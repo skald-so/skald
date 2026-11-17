@@ -1,8 +1,9 @@
 //! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
-//! sends what is left in the outbox, then states its cursor, writes each entry it gets after the
-//! cursor to the local state with the new cursor at once, acks, and stops once catch-up has sent
-//! every entry. It then accepts the revisions of each space it follows, and those of the space of
-//! each `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
+//! sends what is left in the outbox and the history entries of the messages the server stored
+//! ([`crate::history`]), then states its cursor, writes each entry it gets after the cursor to the
+//! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. It
+//! then accepts the revisions of each space it follows, and those of the space of each
+//! `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
 //! and `mls` application messages it wrote, decrypting each message in its channel's group, and
 //! brings the group of each channel of those spaces in line ([`crate::groups`]), uploading the links
 //! of their key chains the server lacks ([`crate::key_chain`]). It then shows the other entries it
@@ -44,11 +45,13 @@ use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
+use crate::history;
 use crate::key_chain;
 use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept};
+use crate::wraps;
 
 /// How long a message waits for an agent at most: the cloud's mailbox retention
 /// (`architecture.md`, "Cloud limits").
@@ -84,13 +87,12 @@ pub fn run(
     if let Err(err) = send::report(&queued, &delivered, timeout) {
         eprintln!("skald: warning: {err}");
     }
+    // The entries go out on the outbox's connection, which then gets the mailbox.
+    let flushed = std::mem::replace(&mut link.socket, delivered.socket.take());
+    history::upload(&mut follower, &mut link, scope);
+    let socket = std::mem::replace(&mut link.socket, flushed);
     let mut synced = BTreeMap::new();
-    let received = receive(
-        &mut follower,
-        delivered.socket.take(),
-        (timeout, scope),
-        &mut synced,
-    );
+    let received = receive(&mut follower, socket, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
     let handed = match ran_as {
@@ -105,8 +107,8 @@ pub fn run(
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]) and uploads the links of their key chains the server lacks
-/// ([`crate::key_chain`]).
+/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]) and the
+/// wraps of their current epochs ([`crate::wraps`]) the server lacks.
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -116,6 +118,7 @@ pub fn align(
     groups::take_in(follower, link, scope, synced)?;
     groups::align_with(follower, link);
     key_chain::upload_missing(follower, link, scope);
+    wraps::upload_missing(follower, link, scope);
     Ok(())
 }
 

@@ -526,7 +526,7 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 ```
 
 - HPKE in base mode as in [Scheme `hpke`](README.md#scheme-hpke), to the `hpke` key of a `browser` device's certificate or to the recovery HPKE key of an account's [record](#account); `info` `skald history wrap`, `aad` the encoded `[channel, epoch, recipient]`.
-- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate. `client` devices take keys from MLS and the key chain and need no wrap.
+- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate, unless that member's `excluded` in the latest revision the wrapping device accepted lists it. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
 A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space.
@@ -545,8 +545,9 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 |---|---|
 | `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
 | `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
-| `epoch-mismatch` | Is of an epoch the channel has not had; an entry, of an epoch other than the channel's current or previous one |
+| `epoch-mismatch` | Is of an epoch the channel has not had; a link or wrap, of an epoch before the channel's cutoff; an entry, of an epoch other than the channel's current or previous one |
 
+- With a history retention, the server deletes each entry stored longer ago than it. A channel's cutoff is the latest epoch of an entry the server has deleted, and never moves back. The server deletes the links and wraps of epochs before the cutoff; those of the cutoff and later epochs stay, whatever their age. Without a retention, it deletes none.
 - The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
 
 ### History entry
