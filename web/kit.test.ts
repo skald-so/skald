@@ -1631,7 +1631,7 @@ test("the screenshot command saves every view of the kit page, as the references
     });
     // The kit page and the cabinet in full, the open side menu at phone width and the questions over
     // Access and the Account page in the window; the sign-in page, the cabinet of an account with
-    // no space, Machines, Access and the Account page fill the window.
+    // no space, Machines, Members, Access and the Account page fill the window.
     const expected = [
       ["kit-light-1440.png", 1440, "Background", "light"],
       ["kit-light-360.png", 360, "Background", "light"],
@@ -1655,6 +1655,10 @@ test("the screenshot command saves every view of the kit page, as the references
       ["machines-light-360.png", 360, "Side panel", "light", 900],
       ["machines-dark-1440.png", 1440, "Side panel", "dark", 900],
       ["machines-dark-360.png", 360, "Side panel", "dark", 900],
+      ["members-light-1440.png", 1440, "Side panel", "light", 900],
+      ["members-light-360.png", 360, "Side panel", "light", 900],
+      ["members-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["members-dark-360.png", 360, "Side panel", "dark", 900],
       ["access-light-1440.png", 1440, "Side panel", "light", 900],
       ["access-light-360.png", 360, "Side panel", "light", 900],
       ["access-dark-1440.png", 1440, "Side panel", "dark", 900],
