@@ -271,8 +271,11 @@ enum Between {
 fn one_default_channel_after(between: Between, (id, login): (u64, &str)) {
     let (world, _front) = fronted();
     let cloud = &world.cloud;
-    let ada = crate::fixtures::retrying_for_the_timeout(world.sign_up(id, login, ADA_HOST));
+    let ada = world.sign_up(id, login, ADA_HOST);
     let (space, first) = create_older_space(cloud, &ada, ACME);
+    // The short timeout only for the runs that lose an answer: on a loaded machine, a request of
+    // the space's creation may take longer.
+    let ada = crate::fixtures::retrying_for_the_timeout(ada);
     let (request, how) = match between {
         Between::RevisionDropped => (store_request(space), Lose::Close),
         Between::RevisionKilled => (store_request(space), Lose::Withhold),
