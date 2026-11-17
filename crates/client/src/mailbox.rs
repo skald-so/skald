@@ -125,7 +125,7 @@ pub enum Came {
 
 impl Came {
     /// Adds what `frame`, what a frame from the server gives, brings.
-    fn add(&mut self, frame: &Got) {
+    pub fn add(&mut self, frame: &Got) {
         let spaces = match frame {
             Got::Entries(entries) => (entries.iter())
                 .map(|push| match push {
@@ -520,50 +520,33 @@ fn poll(follower: &mut Follower, keys: &Keys, cursor: u64) -> Result<Vec<u8>, co
     poll_on(&mut follower.connection, session, cursor, Duration::ZERO)
 }
 
-/// What a run of `skald recv --wait` that keeps no connection watches with: the device's
-/// connection to its server, its session and keys, the cursor its run ended with, and the transport
-/// it was on.
+/// What a run of `skald recv --wait` that keeps no connection watches with: a connection of its
+/// own to the device's server, its session and keys, and the cursor its run ended with.
 pub struct Watched {
     connection: Connection,
     token: String,
     keys: Keys,
     cursor: u64,
-    pub transport: Transport,
-}
-
-thread_local! {
-    /// What the last run of `skald recv --wait` on this thread left to watch with.
-    static WATCHED: RefCell<Option<Watched>> = const { RefCell::new(None) };
-}
-
-/// Leaves what `follower`, at the end of a run of `skald recv --wait`, watches with
-/// ([`take_watched`]); nothing if its keys or cursor do not read.
-pub fn leave_watched(follower: Follower) {
-    let (Ok(keys), Ok(cursor)) = (follower.keys(), follower.state.cursor()) else {
-        return;
-    };
-    let watched = Watched {
-        connection: follower.connection,
-        token: follower.token,
-        keys,
-        cursor,
-        transport: follower.transport,
-    };
-    WATCHED.with(|slot| *slot.borrow_mut() = Some(watched));
-}
-
-/// What the last run of `skald recv --wait` on this thread left to watch with, if any.
-pub fn take_watched() -> Option<Watched> {
-    WATCHED.with(|slot| slot.borrow_mut().take())
 }
 
 impl Watched {
-    /// A long-poll after the cursor that waits up to `wait`: whether anything came, an entry or a
-    /// `space-notice`.
-    pub fn poll(&mut self, wait: Duration) -> Result<bool, connection::Error> {
+    /// What `follower`, at the end of a run of `skald recv --wait`, watches with; `None` if its
+    /// keys, cursor or server do not read.
+    pub fn of(follower: &Follower) -> Option<Self> {
+        Some(Watched {
+            connection: follower.connection.again().ok()?,
+            token: follower.token.clone(),
+            keys: follower.keys().ok()?,
+            cursor: follower.state.cursor().ok()?,
+        })
+    }
+
+    /// A long-poll after the cursor that waits up to `wait`: what it gave, [`Got::End`] if
+    /// nothing came.
+    pub fn poll(&mut self, wait: Duration) -> Result<Got, connection::Error> {
         let session = (self.token.as_str(), &self.keys);
         let answer = poll_on(&mut self.connection, session, self.cursor, wait)?;
-        Ok(!matches!(Frame::from_cbor(&answer), Ok(Frame::Batch(entries)) if entries.is_empty()))
+        Ok(got(Frame::from_cbor(&answer).ok()))
     }
 }
 

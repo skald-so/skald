@@ -13,7 +13,7 @@
     - Each command that changes the local state hands its operation, working directory and `--agent` to the helper over a unix socket in the state directory, and shows its output and exit code. A command whose helper cannot start runs one-shot.
     - The helper reaches the server with the environment, such as `HTTPS_PROXY`, of the command that started it.
     - A helper older than a command exits for it; a command older than the helper fails, naming both versions, and the helper keeps running.
-    - A `skald recv --wait` waits through it as a session: the helper hands it what it waits for as it arrives and marks a message handed over once the session has written it out. A one-shot `skald recv --wait` holds its own connection, takes the lock only while it receives, not while it waits, and goes on through a helper that starts meanwhile.
+    - A `skald recv --wait` waits through it as a session. The helper takes in each arrival once for all its sessions and hands each its own, marking a message handed over once the session has written it out; KeyPackages, GroupInfo and the revocation check stay off that path. A one-shot `skald recv --wait` holds its own connection, takes the lock only while it receives, not while it waits, and goes on through a helper that starts meanwhile.
     - It exits after 10 minutes idle, on sign-out and before a sign-in.
     - Only the OS account that runs it reaches its socket: [threat model](../threat-model.md#another-account-on-the-machine).
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.

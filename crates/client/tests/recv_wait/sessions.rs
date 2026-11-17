@@ -265,7 +265,8 @@ fn session_gets_the_messages_a_command_through_its_helper_makes_its_own() {
 
 /// The device has run as claude in `~/work/acme`. Through one helper, claude waits in
 /// `~/work/acme`, and codex in `~/work/other`, in the personal space. Bob's device sends a message
-/// to acme's channel: claude's session shows it once, with its `msg_id`, and exits; codex's keeps
+/// to acme's channel: claude's session shows it once, with its `msg_id`, and exits, the helper
+/// having asked for no KeyPackages, GroupInfo, device list or server name on the way; codex's keeps
 /// waiting, the server seeing no request meanwhile: the message woke no session of another space.
 #[test]
 fn message_wakes_no_session_of_another_space() {
@@ -279,11 +280,26 @@ fn message_wakes_no_session_of_another_space() {
     let mut codex = (waits.helped).start_in(&other, &[], &[AGENT, CODEX, RECV, WAIT_FLAG]);
     assert_idle(&waits.agents.talk, &mut [&mut claude, &mut codex]);
     let bob = waits.agents.bob();
+    let sending = waits.agents.talk.cloud().relay.mark();
 
     let id = waits.agents.bob_sends(&Line::new(&bob, 1, FOR_ACME));
 
     assert_got(&claude.finish(), FOR_ACME, id);
     let relay = &waits.agents.talk.cloud().relay;
+    let on_the_way: Vec<String> = (relay.sent_since(sending).iter())
+        .filter_map(|sent| sent.head.lines().next().map(str::to_owned))
+        .filter(|line| {
+            [
+                "/key-packages",
+                "/group-info",
+                "get /devices ",
+                "get /server ",
+            ]
+            .iter()
+            .any(|path| line.contains(path))
+        })
+        .collect();
+    assert!(on_the_way.is_empty(), "asked on the way: {on_the_way:?}");
     let from = relay.mark();
     assert_keeps_waiting(&mut codex);
     let sent: Vec<String> = (relay.sent_since(from).iter())

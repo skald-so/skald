@@ -43,6 +43,7 @@ mod groups;
 mod helper;
 mod history;
 mod history_reading;
+mod intake;
 mod key_chain;
 mod key_packages;
 mod lock;
@@ -658,6 +659,11 @@ struct Operation {
 }
 
 impl Operation {
+    /// Whether it shows as JSON: a `skald recv --json`.
+    fn json(&self) -> bool {
+        matches!(self.command, Command::Recv { json: true, .. })
+    }
+
     /// The agent the run acts as, if any; fails for a name that is not an agent's, or a command of
     /// the person's.
     fn agent(&self) -> Result<Option<skald_proto::Name>, String> {
@@ -852,13 +858,12 @@ fn received(operation: &Operation) -> Result<bool, String> {
     clock::set_offset(operation.clock_offset);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
-    let json = matches!(operation.command, Command::Recv { json: true, .. });
     recv::run(
         &dir,
         operation.key_storage,
         settings,
         agent.as_ref(),
-        (true, json),
+        (true, operation.json()),
     )
 }
 

@@ -3,9 +3,11 @@
 //! handed over to it; as the person, for anything the person's `skald recv` shows.
 //!
 //! - Through the helper, such a command is a session of it ([`Sessions`]): the helper runs
-//!   `skald recv` for it at once, and again whenever something comes that may concern it or another
-//!   command ran, until a run shows what the session waits for. Each run writes to the session's command, so it marks
-//!   a message handed over only once the command has written it out; the command exits after.
+//!   `skald recv` for it at once, and again after another command ran. Whenever something comes
+//!   that may concern a session, the helper takes it in once for all of them ([`crate::intake`])
+//!   and hands each its own, until the session has what it waits for. What a session is handed
+//!   goes to its command, so a message is marked handed over only once the command has written it
+//!   out; the command exits after.
 //! - In one-shot mode it holds its own connection and takes the local state's lock only for each
 //!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]). Once a helper
 //!   runs, it goes on through it, as any command does ([`helper::route`]): it ends when the helper
@@ -14,11 +16,13 @@
 //!   long-poll that waits, in the background ([`Watch`]). Off WebSocket, it tries WebSocket again
 //!   after an interval ([`RETRY`]), and then the other transports in order.
 
+use std::collections::BTreeSet;
 use std::io::Read;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -26,9 +30,10 @@ use skald_proto::SpaceId;
 
 use crate::Operation;
 use crate::helper::{self, Route};
+use crate::intake::{self, Said};
 use crate::lock::Lock;
 use crate::mailbox::{self, Came, Transport, Watched};
-use crate::recv;
+use crate::recv::{self, Got};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -99,57 +104,71 @@ pub fn here(
 /// How a run that waits watches for what comes between its runs of `skald recv`.
 #[derive(Default)]
 pub struct Watch {
-    /// Set once a long-poll in the background got something, or failed.
-    came: Arc<AtomicBool>,
+    /// What came that the connection did not give: what the long-poll in the background got, or
+    /// what a run dropped.
+    polled: Arc<Mutex<Polled>>,
     /// The long-poll in the background, while no connection is kept: what stops it, and its
     /// thread.
     poll: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
     /// When to try WebSocket again, while off it.
     retry_at: Option<Instant>,
+    /// Whether that time came since this was last asked.
+    retried: bool,
 }
 
 impl Watch {
-    /// Watches from the end of a run of `skald recv --wait` on this thread: the connection it kept,
-    /// or, with none, a long-poll in the background. What the run dropped of what came counts as
-    /// come.
+    /// Watches from the end of a run of `skald recv --wait` or an intake on this thread: the
+    /// connection it kept, or, with none, a long-poll in the background. What the run dropped of
+    /// what came counts as come.
     pub fn start(&mut self) {
-        let watched = mailbox::take_watched();
         let kept = mailbox::kept_transport();
         if mailbox::missed() {
-            self.came.store(true, Ordering::SeqCst);
+            self.polled.lock().expect("what came").came = Came::Anything;
         }
-        let transport = kept.or(watched.as_ref().map(|watched| watched.transport));
-        self.retry_at = match transport {
+        self.retry_at = match kept.or_else(intake::left_transport) {
             Some(Transport::WebSocket) => None,
             _ => self.retry_at.or_else(|| Some(Instant::now() + retry())),
         };
         if kept.is_some() {
             self.stop_poll();
         } else if !self.polling()
-            && let Some(watched) = watched
+            && let Some(watched) = intake::left_watched()
         {
-            self.poll = Some(poll(watched, Arc::clone(&self.came)));
+            self.poll = Some(poll(watched, Arc::clone(&self.polled)));
         }
     }
 
-    /// What came since: on the connection kept, or anything once the long-poll got something,
-    /// the connection ended or it is time to try WebSocket again, which closes the connection kept.
-    /// Never waits.
+    /// What came since: what the long-poll in the background got, or on the connection kept;
+    /// anything once a run dropped what came, the connection ended or it is time to try WebSocket
+    /// again, which closes the connection kept. Never waits.
     pub fn came(&mut self) -> Came {
         if self.retry_at.is_some_and(|at| Instant::now() >= at) {
             self.retry_at = None;
+            self.retried = true;
             self.stop_poll();
             mailbox::close_kept();
             return Came::Anything;
         }
-        if self.came.swap(false, Ordering::SeqCst) {
-            return Came::Anything;
+        let polled = std::mem::take(&mut self.polled.lock().expect("what came").came);
+        if polled != Came::Nothing {
+            return polled;
         }
         if self.polling() {
             return Came::Nothing;
         }
         // With neither, nothing watches: the next run sets the watch again.
         mailbox::kept_came()
+    }
+
+    /// The spaces of the `space-notice`s the long-poll in the background got since this was last
+    /// asked, which the connection does not give again.
+    pub fn noticed(&mut self) -> BTreeSet<SpaceId> {
+        std::mem::take(&mut self.polled.lock().expect("what came").noticed)
+    }
+
+    /// Whether it was time to try WebSocket again since this was last asked.
+    pub fn retried(&mut self) -> bool {
+        std::mem::take(&mut self.retried)
     }
 
     /// Whether a long-poll in the background watches.
@@ -171,18 +190,31 @@ impl Drop for Watch {
     }
 }
 
-/// Long-polls with `watched` in the background until something comes or one fails, then sets
-/// `came`, or until stopped; gives what stops it, and its thread.
-fn poll(mut watched: Watched, came: Arc<AtomicBool>) -> (Arc<AtomicBool>, JoinHandle<()>) {
+/// What a long-poll in the background got, and the spaces of the `space-notice`s among it.
+#[derive(Default)]
+struct Polled {
+    came: Came,
+    noticed: BTreeSet<SpaceId>,
+}
+
+/// Long-polls with `watched` in the background until something comes, which it adds to `polled`,
+/// or one fails, which counts as anything, or until stopped; gives what stops it, and its thread.
+fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, JoinHandle<()>) {
     let stop = Arc::new(AtomicBool::new(false));
     let stopped = Arc::clone(&stop);
     let thread = thread::spawn(move || {
         while !stopped.load(Ordering::SeqCst) {
             // A failure, too, has the run look again, and say why if it fails.
-            if watched.poll(POLL_WAIT).unwrap_or(true) {
-                came.store(true, Ordering::SeqCst);
-                return;
+            let got = watched.poll(POLL_WAIT).unwrap_or(Got::Nothing);
+            if got == Got::End {
+                continue;
             }
+            let mut polled = polled.lock().expect("what came");
+            polled.came.add(&got);
+            if let Got::Entries(entries) = &got {
+                polled.noticed.extend(recv::noticed(entries));
+            }
+            return;
         }
     });
     (stop, thread)
@@ -224,18 +256,8 @@ impl Sessions {
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
     /// it waits for or failed. Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
-        let panicked = match helper::run_session(session, dir) {
-            Ran::Waits(session) => {
-                self.waiting.push(Waiting {
-                    session: *session,
-                    space: recv::last_space(),
-                    due: false,
-                });
-                false
-            }
-            Ran::Ended => false,
-            Ran::Panicked => true,
-        };
+        let ran = helper::run_for(session, dir, crate::received);
+        let panicked = self.again(ran, recv::last_space());
         self.watch.start();
         !panicked
     }
@@ -247,9 +269,10 @@ impl Sessions {
         }
     }
 
-    /// Drops the sessions whose command went away, and runs `skald recv` again, with the state in
-    /// `dir`, for each other one that what came may concern, or that a command ran since. Gives
-    /// whether a session waits, `None` once a run panicked.
+    /// Drops the sessions whose command went away; runs `skald recv` again, with the state in
+    /// `dir`, for each other one that a command ran since, and takes in what came for each one it
+    /// may concern, handing each its own. Gives whether a session waits, `None` once a run or the
+    /// intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
@@ -259,31 +282,100 @@ impl Sessions {
             return Some(false);
         }
         let came = self.watch.came();
-        let runs = |waiting: &Waiting| waiting.due || came.concerns(waiting.space);
-        if !self.waiting.iter().any(runs) {
+        let (noticed, retry) = (self.watch.noticed(), self.watch.retried());
+        let (mut runs, mut handed) = (Vec::new(), Vec::new());
+        for waiting in std::mem::take(&mut self.waiting) {
+            if waiting.due {
+                runs.push(waiting);
+            } else if came.concerns(waiting.space) {
+                handed.push(waiting);
+            } else {
+                self.waiting.push(waiting);
+            }
+        }
+        if runs.is_empty() && handed.is_empty() {
             return Some(true);
         }
         let mut panicked = false;
-        for waiting in std::mem::take(&mut self.waiting) {
-            if !runs(&waiting) {
-                self.waiting.push(waiting);
-                continue;
-            }
-            match helper::run_session(waiting.session, dir) {
-                Ran::Waits(session) => self.waiting.push(Waiting {
-                    session: *session,
-                    space: recv::last_space(),
-                    due: false,
-                }),
-                Ran::Ended => {}
-                Ran::Panicked => panicked = true,
-            }
+        for waiting in runs {
+            let ran = helper::run_for(waiting.session, dir, crate::received);
+            panicked |= self.again(ran, recv::last_space());
         }
+        panicked |= self.hand(handed, dir, (&noticed, retry));
         if panicked {
             return None;
         }
         self.watch.start();
         Some(!self.waiting.is_empty())
+    }
+
+    /// Takes in once what came for `handed`, sessions with the state in `dir`, with the spaces of
+    /// the notices that came, `noticed`, trying WebSocket first again after a `retry`, and hands
+    /// each its own; with nothing to take in with, runs `skald recv` for each. Whether the intake
+    /// or a session's handover panicked.
+    fn hand(
+        &mut self,
+        handed: Vec<Waiting>,
+        dir: &Path,
+        (noticed, retry): (&BTreeSet<SpaceId>, bool),
+    ) -> bool {
+        if handed.is_empty() {
+            return false;
+        }
+        let Some(mut intake) = intake::take() else {
+            let mut panicked = false;
+            for waiting in handed {
+                let ran = helper::run_for(waiting.session, dir, crate::received);
+                panicked |= self.again(ran, recv::last_space());
+            }
+            return panicked;
+        };
+        let scopes = handed.iter().map(|waiting| waiting.space).collect();
+        let taken =
+            panic::catch_unwind(AssertUnwindSafe(|| intake.take_in(&scopes, noticed, retry)));
+        let mut panicked = false;
+        match taken {
+            Ok(Ok(told)) => {
+                let none = Said::new();
+                for waiting in handed {
+                    let space = waiting.space;
+                    let said = match space {
+                        Some(space) => told.spaces.get(&space).unwrap_or(&none),
+                        None => &told.person,
+                    };
+                    let ran = helper::run_for(waiting.session, dir, |operation| {
+                        let agent = operation.agent()?;
+                        intake.hand(said, space.zip(agent.as_ref()), operation.json())
+                    });
+                    panicked |= self.again(ran, space);
+                }
+            }
+            Ok(Err(err)) => {
+                for waiting in handed {
+                    helper::run_for(waiting.session, dir, |_| Err(err.clone()));
+                }
+            }
+            Err(_) => panicked = true,
+        }
+        intake::leave(intake);
+        panicked
+    }
+
+    /// Keeps the session of `ran` waiting, if it waits, with the space it kept to, `space`;
+    /// whether it panicked.
+    fn again(&mut self, ran: Ran, space: Option<SpaceId>) -> bool {
+        match ran {
+            Ran::Waits(session) => {
+                self.waiting.push(Waiting {
+                    session: *session,
+                    space,
+                    due: false,
+                });
+                false
+            }
+            Ran::Ended => false,
+            Ran::Panicked => true,
+        }
     }
 }
 
