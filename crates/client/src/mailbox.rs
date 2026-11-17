@@ -107,15 +107,9 @@ fn miss() {
     MISSED.with(|missed| missed.set(true));
 }
 
-/// Reads what came on the kept connection, if any, so the server's pushes, which the next catch-up
-/// gets anyway, do not pile up while the helper waits; a connection that broke or closed is
-/// dropped.
-pub fn drain_kept() {
-    kept_came();
-}
-
-/// Whether something came on the kept connection since it was last read, which it reads and drops
-/// as [`drain_kept`] does: a frame, or the connection's end, which drops it; with none kept, true.
+/// Whether something came on the kept connection since it was last read: a frame, or the
+/// connection's end, which drops it; with none kept, true. It reads and drops what came, so the
+/// server's pushes, which the next catch-up gets anyway, do not pile up while the helper waits.
 pub fn kept_came() -> bool {
     let Some(mut kept) = KEPT.with(|kept| kept.borrow_mut().take()) else {
         return true;

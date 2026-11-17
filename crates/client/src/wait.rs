@@ -247,7 +247,8 @@ impl Sessions {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
             self.watch = Watch::default();
-            mailbox::drain_kept();
+            // Only drains it.
+            mailbox::kept_came();
             return Some(false);
         }
         let came = self.watch.came();
