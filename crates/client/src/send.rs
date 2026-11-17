@@ -15,7 +15,8 @@
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
 //! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
 //! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). What
-//! is left waits in the outbox for the next run.
+//! is left waits in the outbox for the next run. It then uploads the history entries of the
+//! messages the server stored ([`crate::history`]).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -37,6 +38,7 @@ use crate::connection::{WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::groups::{self, Link, Rosters};
+use crate::history;
 use crate::key_chain;
 use crate::recv;
 use crate::secrets;
@@ -62,8 +64,8 @@ pub trait Wire {
     fn key(&self) -> Key;
     /// Its `send` frame.
     fn frame(&self) -> &[u8];
-    /// Takes it out of the outbox of `state`, once the server answered it.
-    fn answered(&self, state: &State);
+    /// Takes it out of the outbox of `state`, once the server answered it with `answer`.
+    fn answered(&self, state: &State, answer: &Answer);
 }
 
 /// An envelope of the outbox, as it goes out.
@@ -83,9 +85,10 @@ impl Wire for Queued {
         &self.frame
     }
 
-    fn answered(&self, state: &State) {
+    fn answered(&self, state: &State, answer: &Answer) {
         let (msg_id, recipient) = (self.outgoing.msg_id, self.outgoing.recipient);
-        if let Err(err) = state.remove_outgoing(msg_id, recipient) {
+        let refused = matches!(answer, Answer::Refused(_));
+        if let Err(err) = state.remove_outgoing(msg_id, recipient, refused) {
             eprintln!(
                 "skald: warning: the outbox keeps the message {msg_id}{}, which the server \
                  answered, so a later run sends it again: {err}",
@@ -153,7 +156,14 @@ pub fn run(
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
     let queued = queued(&follower.state, scope)?;
-    let delivered = deliver(&mut follower, &queued, timeout, None);
+    let mut delivered = deliver(&mut follower, &queued, timeout, None);
+    match Link::new(&follower) {
+        Ok(mut link) => {
+            link.socket = delivered.socket.take();
+            history::upload(&mut follower, &mut link, scope);
+        }
+        Err(err) => eprintln!("skald: warning: {err}"),
+    }
     report(&queued, &delivered, timeout)
 }
 
@@ -434,7 +444,7 @@ fn answers<W: Wire>(
         let Some(answered) = queued.iter().find(|queued| queued.key() == key) else {
             continue;
         };
-        answered.answered(&follower.state);
+        answered.answered(&follower.state, &answer);
         answers.insert(key, answer);
     }
     Ok(())
