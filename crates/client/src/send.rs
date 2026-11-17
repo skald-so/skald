@@ -14,9 +14,11 @@
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
 //! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
-//! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). What
-//! is left waits in the outbox for the next run. It then uploads the history entries of the
-//! messages the server stored ([`crate::history`]).
+//! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). Over
+//! HTTPS it sends them one at a time, each after the previous one is answered, so a channel's
+//! envelopes are stored in `counter` order ("Gap detection"). What is left waits in the outbox for
+//! the next run. It then uploads the history entries of the messages the server stored
+//! ([`crate::history`]).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -34,12 +36,13 @@ use tungstenite::protocol::frame::coding::CloseCode;
 use tungstenite::stream::MaybeTlsStream;
 
 use crate::agents::{NO_SERVER_NAME, server_name};
-use crate::connection::{WebSocket, printable};
+use crate::connection::{self, WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::groups::{self, Link, Rosters};
 use crate::history;
 use crate::key_chain;
+use crate::mailbox::{self, Mailbox, Transport};
 use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
@@ -104,7 +107,7 @@ impl Wire for Queued {
 pub struct Delivered {
     answers: BTreeMap<Key, Answer>,
     failed: Option<String>,
-    pub socket: Option<WebSocket>,
+    pub mailbox: Option<Mailbox>,
 }
 
 impl Delivered {
@@ -158,7 +161,7 @@ pub fn run(
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
     match Link::new(&follower) {
         Ok(mut link) => {
-            link.socket = delivered.socket.take();
+            link.mailbox = delivered.mailbox.take();
             history::upload(&mut follower, &mut link, scope);
         }
         Err(err) => eprintln!("skald: warning: {err}"),
@@ -191,10 +194,7 @@ fn through_mailbox(
     }
     let timeout = follower.timeout;
     match recv::catch_up(follower, None, timeout) {
-        Ok(mut socket) => {
-            let _ = socket.close(None);
-            let _ = socket.flush();
-        }
+        Ok(mailbox) => mailbox.close(),
         Err(err) => eprintln!("skald: warning: {err}"),
     }
     let mut rosters = Rosters::from([(space, synced)]);
@@ -340,21 +340,22 @@ pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
         .collect()
 }
 
-/// Sends each envelope of `queued` that the server has not answered, in order, over `socket` or a
+/// Sends each envelope of `queued` that the server has not answered, in order, over `mailbox` or a
 /// connection as the device, again with backoff while some are unanswered, for `timeout`, unless
-/// the server closes the connection for a policy violation, such as a refused proof, which another
-/// attempt does not change; takes each answered one out of the outbox.
+/// the server closes the connection for a policy violation or refuses a request's proof, which
+/// another attempt does not change; takes each answered one out of the outbox. A failed attempt
+/// reconnects in the transports' order ([`crate::mailbox`]).
 pub fn deliver<W: Wire>(
     follower: &mut Follower,
     queued: &[W],
     timeout: Duration,
-    mut socket: Option<WebSocket>,
+    mut mailbox: Option<Mailbox>,
 ) -> Delivered {
     let deadline = Instant::now() + timeout;
     let mut delivered = Delivered {
         answers: BTreeMap::new(),
         failed: None,
-        socket: None,
+        mailbox: None,
     };
     let keys = match follower.keys() {
         Ok(keys) => keys,
@@ -371,27 +372,33 @@ pub fn deliver<W: Wire>(
             .collect();
         let now = Instant::now();
         if unanswered.is_empty() || now >= deadline {
-            delivered.socket = socket;
+            delivered.mailbox = mailbox;
             return delivered;
         }
         let until = (now + pause).min(deadline);
         pause = (pause * 2).min(LONGEST_PAUSE);
-        let opened = match socket.take() {
-            Some(socket) => Ok(socket),
+        let opened = match mailbox.take() {
+            Some(mailbox) => Ok(mailbox),
             None => follower.connect(&keys),
         };
         let attempt = opened.map_err(|err| (err, false)).and_then(|mut opened| {
-            for queued in &unanswered {
-                opened
-                    .send(Message::Binary(queued.frame().to_vec().into()))
-                    .map_err(|err| (broke(err), false))?;
+            let answers = &mut delivered.answers;
+            match opened.websocket() {
+                Some(socket) => {
+                    for queued in &unanswered {
+                        socket
+                            .send(Message::Binary(queued.frame().to_vec().into()))
+                            .map_err(|err| (broke(err), false))?;
+                    }
+                    read_answers(socket, follower, queued, answers, until)?;
+                }
+                None => one_by_one(follower, &keys, &unanswered, answers)?,
             }
-            answers(&mut opened, follower, queued, &mut delivered.answers, until)?;
             Ok(opened)
         });
         match attempt {
             Ok(opened) => {
-                socket = Some(opened);
+                mailbox = Some(opened);
                 delivered.failed = None;
             }
             Err((err, refused)) => {
@@ -399,16 +406,57 @@ pub fn deliver<W: Wire>(
                 if refused {
                     return delivered;
                 }
+                follower.transport = Transport::WebSocket;
                 thread::sleep(until.saturating_duration_since(Instant::now()));
             }
         }
     }
 }
 
+/// Sends each of `unanswered` in an HTTPS request as the device of `keys`, one at a time, each after
+/// the previous one is answered, and keeps the answers in `answers`, taking each answered envelope
+/// out of the outbox; stops at the first request that fails, saying whether the server refused the
+/// device's proof.
+fn one_by_one<W: Wire>(
+    follower: &mut Follower,
+    keys: &crate::device::Keys,
+    unanswered: &[&W],
+    answers: &mut BTreeMap<Key, Answer>,
+) -> Result<(), (String, bool)> {
+    for queued in unanswered {
+        let answer = mailbox::request(
+            follower,
+            keys,
+            mailbox::SEND,
+            queued.frame(),
+            Duration::ZERO,
+        )
+        .map_err(|err| {
+            let refused = matches!(err, connection::Error::Refused { status: 401, .. });
+            (err.to_string(), refused)
+        })?;
+        let (send_key, answer) = match Frame::from_cbor(&answer) {
+            Ok(Frame::Stored(stored)) => (stored.send_key, Answer::Stored),
+            Ok(Frame::SendRefused { send_key, problem }) => (send_key, Answer::Refused(problem)),
+            _ => {
+                let unexpected = "unexpected answer from the server: a send answered without its \
+                                  stored or send-refused";
+                return Err((unexpected.to_owned(), false));
+            }
+        };
+        let SendKey { msg_id, recipient } = send_key;
+        if (msg_id, recipient) == queued.key() {
+            queued.answered(&follower.state, &answer);
+            answers.insert(queued.key(), answer);
+        }
+    }
+    Ok(())
+}
+
 /// Reads the server's answers to `queued` on `socket` into `answers` until each one is answered or
 /// `until`, taking each answered envelope out of the outbox; fails if the connection ends, saying
 /// whether the server closed it for a policy violation.
-fn answers<W: Wire>(
+fn read_answers<W: Wire>(
     socket: &mut WebSocket,
     follower: &Follower,
     queued: &[W],

@@ -38,18 +38,18 @@ use skald_proto::{
     DeviceKind, Envelope, Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName,
     ServerStatus, SpaceId, VersionRange,
 };
-use tungstenite::Message;
 
 use crate::agents::server_name;
-use crate::connection::{WebSocket, printable};
+use crate::connection::printable;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
 use crate::key_chain;
+use crate::mailbox::Mailbox;
 use crate::secrets;
-use crate::send::{self, broke, closed, set_read_timeout};
+use crate::send;
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept};
 use crate::wraps;
@@ -89,11 +89,11 @@ pub fn run(
         eprintln!("skald: warning: {err}");
     }
     // The entries go out on the outbox's connection, which then gets the mailbox.
-    let flushed = std::mem::replace(&mut link.socket, delivered.socket.take());
+    let flushed = std::mem::replace(&mut link.mailbox, delivered.mailbox.take());
     history::upload(&mut follower, &mut link, scope);
-    let socket = std::mem::replace(&mut link.socket, flushed);
+    let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
-    let received = receive(&mut follower, socket, (timeout, scope), &mut synced);
+    let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     let shown = show(&mut follower, scope, synced);
     let handed = match ran_as {
@@ -123,16 +123,18 @@ pub fn align(
     Ok(())
 }
 
-/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
-/// for each frame for `timeout`, as [`catch_up`] does. Then it syncs into `synced` each space
-/// within `scope` the device follows, and the space of each `space-notice` that came meanwhile.
+/// Gets the mailbox over `mailbox`, or a new connection as the device, until catch-up ends,
+/// waiting for each frame for `timeout`, as [`catch_up`] does. Then it syncs into `synced` each
+/// space within `scope` the device follows, and the space of each `space-notice` that came
+/// meanwhile.
 fn receive(
     follower: &mut Follower,
-    socket: Option<WebSocket>,
+    mailbox: Option<Mailbox>,
     (timeout, scope): (Duration, Scope),
     synced: &mut Rosters,
 ) -> Result<(), String> {
-    let mut socket = catch_up(follower, socket, timeout)?;
+    let mut mailbox = catch_up(follower, mailbox, timeout)?;
+    let keys = follower.keys()?;
     // By the end of catch-up the server sends the connection its notices: a revision stored before
     // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
     // space fetched here.
@@ -145,49 +147,32 @@ fn receive(
         .collect();
     while !due.is_empty() {
         sync_due(follower, scope, &mut due, synced)?;
-        due.extend(waiting_notices(&mut socket));
+        due.extend(mailbox.waiting_notices(follower, &keys));
     }
-    let _ = socket.close(None);
-    let _ = socket.flush();
+    mailbox.close();
     Ok(())
 }
 
-/// Gets the mailbox over `socket`, or a new connection as the device, until catch-up ends, waiting
-/// for each frame for `timeout`: writes each entry after the cursor with the new cursor and acks
-/// it. Gives the connection.
+/// Gets the mailbox over `mailbox`, or a new connection as the device, until catch-up ends,
+/// waiting for each frame for `timeout`, over the transports as [`crate::mailbox`] says: writes
+/// each entry after the cursor with the new cursor and acks it. Gives the connection.
 pub fn catch_up(
     follower: &mut Follower,
-    socket: Option<WebSocket>,
+    mailbox: Option<Mailbox>,
     timeout: Duration,
-) -> Result<WebSocket, String> {
-    let mut socket = match socket {
-        Some(socket) => socket,
-        None => follower.connect(&follower.keys()?)?,
+) -> Result<Mailbox, String> {
+    let keys = follower.keys()?;
+    let mailbox = match mailbox {
+        Some(mailbox) => mailbox,
+        None => follower.connect(&keys)?,
     };
-    let mut cursor = follower.state.cursor().map_err(text)?;
-    write(&mut socket, &Frame::Sync { cursor })?;
-    loop {
-        set_read_timeout(&mut socket, timeout).map_err(|err| broke(err.into()))?;
-        let entries = match socket.read() {
-            Ok(Message::Binary(bytes)) => match got(Frame::from_cbor(&bytes).ok()) {
-                Got::Entries(entries) => entries,
-                Got::End => break,
-                Got::Nothing => continue,
-            },
-            Ok(Message::Close(frame)) => return Err(closed(frame.as_ref())),
-            Ok(_) => continue,
-            Err(err) => return Err(failed(err, timeout)),
-        };
+    mailbox.catch_up(follower, &keys, timeout, |follower, entries, cursor| {
         let written = after(entries, cursor);
         if written.is_empty() {
-            continue;
+            return Ok(cursor);
         }
-        cursor = follower.state.write_entries(&written).map_err(text)?;
-        if let Some(seq) = NonZeroU64::new(cursor) {
-            write(&mut socket, &Frame::Ack { seq })?;
-        }
-    }
-    Ok(socket)
+        follower.state.write_entries(&written).map_err(text)
+    })
 }
 
 /// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
@@ -220,25 +205,8 @@ fn sync_due(
     Ok(())
 }
 
-/// The spaces of the `space-notice` frames that came on `socket` and wait to be read; the other
-/// frames are dropped, and the next run gets their entries.
-fn waiting_notices(socket: &mut WebSocket) -> Vec<SpaceId> {
-    let mut spaces = Vec::new();
-    if set_read_timeout(socket, Duration::from_millis(1)).is_err() {
-        return spaces;
-    }
-    while let Ok(message) = socket.read() {
-        if let Message::Binary(bytes) = message
-            && let Got::Entries(entries) = got(Frame::from_cbor(&bytes).ok())
-        {
-            spaces.extend(noticed(&entries));
-        }
-    }
-    spaces
-}
-
 /// The spaces of the `space-notice` entries of `entries`.
-fn noticed(entries: &[Push]) -> impl Iterator<Item = SpaceId> + '_ {
+pub fn noticed(entries: &[Push]) -> impl Iterator<Item = SpaceId> + '_ {
     entries.iter().filter_map(|push| match push {
         Push::SpaceNotice { space } => Some(*space),
         _ => None,
@@ -247,7 +215,7 @@ fn noticed(entries: &[Push]) -> impl Iterator<Item = SpaceId> + '_ {
 
 /// What a frame from the server gives a run that waits for the end of catch-up.
 #[derive(Debug, PartialEq)]
-enum Got {
+pub enum Got {
     /// Entries of the mailbox.
     Entries(Vec<Push>),
     /// The end of catch-up: an empty `batch`.
@@ -257,31 +225,12 @@ enum Got {
 }
 
 /// What `frame`, a frame from the server if it decodes, gives.
-fn got(frame: Option<Frame>) -> Got {
+pub fn got(frame: Option<Frame>) -> Got {
     match frame {
         Some(Frame::Push(push)) => Got::Entries(vec![push]),
         Some(Frame::Batch(entries)) if entries.is_empty() => Got::End,
         Some(Frame::Batch(entries)) => Got::Entries(entries),
         _ => Got::Nothing,
-    }
-}
-
-/// Why a run that waited for each frame for `timeout` failed to read one, by `err`.
-fn failed(err: tungstenite::Error, timeout: Duration) -> String {
-    match err {
-        tungstenite::Error::Io(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            format!(
-                "the server sent nothing within {} s before the end of the mailbox; the next skald \
-                 recv gets the rest",
-                timeout.as_secs()
-            )
-        }
-        err => broke(err),
     }
 }
 
@@ -298,12 +247,6 @@ fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
             (seq > cursor).then(|| (seq, Frame::Push(push).to_cbor()))
         })
         .collect()
-}
-
-fn write(socket: &mut WebSocket, frame: &Frame) -> Result<(), String> {
-    socket
-        .send(Message::Binary(frame.to_cbor().into()))
-        .map_err(broke)
 }
 
 /// What a run checks messages with, besides the state: the spaces it synced, each one's last
@@ -1347,23 +1290,6 @@ mod tests {
         ];
 
         assert_eq!(noticed(&entries).collect::<Vec<_>>(), [first, second]);
-    }
-
-    /// A read that times out says the server sent nothing in time; any other failure, that the
-    /// connection broke.
-    #[test]
-    fn failed_read_says_whether_it_timed_out() {
-        let io = |kind| tungstenite::Error::Io(io::Error::from(kind));
-        let timeout = Duration::from_secs(4);
-        let silent = "the server sent nothing within 4 s before the end of the mailbox; the next \
-                      skald recv gets the rest";
-
-        assert_eq!(failed(io(io::ErrorKind::WouldBlock), timeout), silent);
-        assert_eq!(failed(io(io::ErrorKind::TimedOut), timeout), silent);
-        assert!(
-            failed(io(io::ErrorKind::ConnectionReset), timeout)
-                .starts_with("the connection to the server broke: "),
-        );
     }
 
     /// The warning of missing messages names how many, their counters, the sending device and the
