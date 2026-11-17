@@ -264,18 +264,21 @@ mod tests {
     /// the longest they share, and distinct.
     #[test]
     fn reference_is_four_characters_unless_another_kept_message_shares_them() {
-        let ids: Vec<MessageId> = (0..2000).map(|_| MessageId::generate()).collect();
-        let (one, other) = (0..ids.len())
-            .flat_map(|i| (0..i).map(move |j| (i, j)))
-            .map(|(i, j)| (ids[i], ids[j]))
-            .find(|(one, other)| whole_reference(*one)[..4] == whole_reference(*other)[..4])
-            .expect("two of 2000 share 4 characters");
+        // Two new IDs whose references share their first 4 characters, as the birthday bound
+        // gives them after about 1300 of 32^4.
+        let mut firsts = std::collections::HashMap::new();
+        let (one, other) = std::iter::repeat_with(MessageId::generate)
+            .find_map(|id| {
+                let first = firsts.insert(whole_reference(id)[..4].to_owned(), id)?;
+                Some((first, id))
+            })
+            .unwrap();
         let shared = (whole_reference(one)
             .bytes()
             .zip(whole_reference(other).bytes()))
         .take_while(|(a, b)| a == b)
         .count();
-        let apart = (ids.iter().copied())
+        let apart = std::iter::repeat_with(MessageId::generate)
             .find(|id| whole_reference(*id)[..4] != whole_reference(one)[..4])
             .unwrap();
 
