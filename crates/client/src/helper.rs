@@ -684,7 +684,7 @@ mod tests {
         );
         assert_eq!(receive(&mut read).unwrap(), Some((Kind::Code, vec![1])));
         assert_eq!(receive(&mut read).unwrap(), None);
-        assert!(receive(&mut [9, 0, 0, 0, 0].as_slice()).is_err());
+        assert!(receive(&mut [99, 0, 0, 0, 0].as_slice()).is_err());
     }
 
     /// Versions compare as semantic versions; one that is not is older than any that is.
