@@ -52,6 +52,7 @@ use crate::secrets;
 use crate::send::{self, broke, closed, set_read_timeout};
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept};
+use crate::wraps;
 
 /// How long a message waits for an agent at most: the cloud's mailbox retention
 /// (`architecture.md`, "Cloud limits").
@@ -107,8 +108,8 @@ pub fn run(
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]) and uploads the links of their key chains the server lacks
-/// ([`crate::key_chain`]).
+/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]) and the
+/// wraps of their current epochs ([`crate::wraps`]) the server lacks.
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -118,6 +119,7 @@ pub fn align(
     groups::take_in(follower, link, scope, synced)?;
     groups::align_with(follower, link);
     key_chain::upload_missing(follower, link, scope);
+    wraps::upload_missing(follower, link, scope);
     Ok(())
 }
 
