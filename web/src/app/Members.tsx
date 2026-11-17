@@ -224,8 +224,9 @@ export function Members({ onSignedOut }: { onSignedOut: () => void }) {
     fetchMembers(space.space).then(
       (members) => {
         if (!shown) return;
-        if (members) setListed({ space: space.space, members, at: Date.now() });
-        else onSignedOut();
+        if (!members) return onSignedOut();
+        setListed({ space: space.space, members, at: Date.now() });
+        setFailed(undefined);
       },
       () => {
         if (shown) setFailed({ space: space.space });

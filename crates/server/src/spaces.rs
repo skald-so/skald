@@ -20,7 +20,7 @@ use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::{AppState, history, revocations};
+use crate::{AppState, history, mailboxes, revocations};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -318,18 +318,14 @@ pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten
 /// up to the latest that lists it.
 pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let space = found.id.to_string();
-    let latest: Option<(i64, Vec<u8>)> = sqlx::query_as(
-        "SELECT revision, roster FROM roster_revisions WHERE space_id = $1::uuid
-         ORDER BY revision DESC LIMIT 1",
-    )
-    .bind(&space)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|err| Refusal::Database("read the latest revision", err))?;
-    let Some((revision, roster)) = latest else {
+    let latest = mailboxes::latest(&state.db, found.id)
+        .await
+        .map_err(|err| Refusal::Database("read the latest revision", err))?;
+    let Some(roster) = latest else {
         return Ok(Json(ListedMembers { members: vec![] }).into_response());
     };
-    let roster = Roster::from_cbor(&roster).expect("a stored revision decodes");
+    let revision =
+        i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
     let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT m.account_id::text,
