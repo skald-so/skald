@@ -2,8 +2,10 @@
 
 mod anchors;
 mod cert;
+mod cpace;
 mod history;
 mod hpke;
+mod link;
 mod mls;
 mod revocation;
 mod roster;
@@ -13,8 +15,10 @@ mod wrap;
 
 pub use anchors::{check_anchors, sign_anchors};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
+pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
+pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError};
 pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,

@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use skald_proto::ServerName;
 use skald_server::{
     AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl, Listed,
-    OidcSettings, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
+    OidcSettings, PrivacyPolicyUrl, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
 };
 use tokio::net::TcpListener;
 
@@ -183,6 +183,12 @@ struct Cli {
     )]
     sign_up_google_domains: Vec<String>,
 
+    /// The address of the server's privacy policy, an https URL, e.g.
+    /// https://skald.example/privacy: the web app's sign-in page, the verification page and the page
+    /// of the account's sign-in methods link it [default: no link].
+    #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
+    privacy_policy_url: Option<PrivacyPolicyUrl>,
+
     /// The number of spaces an account may own: the ones it created, its personal space included,
     /// which counts also before it is created [default: no limit].
     #[arg(
@@ -262,6 +268,16 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=SSE_KEEP_ALIVE_LONGEST)
     )]
     sse_keep_alive: Option<u64>,
+
+    /// How long after its hello a link code's run ends, in seconds, at most the code's 5 minutes
+    /// [default: 300].
+    #[arg(
+        long,
+        env = "SKALD_LINK_CODE_LIFETIME",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::LINK_CODE_LIFETIME.as_secs())
+    )]
+    link_code_lifetime: Option<u64>,
 
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
@@ -476,6 +492,7 @@ impl Cli {
             versions: self.protocol_versions.unwrap_or_default(),
             sign_in,
             sign_up,
+            privacy_policy_url: self.privacy_policy_url,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
@@ -485,6 +502,7 @@ impl Cli {
             devices_limit: self.devices_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
             sse_keep_alive: self.sse_keep_alive.map(Duration::from_secs),
+            link_code_lifetime: self.link_code_lifetime.map(Duration::from_secs),
         })
     }
 }
@@ -655,6 +673,25 @@ mod tests {
         assert_eq!(interval(3_600), Some(Some(3_600)));
         assert_eq!(interval(0), None);
         assert_eq!(interval(3_601), None);
+    }
+
+    #[test]
+    fn a_link_codes_run_lasts_from_a_second_to_5_minutes() {
+        let lifetime = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--link-code-lifetime",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.link_code_lifetime)
+            .ok()
+        };
+        assert_eq!(lifetime(1), Some(Some(1)));
+        assert_eq!(lifetime(300), Some(Some(300)));
+        assert_eq!(lifetime(0), None);
+        assert_eq!(lifetime(301), None);
     }
 
     #[test]

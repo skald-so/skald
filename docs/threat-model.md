@@ -92,6 +92,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - Remove the account's other sign-in methods after its own recent sign-in, as can each provider linked to the account, and keep the account. Removing a method ends the web sessions it signed in; device sessions approved through it stay until ended in the web UI's Access section.
 - GitHub: sign up as a listed GitHub login on a server whose sign-up is closed ([self-host.md, "Sign-up"](self-host.md#sign-up)).
 - Persuade the user to enter a link code its own device shows, which links that device with the `name` and kind it chose ([membership.md](protocol/membership.md#security-considerations)).
+- Guess a link code online with a session of the account, which takes the account's hellos and answers them, as the server can ([The server or its operator](#the-server-or-its-operator)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
 - GitHub: read the CI secrets it stores: [A leaked CI secret](#a-leaked-ci-secret).
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).

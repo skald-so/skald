@@ -23,6 +23,7 @@ import { UsageScreen } from "../app/Usage.tsx";
 const providers = getGetSignInProvidersResponseMock({
   providers: ["github", "google"],
   sign_up: "open",
+  privacy_policy_url: "https://skald.example/privacy",
 });
 
 const session = getGetSessionResponseMock({
@@ -198,7 +199,10 @@ const spaceUsage = getGetSpaceUsageResponseMock({
   history_retention: { limit: 90 * 86_400 },
 });
 
-/** The sign-in page of 03-sign-in.png, on a server with both providers and open sign-up. */
+/**
+ * The sign-in page of 03-sign-in.png, on a server with both providers, open sign-up and a privacy
+ * policy.
+ */
 export function KitSignIn() {
   return <SignInPage providers={providers} returnTo="/" />;
 }

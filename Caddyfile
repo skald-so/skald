@@ -5,8 +5,8 @@
 # an unknown one to its index page.
 {$SKALD_SITE} {
 	@server {
-		path /account/anchors /account/devices /account/master /account/personal-space
-		path /account/revocations
+		path /account/anchors /account/devices /account/links /account/links/* /account/master
+		path /account/personal-space /account/revocations
 		path /account/sessions /account/sessions/end-others /account/sessions/*
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
