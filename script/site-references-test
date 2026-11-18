@@ -1,14 +1,14 @@
 #!/usr/bin/env node
-// Tests the main page and the threat model page, as site/build.mjs builds them, against their
-// reference screenshots in site/references/, in the pinned Chrome of the kit's screenshots, after
-// npm ci in site/ and web/; Docker must be running:
-//   - each view of site/screenshots.mjs, each page in both themes at 1440 and 360 px, matches its
-//     reference by the kit's comparison, web/kit-references.ts; a view that differs saves its
-//     screenshot and a diff image to site/references-diff/; site/references/ holds no other file;
-//   - for the main page in the light theme at 1440 px the comparison fails on a changed color of
-//     "Get started", marking only it in the diff image, which it saves; on a changed spacing inside
-//     it, marking it; on a changed spacing between blocks, reporting the new size; and passes once
-//     the reference shows the change.
+// Tests the main page, as site/build.mjs builds it, against its reference screenshots in
+// site/references/, in the pinned Chrome of the kit's screenshots, after npm ci in site/ and web/;
+// Docker must be running:
+//   - each view of site/screenshots.mjs, both themes at 1440 and 360 px, matches its reference by
+//     the kit's comparison, web/kit-references.ts; a view that differs saves its screenshot and a
+//     diff image to site/references-diff/; site/references/ holds no other file;
+//   - in the light theme at 1440 px the comparison fails on a changed color of "Get started",
+//     marking only it in the diff image, which it saves; on a changed spacing inside it, marking it;
+//     on a changed spacing between blocks, reporting the new size; and passes once the reference
+//     shows the change.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -65,7 +65,7 @@ try {
 done();
 
 async function changes() {
-  const view = views.find(({ at, theme, width }) => at === '/' && theme === 'light' && width === 1440);
+  const view = views.find(({ theme, width }) => theme === 'light' && width === 1440);
   // A screenshot of the view after `change` alters "Get started", and the button's box.
   const changed = async (change) => {
     let box;

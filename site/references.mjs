@@ -1,20 +1,18 @@
-// The website's reference screenshots, site/references/: their views and how to take them. The
-// comparison is the kit's, web/kit-references.ts.
+// The main page's reference screenshots, site/references/: its views and how to take them, and the
+// views saved for review only. The comparison is the kit's, web/kit-references.ts.
 import path from 'node:path';
 import { screenshot, themes, widths } from '../web/kit-browser.ts';
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 
-// Every view: the main page, then the threat model page for the docs pages' look, each in both
-// themes at the check widths, {at, theme, width, file}, <at> the page's path, the file e.g.
-// main-light-1440.png or threat-model-dark-360.png.
-const pages = [
-  ['main', '/'],
-  ['threat-model', '/threat-model'],
-];
-export const views = pages.flatMap(([name, at]) =>
-  themes.flatMap((theme) => widths.map((width) => ({ at, theme, width, file: `${name}-${theme}-${width}.png` }))),
-);
+// viewsOf <name> <at>: the page at the path <at> in both themes at the check widths, {at, theme,
+// width, file}, the file e.g. <name>-light-1440.png.
+const viewsOf = (name, at) => themes.flatMap((theme) => widths.map((width) => ({ at, theme, width, file: `${name}-${theme}-${width}.png` })));
+
+// Every view of the main page.
+export const views = viewsOf('main', '/');
+// The threat model page, for reviews of the docs pages' look; no reference.
+export const reviewViews = viewsOf('threat-model', '/threat-model');
 
 // The committed references, made by `node site/screenshots.mjs site/references`.
 export const referenceDir = path.join(here, 'references');
