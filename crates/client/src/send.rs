@@ -141,6 +141,9 @@ impl Delivered {
     }
 }
 
+/// What a `skald send` names: its `--to`, its `--channel` and its text.
+pub type Named<'a> = (Option<&'a str>, Option<&'a str>, &'a str);
+
 /// Sends `text` for the agent `to` names ([`addressee`]), or for every agent without it, to the
 /// channel whose ID is `channel`, by default the default channel of the working directory's space,
 /// by the state in `dir`, its secrets in `storage`, as `agent` if given, whose run holds its
@@ -150,7 +153,7 @@ pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (to, channel, text): (Option<&str>, Option<&str>, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     json: bool,
 ) -> Result<(), String> {
@@ -176,7 +179,7 @@ fn sent(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (to, channel, text): (Option<&str>, Option<&str>, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     reported: Reported,
 ) -> Result<(), String> {

@@ -1702,31 +1702,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// A space's default channel is its first channel, once that has every member; none before.
-    #[test]
-    fn default_channel_is_the_first_channel_once_it_has_every_member() {
-        let (ada, bob) = (AccountId::generate(), AccountId::generate());
-        let mut body = first(ada).body().clone();
-        let sign = |body: &RosterBody| {
-            skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
-        };
-        assert_eq!(default_of(&sign(&body)), None, "no channel");
-        let (one, two) = (ChannelId::generate(), ChannelId::generate());
-        body.channels = vec![default_channel(one, &body)];
-        body.members.push(member(bob, "bob", [4; 32]));
-        body.channels.push(default_channel(two, &body));
-        assert_eq!(
-            default_of(&sign(&body)),
-            None,
-            "bob outside the first channel"
-        );
-        body.channels[0] = default_channel(one, &body);
-        assert_eq!(default_of(&sign(&body)), Some(one));
-    }
-
     /// A space needs a default channel while it has no channel or its first channel lacks a
     /// member; a later channel with every member does not count. A default channel holds every
-    /// member with `history` true.
+    /// member with `history` true; once there, it is the space's default channel.
     #[test]
     fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
@@ -1735,6 +1713,7 @@ pub(crate) mod tests {
             skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
         };
         assert!(needs_default(&sign(&body)), "no channel");
+        assert_eq!(default_of(&sign(&body)), None, "no channel");
         body.channels = vec![default_channel(ChannelId::generate(), &body)];
         let ada_in = ChannelMember {
             account: ada,
@@ -1751,8 +1730,9 @@ pub(crate) mod tests {
             needs_default(&sign(&body)),
             "every member in a later channel"
         );
-        body.channels
-            .insert(0, default_channel(ChannelId::generate(), &body));
+        assert_eq!(default_of(&sign(&body)), None, "a later channel");
+        let default = ChannelId::generate();
+        body.channels.insert(0, default_channel(default, &body));
         let bob_in = ChannelMember {
             account: bob,
             history: true,
@@ -1760,6 +1740,7 @@ pub(crate) mod tests {
         assert_eq!(body.channels[0].members, [ada_in, bob_in]);
         assert!(body.channels[0].services.is_empty());
         assert!(!needs_default(&sign(&body)));
+        assert_eq!(default_of(&sign(&body)), Some(default));
     }
 
     #[test]
