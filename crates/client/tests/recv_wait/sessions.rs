@@ -6,6 +6,7 @@
 use std::time::Instant;
 
 use crate::agents::{CLAUDE, CODEX};
+use crate::cloud::alone;
 use crate::fixtures::person_address;
 use crate::helped::{Helped, WEBSOCKET, times, with_client_b};
 use crate::kit::{RECV, bind_client_a, received};
@@ -45,6 +46,8 @@ const TO_CODEX: &str = "wait test: codex, review the migration";
 /// every run, and the server saw one connection of Ada's machine for them all.
 #[test]
 fn sessions_in_two_folders_wait_through_one_helper_and_each_gets_only_its_own_messages() {
+    // Timed: the load of other tests does not count in its time.
+    let _alone = alone();
     let mut talk = Talk::in_space(
         CLIENT_A,
         &[4_148_011_001, 4_148_011_002],

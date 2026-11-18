@@ -3,7 +3,9 @@
 //! relay; and the person who approves or denies a machine's code on its verification page in
 //! headless Chrome, signing in there with GitHub or Google.
 
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -99,6 +101,81 @@ pub struct Cloud {
     /// The server's public address, e.g. `http://skald.test:41234`.
     pub public: String,
     server: Server,
+    /// Dropped last: once the server has stopped.
+    _share: Share,
+}
+
+/// The tests of a test binary, each with its clouds, run side by side; a test that times what a
+/// machine shows takes the binary for itself ([`alone`]), so that the load of other tests, such as
+/// one that ends meanwhile, does not count in its time.
+static SIDE_BY_SIDE: RwLock<()> = RwLock::new(());
+
+thread_local! {
+    /// The share of the binary that this thread's clouds hold, and how many hold it.
+    static SHARE: RefCell<Option<(RwLockReadGuard<'static, ()>, usize)>> = const { RefCell::new(None) };
+    /// Whether this thread's test runs alone.
+    static ALONE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// A cloud's share of the test binary, while its test does not run alone.
+struct Share {
+    held: bool,
+}
+
+impl Share {
+    /// Waits until no test runs alone, then takes a share.
+    fn take() -> Self {
+        if ALONE.get() {
+            return Share { held: false };
+        }
+        SHARE.with_borrow_mut(|share| match share {
+            Some((_, clouds)) => *clouds += 1,
+            None => {
+                let guard = SIDE_BY_SIDE.read().unwrap_or_else(PoisonError::into_inner);
+                *share = Some((guard, 1));
+            }
+        });
+        Share { held: true }
+    }
+}
+
+impl Drop for Share {
+    fn drop(&mut self) {
+        if !self.held {
+            return;
+        }
+        SHARE.with_borrow_mut(|share| {
+            if let Some((_, clouds)) = share {
+                *clouds -= 1;
+                if *clouds == 0 {
+                    *share = None;
+                }
+            }
+        });
+    }
+}
+
+/// The test binary for one test alone, while it lives.
+pub struct Alone {
+    _guard: RwLockWriteGuard<'static, ()>,
+}
+
+/// Waits until the clouds of other tests are gone, then keeps other tests from starting one until
+/// the guard drops. A test calls it before it starts a cloud.
+pub fn alone() -> Alone {
+    assert!(
+        SHARE.with_borrow(Option::is_none),
+        "a test runs alone from its start"
+    );
+    let guard = SIDE_BY_SIDE.write().unwrap_or_else(PoisonError::into_inner);
+    ALONE.set(true);
+    Alone { _guard: guard }
+}
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        ALONE.set(false);
+    }
 }
 
 impl Cloud {
@@ -187,6 +264,7 @@ impl Cloud {
         (lifetime, interval): (u64, u64),
         change: impl FnOnce(&mut Settings),
     ) -> Self {
+        let share = Share::take();
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
@@ -248,6 +326,7 @@ impl Cloud {
             google,
             public: public_url,
             server,
+            _share: share,
         }
     }
 
