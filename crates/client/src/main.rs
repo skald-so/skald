@@ -29,6 +29,7 @@ macro_rules! eprintln {
 
 mod admin;
 mod agents;
+mod anchors;
 mod channels;
 mod clock;
 mod connection;

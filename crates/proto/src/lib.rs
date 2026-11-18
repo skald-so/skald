@@ -2,6 +2,7 @@
 
 mod account;
 mod address;
+mod anchors;
 mod cbor;
 mod cert;
 mod content;
@@ -20,6 +21,7 @@ pub use account::{ACCOUNT_LABEL, AccountBody, AccountRecord, MasterBackup};
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
 };
+pub use anchors::{ANCHORS_LABEL, Anchors, AnchorsBody};
 pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };

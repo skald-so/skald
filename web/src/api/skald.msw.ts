@@ -12,7 +12,9 @@ import type {
 
 import { SignInProvider } from "./skald.schemas";
 import type {
+  AccountAnchors,
   AccountUsage,
+  AnchorsRequest,
   ChannelGroup,
   Device,
   DeviceRegistration,
@@ -52,11 +54,156 @@ import type {
   SpaceRequest,
   SpaceUsage,
   Spaces,
+  StoredAnchors,
   StoredRevocation,
   StoredRosterRevision,
   UsernameRequest,
   WaitingDevices,
 } from "./skald.schemas";
+
+export const getListAnchorsResponseMock = (
+  overrideResponse: Partial<Extract<AccountAnchors, object>> = {},
+): AccountAnchors => ({
+  anchors: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getListAnchorsResponseMock200 = (
+  overrideResponse: Partial<Extract<AccountAnchors, object>> = {},
+): AccountAnchors => ({
+  anchors: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  ...overrideResponse,
+});
+
+export const getListAnchorsResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getListAnchorsResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListAnchorsResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseMock = (
+  overrideResponse: Partial<Extract<StoredAnchors, object>> = {},
+): StoredAnchors =>
+  faker.helpers.arrayElement([
+    {
+      anchors: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+    {
+      anchors: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getStoreAnchorsResponseMock200 = (
+  overrideResponse: Partial<Extract<StoredAnchors, object>> = {},
+): StoredAnchors => ({
+  anchors: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseMock201 = (
+  overrideResponse: Partial<Extract<StoredAnchors, object>> = {},
+): StoredAnchors => ({
+  anchors: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseMock400 = (): ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getStoreAnchorsResponseProtocolProblemMock() },
+    { ...getStoreAnchorsResponseProblemMock() },
+  ]);
+
+export const getStoreAnchorsResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAnchorsResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
 
 export const getListAccountDevicesResponseMock = (
   overrideResponse: Partial<Extract<ListedDevices, object>> = {},
@@ -3279,6 +3426,301 @@ export const getGetSpaceUsageResponseMock500 = (
   detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
   ...overrideResponse,
 });
+
+export const getListAnchorsMockHandler = (
+  overrideResponse?:
+    | AccountAnchors
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<AccountAnchors> | AccountAnchors),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/anchors",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAnchorsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListAnchorsMockHandler200 = (
+  overrideResponse?:
+    | AccountAnchors
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<AccountAnchors> | AccountAnchors),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/anchors",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAnchorsResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListAnchorsMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/anchors",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAnchorsResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListAnchorsMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/anchors",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAnchorsResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListAnchorsMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get(
+    "*/account/anchors",
+    async (info: Parameters<HttpResponseResolver>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListAnchorsResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler = (
+  overrideResponse?:
+    | StoredAnchors
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<StoredAnchors> | StoredAnchors),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler200 = (
+  overrideResponse?:
+    | StoredAnchors
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<StoredAnchors> | StoredAnchors),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler201 = (
+  overrideResponse?:
+    | StoredAnchors
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<StoredAnchors> | StoredAnchors),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAnchorsMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<PathParams, AnchorsRequest>(
+    "*/account/anchors",
+    async (
+      info: Parameters<HttpResponseResolver<PathParams, AnchorsRequest>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAnchorsResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
 
 export const getListAccountDevicesMockHandler = (
   overrideResponse?:
@@ -10076,6 +10518,8 @@ export const getGetSpaceUsageMockHandler500 = (
   );
 };
 export const getSkaldAPIMock = () => [
+  getListAnchorsMockHandler(),
+  getStoreAnchorsMockHandler(),
   getListAccountDevicesMockHandler(),
   getOpenLinkRunMockHandler(),
   getGetLinkHelloMockHandler(),

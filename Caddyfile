@@ -5,7 +5,7 @@
 # an unknown one to its index page.
 {$SKALD_SITE} {
 	@server {
-		path /account/devices /account/links /account/links/* /account/master
+		path /account/anchors /account/devices /account/links /account/links/* /account/master
 		path /account/personal-space /account/revocations
 		path /account/sessions /account/sessions/end-others /account/sessions/*
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
