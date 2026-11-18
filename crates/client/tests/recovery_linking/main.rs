@@ -71,10 +71,10 @@ use history_common::*;
 mod anchors;
 #[path = "../recovery_key/at_terminal.rs"]
 mod at_terminal;
-#[path = "../recovery_key/grants.rs"]
-mod grants;
 #[path = "../history_devices/devices.rs"]
 mod devices;
+#[path = "../recovery_key/grants.rs"]
+mod grants;
 #[path = "../linked_revocation/linked.rs"]
 mod linked;
 #[path = "../history_reading/reading.rs"]

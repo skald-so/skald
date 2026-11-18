@@ -1,6 +1,7 @@
-//! Certificates a linked device issued: a session of the account stores the certificate of a device
-//! of the account registered without one (`docs/protocol/membership.md`, "Link code", step 4 of the
-//! new device).
+//! Certificates of new devices: a session of the account stores the certificate of a device of the
+//! account registered without one, issued by a linked device (`docs/protocol/membership.md`, "Link
+//! code", step 4 of the new device) or by the master key for a device linked with the recovery key
+//! ("Linking a device").
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -69,19 +70,18 @@ pub(crate) async fn store(
             Err(Refusal::DeviceCertified)
         };
     }
-    // A linked device issues only `client` devices for now: those are the ones that register.
+    // Only `client` devices register, so only they are issued here: by a linked device, or by the
+    // master key for a device linked with the recovery key.
     let matches = body.account.to_string() == account
         && kind == "client"
         && body.kind == skald_proto::DeviceKind::Client
         && signing == body.signing
         && hpke == body.hpke
         && name == body.name.as_bytes();
-    if !matches || body.issuer.is_none() {
-        return Err(Refusal::Cert(if matches {
-            "the master key certifies only the account's first device".to_owned()
-        } else {
-            "the certificate does not match its device's registration on this account".to_owned()
-        }));
+    if !matches {
+        return Err(Refusal::Cert(
+            "the certificate does not match its device's registration on this account".to_owned(),
+        ));
     }
     let (master, mut certs) = account_certs(&state, &account).await?;
     let master = master.ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;

@@ -1734,7 +1734,7 @@ export const getStoreDeviceCertificateUrl = (device: string) => {
 };
 
 /**
- * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, "Link code"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.
+ * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, "Link code") or, for a device linked with the recovery key, by the account's master key ("Linking a device"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.
  * @summary Store a linked device's certificate
  */
 export const storeDeviceCertificate = async (

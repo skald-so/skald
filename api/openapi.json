@@ -3113,7 +3113,7 @@
       "put": {
         "operationId": "storeDeviceCertificate",
         "summary": "Store a linked device's certificate",
-        "description": "Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, \"Link code\"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.",
+        "description": "Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, \"Link code\") or, for a device linked with the recovery key, by the account's master key (\"Linking a device\"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3172,7 +3172,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the certificate: a malformed body, or the problem `https://skald.so/problems/invalid-certificate`, a certificate of another device, one that fails the proof check or checks 1 and 2 against the account's master key and the certificates its devices hold, one issued by the master key, or one whose account, kind, keys or `name` differ from the device's registration on the session's account.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the certificate: a malformed body, or the problem `https://skald.so/problems/invalid-certificate`, a certificate of another device, one that fails the proof check or checks 1 and 2 against the account's master key and the certificates its devices hold, or one whose account, kind, keys or `name` differ from the device's registration on the session's account.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
