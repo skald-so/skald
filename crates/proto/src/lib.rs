@@ -8,6 +8,7 @@ mod envelope;
 mod frame;
 mod history;
 mod id;
+mod link;
 mod receipt;
 mod revocation;
 mod roster;
@@ -35,6 +36,7 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
+pub use link::LinkMessage;
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody, Revocations};
 pub use roster::{

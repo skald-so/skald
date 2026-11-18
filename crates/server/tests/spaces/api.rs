@@ -61,6 +61,16 @@ impl Session {
         }
     }
 
+    /// The session of `token` on `flow`'s server, such as another machine's of the same account.
+    /// The spaces tests start none.
+    #[allow(dead_code)]
+    pub fn of_token(flow: &DeviceFlow, token: &str) -> Self {
+        Session {
+            base: flow.stand.server.base().to_owned(),
+            token: Some(token.to_owned()),
+        }
+    }
+
     /// The same session, its requests to `flow`'s server, such as one started again on the same
     /// database.
     pub fn at(&self, flow: &DeviceFlow) -> Self {

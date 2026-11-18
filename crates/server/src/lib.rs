@@ -32,6 +32,7 @@ mod history_retention;
 mod http_client;
 mod instances;
 mod key_packages;
+mod link_runs;
 mod links;
 mod mailboxes;
 mod notices;
@@ -53,6 +54,7 @@ pub use error_reports::{SentryDsn, report_errors_to};
 pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
+pub use link_runs::LINK_CODE_LIFETIME;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 use protocol::Statement;
 pub use protocol::Versions;
@@ -135,6 +137,9 @@ pub struct Settings {
     /// How often an idle mailbox stream sends a keep-alive (`docs/protocol/delivery.md`,
     /// "Frames"); [`SSE_KEEP_ALIVE`] without it.
     pub sse_keep_alive: Option<Duration>,
+    /// How long after its hello a link code's run ends (`docs/protocol/membership.md`, "Link
+    /// code"); [`LINK_CODE_LIFETIME`] without it.
+    pub link_code_lifetime: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -154,6 +159,7 @@ struct AppState {
     devices_limit: Option<u32>,
     long_poll_max_wait: Duration,
     sse_keep_alive: Duration,
+    link_code_lifetime: Duration,
     instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
@@ -161,8 +167,8 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries, deletes history past its retention and listens to the other instances on that database
-/// in tasks on the Tokio runtime it is called on.
+/// entries, deletes history past its retention and ended link runs, and listens to the other
+/// instances on that database in tasks on the Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
@@ -174,6 +180,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         Arc::clone(&wakers),
         settings.mailbox_retention,
     ));
+    tokio::spawn(link_runs::sweep(db.clone()));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
@@ -198,6 +205,26 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/account/devices",
             get(devices::shown).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links",
+            post(link_runs::open).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/hello",
+            get(link_runs::hello).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/messages",
+            post(link_runs::relay).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/messages/{session}",
+            get(link_runs::messages).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/waiting",
+            get(link_runs::waiting).layer(checked(Statement::Header)),
         )
         .route(
             "/account/master",
@@ -378,6 +405,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             devices_limit: settings.devices_limit,
             long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
             sse_keep_alive: settings.sse_keep_alive.unwrap_or(SSE_KEEP_ALIVE),
+            link_code_lifetime: settings.link_code_lifetime.unwrap_or(LINK_CODE_LIFETIME),
             instance,
             connections,
             wakers,

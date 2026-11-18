@@ -103,6 +103,62 @@ export interface Problem {
 }
 
 /**
+ * A link message's CBOR bytes (docs/protocol/membership.md, "Link code") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type LinkMessage = string;
+
+export interface LinkHelloRequest {
+  /** The new device, registered without a certificate. */
+  device: DeviceId;
+  /** Its `link-hello`. */
+  hello: LinkMessage;
+}
+
+export interface LinkHello {
+  /** The latest hello; `null` while the account has no open run. */
+  hello: LinkMessage | null;
+}
+
+export interface LinkMessageRequest {
+  message: LinkMessage;
+}
+
+/**
+ * A link run's `session`: 16 bytes in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]{21}[AQgw]$
+ */
+export type LinkSession = string;
+
+export interface LinkMessages {
+  messages: LinkMessage[];
+}
+
+/**
+ * The kind the device registered with.
+ */
+export type WaitingDeviceKind =
+  (typeof WaitingDeviceKind)[keyof typeof WaitingDeviceKind];
+
+export const WaitingDeviceKind = {
+  client: "client",
+  browser: "browser",
+  service: "service",
+} as const;
+
+export interface WaitingDevice {
+  device: DeviceId;
+  /** The kind the device registered with. */
+  kind: WaitingDeviceKind;
+  /** The name the device registered with. */
+  name: string;
+}
+
+export interface WaitingDevices {
+  devices: WaitingDevice[];
+}
+
+/**
  * An Ed25519 or X25519 public key: 32 bytes in base64url without padding (RFC 4648, §5).
  * @pattern ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$
  */
