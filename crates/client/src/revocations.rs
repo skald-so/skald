@@ -103,19 +103,24 @@ pub fn run(
         also: None,
         unknown: Unknown::default(),
     };
-    let revocation = sign_revocation(&body, keys.signing())
-        .map_err(|err| format!("the revocation does not encode: {err}"))?
-        .to_cbor();
+    let signed = sign_revocation(&body, keys.signing())
+        .map_err(|err| format!("the revocation does not encode: {err}"))?;
+    let revocation = signed.to_cbor();
     state
         .add_revocations(std::slice::from_ref(&revocation), true)
         .map_err(text)?;
     store(&mut connection, &token, &state, &revocation)?;
     println!("Revoked the device {target} ({name}).");
+    let mut revocations = devices.revocations;
+    revocations.push(signed);
+    let revoked = still_revoked(&master, &devices.certs, &revocations, &kept);
     for (id, name) in certified.iter().filter(|(id, _)| kept.contains(id)) {
-        println!(
-            "The device {id} ({}) stays valid.",
-            connection::printable(name)
-        );
+        let name = connection::printable(name);
+        if revoked.contains(id) {
+            println!("The device {id} ({name}) stays revoked: another revocation revokes it.");
+        } else {
+            println!("The device {id} ({name}) stays valid.");
+        }
     }
     Ok(())
 }
@@ -144,6 +149,20 @@ fn certified_by(master: &[u8; 32], certs: &[Cert], issuer: DeviceId) -> Vec<(Dev
         }
     }
     certified
+}
+
+/// Of `kept`, the devices that `revocations` revoke all the same, against the pinned `master` key
+/// and `certs`: a certified device stays valid only if every counting revocation of its issuer
+/// keeps it.
+fn still_revoked(
+    master: &[u8; 32],
+    certs: &[Cert],
+    revocations: &[Revocation],
+    kept: &[DeviceId],
+) -> Vec<DeviceId> {
+    (kept.iter().copied())
+        .filter(|&device| check_valid_device(master, certs, revocations, device).is_err())
+        .collect()
 }
 
 /// `named`, each once, if each is one of `certified`; otherwise why not, as nothing is revoked.
@@ -514,6 +533,38 @@ mod tests {
         assert_eq!(certified_by(&master, &certs, ada.device(2)), vec![]);
         let other = SigningKey::generate().public_key();
         assert_eq!(certified_by(&other, &certs, ada.device(0)), vec![]);
+    }
+
+    #[test]
+    fn kept_device_stays_revoked_unless_every_counting_revocation_of_its_issuer_keeps_it() {
+        let ada = Account::new();
+        let master = ada.master.public_key();
+        let (first, second) = (ada.device(0), ada.device(1));
+        let revoking = |keep: Option<NonEmpty<DeviceId>>| {
+            let body = RevocationBody {
+                account: ada.id,
+                device: first,
+                keep,
+                signer: Some(ada.device(2)),
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            };
+            sign_revocation(&body, &ada.keys[2]).expect("a revocation")
+        };
+        let keeping = revoking(Some(NonEmpty::new(second)));
+
+        let alone = [keeping.clone()];
+        assert_eq!(
+            still_revoked(&master, &ada.certs, &alone, &[second]),
+            vec![]
+        );
+        let both = [revoking(None), keeping];
+        assert_eq!(
+            still_revoked(&master, &ada.certs, &both, &[second]),
+            vec![second]
+        );
+        assert_eq!(still_revoked(&master, &ada.certs, &both, &[]), vec![]);
     }
 
     #[test]

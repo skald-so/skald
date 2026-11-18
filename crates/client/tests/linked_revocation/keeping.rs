@@ -9,10 +9,13 @@ use crate::devices::second_machine;
 use crate::fixtures::send;
 use crate::joins::read_from;
 use crate::kit::{assert_members, group, received};
-use crate::linked::{SECOND_HOST, THIRD_HOST, checked_by_member, devices_of, revoked_keeping};
+use crate::linked::{
+    SECOND_HOST, THIRD_HOST, checked_by_member, devices_of, revoked_keeping, signed_keeping,
+};
 use crate::revocations::{account_revocations, assert_listed, assert_removed_carrying, naming};
 use crate::talk::Talk;
 use crate::world::Person;
+use crate::world::lines_naming;
 
 /// The text Ada's third machine sends once her second is revoked.
 const STILL_HERE: &str = "the tablet still files the reports";
@@ -184,4 +187,35 @@ fn revocation_without_keep_revokes_and_removes_the_devices_the_revoked_one_certi
         removed_third,
         "Ada's first machine did not remove the third"
     );
+}
+
+/// As above, Ada's first machine's device already revoked her second's without `keep`, by a
+/// revocation the tests sign and store. Her first machine then revokes the second's device again
+/// keeping her third's: the command says the third stays revoked, not that it stays valid, and
+/// Ada's `skald devices` lists it revoked.
+#[test]
+fn kept_device_another_revocation_revokes_is_said_to_stay_revoked() {
+    let (talk, second, third) = chain_of_three(
+        [4_840_009_001, 4_840_009_002],
+        ["ada-keeps-too-late", "bob-sees-no-tablet"],
+    );
+    signed_keeping(talk.cloud(), &talk.ada, second.device, &[]);
+
+    let revoked = revoked_keeping(
+        &talk.ada.machine,
+        second.device,
+        &[third.device],
+        &[THIRD_HOST],
+    );
+
+    let lines = lines_naming(&revoked, THIRD_HOST);
+    assert!(
+        lines.iter().any(|line| line.contains("stays revoked")),
+        "the third is not said to stay revoked: {revoked:?}"
+    );
+    assert!(
+        !lines.iter().any(|line| line.contains("stays valid")),
+        "the third is said to stay valid: {revoked:?}"
+    );
+    assert_listed(&devices_of(&talk.ada.machine), THIRD_HOST, true);
 }
