@@ -516,6 +516,40 @@ fn machine_whose_master_key_is_refused_keeps_no_recovery_key() {
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "sent again");
 }
 
+/// Once the server gives the account's master key without an account record, as for an account
+/// made before recovery keys, `skald sign-in` says the account has no recovery key on a device that
+/// waits for linking and on the certified one; before, it says so on neither.
+#[test]
+fn sign_in_again_says_an_account_made_before_recovery_keys_has_none() {
+    let (cloud, browser) = setup();
+    let page = browser.page();
+    let ada = cloud.user(4_120_666_017, "ada-no-record-standin");
+    let (first, signed_in) = cloud.first_machine(&page, &ada, "ada-certified");
+    assert!(says_created(&signed_in), "{signed_in:?}");
+    let waiting = Machine::new().with_host_name("ada-waits");
+    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[FIRST_DEVICE, NO]);
+    assert!(linked_later.success, "{linked_later:?}");
+    for machine in [&waiting, &first] {
+        let run = again(&cloud, machine, &[]);
+        assert!(run.success, "{run:?}");
+        assert!(!says(&run, "no recovery key"), "{run:?}");
+    }
+    cloud.relay.rewrite(ASK_MASTER, |body| {
+        let mut answer: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        for field in ["record", "backup"] {
+            answer[field] = Value::Null;
+        }
+        answer.to_string()
+    });
+
+    for machine in [&waiting, &first] {
+        let run = again(&cloud, machine, &[]);
+
+        assert!(run.success, "{run:?}");
+        assert!(says(&run, "no recovery key"), "{run:?}");
+    }
+}
+
 /// A machine that says it is not the first device of an account without a master key warns that
 /// the server reports none, creates no master key and stays without a certificate.
 #[test]
