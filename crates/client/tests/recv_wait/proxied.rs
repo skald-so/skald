@@ -192,19 +192,20 @@ fn person_wait_keeps_waiting_through_a_revision_that_shows_nothing() {
         ["ada-waits-through-a-revision", "bob-joins-unseen"],
     );
     let forked = Forked::create(&behind, "revision-to-a-wait");
-    let (cloud, ada) = (behind.cloud(), &behind.ada);
-    let followed = recv(&ada.machine);
-    assert!(followed.success, "{followed:?}");
-    let helped = Helped::new(&ada.machine);
+    let machine = &behind.ada.machine;
+    let settled = recv(machine);
+    assert!(settled.success, "{settled:?}");
+    let helped = Helped::new(machine);
     let mut person = helped.start(&[], &[RECV, WAIT_FLAG]);
     assert_keeps_waiting(&mut person);
-    let since = cloud.relay.mark();
+    let since = behind.cloud().relay.mark();
 
-    store(cloud, &ada.token, &forked.late);
+    store(behind.cloud(), &behind.ada.token, &forked.late);
 
     let devices = devices_request(forked.space);
-    let fetched = || cloud.count_sent(since, &devices) > 0;
-    await_running(&mut person, "the space's devices fetched", fetched);
+    await_running(&mut person, "the space's devices fetched", || {
+        behind.cloud().count_sent(since, &devices) > 0
+    });
     assert_keeps_waiting(&mut person);
 }
 
