@@ -25,22 +25,21 @@
 //! The fixtures encode the objects from their spec fields and sign them with ed25519-dalek, apart
 //! from the crates under test.
 
+// The keys and devices of the tests of revocations, and the shared CBOR and field helpers; this
+// target uses some of each.
+#![allow(dead_code)]
+
 mod bodies;
 mod checks;
 mod encoding;
 mod objects;
 mod vectors;
 
-// The keys and devices of the tests of revocations, and the shared CBOR and field helpers; this
-// target uses some of each.
 #[path = "../rosters/cbor.rs"]
 mod cbor;
-#[allow(dead_code)]
 #[path = "../common/mod.rs"]
 mod common;
-#[allow(dead_code)]
 #[path = "../common/fields.rs"]
 mod fields;
-#[allow(dead_code)]
 #[path = "../revocations/fixtures.rs"]
 mod fixtures;

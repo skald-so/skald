@@ -265,14 +265,7 @@ impl NewDevice {
 /// `before` ones the server granted.
 fn approve(world: &World, first: &Person, run: &mut Terminal, before: usize) {
     let cloud = &world.cloud;
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
-        assert!(!run.exited(), "skald exited: {}", run.shown());
-        assert!(Instant::now() < deadline, "no device authorization");
-        thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
-    run.wait_to_show(&grant.user_code);
+    let grant = crate::terminal_grants::shown_grant(cloud, run, before);
     cloud.decide(&world.browser.page(), &first.user, &grant, APPROVE);
 }
 

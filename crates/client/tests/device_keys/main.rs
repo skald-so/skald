@@ -462,6 +462,93 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
     assert_eq!(self::certified(&cloud.devices(&token)), certified);
 }
 
+/// The names of the secrets of `machine`, which keeps them in the file.
+fn secret_names(machine: &Machine) -> Vec<String> {
+    let file = machine.state_dir().join("secrets.json");
+    let secrets: Value =
+        serde_json::from_slice(&fs::read(&file).expect("the secrets file")).expect("JSON secrets");
+    secrets
+        .as_object()
+        .expect("the secrets by name")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+/// A machine told that the account has no master key gives its own, which the server refuses for
+/// the first machine's: it keeps no recovery key, its secrets naming no more than those of a
+/// machine that waits for linking, and sends its master key no more.
+#[test]
+fn machine_whose_master_key_is_refused_keeps_no_recovery_key() {
+    let (cloud, browser) = setup();
+    let page = browser.page();
+    let ada = cloud.user(4_120_666_016, "ada-refused-standin");
+    let (_first, signed_in) = cloud.first_machine(&page, &ada, "ada-first");
+    assert!(says_created(&signed_in), "{signed_in:?}");
+    let waiting = Machine::new().with_host_name("ada-waiting");
+    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[FIRST_DEVICE, NO]);
+    assert!(linked_later.success, "{linked_later:?}");
+    // From now on the server's answer says the account has no master key.
+    cloud.relay.rewrite(ASK_MASTER, |body| {
+        let mut answer: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        for field in ["master", "record", "backup"] {
+            answer[field] = Value::Null;
+        }
+        answer.to_string()
+    });
+    let refused = Machine::new().with_host_name("ada-refused");
+    let mark = cloud.relay.mark();
+
+    let finished = cloud.signed_in(&page, &refused, &ada, &[FIRST_DEVICE, YES]);
+
+    assert!(finished.success, "{finished:?}");
+    assert_eq!(
+        cloud.count_sent(mark, GIVE_MASTER),
+        1,
+        "no master key sent: {finished:?}"
+    );
+    assert!(says(&finished, "first"), "{finished:?}");
+    assert_eq!(secret_names(&refused), secret_names(&waiting));
+    let mark = cloud.relay.mark();
+    let run = again(&cloud, &refused, &[FIRST_DEVICE, YES]);
+    assert!(says(&run, "link"), "{run:?}");
+    assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "sent again");
+}
+
+/// Once the server gives the account's master key without an account record, as for an account
+/// made before recovery keys, `skald sign-in` says the account has no recovery key on a device that
+/// waits for linking and on the certified one; before, it says so on neither.
+#[test]
+fn sign_in_again_says_an_account_made_before_recovery_keys_has_none() {
+    let (cloud, browser) = setup();
+    let page = browser.page();
+    let ada = cloud.user(4_120_666_017, "ada-no-record-standin");
+    let (first, signed_in) = cloud.first_machine(&page, &ada, "ada-certified");
+    assert!(says_created(&signed_in), "{signed_in:?}");
+    let waiting = Machine::new().with_host_name("ada-waits");
+    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[FIRST_DEVICE, NO]);
+    assert!(linked_later.success, "{linked_later:?}");
+    for machine in [&waiting, &first] {
+        let run = again(&cloud, machine, &[]);
+        assert!(run.success, "{run:?}");
+        assert!(!says(&run, "no recovery key"), "{run:?}");
+    }
+    cloud.relay.rewrite(ASK_MASTER, |body| {
+        let mut answer: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        for field in ["record", "backup"] {
+            answer[field] = Value::Null;
+        }
+        answer.to_string()
+    });
+
+    for machine in [&waiting, &first] {
+        let run = again(&cloud, machine, &[]);
+
+        assert!(run.success, "{run:?}");
+        assert!(says(&run, "no recovery key"), "{run:?}");
+    }
+}
+
 /// A machine that says it is not the first device of an account without a master key warns that
 /// the server reports none, creates no master key and stays without a certificate.
 #[test]

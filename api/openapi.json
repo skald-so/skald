@@ -807,7 +807,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The master public key of the session's account, or `null` while it has none.",
+            "description": "The master public key of the session's account with its account record and master backup, each `null` while it has none.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -871,7 +871,7 @@
       "put": {
         "operationId": "putMasterKey",
         "summary": "Give the account's master key",
-        "description": "The account's first device gives the master public key with its own certificate, issued by that key (docs/protocol/membership.md, \"Linking a device\"). The server takes them only while the account has no master key.",
+        "description": "The account's first device gives the master public key with its own certificate, issued by that key, the account record and the master backup (docs/protocol/membership.md, \"Account\", \"Linking a device\"). The server takes them only while the account has no master key.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -897,7 +897,7 @@
         },
         "responses": {
           "200": {
-            "description": "The master key and certificate the account took before, sent again: a retry after a lost answer.",
+            "description": "The master key, certificate, account record and master backup the account took before, sent again: a retry after a lost answer.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -912,7 +912,7 @@
             }
           },
           "201": {
-            "description": "Taken: the account's master key, and the certificate of its device.",
+            "description": "Taken: the account's master key with its account record and master backup, and the certificate of its device.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -927,7 +927,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; a certificate that fails the proof check, that the master key does not sign or that names an `issuer`; or one whose account, device, kind, keys or `name` differ from the device's registration on the session's account.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; a certificate that fails the proof check, that the master key does not sign or that names an `issuer`; or one whose account, device, kind, keys or `name` differ from the device's registration on the session's account; an account record that is malformed, of another account, names another master key or that the master key does not sign; a malformed master backup.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -964,7 +964,7 @@
             }
           },
           "409": {
-            "description": "The account has a master key, and this is not the master key and certificate it took.",
+            "description": "The account has a master key, and this is not the master key, certificate, account record and master backup it took.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -6142,6 +6142,11 @@
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
+      "AccountRecord": {
+        "description": "An account record's CBOR bytes (docs/protocol/membership.md, \"Account\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
       "AccountUsage": {
         "description": "The spaces an account owns and its devices, each with its limit while one applies.",
         "type": "object",
@@ -6792,9 +6797,14 @@
         },
         "additionalProperties": false
       },
+      "MasterBackup": {
+        "description": "A master backup's CBOR bytes (docs/protocol/membership.md, \"Account\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
       "MasterKey": {
         "type": "object",
-        "required": ["master"],
+        "required": ["master", "record", "backup"],
         "properties": {
           "master": {
             "description": "The account's master public key; `null` while it has none.",
@@ -6806,13 +6816,35 @@
                 "type": "null"
               }
             ]
+          },
+          "record": {
+            "description": "The account record, as the first device sent it; `null` while the account has none, also for an account whose master key came before account records.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AccountRecord"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "backup": {
+            "description": "The master backup, as the first device sent it; `null` while the account has none.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/MasterBackup"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
       },
       "MasterKeyRequest": {
         "type": "object",
-        "required": ["master", "cert"],
+        "required": ["master", "cert", "record", "backup"],
         "properties": {
           "master": {
             "description": "The account's master public key.",
@@ -6821,6 +6853,14 @@
           "cert": {
             "description": "The certificate of the device, issued by the master key.",
             "$ref": "#/components/schemas/Certificate"
+          },
+          "record": {
+            "description": "The account record: of the session's account, naming the master key and signed by it.",
+            "$ref": "#/components/schemas/AccountRecord"
+          },
+          "backup": {
+            "description": "The master backup, sealed to the recovery key the account record names.",
+            "$ref": "#/components/schemas/MasterBackup"
           }
         },
         "additionalProperties": false

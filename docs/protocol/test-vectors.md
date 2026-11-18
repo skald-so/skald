@@ -5,8 +5,9 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - Each vector but [Link code keys](#link-code-keys) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
+- The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), and the [link code](membership.md#link-code) keys of a fixed ISK. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, and an [account record and a master backup](membership.md#account). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -36,6 +37,8 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [HTTPS proof](#https-proof)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
+- [Account record](#account-record)
+- [Master backup](#master-backup)
 - [Anchors object](#anchors-object)
 - [Link object](#link-object)
 - [Link code keys](#link-code-keys)
@@ -655,6 +658,43 @@ b1e1583b84bd49c7051a69127c8006815042592ce391c8869ebdf88dff1cbfc2
 5a58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a
+```
+
+## Account record
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+    3: h'b1f1b840de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b',
+    4: 1
+  }>>,
+  h'd38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe47440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01'
+]
+```
+
+```hex
+82585ba40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025820d75a980182b10a
+b7d54bfed3c964073a0ee172f3daa62325af021a68f707511a035820b1f1b840
+de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b04015840
+d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
+7440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01
+```
+
+## Master backup
+
+```cbor-diag
+[
+  h'0ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b0471c91b',
+  h'0ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44'
+]
+```
+
+```hex
+8258200ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b04
+71c91b58300ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376
+adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44
 ```
 
 ## Anchors object

@@ -1,7 +1,7 @@
 //! `skald sign-in`: the device flow (RFC 8628) on a machine without a browser. Its person approves
 //! the code on the server's verification page from any browser; the session token goes to the
 //! secrets and the server and the account to the local state. Signed in, the machine sets up its
-//! own device: [`crate::device`].
+//! own device, [`crate::device`], and shows a recovery key that waits: [`crate::recovery`].
 
 use std::path::Path;
 use std::thread;
@@ -13,6 +13,7 @@ use skald_proto::AccountId;
 use crate::connection::{self, Connection, printable};
 use crate::device::{self, First, Keys, Setup};
 use crate::key_packages;
+use crate::recovery;
 use crate::secrets::{self, Secrets};
 use crate::state::{self, State};
 
@@ -146,9 +147,9 @@ pub struct Options {
     pub name: Option<String>,
     /// The machine's host name, which names the device unless the user gives a name.
     pub host_name: String,
-    /// Whether its person runs it at a terminal, so that a device waiting for linking shows link
-    /// codes.
-    pub interactive: bool,
+    /// Whether the run is the person's, not an agent's, at a terminal: only then may it show a
+    /// recovery key or link codes.
+    pub shows: bool,
 }
 
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
@@ -215,12 +216,14 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
     Setup {
         connection,
         state: &state,
+        secrets: &secrets,
+        stored: &mut stored,
         token: &token,
         account,
         device,
         keys: &keys,
         first: options.first,
-        interactive: options.interactive,
+        interactive: options.shows,
     }
     .run()?;
     // A device that holds its certificate keeps its KeyPackages on the server.
@@ -230,7 +233,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
     {
         key_packages::warn(&err);
     }
-    Ok(())
+    recovery::show(&state, &secrets, connection.server(), options.shows)
 }
 
 /// The machine's session on the server of `connection`, with `stored`, the secrets: the one it

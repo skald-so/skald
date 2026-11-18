@@ -1,6 +1,7 @@
 //! Devices and the account's master key: a signed-in device registers its public keys, the
-//! account's first device gives the master public key with its certificate, and the account's
-//! sessions read them (`docs/protocol/membership.md`, "Linking a device").
+//! account's first device gives the master public key with its certificate, the account record and
+//! the master backup, and the account's sessions read them (`docs/protocol/membership.md`,
+//! "Account", "Linking a device").
 
 use axum::Json;
 use axum::body::Bytes;
@@ -10,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use skald_proto::{CERT_NAME_MAX, Cbor as _, Cert, DeviceId};
+use skald_proto::{AccountRecord, CERT_NAME_MAX, Cbor as _, Cert, DeviceId, MasterBackup};
 
 use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
 use crate::sign_in::{bearer, digest};
@@ -94,12 +95,16 @@ impl Devices {
 #[derive(Serialize)]
 struct MasterKey {
     master: Option<String>,
+    record: Option<String>,
+    backup: Option<String>,
 }
 
 impl MasterKey {
-    fn new(master: Option<&[u8]>) -> Self {
+    fn new(master: Option<&[u8]>, record: Option<&[u8]>, backup: Option<&[u8]>) -> Self {
         MasterKey {
             master: master.map(base64),
+            record: record.map(base64),
+            backup: backup.map(base64),
         }
     }
 }
@@ -263,17 +268,22 @@ pub(crate) async fn shown(State(state): State<AppState>, SignedIn(account): Sign
     Ok(Json(ListedDevices { devices }).into_response())
 }
 
-/// `GET /account/master`: the session's account's master public key.
+/// An account's master public key, account record and master backup, each as stored.
+type Held = (Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// `GET /account/master`: the session's account's master public key, account record and master
+/// backup.
 pub(crate) async fn master(State(state): State<AppState>, headers: HeaderMap) -> Response {
     answer(async {
         let account = account(&state.db, &headers).await?;
-        let (master,): (Option<Vec<u8>>,) =
-            sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
+        let (master, record, backup): Held =
+            sqlx::query_as("SELECT master, record, backup FROM accounts WHERE id = $1::uuid")
                 .bind(&account)
                 .fetch_one(&state.db)
                 .await
                 .map_err(|err| Refusal::Database("read the master key", err))?;
-        Ok(Json(MasterKey::new(master.as_deref())).into_response())
+        let held = MasterKey::new(master.as_deref(), record.as_deref(), backup.as_deref());
+        Ok(Json(held).into_response())
     })
     .await
 }
@@ -284,6 +294,30 @@ pub(crate) async fn master(State(state): State<AppState>, headers: HeaderMap) ->
 struct MasterKeyRequest {
     master: String,
     cert: String,
+    record: String,
+    backup: String,
+}
+
+/// The account record and the master backup in `request`, as sent, checked against the `master`
+/// key and the session's `account`: the record is of `account`, names `master` and `master` signs
+/// it; the backup is of the spec's form, which is all a server can check of it.
+fn checked_backup(
+    request: &MasterKeyRequest,
+    master: &[u8; 32],
+    account: &str,
+) -> Result<(Vec<u8>, Vec<u8>), Refusal> {
+    let record = bytes(&request.record, "record")?;
+    let decoded = AccountRecord::from_cbor(&record)
+        .map_err(|err| Refusal::Invalid(format!("record: not an account record: {err}")))?;
+    skald_crypto::check_account(&decoded, master)
+        .map_err(|err| Refusal::Invalid(format!("record: {err}")))?;
+    if decoded.body().account.to_string() != account {
+        return Err(Refusal::Invalid("record: of another account".to_owned()));
+    }
+    let backup = bytes(&request.backup, "backup")?;
+    MasterBackup::from_cbor(&backup)
+        .map_err(|err| Refusal::Invalid(format!("backup: not a master backup: {err}")))?;
+    Ok((record, backup))
 }
 
 /// The master key in `request` and its certificate, decoded and as sent, checked against the key
@@ -309,7 +343,8 @@ fn checked_cert(
 }
 
 /// `PUT /account/master`: takes the account's master public key with the certificate of its first
-/// device while the account has none; the same key and certificate again are taken as stored.
+/// device, the account record and the master backup while the account has no master key; the same
+/// ones again are taken as stored.
 pub(crate) async fn give_master(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -317,7 +352,10 @@ pub(crate) async fn give_master(
 ) -> Response {
     answer(async {
         let account = account(&state.db, &headers).await?;
-        let (master, cert, sent) = checked_cert(&parse(&body)?, &account)?;
+        let request: MasterKeyRequest = parse(&body)?;
+        let (master, cert, sent) = checked_cert(&request, &account)?;
+        let (record, backup) = checked_backup(&request, &master, &account)?;
+        let held = MasterKey::new(Some(&master), Some(&record), Some(&backup));
         let body = cert.body();
         let device = body.device.to_string();
         // The master key issues only `client` devices: the check above holds it.
@@ -340,10 +378,12 @@ pub(crate) async fn give_master(
                     .to_owned(),
             ));
         }
-        // One statement, so that of master keys sent at once one is taken, with its certificate.
+        // One statement, so that of master keys sent at once one is taken, with its certificate,
+        // record and backup.
         let stored = sqlx::query(
             "WITH taken AS (
-                 UPDATE accounts SET master = $1 WHERE id = $2::uuid AND master IS NULL RETURNING id
+                 UPDATE accounts SET master = $1, record = $5, backup = $6
+                 WHERE id = $2::uuid AND master IS NULL RETURNING id
              )
              UPDATE devices SET cert = $3 FROM taken
              WHERE devices.id = $4::uuid AND devices.account_id = taken.id",
@@ -352,30 +392,36 @@ pub(crate) async fn give_master(
         .bind(&account)
         .bind(&sent)
         .bind(&device)
+        .bind(&record)
+        .bind(&backup)
         .execute(&state.db)
         .await
         .map_err(|err| Refusal::Database("store the master key", err))?;
         if stored.rows_affected() == 1 {
-            return taken(true, MasterKey::new(Some(&master)));
+            return taken(true, held);
         }
-        // The account has a master key: taken before, if it is this one with this certificate.
+        // The account has a master key: taken before, if it is this one with this certificate,
+        // record and backup.
         let (same,): (bool,) = sqlx::query_as(
             "SELECT EXISTS (
                  SELECT 1 FROM accounts a JOIN devices d ON d.account_id = a.id
                  WHERE a.id = $1::uuid AND a.master = $2 AND d.id = $3::uuid AND d.cert = $4
+                   AND a.record = $5 AND a.backup = $6
              )",
         )
         .bind(&account)
         .bind(master.as_slice())
         .bind(&device)
         .bind(&sent)
+        .bind(&record)
+        .bind(&backup)
         .fetch_one(&state.db)
         .await
         .map_err(|err| Refusal::Database("read the master key", err))?;
         if !same {
             return Err(Refusal::MasterKeyTaken);
         }
-        taken(false, MasterKey::new(Some(&master)))
+        taken(false, held)
     })
     .await
 }

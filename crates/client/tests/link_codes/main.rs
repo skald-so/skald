@@ -57,7 +57,10 @@ mod linked;
 mod linking;
 mod proxy;
 mod refusals;
+#[path = "../recovery_key/terminal.rs"]
 mod terminal;
+#[path = "../recovery_key/grants.rs"]
+mod terminal_grants;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the helpers of the
 // tests of the channel history on new devices and of reading the history, and the anchors objects

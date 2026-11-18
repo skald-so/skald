@@ -53,6 +53,7 @@ mod mailbox;
 mod output;
 mod plain_path;
 mod proxy;
+mod recovery;
 mod recv;
 mod revocations;
 mod secrets;
@@ -742,11 +743,14 @@ fn perform(operation: Operation) -> Result<(), String> {
         command,
         ..
     } = operation;
-    // A grant the device took waits for the server to store its certificate.
-    if command.connects()
-        && let Ok(dir) = state::dir(state_dir.clone())
-    {
-        link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
+    if let Ok(dir) = state::dir(state_dir.clone()) {
+        // A grant the device took waits for the server to store its certificate.
+        if command.connects() {
+            link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
+        }
+        if !matches!(command, Command::SignIn { .. } | Command::Helper { .. }) {
+            recovery::say_if_waiting(&dir);
+        }
     }
     match command {
         Command::Status { server } => status(&server, speaks, timeout),
@@ -767,7 +771,8 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .unwrap_or_else(gethostname::gethostname)
                     .to_string_lossy()
                     .into_owned(),
-                interactive: agent.is_none() && link_code::at_terminal(),
+                // A recovery key or a link code is shown only to the person, at a terminal.
+                shows: agent.is_none() && link_code::at_terminal(),
             };
             state::dir(state_dir).and_then(|dir| {
                 let mut connection =
