@@ -20,9 +20,9 @@
 //! device derives. The front keeps each `history` frame Ada's machine sends, and can close her
 //! connection at the next one carrying a wrap of a channel, which the server never gets.
 //!
-//! The CLI, as these tests use it: `skald send <channel> <text>`, `skald recv`, and the revocations
-//! and revisions Ada's device signs that the tests store, as the tests of revoking devices and of
-//! roster revisions do.
+//! The CLI, as these tests use it: `skald send --all --channel <channel> <text>`, `skald recv`, and
+//! the revocations and revisions Ada's device signs that the tests store, as the tests of revoking
+//! devices and of roster revisions do.
 //!
 //! The server's interfaces, as these tests use them: `GET
 //! /spaces/{space}/channels/{channel}/history/wraps`, `.../history/links` and `.../history/entries`,
