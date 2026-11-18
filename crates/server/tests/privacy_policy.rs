@@ -1,17 +1,19 @@
 //! The server's privacy policy: an address its operator sets, which the answer on sign-in gives and
-//! the server's pages that start a sign-in link. Responses are checked against the OpenAPI spec in
-//! `api/openapi.json`.
+//! the server's pages that start a sign-in link, with a web session or without. Responses are
+//! checked against the OpenAPI spec in `api/openapi.json`.
 //!
 //! The setting `--privacy-policy-url <URL>`, or `SKALD_PRIVACY_POLICY_URL`, is unset by default.
 //! Only an absolute `https` URL; any other value stops the server at start, naming the setting.
 //!
-//! The API, as these tests use it, without a session:
-//! - `GET /auth/providers`: `"privacy_policy_url": <URL>` with the setting, no such field without;
-//! - `GET /device` and `GET /sign-in-methods`: with the setting, a link `Privacy policy` to it.
+//! The API, as these tests use it:
+//! - `GET /auth/providers`, without a session: `"privacy_policy_url": <URL>` with the setting, no
+//!   such field without;
+//! - `GET /device` and `GET /sign-in-methods`, with a web session or without: with the setting, a
+//!   link `Privacy policy` to it.
 
 mod common;
 
-use common::device_flow::{json, text};
+use common::device_flow::{DeviceFlow, json, text};
 use common::sign_in::{CLIENT_SECRET, SignIn};
 use common::spec::{operation_violations, spec};
 use common::{Server, TestDb};
@@ -25,8 +27,8 @@ const POLICY: &str = "https://policies.example/skald/privacy?lang=en&v=2";
 /// The same address in an HTML attribute.
 const POLICY_IN_HTML: &str = "https://policies.example/skald/privacy?lang=en&amp;v=2";
 
-/// The server's pages that start a sign-in.
-const PAGES: [&str; 2] = ["/device", "/sign-in-methods"];
+/// The server's pages that start a sign-in, each with what only its view with a web session shows.
+const PAGES: [(&str, &str); 2] = [("/device", "Approve"), ("/sign-in-methods", "Link GitHub")];
 
 /// A PostgreSQL URL where nothing listens: a server whose settings are taken exits at once too,
 /// but with another error.
@@ -49,11 +51,19 @@ fn policy_of(server: &Server) -> Option<String> {
     })
 }
 
-/// The page at `path` of `stand`'s server, without a session; fails unless it answers `200`.
-fn page(stand: &SignIn, path: &str) -> String {
-    let response = stand.server.get(path);
-    assert_eq!(response.status, 200, "{path}: {}", text(&response));
-    text(&response)
+/// The views of the page at `path` of `flow`'s server, without a session and with the web session
+/// of `cookie`, the latter checked to show `signed_in`; fails unless each answers `200`.
+fn views(flow: &DeviceFlow, cookie: &str, path: &str, signed_in: &str) -> [String; 2] {
+    let shown = |headers: &[(&str, &str)]| {
+        let response = flow.stand.server.get_with(path, headers);
+        assert_eq!(response.status, 200, "{path}: {}", text(&response));
+        text(&response)
+    };
+    let signed_out = shown(&[]);
+    assert!(!signed_out.contains(signed_in), "{path}: {signed_out}");
+    let with_session = shown(&[("cookie", cookie)]);
+    assert!(with_session.contains(signed_in), "{path}: {with_session}");
+    [signed_out, with_session]
 }
 
 /// The answer gives the address set as an argument or in the environment, also on a server without
@@ -72,19 +82,23 @@ fn answer_gives_the_set_address_and_none_without_it() {
 }
 
 /// With the setting, the verification page and the page of the account's sign-in methods link the
-/// policy; without it, neither does.
+/// policy, with a web session or without; without it, neither does.
 #[test]
 fn pages_that_start_a_sign_in_link_the_policy_only_with_the_setting() {
-    let with = SignIn::start_with(&[SETTING, POLICY], CLIENT_SECRET);
-    let without = SignIn::start();
-    for path in PAGES {
-        let shown = page(&with, path);
-        let link = format!("<a href=\"{POLICY_IN_HTML}\">Privacy policy</a>");
-        assert!(shown.contains(&link), "{path}: {link} in {shown}");
-
-        let shown = page(&without, path);
-        assert!(!shown.contains("Privacy policy"), "{path}: {shown}");
-        assert!(!shown.contains("policies.example"), "{path}: {shown}");
+    let with = DeviceFlow::of(SignIn::start_with(&[SETTING, POLICY], CLIENT_SECRET));
+    let without = DeviceFlow::of(SignIn::start());
+    let with_cookie = with.web_cookie(&with.stand.user(3_310_330_001, "ada-policy-standin"));
+    let without_cookie =
+        without.web_cookie(&without.stand.user(3_310_330_002, "bo-policy-standin"));
+    let link = format!("<a href=\"{POLICY_IN_HTML}\">Privacy policy</a>");
+    for (path, signed_in) in PAGES {
+        for shown in views(&with, &with_cookie, path, signed_in) {
+            assert!(shown.contains(&link), "{path}: {link} in {shown}");
+        }
+        for shown in views(&without, &without_cookie, path, signed_in) {
+            assert!(!shown.contains("Privacy policy"), "{path}: {shown}");
+            assert!(!shown.contains("policies.example"), "{path}: {shown}");
+        }
     }
 }
 

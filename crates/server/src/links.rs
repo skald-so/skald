@@ -146,8 +146,9 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
         "<h1>Sign-in methods</h1>\
          <p>Each of these signs in to your account <strong>{username}</strong>.</p><ul>{items}</ul>\
          <p>Link another one: it signs in to this account too. A method of another account is not \
-         linked.</p>{forms}",
+         linked.</p>{forms}{privacy}",
         username = escape(&session.username),
+        privacy = sign_in::privacy_policy_link(&state),
     );
     page_of(StatusCode::OK, "Sign-in methods", &body)
 }
