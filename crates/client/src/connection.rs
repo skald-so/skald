@@ -332,10 +332,19 @@ fn connect(
 
 /// The error of an I/O operation on the server connection.
 pub(crate) fn io_error(err: io::Error, timeout: Duration) -> Error {
-    match err.kind() {
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Error::Timeout(timeout),
-        _ => Error::Unreachable(err.to_string()),
+    if timed_out(&err) {
+        Error::Timeout(timeout)
+    } else {
+        Error::Unreachable(err.to_string())
     }
+}
+
+/// Whether `err`, of a read or write with a timeout, is that the timeout ran out.
+pub(crate) fn timed_out(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 /// `stream`, a connection to the server of `uri`, under TLS by `config`; the handshake runs on its
@@ -517,11 +526,10 @@ impl Socket {
 
     /// The error of a read or write within `timeout` that failed with `err`.
     fn failed(err: io::Error, timeout: NextTimeout) -> ureq::Error {
-        match err.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                ureq::Error::Timeout(timeout.reason)
-            }
-            _ => ureq::Error::Io(err),
+        if timed_out(&err) {
+            ureq::Error::Timeout(timeout.reason)
+        } else {
+            ureq::Error::Io(err)
         }
     }
 }
@@ -916,13 +924,21 @@ impl Connection {
         })
     }
 
-    /// A new challenge of the device session of `token`.
-    fn challenge(&mut self, token: &str) -> Result<Vec<u8>, Error> {
+    /// A new challenge of the device session of `token`, and the signature of `key` with `label`
+    /// over it and the server's origin.
+    fn signed_challenge(
+        &mut self,
+        token: &str,
+        key: &SigningKey,
+        label: &str,
+    ) -> Result<(Vec<u8>, [u8; 64]), Error> {
         let answer = self.post_as(CHALLENGE_PATH, token)?;
-        serde_json::from_slice::<Challenge>(&answer)
+        let challenge = serde_json::from_slice::<Challenge>(&answer)
             .ok()
             .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
-            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))
+            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
+        let signature = key.sign(label, &[&challenge, origin(&self.base).as_bytes()]);
+        Ok((challenge, signature))
     }
 
     /// The proof of an HTTPS request of the device `device`, whose signing key is `key`, on a new
@@ -933,8 +949,7 @@ impl Connection {
         device: DeviceId,
         key: &SigningKey,
     ) -> Result<String, Error> {
-        let challenge = self.challenge(token)?;
-        let signature = key.sign(REQUEST_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let (challenge, signature) = self.signed_challenge(token, key, REQUEST_LABEL)?;
         let proof = RequestProof {
             challenge,
             device,
@@ -955,8 +970,7 @@ impl Connection {
         key: &SigningKey,
     ) -> Result<WebSocket, Error> {
         let mut socket = self.open_websocket(path)?;
-        let challenge = self.challenge(token)?;
-        let signature = key.sign(AUTH_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let (challenge, signature) = self.signed_challenge(token, key, AUTH_LABEL)?;
         let auth = Frame::Auth {
             challenge,
             device,
@@ -1436,28 +1450,13 @@ pub(crate) mod tests {
     fn challenging(challenge: &[u8]) -> (String, thread::JoinHandle<Seen>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let url = format!("http://{}", listener.local_addr().expect("the address"));
-        let body = format!(r#"{{"challenge":"{}"}}"#, URL_SAFE_NO_PAD.encode(challenge));
+        let (_, answer) = challenge_answer(challenge);
         let served = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("the WebSocket");
             let mut socket = tungstenite::accept_hdr(stream, select).expect("a WebSocket");
             let (stream, _) = listener.accept().expect("the challenge request");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
-            let mut request = Vec::new();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).expect("a request line");
-                if line == "\r\n" {
-                    break;
-                }
-                request.push(line.trim_end().to_ascii_lowercase());
-            }
-            write!(
-                &stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                 connection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .expect("answer");
+            let request = take(&stream).head;
+            (&stream).write_all(answer.as_bytes()).expect("answer");
             drop(stream);
             let first = match socket.read().expect("a frame") {
                 Message::Binary(bytes) => bytes.to_vec(),

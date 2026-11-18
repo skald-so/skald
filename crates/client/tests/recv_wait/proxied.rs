@@ -91,6 +91,16 @@ fn assert_moves_to_websocket(behind: &Behind, run: &mut Run) {
     );
 }
 
+/// Bob's device sends `text`; fails unless `run`, a `skald recv --wait` of Ada's, then succeeds,
+/// showing it once.
+#[track_caller]
+fn assert_waiting_gets(behind: &mut Behind, run: Run, text: &str) {
+    behind.bob_sends(text);
+    let got = run.finish();
+    assert!(got.success, "{got:?}");
+    behind.assert_shows_bobs(&got.shown(), text);
+}
+
 /// Behind the proxy, Ada's `skald recv --wait` in one-shot mode, retrying WebSocket every
 /// [`RETRY`] seconds, waits over long-poll; Bob's device sends a message, which it shows once over
 /// long-poll alone before it exits. Her next `skald recv --wait` in one-shot mode waits over
@@ -109,11 +119,7 @@ fn one_shot_wait_gets_messages_over_long_poll_and_moves_to_websocket_within_the_
     await_waiting_poll(&behind, &mut waiting, from);
     let over_poll = "bob, while she waits over long-poll";
 
-    behind.bob_sends(over_poll);
-
-    let got = waiting.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), over_poll);
+    assert_waiting_gets(&mut behind, waiting, over_poll);
     let seen = behind.filter.seen_since(from);
     assert!(
         !answered(&seen, "GET", WEBSOCKET, 101) && !answered(&seen, "GET", EVENTS, 200),
@@ -125,10 +131,7 @@ fn one_shot_wait_gets_messages_over_long_poll_and_moves_to_websocket_within_the_
     await_waiting_poll(&behind, &mut waiting, from);
     assert_moves_to_websocket(&behind, &mut waiting);
     let over_websocket = "bob, once the proxy lets websockets through";
-    behind.bob_sends(over_websocket);
-    let got = waiting.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), over_websocket);
+    assert_waiting_gets(&mut behind, waiting, over_websocket);
     helped.assert_none();
 }
 
@@ -150,10 +153,7 @@ fn helper_on_long_poll_moves_to_websocket_within_the_interval() {
     assert_moves_to_websocket(&behind, &mut session);
 
     let text = "bob, to the helper on its websocket";
-    behind.bob_sends(text);
-    let got = session.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), text);
+    assert_waiting_gets(&mut behind, session, text);
 }
 
 /// Ada's machine follows a space of hers, `notices-to-helper`. Behind the proxy, the person's
@@ -235,10 +235,7 @@ fn person_wait_gets_a_message_after_its_websocket_drops() {
     behind.filter.close_tunnels();
 
     let text = "bob, once her websocket dropped";
-    behind.bob_sends(text);
-    let got = person.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), text);
+    assert_waiting_gets(&mut behind, person, text);
 }
 
 /// Waits for up to [`WAIT`] while `run`, if any, goes on until the proxy has seen no request for
@@ -300,10 +297,7 @@ fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_
     let helper = await_helper_beside(&helped, &[&session]);
     let text = "bob, to the quiet poller";
     let sending = behind.filter.mark();
-    behind.bob_sends(text);
-    let got = session.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), text);
+    assert_waiting_gets(&mut behind, session, text);
     let seen = behind.filter.seen_since(sending);
     let tried = (seen.iter()).any(|one| one.is("GET", WEBSOCKET));
     assert!(!tried, "WebSocket tried within the interval: {seen:#?}");
@@ -343,10 +337,7 @@ fn one_shot_wait_that_moved_to_websocket_long_polls_no_more() {
     let seen = behind.filter.seen_since(from);
     assert!(seen.is_empty(), "requests on WebSocket: {seen:#?}");
     let text = "bob, once she left long-poll";
-    behind.bob_sends(text);
-    let got = waiting.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), text);
+    assert_waiting_gets(&mut behind, waiting, text);
 }
 
 /// Behind the proxy, which blocks nothing, Ada's `skald recv` starts a helper, which keeps its
@@ -411,10 +402,7 @@ fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
         .any(|pair| (pair[0].answering).is_none_or(|answering| pair[1].at < answering));
     assert!(!at_once, "two long-polls that wait at once: {polls:#?}");
     let text = "bob, to the one poller";
-    behind.bob_sends(text);
-    let got = waiting.finish();
-    assert!(got.success, "{got:?}");
-    behind.assert_shows_bobs(&got.shown(), text);
+    assert_waiting_gets(&mut behind, waiting, text);
 }
 
 /// Behind the proxy, which refuses WebSocket upgrades, Ada's `skald recv`, retrying WebSocket every

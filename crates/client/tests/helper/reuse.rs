@@ -42,9 +42,7 @@ fn first_send_starts_the_helper_and_later_commands_reuse_its_connection() {
     helped.assert_none();
     let since = talk.cloud().relay.mark();
 
-    helped.sent(&talk, FIRST);
-
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     helped.received();
     helped.sent(&talk, SECOND);
     assert_eq!(helped.helpers(), [helper], "not the same helper");
@@ -154,8 +152,7 @@ fn one_shot_runs_and_folder_bindings_go_through_a_running_helper_without_waiting
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     let rule = dir_of(&talk.ada.machine, &format!("work/{RULE_FOLDER}"));
     let approved = dir_of(&talk.ada.machine, "work/approved");
     fs::write(
