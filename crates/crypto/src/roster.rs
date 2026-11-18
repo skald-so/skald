@@ -127,24 +127,10 @@ pub fn accept_next(
     };
 
     // Check 1.
-    let signer = prev_body
-        .members
-        .iter()
-        .filter(|member| member.role == Role::Admin)
-        .find_map(|admin| {
-            let cert = check_device(&pinned(prev_body, admin.account)?, certs, body.signer).ok()?;
-            let cert = cert.body();
-            let excluded = admin
-                .excluded
-                .iter()
-                .flat_map(|ids| ids.iter())
-                .any(|id| *id == body.signer);
-            (cert.account == admin.account
-                && matches!(cert.kind, DeviceKind::Client | DeviceKind::Browser)
-                && !excluded)
-                .then_some(cert.signing)
-        })
-        .ok_or(RosterError::Signer(body.signer))?;
+    let signer = admins_device(prev_body, certs, body.signer, |member| {
+        pinned(prev_body, member)
+    })
+    .ok_or(RosterError::Signer(body.signer))?;
     verify(
         &signer,
         ROSTER_LABEL,
@@ -175,6 +161,33 @@ pub fn accept_next(
     }
 
     check_content(body, certs, |member| pinned(body, member))
+}
+
+/// The signing key of `device` if it is an admin's device in `body`: a `client` or `browser`
+/// device with a valid certificate of an account that is an admin in it, which that member's
+/// `excluded` does not list; the master key of a member's account given by `master`.
+pub(crate) fn admins_device(
+    body: &RosterBody,
+    certs: &[Cert],
+    device: DeviceId,
+    master: impl Fn(AccountId) -> Option<[u8; 32]>,
+) -> Option<[u8; 32]> {
+    body.members
+        .iter()
+        .filter(|member| member.role == Role::Admin)
+        .find_map(|admin| {
+            let cert = check_device(&master(admin.account)?, certs, device).ok()?;
+            let cert = cert.body();
+            let excluded = admin
+                .excluded
+                .iter()
+                .flat_map(|ids| ids.iter())
+                .any(|id| *id == device);
+            (cert.account == admin.account
+                && matches!(cert.kind, DeviceKind::Client | DeviceKind::Browser)
+                && !excluded)
+                .then_some(cert.signing)
+        })
 }
 
 /// Checks 3 and 4, the master key of a member's account given by `master`.
