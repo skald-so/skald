@@ -18,7 +18,7 @@ use sqlx::{PgExecutor, PgPool};
 use crate::AppState;
 use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::sweeps;
+use crate::sweeps::{self, PAGE, PAUSE};
 
 /// Where a run is open: it has not expired and its device has no certificate. Over `link_runs r`
 /// joined with `devices d`.
@@ -262,22 +262,33 @@ pub(crate) async fn waiting(State(state): State<AppState>, SignedIn(account): Si
     Ok(Json(WaitingDevices { devices }).into_response())
 }
 
-/// Deletes the runs that ended at their expiry or once their device has a certificate, as
+/// Looks for runs that ended at their expiry or once their device has a certificate, as
 /// [`sweeps::every`] says.
 pub(crate) async fn sweep(db: PgPool) {
     sweeps::every("delete ended link runs", || {
         let db = db.clone();
-        async move {
-            sqlx::query(
-                "DELETE FROM link_runs r USING devices d
-                 WHERE d.id = r.device_id AND (r.expires_at <= now() OR d.cert IS NOT NULL)",
-            )
-            .execute(&db)
-            .await
-            .map(drop)
-        }
+        async move { delete_ended(&db).await }
     })
     .await;
+}
+
+/// Deletes the ended runs with their messages, [`PAGE`] runs at a time.
+async fn delete_ended(db: &PgPool) -> Result<(), sqlx::Error> {
+    loop {
+        let deleted = sqlx::query(
+            "DELETE FROM link_runs WHERE id IN (
+                 SELECT r.id FROM link_runs r JOIN devices d ON d.id = r.device_id
+                 WHERE r.expires_at <= now() OR d.cert IS NOT NULL LIMIT $1)",
+        )
+        .bind(PAGE)
+        .execute(db)
+        .await?;
+        if deleted.rows_affected() == 0 {
+            return Ok(());
+        }
+        // Leaves the database to other work between pages.
+        tokio::time::sleep(PAUSE).await;
+    }
 }
 
 /// How long after its hello a run ends unless a setting shortens it: the code's 5 minutes.
