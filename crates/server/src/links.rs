@@ -105,8 +105,9 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
                 StatusCode::OK,
                 "Sign-in methods",
                 &format!(
-                    "<h1>Sign-in methods</h1><p>Sign in to see your account's sign-in methods. {}</p>",
-                    sign_in_links(&flows, "", PAGE_PATH)
+                    "<h1>Sign-in methods</h1><p>Sign in to see your account's sign-in methods. {}</p>{}",
+                    sign_in_links(&flows, "", PAGE_PATH),
+                    sign_in::privacy_policy_link(&state)
                 ),
             );
         }

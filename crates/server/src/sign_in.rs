@@ -87,6 +87,36 @@ impl FromStr for PublicUrl {
     }
 }
 
+/// The address of a server's privacy policy: an absolute https URL.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrivacyPolicyUrl(Url);
+
+impl FromStr for PrivacyPolicyUrl {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        let url = Url::parse(text).map_err(|err| format!("not a URL: {err}"))?;
+        if url.scheme() != "https" {
+            return Err("not an https URL".to_owned());
+        }
+        Ok(PrivacyPolicyUrl(url))
+    }
+}
+
+/// A paragraph with a link to `state`'s privacy policy, for the server's pages that start a
+/// sign-in; empty without one.
+pub(crate) fn privacy_policy_link(state: &AppState) -> String {
+    state
+        .privacy_policy_url
+        .as_ref()
+        .map_or_else(String::new, |url| {
+            format!(
+                "<p><a href=\"{}\">Privacy policy</a></p>",
+                escape(url.0.as_str())
+            )
+        })
+}
+
 /// Sign-in's settings: the providers and the device flow.
 #[derive(Debug, Clone)]
 pub struct SignInSettings {
@@ -194,13 +224,15 @@ fn provider_name(provider: &str) -> &'static str {
 
 /// `SignInProviders` in the spec.
 #[derive(Serialize)]
-struct Providers {
+struct Providers<'a> {
     providers: Vec<&'static str>,
     sign_up: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    privacy_policy_url: Option<&'a str>,
 }
 
-/// `GET /auth/providers`: the providers the server has settings for and whether its sign-up is
-/// open, without its lists.
+/// `GET /auth/providers`: the providers the server has settings for, whether its sign-up is open,
+/// without its lists, and its privacy policy, if any.
 pub(crate) async fn providers(State(state): State<AppState>) -> Response {
     let providers = flows(&state)
         .iter()
@@ -210,7 +242,13 @@ pub(crate) async fn providers(State(state): State<AppState>) -> Response {
         SignUp::Open => "open",
         SignUp::Closed(_) => "closed",
     };
-    axum::Json(Providers { providers, sign_up }).into_response()
+    let privacy_policy_url = state.privacy_policy_url.as_ref().map(|url| url.0.as_str());
+    axum::Json(Providers {
+        providers,
+        sign_up,
+        privacy_policy_url,
+    })
+    .into_response()
 }
 
 /// Links that sign in with each of `flows` and return to `return_to`, a page of this server.

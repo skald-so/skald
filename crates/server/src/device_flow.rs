@@ -391,8 +391,9 @@ pub(crate) async fn page(
             StatusCode::OK,
             "Sign in a machine",
             &format!(
-                "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>",
-                sign_in_here(&state, &user_code)
+                "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>{}",
+                sign_in_here(&state, &user_code),
+                sign_in::privacy_policy_link(&state)
             ),
         ),
         Err(err) => failed("read a session", err),

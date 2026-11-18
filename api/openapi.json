@@ -1907,7 +1907,7 @@
       "get": {
         "operationId": "getSignInProviders",
         "summary": "The sign-in providers and sign-up",
-        "description": "Needs no session. Names the providers the server has settings for and whether its sign-up is open, and nothing of the lists of who may sign up while it is closed.",
+        "description": "Needs no session. Names the providers the server has settings for, whether its sign-up is open, and nothing of the lists of who may sign up while it is closed; and its privacy policy, if it has one.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -2057,7 +2057,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`.",
+            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`, and a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -3577,7 +3577,7 @@
       "get": {
         "operationId": "getSignInMethodsPage",
         "summary": "The page of the account's sign-in methods",
-        "description": "Opened by the browser. With a web session, it lists the account's sign-in methods, each with its provider, when it was linked and, for GitHub, its login, and has a form for each provider the server has settings for, Link GitHub and Link Google, that submits `POST /auth/github/link` or `POST /auth/google/link`. Without one, links to sign in with each of those providers that return to this page.",
+        "description": "Opened by the browser. With a web session, it lists the account's sign-in methods, each with its provider, when it was linked and, for GitHub, its login, and has a form for each provider the server has settings for, Link GitHub and Link Google, that submits `POST /auth/github/link` or `POST /auth/google/link`. Without one, links to sign in with each of those providers that return to this page, and to the privacy policy of the server setting `--privacy-policy-url`, if set.",
         "security": [
           {
             "session": []
@@ -6174,6 +6174,12 @@
             "description": "`open`: a first sign-in creates an account. `closed`: only for the people the server lists.",
             "type": "string",
             "enum": ["open", "closed"]
+          },
+          "privacy_policy_url": {
+            "description": "The address of the server's privacy policy, the server setting `--privacy-policy-url`, which its sign-in pages link. Absent without the setting.",
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
           }
         },
         "additionalProperties": false
