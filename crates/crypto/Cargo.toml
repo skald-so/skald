@@ -14,7 +14,7 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 curve25519-dalek = "5"
 ed25519-dalek = "3"
 getrandom = "0.4"
-# The link codes' request and grant keys.
+# The master backup's PSK, and the link codes' request and grant keys.
 hkdf = "0.13"
 # Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }

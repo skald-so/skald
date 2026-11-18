@@ -1971,6 +1971,8 @@ pub(crate) mod tests {
                 Link::Sent {
                     master: [7; 32],
                     cert: vec![0x80],
+                    record: vec![0x81],
+                    backup: vec![0x82],
                 },
             ),
         ] {

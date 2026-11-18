@@ -250,6 +250,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A browser runs no agent, so an answer from a linked browser is not an agent's ([agents.md](protocol/agents.md#security-considerations)).
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
+- Run as an agent, the CLI shows no recovery key or link code and takes none, nor a new device's confirmation: a recovery key waits for the person's `skald sign-in` in a terminal ([Account](protocol/membership.md#account)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.

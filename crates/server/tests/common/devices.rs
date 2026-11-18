@@ -1,6 +1,6 @@
 //! Devices on a `skald-server` with the device flow, against the GitHub stand-in: a machine signs
 //! in by plain HTTP, registers its device, gives the account's master key with its first device's
-//! certificate, and reads the account's master key and devices. Every response is checked against
+//! certificate, account record and master backup, and reads the account's master key and devices. Every response is checked against
 //! the OpenAPI spec in `api/openapi.json`.
 //!
 //! The API, each request stating the protocol version:
@@ -8,9 +8,11 @@
 //!   "name": <name>}`: registers a device of the session's account.
 //! - `GET /devices`: `{"devices": [{"device": <ID>, "cert": <bytes> | null}, ...]}`, the account's
 //!   devices, each with its certificate as the device sent it.
-//! - `PUT /account/master` of `{"master": <bytes>, "cert": <bytes>}`: the master public key and the
-//!   first device's certificate, issued by that key.
-//! - `GET /account/master`: `{"master": <bytes> | null}`.
+//! - `PUT /account/master` of `{"master": <bytes>, "cert": <bytes>, "record": <bytes>, "backup":
+//!   <bytes>}`: the master public key, the first device's certificate, issued by that key, the
+//!   account record and the master backup.
+//! - `GET /account/master`: `{"master": <bytes> | null, "record": <bytes> | null, "backup": <bytes> |
+//!   null}`.
 //!
 //! Bytes are base64url without padding (RFC 4648, §5); a certificate is its CBOR bytes. Taken:
 //! `200` or `201`. Refused, with a problem details object: `400` for an invalid request, `401`
@@ -21,9 +23,11 @@ use std::collections::BTreeMap;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use skald_crypto::{SigningKey, issue};
+use skald_crypto::{SigningKey, issue, sign_account};
 use skald_github_stand_in::User;
-use skald_proto::{AccountId, Cbor, CertBody, DeviceId, DeviceKind, Unknown};
+use skald_proto::{
+    AccountBody, AccountId, Cbor, CertBody, DeviceId, DeviceKind, MasterBackup, Unknown,
+};
 
 use super::cbor::{array_of, byte_item, uint};
 use super::device_flow::{DeviceFlow, json, text};
@@ -277,9 +281,14 @@ impl Machine<'_> {
         self.send("put", MASTER, Some(request))
     }
 
-    /// `PUT /account/master` of `master`'s public key and the certificate `cert`.
+    /// `PUT /account/master` of [`Machine::master_request`].
     pub fn give_master(&self, master: &Key, cert: &[u8]) -> Response {
-        self.give(&json!({ "master": b64(&master.public()), "cert": b64(cert) }))
+        self.give(&self.master_request(master, cert))
+    }
+
+    /// [`master_request`] on this machine's account.
+    pub fn master_request(&self, master: &Key, cert: &[u8]) -> Value {
+        master_request(account_id(&self.account), master, cert)
     }
 
     /// `DELETE /session`: ends this machine's session.
@@ -296,6 +305,30 @@ impl Machine<'_> {
     pub fn devices(&self) -> BTreeMap<String, Option<Vec<u8>>> {
         devices_of(&self.send("get", DEVICES, None))
     }
+}
+
+/// The request body of `PUT /account/master` with `master`'s public key, the certificate `cert`,
+/// and the account record and master backup of `account`: a record `master` signs and names,
+/// revision 1, and a backup of the spec's form, each the same for the same `master`.
+pub fn master_request(account: AccountId, master: &Key, cert: &[u8]) -> Value {
+    let body = AccountBody {
+        account,
+        master: master.public(),
+        recovery: [0x7e; 32],
+        revision: 1,
+        unknown: Unknown::default(),
+    };
+    let record = sign_account(&body, &master.key).expect("an account record");
+    let backup = MasterBackup {
+        enc: [0xe0; 32],
+        ct: vec![0xc0; 48],
+    };
+    json!({
+        "master": b64(&master.public()),
+        "cert": b64(cert),
+        "record": b64(&record.to_cbor()),
+        "backup": b64(&backup.to_cbor()),
+    })
 }
 
 /// The master key in `response`, a `GET /account/master` answer.

@@ -52,6 +52,7 @@ mod mailbox;
 mod output;
 mod plain_path;
 mod proxy;
+mod recovery;
 mod recv;
 mod revocations;
 mod secrets;
@@ -70,6 +71,7 @@ mod update;
 mod wait;
 mod wraps;
 
+use std::io::{self, IsTerminal as _};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -718,6 +720,11 @@ fn perform(operation: Operation) -> Result<(), String> {
         command,
         ..
     } = operation;
+    if !matches!(command, Command::SignIn { .. } | Command::Helper { .. })
+        && let Ok(dir) = state::dir(state_dir.clone())
+    {
+        recovery::say_if_waiting(&dir);
+    }
     match command {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
@@ -737,6 +744,8 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .unwrap_or_else(gethostname::gethostname)
                     .to_string_lossy()
                     .into_owned(),
+                // A recovery key is shown only to the person, who reads it at a terminal.
+                shows: agent.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal(),
             };
             state::dir(state_dir).and_then(|dir| {
                 let mut connection =

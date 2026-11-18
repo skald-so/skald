@@ -184,9 +184,25 @@ export interface WaitingDevices {
  */
 export type PublicKey = string;
 
+/**
+ * An account record's CBOR bytes (docs/protocol/membership.md, "Account") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type AccountRecord = string;
+
+/**
+ * A master backup's CBOR bytes (docs/protocol/membership.md, "Account") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type MasterBackup = string;
+
 export interface MasterKey {
   /** The account's master public key; `null` while it has none. */
   master: PublicKey | null;
+  /** The account record, as the first device sent it; `null` while the account has none, also for an account whose master key came before account records. */
+  record: AccountRecord | null;
+  /** The master backup, as the first device sent it; `null` while the account has none. */
+  backup: MasterBackup | null;
 }
 
 /**
@@ -200,6 +216,10 @@ export interface MasterKeyRequest {
   master: PublicKey;
   /** The certificate of the device, issued by the master key. */
   cert: Certificate;
+  /** The account record: of the session's account, naming the master key and signed by it. */
+  record: AccountRecord;
+  /** The master backup, sealed to the recovery key the account record names. */
+  backup: MasterBackup;
 }
 
 /**

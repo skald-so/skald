@@ -1,6 +1,7 @@
 //! The machine's own device (`docs/protocol/membership.md`, "Linking a device"): its keys, kept with
 //! the secrets, its `name`, its registration with the server and, on the account's first device,
-//! the account master key and the certificate it issues.
+//! the account master key, the certificate it issues, the account record it signs and the master
+//! backup that seals it to the recovery key.
 
 use std::io::{self, BufRead, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -8,12 +9,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
-use skald_crypto::{HpkeKey, SigningKey, StateKey};
-use skald_proto::{AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown};
+use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, StateKey};
+use skald_proto::{
+    AccountBody, AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown,
+};
 use zeroize::Zeroizing;
 
 use crate::connection::{self, Connection, Method};
-use crate::secrets;
+use crate::recovery;
+use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::state::{self, Link, State};
 
@@ -289,12 +293,15 @@ struct Registration<'a> {
 struct MasterKeyRequest {
     master: String,
     cert: String,
+    record: String,
+    backup: String,
 }
 
 /// `MasterKey` in the API spec.
 #[derive(Deserialize)]
 struct MasterKey {
     master: Option<String>,
+    record: Option<String>,
 }
 
 /// Whether this is the account's first device, as the user said beforehand, or ask the user.
@@ -307,10 +314,13 @@ pub enum First {
 
 /// `device`, the machine's own device in `state`, with its keys `keys`, signed in to `account`
 /// with the session `token`: it registers if it has not, then links as the account's first device
-/// or waits for linking.
+/// or waits for linking. A recovery key it creates goes to `stored`, the secrets, kept in
+/// `secrets`.
 pub struct Setup<'a> {
     pub connection: &'a mut Connection,
     pub state: &'a State,
+    pub secrets: &'a Secrets,
+    pub stored: &'a mut secrets::Map,
     pub token: &'a str,
     pub account: AccountId,
     pub device: state::Device,
@@ -330,13 +340,20 @@ impl Setup<'_> {
         match self.device.link.clone() {
             Link::Certified { .. } => {
                 println!("This device holds its certificate, signed by the account's master key.");
+                self.say_if_no_recovery_key();
                 Ok(())
             }
             Link::Waiting => {
+                self.say_if_no_recovery_key();
                 waits();
                 Ok(())
             }
-            Link::Sent { master, cert } => self.give_master(master, cert),
+            Link::Sent {
+                master,
+                cert,
+                record,
+                backup,
+            } => self.give_master(master, cert, &record, &backup),
             Link::New => self.link(),
         }
     }
@@ -361,6 +378,18 @@ impl Setup<'_> {
                 Err(Error::DevicesLimit.into())
             }
             Err(err) => Err(err.into()),
+        }
+    }
+
+    /// `GET /account/master`, then [`no_recovery_key`] on its record; an answer it does not get
+    /// says nothing.
+    fn say_if_no_recovery_key(&mut self) {
+        let answer = self.connection.get_as("/account/master", self.token);
+        if let Ok(body) = answer
+            && let Ok(master) = serde_json::from_slice::<MasterKey>(&body)
+            && master.master.is_some()
+        {
+            no_recovery_key(master.record.as_deref());
         }
     }
 
@@ -389,17 +418,29 @@ impl Setup<'_> {
         })?;
         match (first, master.master) {
             (true, None) => {
-                let (master, cert) = self.create_master()?;
+                let created = self.create_master()?;
+                // The recovery key is kept before anything that it backs is.
+                recovery::keep(self.secrets, self.stored, &created.recovery)?;
+                self.state
+                    .set_recovery_waits(Some(self.connection.server()))?;
                 self.state.set_link(&Link::Sent {
-                    master,
-                    cert: cert.clone(),
+                    master: created.master,
+                    cert: created.cert.clone(),
+                    record: created.record.clone(),
+                    backup: created.backup.clone(),
                 })?;
-                self.give_master(master, cert)
+                self.give_master(
+                    created.master,
+                    created.cert,
+                    &created.record,
+                    &created.backup,
+                )
             }
             (true, Some(_)) => Err(Error::NotFirst.into()),
             (false, None) => Err(Error::NoMasterKey.into()),
             (false, Some(_)) => {
                 self.state.set_link(&Link::Waiting)?;
+                no_recovery_key(master.record.as_deref());
                 waits();
                 Ok(())
             }
@@ -407,9 +448,8 @@ impl Setup<'_> {
     }
 
     /// Creates the account's master key, issues the device's certificate with it, issued now, and
-    /// checks it; gives the master public key and the certificate in CBOR. The master private key
-    /// is gone once it returns.
-    fn create_master(&self) -> Result<([u8; 32], Vec<u8>), Error> {
+    /// checks it, as [`own_certificate`] does. The master private key is gone once it returns.
+    fn create_master(&self) -> Result<Created, Error> {
         let issued = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_secs());
@@ -428,12 +468,15 @@ impl Setup<'_> {
         own_certificate(&body, self.keys)
     }
 
-    /// `PUT /account/master`: gives the master public key and the certificate, as often as it takes
-    /// for the server to take them; drops them if the account took another device's master key.
-    fn give_master(self, master: [u8; 32], cert: Vec<u8>) -> Done {
+    /// `PUT /account/master`: gives the master public key, the certificate, the account record and
+    /// the master backup, as often as it takes for the server to take them; drops them and the
+    /// recovery key if the account took another device's master key.
+    fn give_master(self, master: [u8; 32], cert: Vec<u8>, record: &[u8], backup: &[u8]) -> Done {
         let request = MasterKeyRequest {
             master: URL_SAFE_NO_PAD.encode(master),
             cert: URL_SAFE_NO_PAD.encode(&cert),
+            record: URL_SAFE_NO_PAD.encode(record),
+            backup: URL_SAFE_NO_PAD.encode(backup),
         };
         let body = serde_json::to_vec(&request).expect("a master key request is JSON");
         match self
@@ -444,11 +487,14 @@ impl Setup<'_> {
                 self.state.set_link(&Link::Certified { master, cert })?;
                 println!(
                     "Created the account's master key and issued this device's certificate with \
-                     it: the device holds its certificate. The master private key is not kept."
+                     it: the device holds its certificate. The server keeps the master key sealed \
+                     to the account's recovery key."
                 );
                 Ok(())
             }
             Err(connection::Error::Refused { status: 409, .. }) => {
+                recovery::forget(self.secrets, self.stored)?;
+                self.state.set_recovery_waits(None)?;
                 self.state.set_link(&Link::Waiting)?;
                 println!(
                     "Another device gave the account's master key first: this device dropped its \
@@ -462,18 +508,58 @@ impl Setup<'_> {
     }
 }
 
+/// What the account's first device creates: the master public key, the certificate in CBOR, the
+/// account record and the master backup in CBOR, and the recovery key.
+#[derive(Debug)]
+struct Created {
+    master: [u8; 32],
+    cert: Vec<u8>,
+    record: Vec<u8>,
+    backup: Vec<u8>,
+    recovery: RecoveryKey,
+}
+
 /// A new master key, and the certificate of `body` that it issues and `keys` prove, checked against
-/// it as "Device checks" says: the master public key and the certificate in CBOR. The master
-/// private key is gone once it returns.
-fn own_certificate(body: &CertBody, keys: &Keys) -> Result<([u8; 32], Vec<u8>), Error> {
+/// it as "Device checks" says; a new recovery key, the account record of revision 1 that the master
+/// key signs, and the master backup that seals the master key to the recovery key, as "Account"
+/// says. The master private key is gone once it returns.
+fn own_certificate(body: &CertBody, keys: &Keys) -> Result<Created, Error> {
     let master = SigningKey::generate();
     let public = master.public_key();
     let cert = skald_crypto::issue(body, &master, &keys.signing)
         .map_err(|err| Error::Cert(err.to_string()))?;
+    let recovery = RecoveryKey::generate();
+    let account = AccountBody {
+        account: body.account,
+        master: public,
+        recovery: HpkeKey::from_recovery_key(&recovery.to_bytes()).public_key(),
+        revision: 1,
+        unknown: Unknown::default(),
+    };
+    let record = skald_crypto::sign_account(&account, &master)
+        .expect("an account record of the spec's form");
+    let backup = skald_crypto::seal_master_backup(&master, &recovery, body.account);
     drop(master);
     skald_crypto::check_device(&public, std::slice::from_ref(&cert), body.device)
         .map_err(|err| Error::Cert(err.to_string()))?;
-    Ok((public, cert.to_cbor()))
+    Ok(Created {
+        master: public,
+        cert: cert.to_cbor(),
+        record: record.to_cbor(),
+        backup: backup.to_cbor(),
+        recovery,
+    })
+}
+
+/// Says that the account has no recovery key when its master key has no account `record`, as on
+/// an account made before recovery keys.
+fn no_recovery_key(record: Option<&str>) {
+    if record.is_none() {
+        println!(
+            "This account has no recovery key: it was made before recovery keys, and none can be \
+             made for it."
+        );
+    }
 }
 
 /// Says that the device waits for linking.
@@ -637,15 +723,39 @@ mod tests {
             name: "ada".to_owned(),
             unknown: Unknown::default(),
         };
-        let (master, cert) = own_certificate(&body, &keys).expect("issued");
-        let cert = skald_proto::Cert::from_cbor(&cert).expect("a certificate");
+        let created = own_certificate(&body, &keys).expect("issued");
+        let master = created.master;
+        let cert = skald_proto::Cert::from_cbor(&created.cert).expect("a certificate");
         assert_eq!(*cert.body(), body);
         assert_eq!(
             skald_crypto::check_device(&master, std::slice::from_ref(&cert), keys.id()),
             Ok(&cert)
         );
-        let (other, _) = own_certificate(&body, &keys).expect("issued");
-        assert_ne!(other, master, "a new master key each time");
+        // The record names the account, the master key and the recovery key, and the backup opens
+        // with that recovery key to the master key.
+        let record = skald_proto::AccountRecord::from_cbor(&created.record).expect("a record");
+        assert_eq!(skald_crypto::check_account(&record, &master), Ok(()));
+        let recovery = HpkeKey::from_recovery_key(&created.recovery.to_bytes()).public_key();
+        assert_eq!(
+            (
+                record.body().account,
+                record.body().recovery,
+                record.body().revision
+            ),
+            (body.account, recovery, 1)
+        );
+        let backup = skald_proto::MasterBackup::from_cbor(&created.backup).expect("a backup");
+        let opened =
+            skald_crypto::open_master_backup(&backup, &created.recovery, body.account, &master)
+                .expect("the backup opens");
+        assert_eq!(opened.public_key(), master);
+        let other = own_certificate(&body, &keys).expect("issued");
+        assert_ne!(other.master, master, "a new master key each time");
+        assert_ne!(
+            *other.recovery.to_bytes(),
+            *created.recovery.to_bytes(),
+            "a new recovery key each time"
+        );
         // A body the device's keys do not prove is not issued.
         let other_device = CertBody {
             device: Keys::generate().id(),

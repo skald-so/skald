@@ -8,7 +8,7 @@ use skald_proto::{AccountId, Member, Name, PROTOCOL_VERSION, Role, RosterBody, S
 use crate::api::space_of;
 use crate::common::accounts::Who;
 use crate::common::device_flow::{INTERVAL, Machine, text};
-use crate::common::devices::{DEVICES, Device, Key, MASTER, assert_taken, b64};
+use crate::common::devices::{DEVICES, Device, Key, MASTER, assert_taken, b64, master_request};
 use crate::common::google::{Google, Setup};
 use crate::common::sign_in::Jar;
 use crate::common::spec::{operation_violations, spec};
@@ -98,7 +98,7 @@ fn machine_with_space(
     let call = |route, body: &Value| as_machine(google, &token, route, body);
     assert_taken(&call(("post", DEVICES, DEVICES), &laptop.registration()));
     let cert = laptop.cert_as(web.account(), skald_proto::DeviceKind::Client, master);
-    let given = json!({ "master": b64(&master.public()), "cert": b64(&cert) });
+    let given = master_request(web.account(), master, &cert);
     assert_taken(&call(("put", MASTER, MASTER), &given));
     let created = call(("post", "/spaces", "/spaces"), &json!({ "name": name }));
     assert_taken(&created);

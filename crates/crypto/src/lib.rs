@@ -1,5 +1,6 @@
 //! Skald end-to-end encryption core.
 
+mod account;
 mod anchors;
 mod cert;
 mod cpace;
@@ -13,6 +14,10 @@ mod sealed;
 mod sign;
 mod wrap;
 
+pub use account::{
+    AccountError, RecoveryKey, RecoveryKeyError, check_account, open_master_backup,
+    seal_master_backup, seal_master_backup_with_ephemeral, sign_account,
+};
 pub use anchors::{check_anchors, sign_anchors};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
