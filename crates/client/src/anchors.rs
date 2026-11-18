@@ -122,16 +122,21 @@ mod tests {
         anchors.body().clone()
     }
 
+    /// The signer with `keys` on a new account.
+    fn signer(keys: &device::Keys) -> Signer<'_> {
+        Signer {
+            account: AccountId::generate(),
+            device: keys.id(),
+            keys,
+        }
+    }
+
     #[test]
     fn device_signs_its_anchors_object_once_per_change_and_until_the_server_takes_it() {
         let dir = TestDir::new("anchors");
         let state = State::open(&dir).unwrap();
         let keys = device::Keys::generate();
-        let signer = Signer {
-            account: AccountId::generate(),
-            device: keys.id(),
-            keys: &keys,
-        };
+        let signer = signer(&keys);
         assert_eq!(signed(&state, &signer), Ok(None), "nothing accepted");
         assert_eq!(state.anchors().unwrap(), None);
 
@@ -184,11 +189,7 @@ mod tests {
         let dir = TestDir::new("anchors-personal");
         let state = State::open(&dir).unwrap();
         let keys = device::Keys::generate();
-        let signer = Signer {
-            account: AccountId::generate(),
-            device: keys.id(),
-            keys: &keys,
-        };
+        let signer = signer(&keys);
         let acme = first(signer.account);
         let id: SpaceId = acme.body().space;
         state.add_space(id, "acme", &acme.to_cbor()).unwrap();
