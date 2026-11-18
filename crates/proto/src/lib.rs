@@ -1,6 +1,7 @@
 //! Skald wire protocol types, as the protocol spec in `docs/protocol/` defines them.
 
 mod address;
+mod anchors;
 mod cbor;
 mod cert;
 mod content;
@@ -18,6 +19,7 @@ mod version;
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
 };
+pub use anchors::{ANCHORS_LABEL, Anchors, AnchorsBody};
 pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };

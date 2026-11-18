@@ -27,6 +27,7 @@ use skald_proto::{
     NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
 };
 
+use crate::anchors;
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
@@ -352,6 +353,8 @@ pub struct Follower {
     pub transport: Transport,
     /// Whether the run has kept the device's KeyPackages on the server.
     kept: bool,
+    /// Whether a send of the device's anchors object failed in this run ([`anchors::keep`]).
+    anchors_unsent: bool,
     /// The revisions the server last gave of each space the run followed or synced.
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
@@ -377,7 +380,8 @@ impl Follower {
 
     /// As [`Follower::new`], without taking the personal space. Once the revocations the device
     /// signed are sent, it fails if the device is revoked ([`revocations::refuse_if_revoked`]), so
-    /// a revoked device signs and sends nothing.
+    /// a revoked device signs and sends nothing; otherwise it keeps its anchors object
+    /// ([`Follower::keep_anchors`]).
     fn open(
         dir: &Path,
         storage: secrets::Storage,
@@ -392,8 +396,28 @@ impl Follower {
                 &follower.state,
                 (&follower.own.master, &follower.cert),
             )?;
+            follower.keep_anchors();
         }
         Ok(follower)
+    }
+
+    /// Keeps the device's anchors object of what the state holds on the server
+    /// ([`anchors::keep`]); warns of what fails.
+    fn keep_anchors(&mut self) {
+        match self.keys() {
+            Ok(keys) => anchors::keep(
+                &mut self.connection,
+                &self.token,
+                &self.state,
+                &anchors::Signer {
+                    account: self.own.account,
+                    device: self.this,
+                    keys: &keys,
+                },
+                &mut self.anchors_unsent,
+            ),
+            Err(err) => eprintln!("skald: warning: {err}"),
+        }
     }
 
     /// As [`Follower::open`], without checking whether the device is revoked.
@@ -426,6 +450,7 @@ impl Follower {
             accepted: groups::Rosters::new(),
             transport: Transport::default(),
             kept: false,
+            anchors_unsent: false,
             given: BTreeMap::new(),
         }))
     }
@@ -511,7 +536,8 @@ impl Follower {
     /// Takes the account's personal space, unless the device pinned one already, whose revision 1
     /// it sends again while the server has not taken it. Otherwise it gets the space from the
     /// server and, unless another device stored its revision 1, signs that revision, pins the
-    /// space and stores the revision as `skald create-space` does. Gives the revision 1 it signed.
+    /// space, stores the revision as `skald create-space` does and keeps the device's anchors
+    /// object ([`Follower::keep_anchors`]). Gives the revision 1 it signed.
     fn take_personal(&mut self) -> Result<Option<Roster>, String> {
         let spaces = self.state.spaces().map_err(text)?;
         if let Some(space) = spaces.iter().find(|space| space.personal) {
@@ -540,6 +566,7 @@ impl Follower {
             .add_personal_space(id, name.as_str(), &bytes)
             .map_err(text)?;
         self.send_first((id, name.as_str()), &bytes, PERSONAL_AGAIN)?;
+        self.keep_anchors();
         Ok(Some(first))
     }
 
@@ -628,6 +655,7 @@ impl Follower {
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
     /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
+    /// Then it keeps the device's anchors object ([`Follower::keep_anchors`]).
     fn follow(
         &mut self,
         space: &state::Space,
@@ -640,6 +668,7 @@ impl Follower {
             &self.own,
         )?;
         self.given.insert(space.id, followed.2.clone());
+        self.keep_anchors();
         Ok(followed)
     }
 

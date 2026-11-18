@@ -285,6 +285,14 @@ const MIGRATIONS: &[&str] = &[
         position INTEGER PRIMARY KEY,
         line TEXT NOT NULL
     ) STRICT;",
+    // The last anchors object the device signed, as its CBOR bytes, and whether it waits for the
+    // server to take it. At most one row. A state older than this table has none, so the device
+    // signs one at its next run.
+    "CREATE TABLE anchors (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        anchors BLOB NOT NULL,
+        pending INTEGER NOT NULL CHECK (pending IN (0, 1))
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -1266,6 +1274,44 @@ impl State {
         .transpose()
     }
 
+    /// The last anchors object the device signed, as its CBOR bytes, with whether it waits for the
+    /// server to take it.
+    pub fn anchors(&self) -> Result<Option<(Vec<u8>, bool)>, Error> {
+        Ok(self
+            .db
+            .query_row("SELECT anchors, pending FROM anchors", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()?)
+    }
+
+    /// Records `next`, in CBOR, as the device's last anchors object, waiting for the server, in
+    /// place of `replaced` or of none. Records nothing and gives `false` if another run changed it
+    /// meanwhile.
+    pub fn set_anchors(&self, replaced: Option<&[u8]>, next: &[u8]) -> Result<bool, Error> {
+        let changed = match replaced {
+            Some(replaced) => self.db.execute(
+                "UPDATE anchors SET anchors = ?2, pending = 1 WHERE anchors = ?1",
+                params![replaced, next],
+            )?,
+            None => self.db.execute(
+                "INSERT INTO anchors (id, anchors, pending) VALUES (1, ?1, 1)
+                 ON CONFLICT DO NOTHING",
+                params![next],
+            )?,
+        };
+        Ok(changed > 0)
+    }
+
+    /// Records that the server took `anchors`, the device's last anchors object, if it still is.
+    pub fn anchors_taken(&self, anchors: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE anchors SET pending = 0 WHERE anchors = ?1",
+            params![anchors],
+        )?;
+        Ok(())
+    }
+
     /// The `msg_id` of each message the device keeps: those it sent, and those that wait to be
     /// shown, but for any an older client kept.
     pub fn kept_ids(&self) -> Result<Vec<MessageId>, Error> {
@@ -2002,6 +2048,27 @@ pub(crate) mod tests {
         );
         state.end_session().unwrap();
         assert_eq!(state.session().unwrap(), None);
+    }
+
+    #[test]
+    fn anchors_object_replaces_only_the_one_the_run_read() {
+        let dir = TestDir::new("state-anchors");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.anchors().unwrap(), None);
+        assert!(state.set_anchors(None, &[1]).unwrap());
+        assert!(
+            !state.set_anchors(None, &[2]).unwrap(),
+            "another run's first"
+        );
+        assert_eq!(state.anchors().unwrap(), Some((vec![1], true)));
+        state.anchors_taken(&[2]).unwrap();
+        assert_eq!(state.anchors().unwrap(), Some((vec![1], true)), "not it");
+        state.anchors_taken(&[1]).unwrap();
+        assert_eq!(state.anchors().unwrap(), Some((vec![1], false)));
+        assert!(!state.set_anchors(Some(&[2]), &[3]).unwrap(), "replaced");
+        assert!(state.set_anchors(Some(&[1]), &[3]).unwrap());
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.anchors().unwrap(), Some((vec![3], true)));
     }
 
     #[test]
