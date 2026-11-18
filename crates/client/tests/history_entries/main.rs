@@ -33,49 +33,7 @@ mod sent;
 mod unclean;
 mod withheld;
 
-// The links of the tests of the key chain; the front of the tests of sending; the devices the tests
-// of channel groups play; the talk of the tests of channel messages.
-#[path = "../key_chain/chain.rs"]
-mod chain;
-#[path = "../sending/front.rs"]
-mod front;
-#[path = "../channel_groups/played.rs"]
-mod played;
-#[path = "../channel_messages/talk.rs"]
-mod talk;
-
-// The server of the tests of signing in; the fixtures of the tests of sending; the kit of the tests
-// of channel groups; the relay of the tests of signing in; people in spaces, of the tests of roster
-// revisions.
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../sending/fixtures.rs"]
-mod fixtures;
-#[path = "../channel_groups/kit.rs"]
-mod kit;
-#[path = "../sign_in/relay.rs"]
-mod relay;
-#[path = "../roster_revisions/world.rs"]
-mod world;
-
-// The admin commands' kit of the tests of removing members; the joins of the tests of joining
-// channels; the machines of the tests of signing in; the device the tests of receiving play.
-#[path = "../member_removal/edits.rs"]
-mod edits;
-#[path = "../channel_joins/joins.rs"]
-mod joins;
-#[path = "../sign_in/machine.rs"]
-mod machine;
-#[path = "../receiving/peer.rs"]
-mod peer;
-
-// The server's tests' readers of the KeyPackages API's answers and the person's browser; the
-// helpers of every client test; finding keys in bytes.
-#[path = "../../../server/tests/key_packages/answers.rs"]
-mod answers;
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../device_keys/keys.rs"]
-mod keys;
+// The modules the tests of the channel history share (`history_common/mod.rs`).
+#[path = "../history_common/mod.rs"]
+mod history_common;
+use history_common::*;
