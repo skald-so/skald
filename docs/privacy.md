@@ -42,7 +42,7 @@ There is no analytics, tracking or advertising on the website or in the app.
 ## Who else processes data
 - GitHub hosts the website and runs GitHub sign-in: [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
 - Google runs Google sign-in and the Gmail mailbox that mail to `info@skald.so` reaches: [Google Privacy Policy](https://policies.google.com/privacy).
-- A hosting provider runs the cloud's servers in France.
+- OVHcloud runs the cloud's servers in France: [OVHcloud's privacy policy](https://www.ovhcloud.com/en/terms-and-conditions/privacy-policy/).
 - Namecheap forwards mail sent to `info@skald.so` to that mailbox.
 
 ## How long the cloud keeps data
