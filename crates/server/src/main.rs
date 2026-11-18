@@ -269,6 +269,16 @@ struct Cli {
     )]
     sse_keep_alive: Option<u64>,
 
+    /// How long after its hello a link code's run ends, in seconds, at most the code's 5 minutes
+    /// [default: 300].
+    #[arg(
+        long,
+        env = "SKALD_LINK_CODE_LIFETIME",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::LINK_CODE_LIFETIME.as_secs())
+    )]
+    link_code_lifetime: Option<u64>,
+
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
     #[arg(long, env = "SKALD_SERVER_NAME", value_name = "NAME")]
@@ -492,6 +502,7 @@ impl Cli {
             devices_limit: self.devices_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
             sse_keep_alive: self.sse_keep_alive.map(Duration::from_secs),
+            link_code_lifetime: self.link_code_lifetime.map(Duration::from_secs),
         })
     }
 }
@@ -662,6 +673,25 @@ mod tests {
         assert_eq!(interval(3_600), Some(Some(3_600)));
         assert_eq!(interval(0), None);
         assert_eq!(interval(3_601), None);
+    }
+
+    #[test]
+    fn a_link_codes_run_lasts_from_a_second_to_5_minutes() {
+        let lifetime = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--link-code-lifetime",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.link_code_lifetime)
+            .ok()
+        };
+        assert_eq!(lifetime(1), Some(Some(1)));
+        assert_eq!(lifetime(300), Some(Some(300)));
+        assert_eq!(lifetime(0), None);
+        assert_eq!(lifetime(301), None);
     }
 
     #[test]

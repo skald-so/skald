@@ -2,12 +2,12 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Link code keys](#link-code-keys) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
-- Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
+- Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, and an [account record and a master backup](membership.md#account). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, the [link code](membership.md#link-code) keys of a fixed ISK, and an [account record and a master backup](membership.md#account). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -39,6 +39,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Revocation by the master key](#revocation-by-the-master-key)
 - [Account record](#account-record)
 - [Master backup](#master-backup)
+- [Link code keys](#link-code-keys)
 
 ## Envelope under `mls`
 
@@ -693,3 +694,13 @@ d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
 71c91b58300ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376
 adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44
 ```
+
+## Link code keys
+
+The request and grant keys of the ISK of draft-irtf-cfrg-cpace-21, Appendix B.3.5, and the plaintext `skald link test` sealed with each: ciphertext, then tag. Hex.
+
+- ISK: `b69effbf61b51d56401c0f65601abe428de8206feaaf0e32198896dcae7b35cd2b38950a39dfd5d4a79164614c2984f7daa460b588c1e80c3fa2068af7900447`
+- Request key: `34ef61cde245a794a66fb3a2a1119e06`
+- Grant key: `f59082ca8b39050a140e5a40d4bc616b`
+- Sealed with the request key: `1ac64ce7dc7b6554503c135dc7ce92240353fc905792016f23a2a16c7e79f0`
+- Sealed with the grant key: `d04b154ed6d577f0279c06f14cd70c537cc273da51bdb2cd700312b5337e81`

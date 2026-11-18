@@ -59,6 +59,14 @@ pub(crate) enum Refusal {
     DevicesLimit(u32),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
+    /// A link message the server does not relay there, for the reason it holds.
+    LinkMessage(String),
+    /// A hello naming a device that has a certificate.
+    DeviceCertified,
+    /// A hello whose `session` another device's run of the account holds.
+    LinkSessionTaken,
+    /// No such open run of the session's account.
+    NoLinkRun,
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -186,6 +194,27 @@ impl IntoResponse for Refusal {
                 "revision-conflict",
                 "Revision out of order",
                 &detail,
+            ),
+            Refusal::LinkMessage(detail) => {
+                problem(bad, "invalid-link-message", "Invalid link message", &detail)
+            }
+            Refusal::DeviceCertified => problem(
+                conflict,
+                "device-certified",
+                "The device has a certificate",
+                "The device has a certificate, so it links no more.",
+            ),
+            Refusal::LinkSessionTaken => problem(
+                conflict,
+                "link-session-taken",
+                "Session taken",
+                "A run of another device of the account has this session.",
+            ),
+            Refusal::NoLinkRun => problem(
+                StatusCode::NOT_FOUND,
+                "no-link-run",
+                "No such link run",
+                "The session's account has no open run with this session: it ended or never opened.",
             ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }
