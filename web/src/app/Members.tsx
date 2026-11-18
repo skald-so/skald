@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext, useState } from "react";
 import { listSpaceMembers } from "../api/skald.ts";
 import type { ListedMember, ListedMemberRole } from "../api/skald.schemas.ts";
 import { Banner } from "../ui/Banner.tsx";
@@ -9,7 +9,9 @@ import { PageHeader } from "../ui/PageHeader.tsx";
 import { Search } from "../ui/Search.tsx";
 import { sortRows, type Sort } from "../ui/sort.ts";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
-import { versioned } from "./api.ts";
+import { signedIn, versioned } from "./api.ts";
+import { useLoaded } from "./load.ts";
+import { NoSpace } from "./NoSpace.tsx";
 import { ChosenSpace } from "./space.ts";
 import styles from "./Members.module.css";
 import { date } from "./time.ts";
@@ -113,8 +115,7 @@ export function MembersScreen({
       <>
         <PageHeader title="Members" />
         <EmptyState>
-          No space yet. Sign in a machine with <code>skald</code> to make your
-          personal space.
+          <NoSpace />
         </EmptyState>
       </>
     );
@@ -195,13 +196,18 @@ export function MembersScreen({
   );
 }
 
-/** The members of `space`, or `null` when the API refuses the session; throws when it gives neither. */
-async function fetchMembers(space: string): Promise<ListedMember[] | null> {
-  const listed = await listSpaceMembers(space, { headers: versioned });
-  if (listed.status === 401) return null;
-  if (listed.status !== 200)
-    throw new Error(`GET /spaces/${space}/members ${listed.status}`);
-  return listed.data.members;
+/**
+ * The members of `space` with the time they came, or `null` when the API refuses the session; throws
+ * when it gives neither.
+ */
+async function fetchMembers(
+  space: string,
+): Promise<{ members: ListedMember[]; at: number } | null> {
+  const listed = signedIn(
+    await listSpaceMembers(space, { headers: versioned }),
+    `GET /spaces/${space}/members`,
+  );
+  return listed && { members: listed.members, at: Date.now() };
 }
 
 /**
@@ -210,45 +216,14 @@ async function fetchMembers(space: string): Promise<ListedMember[] | null> {
  */
 export function Members({ onSignedOut }: { onSignedOut: () => void }) {
   const space = useContext(ChosenSpace);
-  const [listed, setListed] = useState<{
-    space: string;
-    members: ListedMember[];
-    at: number;
-  }>();
-  const [failed, setFailed] = useState<{ space: string }>();
-
-  useEffect(() => {
-    if (space === undefined) return;
-    // An answer for a space chosen before is dropped.
-    let shown = true;
-    fetchMembers(space.space).then(
-      (members) => {
-        if (!shown) return;
-        if (!members) return onSignedOut();
-        setListed({ space: space.space, members, at: Date.now() });
-        setFailed(undefined);
-      },
-      () => {
-        if (shown) setFailed({ space: space.space });
-      },
-    );
-    return () => {
-      shown = false;
-    };
-  }, [space, onSignedOut]);
-
-  const current = listed?.space === space?.space ? listed : undefined;
+  const listed = useLoaded(space?.space, fetchMembers, onSignedOut);
   return (
     <MembersScreen
       key={space?.space}
       space={space?.name}
-      members={current?.members}
-      now={current?.at ?? 0}
-      failed={
-        failed?.space === space?.space && space !== undefined
-          ? "The members did not load."
-          : undefined
-      }
+      members={listed?.value?.members}
+      now={listed?.value?.at ?? 0}
+      failed={listed?.failed && "The members did not load."}
     />
   );
 }

@@ -1,4 +1,4 @@
-import { useContext, useEffect, useState } from "react";
+import { useContext } from "react";
 import { getAccountUsage, getSpaceUsage } from "../api/skald.ts";
 import type { AccountUsage, SpaceUsage } from "../api/skald.schemas.ts";
 import { Banner } from "../ui/Banner.tsx";
@@ -6,7 +6,9 @@ import { EmptyState } from "../ui/EmptyState.tsx";
 import { Loading } from "../ui/Loading.tsx";
 import { PageHeader } from "../ui/PageHeader.tsx";
 import { UsageCard } from "../ui/UsageCard.tsx";
-import { versioned } from "./api.ts";
+import { signedIn, versioned } from "./api.ts";
+import { useLoaded } from "./load.ts";
+import { NoSpace } from "./NoSpace.tsx";
 import { ChosenSpace } from "./space.ts";
 import { period, size } from "./units.ts";
 import styles from "./Usage.module.css";
@@ -51,8 +53,7 @@ export function UsageScreen({
       {failed && <Banner>{failed}</Banner>}
       {space === undefined && (
         <EmptyState>
-          No space yet. Sign in a machine with <code>skald</code> to make your
-          personal space.
+          <NoSpace />
         </EmptyState>
       )}
       {loading ? (
@@ -132,52 +133,18 @@ function Messages({ usage }: { usage: SpaceUsage }) {
 
 /** The usage of the account, or `null` when the API refuses the session; throws when it gives neither. */
 async function fetchAccount(): Promise<AccountUsage | null> {
-  const got = await getAccountUsage({ headers: versioned });
-  if (got.status === 401) return null;
-  if (got.status !== 200) throw new Error(`GET /account/usage ${got.status}`);
-  return got.data;
+  return signedIn(
+    await getAccountUsage({ headers: versioned }),
+    "GET /account/usage",
+  );
 }
 
 /** The usage of `space`, or `null` when the API refuses the session; throws when it gives neither. */
 async function fetchSpace(space: string): Promise<SpaceUsage | null> {
-  const got = await getSpaceUsage(space, { headers: versioned });
-  if (got.status === 401) return null;
-  if (got.status !== 200)
-    throw new Error(`GET /spaces/${space}/usage ${got.status}`);
-  return got.data;
-}
-
-/**
- * What `load` gives for `key`, loaded again whenever `key` changes, or whether it failed; nothing
- * while it loads or without a key. When `load` gives `null`, as when the API refuses the session,
- * `onSignedOut` shows the sign-in page. An answer for a key before is dropped.
- */
-function useLoaded<T>(
-  key: string | undefined,
-  load: (key: string) => Promise<T | null>,
-  onSignedOut: () => void,
-): { value?: T; failed?: true } | undefined {
-  const [loaded, setLoaded] = useState<{
-    key: string;
-    value?: T;
-    failed?: true;
-  }>();
-  useEffect(() => {
-    if (key === undefined) return;
-    // Not aborted when the key changes or another page opens: the answer comes whole.
-    let current = true;
-    const settle = (value?: T, failed?: true) => {
-      if (current) setLoaded({ key, value, failed });
-    };
-    load(key).then(
-      (value) => (value ? settle(value) : current && onSignedOut()),
-      () => settle(undefined, true),
-    );
-    return () => {
-      current = false;
-    };
-  }, [key, load, onSignedOut]);
-  return loaded?.key === key ? loaded : undefined;
+  return signedIn(
+    await getSpaceUsage(space, { headers: versioned }),
+    `GET /spaces/${space}/usage`,
+  );
 }
 
 /**
