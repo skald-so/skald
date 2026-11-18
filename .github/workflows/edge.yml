@@ -1,12 +1,14 @@
 name: Edge image
 
-# Every push to dev publishes the skald-server image built from it: tagged with the commit, and
-# :edge; then deploys it to staging. Never runs for PRs. script/edge-workflow-test tests this file.
+# Every push to dev builds the web app's archive and publishes the skald-server image from it: tagged
+# with the commit, and :edge, labelled with the archive's SHA-256; then deploys both to staging. Never
+# runs for PRs. script/edge-workflow-test tests this file.
 on:
   push:
     branches: [dev]
 
-# Writes packages only; reads the repository to build it. The deploy job only reads it.
+# Writes packages only; reads the repository to build it. The web app's and the deploy job only
+# read it.
 permissions:
   contents: read
   packages: write
@@ -17,8 +19,39 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # The web app's archive, as a release builds it (script/release-web), from web/'s lockfile with no
+  # cache; staging's deploy takes only the archive whose SHA-256 the image's label names.
+  web:
+    name: Web app
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      sha256: ${{ steps.archive.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          package-manager-cache: false
+      - name: Install the web app's packages
+        run: npm ci --prefix web --no-audit --no-fund
+      - name: Build the archive
+        run: script/release-web web-build
+      - id: archive
+        name: The archive's SHA-256
+        run: echo "sha256=$(sha256sum web-build/skald-web.tar.gz | cut -d ' ' -f 1)" >>"$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: web
+          path: web-build/skald-web.tar.gz
+          if-no-files-found: error
+
   publish:
     name: Publish
+    needs: web
     runs-on: ubuntu-latest
     outputs:
       digest: ${{ steps.build.outputs.digest }}
@@ -40,6 +73,7 @@ jobs:
           context: .
           file: crates/server/Dockerfile
           build-args: REVISION=${{ github.sha }}
+          labels: so.skald.web.sha256=${{ needs.web.outputs.sha256 }}
           tags: ghcr.io/skald-so/skald-server:${{ github.sha }}
           push: true
           cache-from: type=gha
@@ -51,7 +85,7 @@ jobs:
 
   deploy:
     name: Deploy to staging
-    needs: publish
+    needs: [publish, web]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -62,10 +96,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: web
+          path: web-build
       - name: Deploy
         env:
           DIGEST: ${{ needs.publish.outputs.digest }}
           STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
           STAGING_SSH_HOST_KEY: ${{ secrets.STAGING_SSH_HOST_KEY }}
           STAGING_SSH_DESTINATION: ${{ secrets.STAGING_SSH_DESTINATION }}
-        run: script/deploy-staging "$GITHUB_SHA" "$DIGEST"
+        run: script/deploy-staging "$GITHUB_SHA" "$DIGEST" web-build/skald-web.tar.gz
