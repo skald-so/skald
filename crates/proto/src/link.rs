@@ -93,3 +93,56 @@ impl Codec for LinkMessage {
 }
 
 cbor::cbor!(LinkMessage);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Cbor as _;
+
+    #[test]
+    fn each_message_encodes_as_its_type_its_session_and_its_payload() {
+        let abort = LinkMessage::Abort { session: [7; 16] };
+        let mut want = vec![0x82, 0x05, 0x50];
+        want.extend([7; 16]);
+        assert_eq!(abort.to_cbor(), want);
+        let hello = LinkMessage::Hello {
+            session: [7; 16],
+            share: [9; 32],
+        };
+        let mut want = vec![0x83, 0x01, 0x50];
+        want.extend([7; 16]);
+        want.extend([0x58, 0x20]);
+        want.extend([9; 32]);
+        assert_eq!(hello.to_cbor(), want);
+    }
+
+    #[test]
+    fn each_message_reads_back_with_its_session() {
+        let messages = [
+            LinkMessage::Hello {
+                session: [1; 16],
+                share: [9; 32],
+            },
+            LinkMessage::Reply {
+                session: [2; 16],
+                share: [8; 32],
+            },
+            LinkMessage::Request {
+                session: [3; 16],
+                sealed: vec![7; 40],
+            },
+            LinkMessage::Grant {
+                session: [4; 16],
+                sealed: vec![6; 50],
+            },
+            LinkMessage::Abort { session: [5; 16] },
+        ];
+        for (at, message) in (1..).zip(&messages) {
+            assert_eq!(message.session(), &[at; 16]);
+            assert_eq!(
+                LinkMessage::from_cbor(&message.to_cbor()).as_ref(),
+                Ok(message)
+            );
+        }
+    }
+}

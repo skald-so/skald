@@ -226,7 +226,9 @@ fn prepend_len(data: &[u8]) -> Vec<u8> {
     let bytes = (usize::BITS - len.leading_zeros()).div_ceil(7).max(1);
     let mut out = Vec::new();
     for at in 0..bytes {
-        let byte = (len >> (7 * at)) as u8 & 0x7f;
+        // The last byte is below 0x80; `as` keeps the low 8 bits, whose top one each earlier
+        // byte sets.
+        let byte = (len >> (7 * at)) as u8;
         out.push(if at + 1 < bytes { byte | 0x80 } else { byte });
     }
     out.extend_from_slice(data);
