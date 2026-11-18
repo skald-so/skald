@@ -47,9 +47,9 @@ const check = (file, actual, dir) => {
   };
 };
 
-const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'site-references-test.')));
 // The first run pulls the Chrome image.
 const site = await startSite({ pinned: true });
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'site-references-test.')));
 try {
   for (const view of views) {
     const { message } = check(view.file, await take(site, view), diffDir);
