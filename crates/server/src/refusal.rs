@@ -52,6 +52,8 @@ pub(crate) enum Refusal {
     Roster(String),
     /// A revocation the server does not store, for the reason it holds.
     Revocation(String),
+    /// An anchors object the server does not store, for the reason it holds.
+    Anchors(String),
     SpaceNameTaken,
     /// The account owns as many spaces as it may: the number it holds.
     OwnedSpacesLimit(u32),
@@ -162,6 +164,9 @@ impl IntoResponse for Refusal {
             }
             Refusal::Revocation(detail) => {
                 problem(bad, "invalid-revocation", "Invalid revocation", &detail)
+            }
+            Refusal::Anchors(detail) => {
+                problem(bad, "invalid-anchors", "Invalid anchors object", &detail)
             }
             Refusal::SpaceNameTaken => problem(
                 conflict,

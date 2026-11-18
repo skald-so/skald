@@ -129,11 +129,13 @@ link-body = {
   1 => id,                 ; device: the new device
   2 => id,                 ; issuer
   3 => [* [space: id, revision: bstr .size 32]],  ; anchors: hash of the latest revision the issuer accepted of each of its spaces
+  ? 4 => id,               ; personal: the account's personal space the issuer pinned
   * int => any,            ; fields of later versions
 }
 ```
 
 - The new device MUST reject a link object unless `device` is itself and the signature verifies with the certificate of `issuer`, a valid `client` device of its account. Each anchor is a revision it starts from: [Roster](#roster).
+- It pins `personal`, if present, as its personal space.
 - A device linked with the recovery key has no link object: it starts from [anchors](#anchors).
 
 ### Link code
@@ -202,13 +204,15 @@ anchors-body = {
   1 => id,                 ; account
   2 => id,                 ; device: a `client` device of the account
   3 => [* [space: id, revision: bstr .size 32]],  ; as in a link object
+  ? 4 => id,               ; personal: as in a link object
   * int => any,            ; fields of later versions
 }
 ```
 
-- A `client` device signs a new anchors object when it accepts a revision; the server keeps the latest per device.
+- A `client` device signs a new anchors object when it accepts a revision; the server keeps the latest per device and gives them only to the account's sessions.
 - A device linked with the recovery key takes the anchors objects after it revokes the stolen devices. It MUST reject one unless `account` is its own and the signature verifies with the certificate of `device`, a `client` device whose certificate passes checks 1 and 2 of [Device checks](#device-checks) and that no master-key revocation marks as stolen. Other revocations do not matter here, so anchors of lost or wiped devices count.
 - For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
+- It pins as its personal space the `personal` of the valid anchors objects that have one. When they name different spaces, it pins none and warns its user.
 
 ## Revocation
 A revocation removes a device from its account.

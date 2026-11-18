@@ -27,6 +27,7 @@ use skald_proto::{
     NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
 };
 
+use crate::anchors;
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
@@ -377,7 +378,8 @@ impl Follower {
 
     /// As [`Follower::new`], without taking the personal space. Once the revocations the device
     /// signed are sent, it fails if the device is revoked ([`revocations::refuse_if_revoked`]), so
-    /// a revoked device signs and sends nothing.
+    /// a revoked device signs and sends nothing; otherwise it keeps its anchors object
+    /// ([`Follower::keep_anchors`]).
     fn open(
         dir: &Path,
         storage: secrets::Storage,
@@ -392,8 +394,27 @@ impl Follower {
                 &follower.state,
                 (&follower.own.master, &follower.cert),
             )?;
+            follower.keep_anchors();
         }
         Ok(follower)
+    }
+
+    /// Keeps the device's anchors object of what the state holds on the server
+    /// ([`anchors::keep`]); warns of what fails.
+    fn keep_anchors(&mut self) {
+        match self.keys() {
+            Ok(keys) => anchors::keep(
+                &mut self.connection,
+                &self.token,
+                &self.state,
+                &anchors::Signer {
+                    account: self.own.account,
+                    device: self.this,
+                    keys: &keys,
+                },
+            ),
+            Err(err) => eprintln!("skald: warning: {err}"),
+        }
     }
 
     /// As [`Follower::open`], without checking whether the device is revoked.
@@ -628,6 +649,7 @@ impl Follower {
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
     /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
+    /// Then it keeps the device's anchors object ([`Follower::keep_anchors`]).
     fn follow(
         &mut self,
         space: &state::Space,
@@ -640,6 +662,7 @@ impl Follower {
             &self.own,
         )?;
         self.given.insert(space.id, followed.2.clone());
+        self.keep_anchors();
         Ok(followed)
     }
 

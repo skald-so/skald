@@ -16,6 +16,7 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
 mod accounts;
+mod anchors;
 mod attachments;
 mod connections;
 mod delivery;
@@ -191,6 +192,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
     let checked =
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
+        .route(
+            "/account/anchors",
+            get(anchors::list)
+                .post(anchors::store)
+                .layer(checked(Statement::Header)),
+        )
         .route(
             "/account/devices",
             get(devices::shown).layer(checked(Statement::Header)),

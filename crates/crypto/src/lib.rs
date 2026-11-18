@@ -1,5 +1,6 @@
 //! Skald end-to-end encryption core.
 
+mod anchors;
 mod cert;
 mod history;
 mod hpke;
@@ -10,6 +11,7 @@ mod sealed;
 mod sign;
 mod wrap;
 
+pub use anchors::{check_anchors, sign_anchors};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
