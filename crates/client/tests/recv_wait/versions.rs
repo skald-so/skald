@@ -61,11 +61,12 @@ fn session_on_a_helper_that_exits_for_a_newer_command_fails_and_the_next_gets_me
 /// The device has run as claude in `~/work/acme`, in one-shot mode, and the person's `skald recv`
 /// has shown what came so far. The person's `skald recv --wait` in one-shot mode, acting as an
 /// older version than the copy's, waits on its own connection. claude's `skald recv --wait` of the
-/// copy's version then starts a helper and waits through it. Bob's device sends a message to Ada as
-/// a person: the older wait ends, failing, saying to run it again and naming both versions, while
-/// claude's session keeps waiting and the helper keeps running. Bob's device then sends a message
-/// to the channel, which claude's session shows once, with its `msg_id`. The older wait and the
-/// person's next `skald recv`, through that helper, showed each of Bob's messages once in all.
+/// copy's version then starts a helper and waits through it, on the helper's connection. Bob's
+/// device sends a message to Ada as a person: the older wait ends, failing, saying to run it again
+/// and naming both versions, while claude's session keeps waiting and the helper keeps running.
+/// Bob's device then sends a message to the channel, which claude's session shows once, with its
+/// `msg_id`. The older wait and the person's next `skald recv`, through that helper, showed each of
+/// Bob's messages once in all.
 #[test]
 fn older_one_shot_wait_ends_when_a_newer_helper_starts_and_the_helper_and_its_sessions_go_on() {
     let mut waits = Waits::new(
@@ -81,6 +82,9 @@ fn older_one_shot_wait_ends_when_a_newer_helper_starts_and_the_helper_and_its_se
     await_connections(&waits.agents.talk, &mut stale, (since, 1));
     let mut session = waits.session(CLAUDE);
     let helper = await_helper_beside(&waits.helped, &[&stale, &session]);
+    // The helper connects once it holds the lock and listens: a message that came before would be
+    // the older wait's own.
+    await_connections(&waits.agents.talk, &mut session, (since, 2));
     let bob = waits.agents.bob();
     let mut to_ada = Line::new(&bob, 1, TO_ADA);
     to_ada.to = Some(waits.agents.talk.address(&waits.agents.talk.ada));
