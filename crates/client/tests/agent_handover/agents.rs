@@ -7,6 +7,7 @@ use skald_proto::{MessageId, RawEnvelope};
 
 use crate::gaps::sends;
 use crate::kit::RECV;
+use crate::lines::assert_handed_line;
 use crate::machine::{Finished, Machine};
 use crate::talk::{Line, Talk, encrypted};
 use crate::world::{ACME, ADD_RULE, AGENT, HOST, dir_of, path, run};
@@ -28,7 +29,11 @@ impl Agents {
     /// Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones, in `acme`'s channel;
     /// `~/work/acme` bound to `acme`.
     pub fn new(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let talk = Talk::new(&ids, &logins, false);
+        Self::bound(Talk::new(&ids, &logins, false))
+    }
+
+    /// `talk`, a talk in `acme`, with `~/work/acme` bound to `acme`.
+    pub fn bound(talk: Talk) -> Self {
         let folder = dir_of(&talk.ada.machine, ACME_DIR);
         let bound = run(&talk.ada.machine, &[ADD_RULE, path(&folder), ACME]);
         assert!(bound.success, "not bound: {bound:?}");
@@ -78,14 +83,11 @@ pub fn run_as_in(machine: &Machine, dir: &Path, agent: &str) -> Finished {
     finished
 }
 
-/// Fails unless `shown` holds `text` once and the `msg_id` `id`.
+/// Fails unless `shown`, an agent's output, holds `text` once, on one line whose reference refers
+/// to the `msg_id` `id`, and holds no UUID.
 #[track_caller]
 pub fn assert_handed_once(shown: &str, text: &str, id: MessageId) {
-    assert_eq!(shown.matches(text).count(), 1, "{text:?} not once: {shown}");
-    assert!(
-        shown.contains(&id.to_string()),
-        "{text:?} without {id}: {shown}"
-    );
+    assert_handed_line(shown, text, id);
 }
 
 /// Fails if `shown` holds `text`.

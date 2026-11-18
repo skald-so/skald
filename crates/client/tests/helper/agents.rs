@@ -5,6 +5,7 @@ use crate::fixtures::{SEND, person_address, sent_after};
 use crate::front::Answers;
 use crate::helped::{Helped, ONE_SHOT, bob_reads, timeout_of, with_client_b};
 use crate::kit::{RECV, bind_client_a};
+use crate::lines::assert_agent_got;
 use crate::machine::Finished;
 use crate::talk::{
     BOB_HOST, Line, Talk, assert_read, assert_shows_once, encrypted, one_message_sent, stored,
@@ -36,8 +37,9 @@ const DOWN_TIMEOUT: &str = "4";
 /// as the agent in `~/work/clientA`: `skald recv` runs first; `skald send` to clienta's channel
 /// stores a message Bob's device reads with `from` the agent's address in clienta; `skald send`
 /// to clientb's channel fails, sends nothing and names nothing of clientb. Bob's device then says
-/// something in each channel: the agent's `skald recv` shows clienta's once and names nothing of
-/// clientb; the person's `skald recv` shows both, each once. The same helper served every run.
+/// something in each channel: the agent's `skald recv` shows clienta's once, as its one line, and
+/// names nothing of clientb; the person's `skald recv` shows both, each once. The same helper
+/// served every run.
 #[test]
 fn through_the_helper_an_agent_sends_and_receives_only_in_the_space_of_its_folder() {
     let mut talk = Talk::in_space(
@@ -95,20 +97,19 @@ fn through_the_helper_an_agent_sends_and_receives_only_in_the_space_of_its_folde
         ((talk.space.id, talk.channel), &from_bob[0], BOB_IN_A),
         ((other.id, elsewhere), &from_bob[1], BOB_IN_B),
     ];
+    let mut ids = Vec::new();
     for (at, from, text) in said {
         let bob = &mut talk.played[0];
         let envelope = encrypted(bob, at, at.1, &Line::new(from, 1, text));
         stored(&talk.world.cloud, bob, &envelope);
+        ids.push(envelope.envelope().header.msg_id);
     }
 
     let as_agent = agent(&[RECV]);
 
     assert!(as_agent.success, "{as_agent:?}");
-    assert_shows_once(
-        &as_agent.shown(),
-        BOB_IN_A,
-        (talk.channel, &from_bob[0], BOB_HOST),
-    );
+    let got = (ids[0], from_bob[0].as_str(), BOB_HOST);
+    assert_agent_got(&as_agent.shown(), BOB_IN_A, got);
     let mut unseen = clientb.to_vec();
     unseen.push(BOB_IN_B.to_owned());
     assert_names_none(&as_agent, &unseen);

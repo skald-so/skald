@@ -367,7 +367,7 @@ impl Sessions {
                             trace(&marks);
                         }
                         let agent = operation.agent()?;
-                        intake.hand(said, space.zip(agent.as_ref()))
+                        intake.hand(said, space.zip(agent.as_ref()), operation.json())
                     });
                     self.again(ran, space)?;
                 }

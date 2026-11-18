@@ -1,6 +1,7 @@
 //! A run's output: standard output and standard error, unless a helper runs the operation for a
 //! command ([`crate::helper`]); then each write goes to that command, which shows it. The crate's
-//! `print!`, `println!` and `eprintln!` write here (`main.rs`).
+//! `print!`, `println!` and `eprintln!` write here (`main.rs`). A run as an agent holds its
+//! warnings back for the person ([`holding_warnings`]).
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
@@ -21,6 +22,45 @@ thread_local! {
     static SINK: RefCell<Option<Box<Sink<'static>>>> = const { RefCell::new(None) };
     /// How many writes of this thread's runs went out.
     static WRITTEN: Cell<u64> = const { Cell::new(0) };
+    /// The warnings held back from the run on this thread, if it holds them.
+    static HELD: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// What starts a warning's line.
+pub const WARNING: &str = "skald: warning: ";
+
+/// Runs `run`, holding back each warning it writes to its error output, a line that starts with
+/// [`WARNING`]; gives what it gave and those warnings, each without its line's end.
+pub fn holding_warnings<R>(run: impl FnOnce() -> R) -> (R, Vec<String>) {
+    /// Stops holding when the run ends, a panic included.
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            HELD.with(|held| held.borrow_mut().take());
+        }
+    }
+    HELD.with(|held| *held.borrow_mut() = Some(Vec::new()));
+    let reset = Reset;
+    let ran = run();
+    let held = HELD
+        .with(|held| held.borrow_mut().take())
+        .unwrap_or_default();
+    drop(reset);
+    (ran, held)
+}
+
+/// Holds `text` back if the run holds its warnings and it is one; gives whether it did.
+fn held(stream: Stream, text: &str) -> bool {
+    if stream != Stream::Err || !text.starts_with(WARNING) {
+        return false;
+    }
+    HELD.with(|held| match held.borrow_mut().as_mut() {
+        Some(held) => {
+            held.push(text.trim_end_matches('\n').to_owned());
+            true
+        }
+        None => false,
+    })
 }
 
 /// How many writes this thread's runs made so far: a run that makes one shows something.
@@ -73,6 +113,9 @@ fn sent(stream: Stream, bytes: &[u8]) -> io::Result<()> {
 /// output panics; one to the command a helper runs it for is that command's to see, which has gone.
 pub fn print(stream: Stream, args: fmt::Arguments<'_>) {
     let text = args.to_string();
+    if held(stream, &text) {
+        return;
+    }
     let written = write(stream, text.as_bytes());
     let helped = SINK.with(|sink| sink.borrow().is_some());
     if let Err(err) = written
@@ -83,5 +126,35 @@ pub fn print(stream: Stream, args: fmt::Arguments<'_>) {
             Stream::Err => "stderr",
         };
         panic!("failed printing to {name}: {err}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A run that holds its warnings holds back each line of its error output that starts as a
+    /// warning, and only those, until it ends.
+    #[test]
+    fn held_run_holds_back_only_its_warnings() {
+        let ((), warnings) = holding_warnings(|| {
+            assert!(held(Stream::Err, "skald: warning: one\n"));
+            assert!(!held(Stream::Err, "skald: dropped #k3vq: why\n"));
+            assert!(!held(Stream::Out, "skald: warning: on the output\n"));
+            assert!(held(Stream::Err, "skald: warning: two"));
+        });
+
+        assert_eq!(warnings, ["skald: warning: one", "skald: warning: two"]);
+        assert!(!held(Stream::Err, "skald: warning: after the run\n"));
+    }
+
+    /// A run that panics holds nothing back after it, as the helper's next operation on its
+    /// thread shows.
+    #[test]
+    fn run_that_panics_holds_nothing_after_it() {
+        let panicked = std::panic::catch_unwind(|| holding_warnings(|| panic!("the run fails")));
+
+        assert!(panicked.is_err());
+        assert!(!held(Stream::Err, "skald: warning: after the run\n"));
     }
 }

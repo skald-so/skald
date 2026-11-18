@@ -158,7 +158,7 @@ pub fn await_connections(talk: &Talk, run: &mut Run, (since, count): (Instant, u
     });
 }
 
-/// Fails unless `finished` succeeded and shows `text` once, with `msg_id`.
+/// Fails unless `finished` succeeded and shows `text` once, by the reference of `msg_id`.
 #[track_caller]
 pub fn assert_got(finished: &Finished, text: &str, msg_id: MessageId) {
     assert!(finished.success, "{finished:?}");

@@ -6,8 +6,8 @@
 //!   space. Content to a person goes to no agent; a receipt is never handed over.
 //! - The device keeps each agent's messages in its local state until they are handed over, and
 //!   marks a message handed over only after the handover: a crash in between repeats the handover
-//!   and never loses it. Each handover carries `msg_id`; the next message from a sending device
-//!   after missing ones is marked as following them.
+//!   and never loses it. Each handover carries the reference of its `msg_id`; the next message from
+//!   a sending device after missing ones is marked as following them.
 //! - A message waits for an agent until its envelope's `ttl` ends, at most the mailbox retention;
 //!   then the device drops it for that agent.
 //! - The person's `skald recv` shows each message once, whether or not an agent got it.
@@ -20,9 +20,9 @@
 //! detection:
 //! - `skald --agent <name> recv`, in a folder bound to a space: runs as the agent `<name>`, which
 //!   from then on is one of the device's agents in that space; shows each message handed over to
-//!   it, its text once and its `msg_id`, and marks it handed over once its output is written. The
-//!   line that holds the `msg_id` of a message following missing ones says `missing`, as gap
-//!   detection's tests say.
+//!   it once, as one line with its text and the reference of its `msg_id`, and no ID, as the tests
+//!   of compact output say (`compact_output/main.rs`), and marks it handed over once its output is
+//!   written. The line of a message following missing ones is marked so.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -53,6 +53,10 @@ mod peer;
 mod played;
 #[path = "../channel_messages/talk.rs"]
 mod talk;
+
+// What an agent reads, as the tests of compact output have it.
+#[path = "../compact_output/lines.rs"]
+mod lines;
 
 // The server's tests' readers of the KeyPackages API's answers and the person's browser; the
 // server, the fixtures and the front of the tests of sending, the machines, the relay and people in

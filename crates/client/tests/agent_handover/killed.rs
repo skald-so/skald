@@ -12,8 +12,8 @@ use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
 /// Ada's device has run as claude in `~/work/acme`. Bob's device sends a message with a long text
 /// to the channel, which the person's `skald recv` shows. claude's run, killed while it waits in
 /// the middle of writing the text, never wrote it whole: the next one writes it whole, and, killed
-/// while it waits to mark it, the next one shows it once, with its `msg_id`; after that run,
-/// nothing again.
+/// while it waits to mark it, the next one shows it once, with the reference of its `msg_id`;
+/// after that run, nothing again.
 #[test]
 fn cli_killed_before_its_output_or_before_the_mark_hands_the_message_over_again() {
     let mut agents = Agents::new(
