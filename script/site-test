@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Tests the build of the website and docs, site/build.mjs, after npm ci in site/:
-//   - docs/ builds, with a page for each of its Markdown files and a main page;
+//   - docs/ builds, with a page for each of its Markdown files and a main page, and the privacy
+//     policy at /privacy with each of its sections and the contact address;
 //   - on a scratch repository: a README.md is its directory's page; the main page links to every
 //     page; a heading gets GitHub's ID, which a link to it from another page resolves to; a link to a
 //     file outside docs/ goes to it on GitHub at SKALD_SITE_REF, main by default, a directory as a
@@ -42,6 +43,25 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
       if (!fs.existsSync(path.join(out, page))) fail(`the site has no page ${page} for ${file}`);
     }
     if (!fs.existsSync(path.join(out, 'index.html'))) fail('the site has no main page, index.html');
+    const privacy = read(path.join(out, 'privacy.html'));
+    if (privacy === '') fail('the site has no privacy policy at /privacy, privacy.html');
+    else {
+      const sections = [
+        'who-runs-the-cloud',
+        'what-the-cloud-keeps',
+        'sign-in',
+        'github',
+        'google',
+        'how-the-cloud-uses-it',
+        'cookies-and-browser-storage',
+        'who-else-processes-data',
+        'how-long-the-cloud-keeps-data',
+        'deletion-and-other-requests',
+        'changes',
+      ];
+      for (const id of sections) if (!privacy.includes(`id="${id}"`)) fail(`the privacy policy has no section ${id}`);
+      if (!privacy.includes('href="mailto:info@skald.so"')) fail('the privacy policy has no link to info@skald.so');
+    }
   }
 }
 
