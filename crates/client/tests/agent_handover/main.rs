@@ -36,9 +36,8 @@ mod missing;
 mod recipients;
 mod waiting;
 
-pub use agents::{
-    ACME_DIR, Agents, CLAUDE, CODEX, assert_handed_once, assert_not_handed, run_as_in,
-};
+pub use agents::{ACME_DIR, Agents, CLAUDE, CODEX, assert_not_handed, run_as_in};
+pub use lines::assert_handed_line;
 
 // The messages of the tests of gap detection, the kit of the tests of channel groups, the device
 // the tests of receiving play over the delivery protocol, the device the tests of channel groups

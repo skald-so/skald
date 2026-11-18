@@ -24,8 +24,7 @@ fn helper_socket_in_the_state_directory_is_reachable_only_by_its_owner() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    helped.one_helper();
+    helped.helper_after_sending(&talk, &[], FIRST);
     let state = talk.ada.machine.state_dir();
 
     let sockets = unix::sockets(&state);
@@ -63,8 +62,7 @@ fn another_account_gets_nothing_through_the_helper() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     let before = talk.front.sent().len();
     let channel = talk.channel.to_string();
 

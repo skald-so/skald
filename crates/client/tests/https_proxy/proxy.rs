@@ -168,7 +168,7 @@ fn keep_sent(
 }
 
 /// The head of the request on `client`, up to its empty line; `None` if it never ends.
-fn read_head(client: &mut TcpStream) -> Option<String> {
+pub fn read_head(client: &mut TcpStream) -> Option<String> {
     let mut head = Vec::new();
     let mut byte = [0];
     while !head.ends_with(b"\r\n\r\n") {

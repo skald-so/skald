@@ -19,7 +19,7 @@ use crate::common::{Response, Server, get_url, send};
 pub const SPACES: &str = "/spaces";
 
 /// The spec, read once.
-fn the_spec() -> &'static Value {
+pub fn the_spec() -> &'static Value {
     static SPEC: OnceLock<Value> = OnceLock::new();
     SPEC.get_or_init(spec)
 }

@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 mod proxy;
+mod trust;
 
 // The TLS endpoint and test CA of the tests of HTTPS.
 #[path = "../common/tls.rs"]
@@ -69,34 +70,28 @@ mod keys;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use browser::{APPROVE, Browser};
-use cloud::{Cloud, shown_grant};
+use browser::Browser;
+use cloud::Cloud;
 use common::Server;
 use fixtures::{TIMEOUT_SETTING, send};
 use kit::{RECV, create_space, received, with_channel};
-use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
+use machine::{Finished, Machine, SERVER, SIGN_IN};
 use played::Played;
 use proxy::{
     BAD_GATEWAY, BASIC_ASKED, FORBIDDEN, OTHER_SCHEMES_ASKED, Proxy, Request, closed_port,
 };
 use skald_proto::{PROTOCOL_VERSION, Role};
 use talk::{ADA_HOST, BOB_HOST, Line, assert_read, assert_shows_once, encrypted, stored};
-use tls::Ca;
 use tls_front::Front;
+use trust::{HOST, HTTPS_PROXY, Trust, signed_up};
 use world::{ACME, Person, World};
 
-/// The settings of the proxy, and of the hosts that take none, in both cases.
-const HTTPS_PROXY: &str = "HTTPS_PROXY";
+/// The setting of the proxy in lowercase, and those of the hosts that take none, in both cases.
 const HTTPS_PROXY_LOWER: &str = "https_proxy";
 const NO_PROXY: &str = "NO_PROXY";
 const NO_PROXY_LOWER: &str = "no_proxy";
 /// The proxy settings the client does not read.
 const OTHER_PROXIES: [&str; 4] = ["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
-/// The setting of the root certificates the client trusts instead of the platform's.
-const CERT_FILE: &str = "SSL_CERT_FILE";
-
-/// The server's host that only the proxy reaches; Chrome maps it to this machine.
-const HOST: &str = "skald.test";
 /// The names of the endpoint's certificate: the hosts the tests reach it at.
 const NAMES: &str = "DNS:skald.test, DNS:localhost, IP:127.0.0.1";
 /// The names of a certificate for another server than the endpoint.
@@ -125,32 +120,6 @@ const ENCODED: (&str, &str, &str) = (
 /// The texts the tests send; none is anywhere else.
 const ADA_SAYS: &str = "the proxy lets this one through, ship the release";
 const BOB_SAYS: &str = "got it behind the corporate proxy, thanks";
-
-/// A test CA, its files in the directory of a machine of its own, removed on drop.
-struct Trust {
-    ca: Ca,
-    _keeper: Machine,
-}
-
-impl Trust {
-    fn new() -> Self {
-        let keeper = Machine::new();
-        Trust {
-            ca: Ca::new(&keeper.root().join("ca")),
-            _keeper: keeper,
-        }
-    }
-
-    /// A new machine that trusts the CA and nothing else.
-    fn machine(&self) -> Machine {
-        Machine::new().with_env(CERT_FILE, &self.ca.cert)
-    }
-
-    /// A new machine that trusts the CA and whose proxy is at `url`.
-    fn proxied(&self, url: &str) -> Machine {
-        self.machine().with_env(HTTPS_PROXY, url)
-    }
-}
 
 /// A `skald-server` without sign-in behind the TLS endpoint, whose certificate the CA of `trust`
 /// issued for [`NAMES`].
@@ -254,25 +223,6 @@ fn assert_only_tls(requests: &[Request], texts: &[&str]) {
     }
 }
 
-/// A new account of GitHub user `id` with `login`, whose first machine, `machine` on the host
-/// `host`, signs in at the server's public address, the person approving its code.
-fn sign_up(
-    world: &World,
-    machine: Machine,
-    (id, login): (u64, &str),
-    host: &'static str,
-) -> Person {
-    let cloud = &world.cloud;
-    let user = cloud.user(id, login);
-    let before = cloud.grants().len();
-    let mut run = machine.start(&[SIGN_IN, SERVER, &cloud.public, FIRST_DEVICE, YES]);
-    let grant = shown_grant(cloud, &mut run, before);
-    cloud.decide(&world.browser.page(), &user, &grant, APPROVE);
-    let signed_in = run.finish();
-    assert!(signed_in.success, "{signed_in:?}");
-    world.person(user, machine, host)
-}
-
 /// `person`'s person address in `space`, on a server named after its host, [`HOST`].
 fn address_of(space: &str, person: &Person) -> String {
     format!("{space}/{}/user@{HOST}", person.handle)
@@ -296,13 +246,13 @@ fn sign_in_send_and_recv_go_through_the_proxy_which_sees_only_tls() {
     let cloud = &world.cloud;
     let proxy = Proxy::tunneling();
     let on = |host| trust.proxied(&proxy.url()).with_host_name(host);
-    let mut ada = sign_up(
+    let mut ada = signed_up(
         &world,
         on(ADA_HOST),
         (4_143_031_001, "ada-behind-proxy"),
         ADA_HOST,
     );
-    let bob = sign_up(
+    let bob = signed_up(
         &world,
         on(BOB_HOST),
         (4_143_031_002, "bob-behind-proxy"),

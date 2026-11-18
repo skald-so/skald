@@ -13,7 +13,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use tungstenite::http::{HeaderMap, HeaderName, HeaderValue, header};
 use tungstenite::stream::MaybeTlsStream;
 
-use crate::connection::{Error, io_error, uninterrupted};
+use crate::connection::{Error, io_error, timed_out, uninterrupted};
 
 /// The longest answer head, and the longest body of a refusal, the client reads.
 const LIMIT: usize = 64 << 10;
@@ -194,14 +194,7 @@ impl Events {
                 self.unframe()?;
                 Ok(true)
             }
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(false)
-            }
+            Err(err) if timed_out(&err) => Ok(false),
             Err(err) => Err(io_error(err, wait)),
         }
     }

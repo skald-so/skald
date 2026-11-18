@@ -85,8 +85,7 @@ fn command_waiting_for_a_busy_helper_past_its_timeout_fails_saying_so() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     talk.front.answer(Answers::Lose);
     let lost = talk.front.lost();
     let channel = talk.channel.to_string();

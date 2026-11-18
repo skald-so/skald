@@ -29,6 +29,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use skald_proto::SpaceId;
 
 use crate::Operation;
+use crate::connection;
 use crate::helper::{self, Route};
 use crate::intake::{self, Said};
 use crate::lock::Lock;
@@ -416,13 +417,8 @@ fn trace(marks: &intake::Marks) {
 /// Whether the command on `stream` is still there: a waiting session's command says nothing, so
 /// its connection reads nothing until it ends.
 fn open(stream: &helper::Stream) -> bool {
-    if stream.set_nonblocking(true).is_err() {
-        return false;
-    }
-    let mut byte = [0];
-    let waits = matches!(
-        (&mut &*stream).read(&mut byte),
-        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
-    );
-    stream.set_nonblocking(false).is_ok() && waits
+    connection::idle(
+        |on| stream.set_nonblocking(on),
+        |byte| (&mut &*stream).read(byte),
+    )
 }

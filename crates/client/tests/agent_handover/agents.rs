@@ -7,7 +7,6 @@ use skald_proto::{MessageId, RawEnvelope};
 
 use crate::gaps::sends;
 use crate::kit::RECV;
-use crate::lines::assert_handed_line;
 use crate::machine::{Finished, Machine};
 use crate::talk::{Line, Talk, encrypted};
 use crate::world::{ACME, ADD_RULE, AGENT, HOST, dir_of, path, run};
@@ -81,13 +80,6 @@ pub fn run_as_in(machine: &Machine, dir: &Path, agent: &str) -> Finished {
         dir.display()
     );
     finished
-}
-
-/// Fails unless `shown`, an agent's output, holds `text` once, on one line whose reference refers
-/// to the `msg_id` `id`, and holds no UUID.
-#[track_caller]
-pub fn assert_handed_once(shown: &str, text: &str, id: MessageId) {
-    assert_handed_line(shown, text, id);
 }
 
 /// Fails if `shown` holds `text`.

@@ -24,6 +24,8 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use crate::proxy::read_head;
+
 /// The paths of the WebSocket, the mailbox's event stream, its long-poll and the HTTPS send, as the
 /// OpenAPI spec names them.
 pub const WEBSOCKET: &str = "/ws";
@@ -510,15 +512,7 @@ fn status_of(sent: &[u8]) -> Option<u16> {
 /// The head of the request on `machine`, with its empty line, and its body, by its
 /// `content-length` or chunked as it came; `None` if it never comes whole.
 fn read_request(machine: &mut TcpStream) -> Option<(String, Vec<u8>)> {
-    let mut head = Vec::new();
-    let mut byte = [0];
-    while !head.ends_with(b"\r\n\r\n") {
-        if head.len() > 64 << 10 || machine.read(&mut byte).ok()? == 0 {
-            return None;
-        }
-        head.extend_from_slice(&byte);
-    }
-    let head = String::from_utf8(head).ok()?;
+    let head = read_head(machine)?;
     let chunked = header(&head, "transfer-encoding").is_some_and(|value| value.contains("chunked"));
     let body = if chunked {
         read_chunks(machine)?
