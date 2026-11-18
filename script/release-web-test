@@ -9,6 +9,8 @@
 //     <dir>;
 //   - has index.html at its root, and every file of the archive that index.html loads by a path of
 //     its own; no entry leaves the root;
+//   - names the commit it was built from, HEAD of the working tree, in index.html, so every page of
+//     the web app names it: `<meta name="skald-commit" content="<full commit hash>"`, as written;
 //   - holds the licenses of the packages and fonts the build bundles: for each package that
 //     web/package-lock.json installs other than for development, a file of the archive holds the text
 //     of the package's license file and names the package, in its path or its text.
@@ -85,6 +87,11 @@ try {
     fail(`${WEB} has no index.html at its root; it has: ${entries.slice(0, 10).join(', ')}`);
   } else {
     const html = fs.readFileSync(index, 'utf8');
+    const commit = sh('git', ['rev-parse', 'HEAD'], { cwd: root }).stdout.trim();
+    const named = [...html.matchAll(/<meta name="skald-commit" content="([^"]*)"/g)].map((m) => m[1]);
+    if (JSON.stringify(named) !== JSON.stringify([commit])) {
+      fail(`index.html of the archive names the commit it was built from once, <meta name="skald-commit" content="${commit}">, not: ${named.length ? named.join(', ') : 'none'}`);
+    }
     const loaded = [...html.matchAll(/\b(?:src|href)\s*=\s*["']([^"']+)["']/g)]
       .map((m) => m[1])
       .filter((u) => !/^([a-z][a-z0-9+.-]*:|\/\/|#)/i.test(u))
