@@ -1,6 +1,7 @@
 //! The account record and the master backup: `docs/protocol/membership.md`, "Account".
 
 use crate::cbor::{self, Codec, DecodeError, Item, MapOut, Unknown};
+use crate::envelope::{decode_sealed, encode_sealed};
 use crate::id::AccountId;
 use crate::signed::{Signed, SignedBody};
 
@@ -72,15 +73,15 @@ pub struct MasterBackup {
 
 impl Codec for MasterBackup {
     fn encode(&self) -> Vec<u8> {
-        cbor::array([cbor::bytes(&self.enc), cbor::bytes(&self.ct)])
+        encode_sealed(&self.enc, &self.ct)
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        let [enc, ct] = item.tuple("master-backup")?;
-        Ok(Self {
-            enc: enc.fixed("master-backup.enc")?,
-            ct: ct.bytes("master-backup.ct")?.to_vec(),
-        })
+        let (enc, ct) = decode_sealed(
+            item,
+            ["master-backup", "master-backup.enc", "master-backup.ct"],
+        )?;
+        Ok(Self { enc, ct })
     }
 }
 
