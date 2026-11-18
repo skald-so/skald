@@ -28,9 +28,9 @@ Versions as of 2026-11-09.
 | Web fonts | Fontsource 5 variable packages: Inter, Space Grotesk, JetBrains Mono; bundled with the build |
 | Browser tests | Chrome Headless Shell of playwright-core 1; in the crates' tests, one per test binary, a browser context per page |
 | Terminal tests | portable-pty 0.9 (MIT), a dev-dependency of `client`: the CLI's tests run it in a pseudo-terminal on Unix and a pseudo-console (ConPTY) on Windows |
-| Web accessibility check | axe-core 4 over the kit page in Chrome Headless Shell |
+| Web accessibility check | axe-core 4 over the kit page and the website's main page in Chrome Headless Shell |
 | Web screenshot comparison | The kit page in the Chromium of the Playwright Docker image (linux/amd64, pinned by digest) on every machine; pixelmatch 8 compares with the references, anti-aliasing aside |
-| Website and docs | VitePress 2 (alpha) builds `docs/` into a static site, with its default theme and local search; github-slugger 2 gives headings GitHub's IDs. `site/build.mjs` checks every link of the built pages: [infrastructure.md](infrastructure.md#website-and-docs) |
+| Website and docs | VitePress 2 (alpha) builds `docs/` into a static site, with its default theme and local search; github-slugger 2 gives headings GitHub's IDs. The main page is static HTML built with Vite. `site/build.mjs` checks every link of the built pages: [infrastructure.md](infrastructure.md#website-and-docs) |
 | In-browser decryption | WASM build of the Rust core: `proto` and `crypto` for `wasm32-unknown-unknown`. There getrandom 0.4 with `wasm_js` takes the random generator of the browser or Node.js, and js-sys 0.3 JavaScript's clock for UUIDv7 IDs. wasm-bindgen-test 0.3 runs the tests there |
 | SDK | Rust |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package `skald-so` that runs the release's binary (`npx skald-so`); Claude Code plugin; server Docker image |

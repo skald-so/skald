@@ -8,9 +8,12 @@
 //! mailbox's event stream with `403 Forbidden`, or hold the stream's answer back until it ends. As
 //! a network would, it can take the server down for delivery, closing each connection that asks
 //! for a challenge, a WebSocket or the mailbox, unanswered; hold the first envelope a device sends
-//! over HTTPS for a while before it goes on, or drop it unanswered; and cut the machine off once the server has sent it a
+//! over HTTPS, or the next long-poll, for a while before it goes on, or drop the envelope
+//! unanswered; and cut the machine off once the server has sent it a
 //! given envelope: what the server sends on the connections open then still reaches the machine,
-//! but nothing the machine sends after it reaches the server, such as its ack.
+//! but nothing the machine sends after it reaches the server, such as its ack. It can close the
+//! WebSockets it tunnels, as a dropped connection, or hold what the machine sends next on one back
+//! for a while.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -97,6 +100,10 @@ struct State {
     delay_send: Option<Duration>,
     /// Whether the next `POST /mailbox/send` is closed unanswered.
     drop_send: bool,
+    /// How long the next `POST /mailbox/poll` waits before it goes on.
+    delay_poll: Option<Duration>,
+    /// How many long-polls waited so.
+    delayed_polls: usize,
     /// The envelope whose bytes, once the server has sent them, cut the machine off.
     cut_after: Option<Vec<u8>>,
     /// Whether the machine is cut off.
@@ -104,6 +111,12 @@ struct State {
     seen: Vec<Seen>,
     /// What the server sent on the event streams and the filter passed to the machine.
     streamed: Vec<u8>,
+    /// The machine's end of each WebSocket it tunnels.
+    tunnels: Vec<TcpStream>,
+    /// How long what the machine sends next on a WebSocket waits before it goes on.
+    delay_tunnel: Option<Duration>,
+    /// How many of its reads waited so.
+    delayed_tunnel: usize,
 }
 
 impl State {
@@ -149,10 +162,15 @@ impl Filter {
                 down: false,
                 delay_send: None,
                 drop_send: false,
+                delay_poll: None,
+                delayed_polls: 0,
                 cut_after: None,
                 cut: false,
                 seen: Vec::new(),
                 streamed: Vec::new(),
+                tunnels: Vec::new(),
+                delay_tunnel: None,
+                delayed_tunnel: 0,
             })),
         };
         let (serving, target) = (filter.clone(), target.to_owned());
@@ -192,6 +210,16 @@ impl Filter {
         self.state().delay_send = Some(delay);
     }
 
+    /// Holds the next `POST /mailbox/poll` for `delay` before it goes on.
+    pub fn delay_next_poll(&self, delay: Duration) {
+        self.state().delay_poll = Some(delay);
+    }
+
+    /// How many long-polls it held so far.
+    pub fn delayed_polls(&self) -> usize {
+        self.state().delayed_polls
+    }
+
     /// Closes the next `POST /mailbox/send` unanswered, as a dropped connection.
     pub fn drop_next_send(&self) {
         self.state().drop_send = true;
@@ -204,6 +232,24 @@ impl Filter {
         let mut state = self.state();
         state.cut_after = Some(envelope.to_vec());
         state.cut = false;
+    }
+
+    /// Holds what the machine sends next on a WebSocket for `delay` before it goes on, and all
+    /// that it sends after on it meanwhile.
+    pub fn delay_next_tunnel_write(&self, delay: Duration) {
+        self.state().delay_tunnel = Some(delay);
+    }
+
+    /// How many of the machine's writes on a WebSocket it held so far.
+    pub fn delayed_tunnel_writes(&self) -> usize {
+        self.state().delayed_tunnel
+    }
+
+    /// Closes each WebSocket it tunnels.
+    pub fn close_tunnels(&self) {
+        for tunnel in std::mem::take(&mut self.state().tunnels) {
+            let _ = tunnel.shutdown(Shutdown::Both);
+        }
     }
 
     /// Whether the machine was cut off.
@@ -269,7 +315,13 @@ impl Filter {
             let delivery = path == WEBSOCKET || DELIVERY.iter().any(|at| path.starts_with(at));
             let events = method == "GET" && path == EVENTS;
             let sending = method == "POST" && path == SEND;
-            let delay = sending.then(|| state.delay_send.take()).flatten();
+            let polling = method == "POST" && path == POLL;
+            let delay = match (sending, polling) {
+                (true, _) => state.delay_send.take(),
+                (_, true) => state.delay_poll.take(),
+                _ => None,
+            };
+            state.delayed_polls += usize::from(polling && delay.is_some());
             let dropped = sending && std::mem::take(&mut state.drop_send);
             (
                 (upgrade && state.refuse_websocket) || (events && state.stream == Stream::Refuse),
@@ -327,14 +379,19 @@ impl Filter {
     /// Forwards a WebSocket upgrade both ways until either side closes; once the machine is cut
     /// off, nothing more of it.
     fn tunnel(&self, machine: TcpStream, server: TcpStream, index: usize) {
-        let (Ok(mut from_machine), Ok(mut to_server)) = (machine.try_clone(), server.try_clone())
+        let (Ok(mut from_machine), Ok(mut to_server), Ok(kept)) =
+            (machine.try_clone(), server.try_clone(), machine.try_clone())
         else {
             return close(machine);
         };
+        self.state().tunnels.push(kept);
         let filter = self.clone();
         thread::spawn(move || {
             let mut buffer = [0; 16 * 1024];
             while let Ok(count @ 1..) = from_machine.read(&mut buffer) {
+                if let Some(delay) = filter.tunnel_delay() {
+                    thread::sleep(delay);
+                }
                 if filter.cut_now() || to_server.write_all(&buffer[..count]).is_err() {
                     break;
                 }
@@ -387,6 +444,14 @@ impl Filter {
 
     fn cut_now(&self) -> bool {
         self.state().cut
+    }
+
+    /// How long a write on a WebSocket waits, if it is to, counting it.
+    fn tunnel_delay(&self) -> Option<Duration> {
+        let mut state = self.state();
+        let delay = state.delay_tunnel.take();
+        state.delayed_tunnel += usize::from(delay.is_some());
+        delay
     }
 }
 

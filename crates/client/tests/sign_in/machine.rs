@@ -326,6 +326,11 @@ impl Run {
         }
     }
 
+    /// Its process ID.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
     /// What it printed so far, stdout and stderr both.
     pub fn shown(&self) -> String {
         let stdout = self.stdout.lock().expect("a run's output");
@@ -368,6 +373,23 @@ impl Run {
             );
             thread::sleep(Duration::from_millis(50));
         }
+    }
+
+    /// Waits for it to exit, as [`Run::finish`] does; also gives how long it ran until what it
+    /// printed held each of `parts`, or until its exit if that came first, and how long from then.
+    pub fn finish_after_showing(mut self, parts: &[&str]) -> (Finished, [Duration; 2]) {
+        let shown = loop {
+            let now = Instant::now();
+            let exited = self.child.try_wait().expect("wait for skald").is_some();
+            let all = parts.iter().all(|part| self.shown().contains(part));
+            if exited || all || self.started.elapsed() > RUN_LIMIT {
+                break now;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let before = shown.duration_since(self.started);
+        let finished = self.finish();
+        (finished, [before, shown.elapsed()])
     }
 
     /// Kills it; gives what it printed until then.

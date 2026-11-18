@@ -302,7 +302,7 @@ fn answers<T>(
         Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
     };
-    let Some(socket) = mailbox.websocket() else {
+    let Some((socket, pushed)) = mailbox.websocket() else {
         link.mailbox = Some(mailbox);
         return Err(
             "history items go to the server over a WebSocket only, and this network lets none \
@@ -322,7 +322,7 @@ fn answers<T>(
             break;
         }
         set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
-        let (upload, refused) = match socket.read() {
+        let (upload, refused) = match crate::mailbox::read_answer(socket, pushed) {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
                 Ok(Frame::HistoryRefused { upload, problem }) => (upload, Some(problem)),

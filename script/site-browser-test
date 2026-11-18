@@ -1,0 +1,114 @@
+#!/usr/bin/env node
+// Tests the website's main page, as site/build.mjs builds it, in Chrome Headless Shell (or the binary
+// in SKALD_CHROME), after npm ci in site/ and web/. In both themes of the system setting, at 1440 and
+// 360 px:
+//   - the page has the design's background and text colors and loads the bundled fonts;
+//   - it requests no other host;
+//   - it does not scroll sideways;
+//   - it has the header, the page and the footer as landmarks, and the diagram a text alternative;
+//   - it passes the kit's accessibility check, axe-core;
+//   - every element focused from the keyboard has the accent outline;
+//   - each Copy puts its command on the clipboard and announces it.
+// And that the 404 page's link loads the docs start page, not the 404 page again.
+import { accessibilityViolations, keyboardFocus, themes, widths } from '../web/kit-browser.ts';
+import { startSite } from '../site/browser.mjs';
+import { reporter } from './lib/report.mjs';
+
+const { fail, done } = reporter('site-browser-test');
+
+// The design's background, text and accent colors, as the browser computes them.
+const colors = {
+  light: { background: 'rgb(255, 255, 255)', text: 'rgb(23, 24, 27)', accent: 'rgb(48, 70, 200)' },
+  dark: { background: 'rgb(15, 16, 19)', text: 'rgb(236, 237, 239)', accent: 'rgb(147, 163, 255)' },
+};
+const fonts = ['Inter Variable', 'Space Grotesk Variable', 'JetBrains Mono Variable'];
+
+const site = await startSite();
+try {
+  for (const theme of themes) {
+    for (const width of widths) {
+      const view = `the main page in the ${theme} theme at ${width} px`;
+      const { page, requests } = await site.open({ width, system: theme });
+      try {
+        await check(view, page, theme);
+      } catch (error) {
+        fail(`${view}: ${error.stack}`);
+      }
+      const others = requests.filter((url) => new URL(url).origin !== site.origin);
+      if (requests.length === 0) fail(`${view}: makes no request`);
+      if (others.length > 0) fail(`${view}: requests other hosts: ${others.join(', ')}`);
+      await page.close();
+    }
+  }
+  try {
+    await notFound();
+  } catch (error) {
+    fail(`the 404 page: ${error.stack}`);
+  }
+} finally {
+  await site.close();
+}
+done();
+
+async function check(view, page, theme) {
+  const look = await page.evaluate(() => {
+    const style = getComputedStyle(document.body);
+    return { background: style.backgroundColor, text: style.color };
+  });
+  const want = colors[theme];
+  if (look.background !== want.background || look.text !== want.text) {
+    fail(`${view}: has the colors ${JSON.stringify(look)}, not those of the design's ${theme} theme`);
+  }
+
+  const loaded = await page.evaluate(() =>
+    [...new Set([...document.fonts].filter((font) => font.status === 'loaded').map((font) => font.family.replaceAll('"', '')))].sort(),
+  );
+  if (JSON.stringify(loaded) !== JSON.stringify([...fonts].sort())) fail(`${view}: loads the fonts ${loaded.join(', ')}, not ${fonts.join(', ')}`);
+
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (overflow !== 0) fail(`${view}: scrolls sideways by ${overflow} px`);
+
+  for (const role of ['banner', 'main', 'contentinfo']) {
+    const count = await page.getByRole(role).count();
+    if (count !== 1) fail(`${view}: has ${count} ${role} landmarks, not 1`);
+  }
+  const diagram = await page.getByRole('img', { name: /^Agents on different machines and accounts connect through Skald/ }).count();
+  if (diagram !== 1) fail(`${view}: has no diagram with a text alternative`);
+
+  for (const { rule, nodes } of await accessibilityViolations(page)) fail(`${view}: fails the accessibility check: ${rule}: ${nodes.join(', ')}`);
+
+  const focus = await keyboardFocus(page);
+  for (const { element, outline } of focus) {
+    if (outline !== `solid 2px ${want.accent}`) fail(`${view}: ${element} focused from the keyboard has the outline ${outline}`);
+  }
+  if (focus.length === 0) fail(`${view}: no element takes the keyboard focus`);
+
+  const commands = page.locator('.command');
+  const count = await commands.count();
+  if (count === 0) fail(`${view}: has no command`);
+  // The clipboard takes only a focused page's writes and reads: the last Tab left the page.
+  await page.locator('h1').click();
+  for (let i = 0; i < count; i++) {
+    const command = await commands.nth(i).locator('code').textContent();
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+    await commands.nth(i).getByRole('button', { name: 'Copy command' }).click();
+    const status = page.getByRole('status');
+    await status.filter({ hasText: command }).waitFor({ timeout: 5000 }).catch(() => {});
+    const clipboard = await page.evaluate(() => navigator.clipboard.readText());
+    if (clipboard !== command) fail(`${view}: Copy of ${command} puts '${clipboard}' on the clipboard`);
+    const said = await status.textContent();
+    if (said !== `Copied: ${command}`) fail(`${view}: Copy of ${command} announces '${said}'`);
+  }
+}
+
+// notFound: a missing path shows the 404 page, whose link loads the docs start page.
+async function notFound() {
+  const { page } = await site.open({ width: 1440, system: 'light', at: '/missing-page' });
+  await page.getByRole('link', { name: 'Go to the docs' }).click();
+  const shown = await page.locator('h1').filter({ hasText: /^Docs/ }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+  const at = new URL(page.url()).pathname;
+  if (!shown || at !== '/start') {
+    fail(`the 404 page's link leads to ${at}, headed '${await page.locator('h1').first().textContent()}', not the docs start page`);
+  }
+  await page.close();
+}

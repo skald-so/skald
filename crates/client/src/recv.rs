@@ -25,6 +25,7 @@
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
 
+use std::cell::Cell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU64;
@@ -45,6 +46,7 @@ use crate::follow::{Own, SpaceDevices};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
+use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::output::{self, Stream};
@@ -54,20 +56,39 @@ use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, Kept};
 use crate::wraps;
 
+thread_local! {
+    /// The space the last run of this thread kept to, if it kept to one: an agent's.
+    static SPACE: Cell<Option<SpaceId>> = const { Cell::new(None) };
+}
+
+/// The space the last run of this thread kept to, if it kept to one: an agent's.
+pub fn last_space() -> Option<SpaceId> {
+    SPACE.with(Cell::get)
+}
+
 /// How long a message waits for an agent at most: the cloud's mailbox retention
 /// (`architecture.md`, "Cloud limits").
 pub const AGENT_WAIT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
 /// Receives the mailbox of the device of the state in `dir`, its secrets in `storage`, as `agent`
-/// if given; waits for each frame for `timeout`.
+/// if given; waits for each frame for `timeout`. Gives whether it showed what `skald recv --wait`
+/// waits for: as an agent, a message handed over to it; as the person, anything. For such a run,
+/// if `waits`, leaves what takes in what comes next ([`intake::leave`]).
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
+    (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
-) -> Result<(), String> {
+    waits: bool,
+) -> Result<bool, String> {
+    let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
+    SPACE.with(|space| {
+        space.set(match scope {
+            Scope::Only(only) => Some(only),
+            Scope::All => None,
+        });
+    });
     let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
     let ran_as = match (scope, agent) {
         (Scope::Only(space), Some(agent)) => {
@@ -95,15 +116,30 @@ pub fn run(
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
-    let shown = show(&mut follower, scope, synced);
+    let mut checks = Checks::new(&follower, synced);
+    let shown = match checks.as_mut() {
+        Ok(checks) => show(&mut follower, scope, checks),
+        Err(err) => Err(err.clone()),
+    };
     let handed = match ran_as {
         Some((space, agent)) => hand_over(&follower, space, agent),
         None => show_to_person(&follower),
     };
+    if waits && let Ok(mut checks) = checks {
+        // A failure leaves it to the first message.
+        let _ = checks.ask_server(&mut follower);
+        // Its connection goes back to be kept.
+        link.mailbox = None;
+        intake::leave(Intake::new(follower, checks, link));
+    }
     received?;
     aligned?;
     shown?;
-    handed
+    let handed = handed?;
+    Ok(match ran_as {
+        Some(_) => handed > 0,
+        None => output::written() > written,
+    })
 }
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
@@ -160,12 +196,23 @@ pub fn catch_up(
     mailbox: Option<Mailbox>,
     timeout: Duration,
 ) -> Result<Mailbox, String> {
+    catch_up_noting(follower, mailbox, timeout, &mut BTreeSet::new())
+}
+
+/// As [`catch_up`], adding to `noticed` the space of each `space-notice` catch-up gives.
+pub fn catch_up_noting(
+    follower: &mut Follower,
+    mailbox: Option<Mailbox>,
+    timeout: Duration,
+    noticed: &mut BTreeSet<SpaceId>,
+) -> Result<Mailbox, String> {
     let keys = follower.keys()?;
     let mailbox = match mailbox {
         Some(mailbox) => mailbox,
         None => follower.connect(&keys)?,
     };
     mailbox.catch_up(follower, &keys, timeout, |follower, entries, cursor| {
+        noticed.extend(self::noticed(&entries));
         let written = after(entries, cursor);
         if written.is_empty() {
             return Ok(cursor);
@@ -176,7 +223,7 @@ pub fn catch_up(
 
 /// Syncs into `synced` each space of `due` within `scope` that the device follows, and empties
 /// `due`. A space that fails to sync is warned of, and synced again at its first message.
-fn sync_due(
+pub fn sync_due(
     follower: &mut Follower,
     scope: Scope,
     due: &mut BTreeSet<SpaceId>,
@@ -248,28 +295,41 @@ fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-/// What a run checks messages with, besides the state: the spaces it synced, each one's last
-/// accepted revision and its accounts' devices, the server's name, once it asked for it, and the
-/// key that opens what decrypting the mailbox's application messages gave, once it needed it.
-struct Checks {
+/// What a run checks messages with, besides the state and the spaces it follows: those it synced,
+/// each one's last accepted revision and its accounts' devices, the server's name, once it asked
+/// for it, and the key that opens what decrypting the mailbox's application messages gave, once it
+/// needed it.
+pub struct Checks {
     keys: crate::device::Keys,
-    followed: Vec<state::Space>,
-    synced: Rosters,
+    pub synced: Rosters,
     server: Option<Option<ServerName>>,
     inbox_key: Option<StateKey>,
 }
 
+impl Checks {
+    /// The checks of `follower`'s run, with the spaces it synced, `synced`.
+    pub fn new(follower: &Follower, synced: Rosters) -> Result<Self, String> {
+        Ok(Checks {
+            keys: follower.keys()?,
+            synced,
+            server: None,
+            inbox_key: None,
+        })
+    }
+
+    /// Asks `follower`'s server for its name, once, so a later message is checked without asking.
+    pub fn ask_server(&mut self, follower: &mut Follower) -> Result<(), String> {
+        if self.server.is_none() {
+            self.server = Some(server_name(&mut follower.connection)?);
+        }
+        Ok(())
+    }
+}
+
 /// Shows each entry the state holds within `scope`, in `seq` order, and takes it out, keeping each
 /// message that passes the checks for the person and the agents it is for; checks messages against
-/// the spaces as `synced` holds them, syncing any other at its first message.
-fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), String> {
-    let mut checks = Checks {
-        keys: follower.keys()?,
-        followed: follower.state.spaces().map_err(text)?,
-        synced,
-        server: None,
-        inbox_key: None,
-    };
+/// the spaces as `checks` holds them, syncing any other at its first message.
+pub fn show(follower: &mut Follower, scope: Scope, checks: &mut Checks) -> Result<(), String> {
     for entry in follower.state.inbox().map_err(text)? {
         let (seq, bytes) = (entry.seq, &entry.frame);
         // A Welcome or Commit waits for a run that can check it.
@@ -291,9 +351,9 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                     let Some(opened) = groups::opened(follower, key, &entry) else {
                         continue;
                     };
-                    decrypted(follower, &mut checks, (seq, envelope), opened)?
+                    decrypted(follower, checks, (seq, envelope), opened)?
                 } else {
-                    verdict(follower, &mut checks, (seq, envelope))?
+                    verdict(follower, checks, (seq, envelope))?
                 };
                 let header = &envelope.header;
                 match verdict {
@@ -302,8 +362,7 @@ fn show(follower: &mut Follower, scope: Scope, synced: Rosters) -> Result<(), St
                         if let Some(gap) = gap {
                             eprintln!("skald: warning: {}", missing(header.channel, sender, gap));
                         }
-                        let kept =
-                            kept(follower, &mut checks, (seq, header, sender), &message, gap)?;
+                        let kept = kept(follower, checks, (seq, header, sender), &message, gap)?;
                         match counted {
                             Some((source, accepted)) => (follower.state).keep_counted(
                                 seq,
@@ -424,15 +483,17 @@ fn kept_item(seq: u64) -> Vec<u8> {
     [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
-/// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown.
-fn show_to_person(follower: &Follower) -> Result<(), String> {
+/// Shows each kept message the person's run has yet to show, in `seq` order, and marks it shown;
+/// gives how many it showed.
+pub fn show_to_person(follower: &Follower) -> Result<usize, String> {
     let kept = follower.state.for_person().map_err(text)?;
     shown_kept(follower, kept, |seq| follower.state.shown_to_person(seq))
 }
 
 /// Hands each kept message that waits for `agent` in `space` over to it, in `seq` order: shows it,
-/// then marks it handed over. A message whose wait ended is dropped first.
-fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<(), String> {
+/// then marks it handed over. A message whose wait ended is dropped first. Gives how many it
+/// handed over.
+pub fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<usize, String> {
     let kept = (follower.state)
         .for_agent(space, agent.as_str(), state::unix_now())
         .map_err(text)?;
@@ -443,20 +504,23 @@ fn hand_over(follower: &Follower, space: SpaceId, agent: &Name) -> Result<(), St
 
 /// Writes the line of each of `kept`, kept messages by `seq` with their sealed lines, to the
 /// output, then calls `mark` with its `seq`; a line that does not open is warned of and marked.
+/// Gives how many lines it wrote.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
     mark: impl Fn(u64) -> Result<(), state::Error>,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if kept.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let key = groups::inbox_key(follower)?;
+    let mut shown = 0;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(line) => {
                 output::write(Stream::Out, &[line.as_slice(), b"\n"].concat())
                     .map_err(|err| format!("cannot write a message to the output: {err}"))?;
+                shown += 1;
             }
             None => eprintln!(
                 "skald: warning: a message this device kept does not open, so it is not shown"
@@ -464,7 +528,7 @@ fn shown_kept(
         }
         mark(seq).map_err(text)?;
     }
-    Ok(())
+    Ok(shown)
 }
 
 /// What a run does with a `message` entry.
@@ -554,11 +618,8 @@ fn judge(
     (seq, header, sender, group): (u64, &Header, DeviceId, Group),
     content: impl FnOnce(&Cert) -> Result<Content, String>,
 ) -> Result<Verdict, String> {
-    let Some(space) = checks
-        .followed
-        .iter()
-        .find(|space| space.id == header.space)
-    else {
+    let followed = follower.state.spaces().map_err(text)?;
+    let Some(space) = followed.iter().find(|space| space.id == header.space) else {
         return Ok(Verdict::Drop(
             Some(sender),
             format!("its space {} is none this device follows", header.space),
