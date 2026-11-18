@@ -286,11 +286,12 @@ pub fn anchors() -> Anchors {
 /// The link object Alice's device gives the device of "TEST 3" it links: the same anchors as
 /// [`anchors`] and the personal space.
 pub fn link() -> Link {
+    let held = anchors().body().clone();
     let body = LinkBody {
         device: server_device(),
         issuer: alice_device(),
-        anchors: vec![(space(), [0xa1; 32]), (personal_space(), [0xc3; 32])],
-        personal: Some(personal_space()),
+        anchors: held.anchors,
+        personal: held.personal,
         unknown: Unknown::default(),
     };
     Link::from_parts(body.to_cbor(), SIGNATURE).unwrap()

@@ -2,7 +2,7 @@
 //! request and grant bodies they seal: `docs/protocol/membership.md`, "Linking a device" and "Link
 //! code".
 
-use crate::anchors::{decode_anchors, encode_anchors};
+use crate::anchors::{finish_anchors, take_anchors};
 use crate::cbor::{
     self, Cbor as _, Codec, DecodeError, FieldProblem, Item, MapOut, Unknown, field_error,
 };
@@ -38,31 +38,22 @@ impl SignedBody for LinkBody {
 
 impl Codec for LinkBody {
     fn encode(&self) -> Vec<u8> {
-        MapOut::new(&self.unknown)
-            .put(1, cbor::id(&self.device))
-            .put(2, cbor::id(&self.issuer))
-            .put(3, encode_anchors(&self.anchors))
-            .put_some(4, self.personal.as_ref().map(cbor::id))
-            .finish()
+        let map = (MapOut::new(&self.unknown).put(1, cbor::id(&self.device)))
+            .put(2, cbor::id(&self.issuer));
+        finish_anchors(map, &self.anchors, self.personal.as_ref())
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("link-body")?;
+        let device = (fields.required(1, "link-body.device")?).id("link-body.device")?;
+        let issuer = (fields.required(2, "link-body.issuer")?).id("link-body.issuer")?;
+        let (anchors, personal) =
+            take_anchors(&mut fields, ["link-body.anchors", "link-body.personal"])?;
         Ok(Self {
-            device: fields
-                .required(1, "link-body.device")?
-                .id("link-body.device")?,
-            issuer: fields
-                .required(2, "link-body.issuer")?
-                .id("link-body.issuer")?,
-            anchors: decode_anchors(
-                fields.required(3, "link-body.anchors")?,
-                "link-body.anchors",
-            )?,
-            personal: fields
-                .take(4)
-                .map(|item| item.id("link-body.personal"))
-                .transpose()?,
+            device,
+            issuer,
+            anchors,
+            personal,
             unknown: fields.unknown(),
         })
     }

@@ -32,14 +32,13 @@ fn refused_with(id: u64, login: &str, problem: &str) -> Shown {
         .refuse_with(STORE_CERT, "403 Forbidden", problem);
 
     let linked = link_with(&ada, &typed(&new.code()), LAPTOP, YES);
+    assert!(!linked.success, "skald link succeeded: {}", linked.text);
     let shown = new.finish();
-
     assert!(!shown.success, "the new device succeeded: {}", shown.text);
     assert!(
         cloud.count_sent(new.started, STORE_CERT) >= 1,
         "no certificate sent"
     );
-    assert!(!linked.success, "skald link succeeded: {}", linked.text);
     let certified = cloud
         .devices(&ada.token)
         .into_iter()
