@@ -1,0 +1,93 @@
+/* The docs pages: VitePress's default theme on the web UI's tokens and fonts, with the main page's
+   header (site/main/main.css). */
+:root,
+:root.dark {
+  --vp-c-bg: var(--color-bg);
+  --vp-c-bg-alt: var(--color-side);
+  --vp-c-bg-elv: var(--color-bg);
+  --vp-c-bg-soft: var(--color-side);
+
+  --vp-c-border: var(--color-line);
+  --vp-c-divider: var(--color-line);
+  --vp-c-gutter: var(--color-line);
+
+  --vp-c-text-1: var(--color-text);
+  --vp-c-text-2: var(--color-muted);
+  --vp-c-text-3: var(--color-muted);
+
+  --vp-c-default-soft: var(--color-hover);
+
+  --vp-c-brand-1: var(--color-accent);
+  --vp-c-brand-2: var(--color-accent);
+  --vp-c-brand-3: var(--color-accent);
+  --vp-c-brand-soft: var(--color-accent-soft);
+
+  --vp-c-success-1: var(--color-ok);
+  --vp-c-success-2: var(--color-ok);
+  --vp-c-success-3: var(--color-ok);
+  --vp-c-success-soft: var(--color-ok-soft);
+
+  --vp-c-warning-1: var(--color-warning);
+  --vp-c-warning-2: var(--color-warning);
+  --vp-c-warning-3: var(--color-warning);
+  --vp-c-warning-soft: var(--color-warning-soft);
+
+  --vp-c-danger-1: var(--color-danger);
+  --vp-c-danger-2: var(--color-danger);
+  --vp-c-danger-3: var(--color-danger);
+  --vp-c-danger-soft: var(--color-danger-soft);
+
+  --vp-c-caution-1: var(--color-danger);
+  --vp-c-caution-2: var(--color-danger);
+  --vp-c-caution-3: var(--color-danger);
+  --vp-c-caution-soft: var(--color-danger-soft);
+
+  --vp-button-brand-text: var(--color-accent-text);
+  --vp-button-brand-hover-text: var(--color-accent-text);
+  --vp-button-brand-active-text: var(--color-accent-text);
+
+  --vp-font-family-base: var(--font-text);
+  --vp-font-family-mono: var(--font-mono);
+}
+
+.vp-doc :is(h1, h2, h3, h4, h5, h6) {
+  font-family: var(--font-heading);
+  letter-spacing: -0.01em;
+}
+
+/* The main page's header: the logo and title, the muted links and Sign in as a button. */
+.VPNavBar .VPNavBarTitle .title {
+  gap: 10px;
+  font-family: var(--font-heading);
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+
+.VPNavBar .skald-logo {
+  flex: none;
+}
+
+.VPNavBar .VPNavBarMenu .list {
+  align-items: center;
+}
+
+.VPNavBar a.VPNavBarMenuLink {
+  font-size: 15px;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+.VPNavBar a.VPNavBarMenuLink:hover,
+.VPNavBar a.VPNavBarMenuLink.active {
+  color: var(--color-text);
+}
+
+.VPNavBar a.VPNavBarMenuLink[href="https://app.skald.so"] {
+  min-height: 0;
+  margin-inline-start: 0.75rem;
+  padding: 10px 18px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  font-weight: 500;
+  color: var(--color-text);
+}

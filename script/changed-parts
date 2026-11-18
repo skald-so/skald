@@ -12,7 +12,7 @@
 #     Chrome with its playwright-core, self-host, and site, whose browser tests do too; what the web
 #     app's build takes, src/, public/, index.html, vite.config.ts and the tsconfig files, also
 #     workspace, whose browser tests run that build, and self-host, whose stack serves it; the theme,
-#     src/theme/, and the browser of the kit tests, kit-browser.ts, also site, whose main page and
+#     src/theme/, and the browser of the kit tests, kit-browser.ts, also site, whose pages and
 #     browser tests take them
 #   docker-compose.yml, Caddyfile: self-host
 #   site/, docs/, Markdown files in the root: site; docs/self-host.md (the self-host stack's guide)

@@ -1,6 +1,7 @@
 // Saves full-page screenshots of the main page in both themes at the check widths, taken in the
 // pinned Chrome of the kit's screenshots: <dir>/main-<theme>-<width>.png. Reviews compare them with
-// the approved design. Usage, after npm ci in site/ and web/:
+// the approved design. The same of the threat model page, for the docs pages' look:
+// <dir>/threat-model-<theme>-<width>.png. Usage, after npm ci in site/ and web/:
 //   node site/screenshots.mjs [<dir>]  <dir> is site/screenshots/ by default
 import fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +17,15 @@ try {
     for (const width of widths) {
       const { page } = await site.open({ width, system: theme });
       const file = path.join(dir, `main-${theme}-${width}.png`);
+      fs.writeFileSync(file, await screenshot(page));
+      await page.close();
+      console.log(file);
+    }
+  }
+  for (const theme of themes) {
+    for (const width of widths) {
+      const { page } = await site.open({ width, system: theme, at: '/threat-model' });
+      const file = path.join(dir, `threat-model-${theme}-${width}.png`);
       fs.writeFileSync(file, await screenshot(page));
       await page.close();
       console.log(file);
