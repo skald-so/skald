@@ -101,7 +101,7 @@ pub(crate) struct Found {
     /// Whether the account gets the space.
     pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
-    admin: bool,
+    pub(crate) admin: bool,
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
@@ -680,6 +680,21 @@ async fn insert(
     history::added(&mut tx, roster, previous)
         .await
         .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
+    // A token ends once the latest revision lists its device in no service agent entry.
+    let agents: Vec<String> = body
+        .service_agents
+        .iter()
+        .map(|agent| agent.device.to_string())
+        .collect();
+    sqlx::query(
+        "DELETE FROM service_tokens
+         WHERE space_id = $1::uuid AND device_id <> ALL($2::text[]::uuid[])",
+    )
+    .bind(space.to_string())
+    .bind(&agents)
+    .execute(&mut *tx)
+    .await
+    .map_err(|err| Refusal::Database("end the service tokens of removed agents", err))?;
     state
         .instance
         .tell(&mut tx, &[Event::Revision(space, revision)])
