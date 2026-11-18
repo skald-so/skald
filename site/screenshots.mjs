@@ -13,22 +13,15 @@ fs.mkdirSync(dir, { recursive: true });
 
 const site = await startSite({ pinned: true });
 try {
-  for (const theme of themes) {
-    for (const width of widths) {
-      const { page } = await site.open({ width, system: theme });
-      const file = path.join(dir, `main-${theme}-${width}.png`);
-      fs.writeFileSync(file, await screenshot(page));
-      await page.close();
-      console.log(file);
-    }
-  }
-  for (const theme of themes) {
-    for (const width of widths) {
-      const { page } = await site.open({ width, system: theme, at: '/threat-model' });
-      const file = path.join(dir, `threat-model-${theme}-${width}.png`);
-      fs.writeFileSync(file, await screenshot(page));
-      await page.close();
-      console.log(file);
+  for (const [name, at] of [['main', '/'], ['threat-model', '/threat-model']]) {
+    for (const theme of themes) {
+      for (const width of widths) {
+        const { page } = await site.open({ width, system: theme, at });
+        const file = path.join(dir, `${name}-${theme}-${width}.png`);
+        fs.writeFileSync(file, await screenshot(page));
+        await page.close();
+        console.log(file);
+      }
     }
   }
 } finally {

@@ -45,9 +45,6 @@
   --vp-button-brand-text: var(--color-accent-text);
   --vp-button-brand-hover-text: var(--color-accent-text);
   --vp-button-brand-active-text: var(--color-accent-text);
-
-  --vp-font-family-base: var(--font-text);
-  --vp-font-family-mono: var(--font-mono);
 }
 
 .vp-doc :is(h1, h2, h3, h4, h5, h6) {

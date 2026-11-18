@@ -115,7 +115,8 @@ expect 'workspace self-host web' web/index.html
 expect 'workspace self-host web' web/vite.config.ts
 expect 'workspace self-host web' web/tsconfig.app.json
 expect web web/kit.test.ts
-# The website's main page takes the web UI's theme; its browser tests, the kit's Chrome.
+# The website's main page and docs pages take the web UI's theme; its browser tests, the kit's
+# Chrome.
 expect 'workspace self-host web site' web/src/theme/theme.css
 expect 'web site' web/kit-browser.ts
 # Any Markdown file: a link of docs/ can name its headings.

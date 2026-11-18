@@ -10,17 +10,22 @@
 //   - every element focused from the keyboard has the accent outline;
 //   - each Copy puts its command on the clipboard and announces it.
 // A docs page, the threat model, in both themes at 1440 and 360 px:
-//   - it has the design's background, behind the header and the page too, text and accent colors,
-//     the bundled fonts for text, headings and code, and no theme switch;
+//   - it has the design's background, behind the page and as the header is painted, text color, in
+//     the header's title too, and accent color, the bundled fonts for text, headings and code, and
+//     no theme switch;
 //   - it requests no other host;
 //   - it does not scroll sideways;
 //   - its header has the logo's link to the main page, Docs, GitHub and Sign in, reachable through
 //     the header's menu at 360 px;
 //   - it passes the kit's accessibility check.
 // And that the 404 page's link loads the docs start page, not the 404 page again.
+import { createRequire } from 'node:module';
 import { accessibilityViolations, keyboardFocus, themes, widths } from '../web/kit-browser.ts';
 import { startSite } from '../site/browser.mjs';
 import { reporter } from './lib/report.mjs';
+
+// pngjs of web/, for the header's painted pixels.
+const { PNG } = createRequire(new URL('../web/package.json', import.meta.url))('pngjs');
 
 const { fail, done } = reporter('site-browser-test');
 
@@ -31,32 +36,27 @@ const colors = {
 };
 const fonts = ['Inter Variable', 'Space Grotesk Variable', 'JetBrains Mono Variable'];
 
+// The pages checked, each in both themes at the check widths.
+const pages = [
+  { name: 'the main page', at: '/', check: checkMain },
+  { name: 'the threat model page', at: '/threat-model', check: checkDocs },
+];
+
 const site = await startSite();
 try {
-  for (const theme of themes) {
-    for (const width of widths) {
-      const view = `the main page in the ${theme} theme at ${width} px`;
-      const { page, requests } = await site.open({ width, system: theme });
-      try {
-        await check(view, page, theme);
-      } catch (error) {
-        fail(`${view}: ${error.stack}`);
+  for (const { name, at, check } of pages) {
+    for (const theme of themes) {
+      for (const width of widths) {
+        const view = `${name} in the ${theme} theme at ${width} px`;
+        const { page, requests } = await site.open({ width, system: theme, at });
+        try {
+          await check(view, page, theme);
+        } catch (error) {
+          fail(`${view}: ${error.stack}`);
+        }
+        ownHostOnly(view, requests);
+        await page.close();
       }
-      ownHostOnly(view, requests);
-      await page.close();
-    }
-  }
-  for (const theme of themes) {
-    for (const width of widths) {
-      const view = `the threat model page in the ${theme} theme at ${width} px`;
-      const { page, requests } = await site.open({ width, system: theme, at: '/threat-model' });
-      try {
-        await checkDocs(view, page, theme);
-      } catch (error) {
-        fail(`${view}: ${error.stack}`);
-      }
-      ownHostOnly(view, requests);
-      await page.close();
     }
   }
   try {
@@ -97,7 +97,7 @@ async function look(view, page, theme) {
   if (overflow !== 0) fail(`${view}: scrolls sideways by ${overflow} px`);
 }
 
-async function check(view, page, theme) {
+async function checkMain(view, page, theme) {
   const want = colors[theme];
   await look(view, page, theme);
 
@@ -146,22 +146,29 @@ async function checkDocs(view, page, theme) {
     };
   });
   if (shown.accent !== colors[theme].accent) fail(`${view}: a link has the color ${shown.accent}, not the design's accent`);
-  // The background behind the middle of the header and of the page's bottom, the first one set from
-  // the element there up.
-  const backgrounds = await page.evaluate(() => {
-    const at = (x, y) => {
-      for (let element = document.elementFromPoint(x, y); element; element = element.parentElement) {
-        const background = getComputedStyle(element).backgroundColor;
-        if (background !== 'rgba(0, 0, 0, 0)') return background;
-      }
-      return 'none';
-    };
+  // The header as painted, a few pixels in its middle, where it shows nothing; the background
+  // behind the page's bottom, the first one set from the element there up; and the header's title,
+  // which VitePress colors.
+  const spot = await page.evaluate(() => {
     const header = document.querySelector('header').getBoundingClientRect();
-    return [at(innerWidth / 2, header.top + header.height / 2), at(innerWidth / 2, innerHeight - 50)];
+    return { x: Math.round(innerWidth / 2), y: Math.round(header.top + header.height / 2) };
   });
-  if (backgrounds.some((background) => background !== colors[theme].background)) {
-    fail(`${view}: the header and the page have the backgrounds ${backgrounds.join(' and ')}, not the design's`);
+  const painted = PNG.sync.read(await page.screenshot({ clip: { ...spot, width: 4, height: 4 }, animations: 'disabled' }));
+  const pixels = new Set();
+  for (let i = 0; i < painted.data.length; i += 4) pixels.add(`rgb(${painted.data[i]}, ${painted.data[i + 1]}, ${painted.data[i + 2]})`);
+  if (pixels.size !== 1 || !pixels.has(colors[theme].background)) {
+    fail(`${view}: the header is painted ${[...pixels].join(', ')}, not the design's background`);
   }
+  const below = await page.evaluate(() => {
+    for (let element = document.elementFromPoint(innerWidth / 2, innerHeight - 50); element; element = element.parentElement) {
+      const background = getComputedStyle(element).backgroundColor;
+      if (background !== 'rgba(0, 0, 0, 0)') return background;
+    }
+    return 'none';
+  });
+  if (below !== colors[theme].background) fail(`${view}: the page has the background ${below}, not the design's`);
+  const title = await page.getByRole('banner').locator('a[href="/"]').evaluate((link) => getComputedStyle(link).color);
+  if (title !== colors[theme].text) fail(`${view}: the header's title has the color ${title}, not the design's text color`);
   const [text, heading, code] = fonts;
   if (shown.text !== text || shown.heading !== heading || shown.code !== code) {
     fail(`${view}: sets text, headings and code in ${shown.text}, ${shown.heading} and ${shown.code}, not ${fonts.join(', ')}`);
@@ -173,7 +180,13 @@ async function checkDocs(view, page, theme) {
   const logo = await header.locator('a[href="/"]').filter({ has: page.locator('svg') }).count();
   if (logo !== 1) fail(`${view}: the header has no logo linking to the main page`);
   const menu = header.getByRole('button', { name: 'Menu', exact: true });
-  if (await menu.isVisible()) await menu.click();
+  if (await menu.isVisible()) {
+    await menu.click();
+    // The menu fades in, starting a frame after the click: checked half shown, its links' contrast
+    // fails.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState === 'finished'));
+  }
   for (const [name, href] of [
     ['Docs', '/start'],
     ['GitHub', 'https://github.com/skald-so/skald'],
