@@ -1266,6 +1266,20 @@ mod tests {
             check(opened.sender(), signed(opened), header, &context)
         }
 
+        /// The space's devices with one more of Bob's, of `kind`, issued by his device; and its ID.
+        fn with_bobs(&self, kind: DeviceKind) -> (SpaceDevices, DeviceId) {
+            let (cert, ..) = (self.bob_account).device(kind, &self.bob_key, Some(self.bob));
+            let id = cert.body().device;
+            let mut devices = SpaceDevices {
+                ids: self.devices.ids.clone(),
+                certs: self.devices.certs.clone(),
+                revocations: Vec::new(),
+            };
+            devices.ids.push(id);
+            devices.certs.push(cert);
+            (devices, id)
+        }
+
         fn checked(&self, header: &Header, content: &Content) -> Result<Received, String> {
             self.checked_in(&self.roster, header, content, &self.bob_key)
         }
@@ -1375,16 +1389,7 @@ mod tests {
         let as_client = check(world.bob, |_| Ok(content.clone()), &header, &context);
         assert!(as_client.is_ok(), "{as_client:?}");
 
-        let bob = &world.bob_account;
-        let (service, ..) = bob.device(DeviceKind::Service, &world.bob_key, Some(world.bob));
-        let id = service.body().device;
-        let mut devices = SpaceDevices {
-            ids: world.devices.ids.clone(),
-            certs: world.devices.certs.clone(),
-            revocations: Vec::new(),
-        };
-        devices.ids.push(id);
-        devices.certs.push(service);
+        let (devices, id) = world.with_bobs(DeviceKind::Browser);
         let context = Context {
             devices: &devices,
             ..world.context(&world.roster, Group::Sender)
@@ -1406,16 +1411,7 @@ mod tests {
     #[test]
     fn service_content_without_counter_passes_only_under_hpke() {
         let world = World::new();
-        let (service, ..) =
-            (world.bob_account).device(DeviceKind::Service, &world.bob_key, Some(world.bob));
-        let id = service.body().device;
-        let mut devices = SpaceDevices {
-            ids: world.devices.ids.clone(),
-            certs: world.devices.certs.clone(),
-            revocations: Vec::new(),
-        };
-        devices.ids.push(id);
-        devices.certs.push(service);
+        let (devices, id) = world.with_bobs(DeviceKind::Service);
         let mut body = world.roster.body().clone();
         body.service_agents.push(ServiceAgent {
             device: id,
