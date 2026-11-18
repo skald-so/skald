@@ -1492,14 +1492,15 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 
 /// Encrypts the content `content` gives for a new message ID and the device's next counter in
 /// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
-/// devices, in the channel's group, and puts the `mls` envelope in the outbox with the state it
-/// leaves and the message's history entry ([`crate::history`]); gives its message ID. Sends
+/// devices, in the channel's group, and puts the `mls` envelope in the outbox, as from `agent` if
+/// given, with the state it leaves and the message's history entry ([`crate::history`]); gives its
+/// message ID. Sends
 /// nothing, and says why, while a member device of the group is not admitted, while a Commit of
 /// this device in the channel waits for the server, or when no other device is in the group.
 pub fn encrypt(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
-    channel: ChannelId,
+    (channel, agent): (ChannelId, Option<&str>),
     content: impl FnOnce(MessageId, NonZeroU64) -> Content,
 ) -> Result<MessageId, String> {
     let keys = follower.keys()?;
@@ -1567,6 +1568,7 @@ pub fn encrypt(
             },
             channel,
             counter: counter.get(),
+            agent: agent.map(str::to_owned),
         };
         let changes = MlsChanges {
             messages: vec![message],

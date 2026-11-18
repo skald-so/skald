@@ -13,8 +13,11 @@
 //!   command shows its output and exits with its exit code. A write of the operation's output
 //!   returns once the command has written it, or fails as the command's write did, so the
 //!   operation marks nothing shown that the command did not show.
-//! - The helper exits after an idle time, after sign-out and when a newer command or a sign-in asks
-//!   it to; a helper that is killed leaves its socket, which the next helper replaces.
+//! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
+//!   when it exits.
+//! - The helper exits after an idle time with no command or session, after sign-out and when a
+//!   newer command or a sign-in asks it to; a helper that is killed leaves its socket, which the
+//!   next helper replaces.
 //! - The socket's directory is its owner's only; on Windows it has the access rights it inherits
 //!   from the state directory.
 
@@ -28,14 +31,19 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
+pub use std::os::unix::net::UnixStream as Stream;
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 
 use serde::{Deserialize, Serialize};
 #[cfg(windows)]
+pub use uds_windows::UnixStream as Stream;
+#[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
 
 use crate::lock::{self, Lock, Taken};
-use crate::output::{self, Stream};
+use crate::output;
+use crate::wait::{self, Ran, Session, Sessions};
 use crate::{Command, Operation, mailbox, state};
 
 /// How long the helper waits idle, with no command, before it exits.
@@ -206,6 +214,11 @@ pub fn stop(dir: &Path, timeout: Duration) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a helper of the state in `dir` listens.
+pub fn running(dir: &Path) -> bool {
+    connect(dir).is_some()
+}
+
 /// The helper's socket in the state directory `dir`.
 fn socket(dir: &Path) -> PathBuf {
     dir.join(DIR).join(SOCKET)
@@ -356,7 +369,13 @@ fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
         .arg("--state-dir")
         .arg(dir)
         .arg("--timeout")
-        .arg(timeout.as_secs().max(1).to_string())
+        .arg(timeout.as_secs().max(1).to_string());
+    if let Some(retry) = wait::retry_set() {
+        command
+            .arg("--websocket-retry")
+            .arg(retry.as_secs().to_string());
+    }
+    command
         .arg("helper")
         .env(VERSION_SETTING, version())
         .current_dir(dir)
@@ -424,23 +443,32 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
         .map_err(|err| format!("cannot listen on {}: {err}", bound.0.display()))?;
     let _ = std::env::set_current_dir(&dir);
     let mut last = Instant::now();
+    let mut sessions = Sessions::default();
     let parting = loop {
         match listener.accept() {
-            Ok((stream, _)) => match serve_one(stream, &dir) {
+            Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {
                 Served::Nothing => {}
-                Served::Ran => last = Instant::now(),
+                Served::Ran => {
+                    last = Instant::now();
+                    sessions.ran();
+                }
+                Served::Joined => last = Instant::now(),
                 Served::Exit(stream) => break stream,
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
-                if last.elapsed() >= idle {
-                    break None;
+                match sessions.look(&dir) {
+                    Some(true) => last = Instant::now(),
+                    Some(false) if last.elapsed() >= idle => break None,
+                    Some(false) => {}
+                    None => break None,
                 }
-                mailbox::drain_kept();
                 thread::sleep(RETRY);
             }
         }
     };
+    // Its sessions end as a dead helper's do.
+    drop(sessions);
     drop(listener);
     drop(bound);
     if let Some(mut stream) = parting {
@@ -465,12 +493,14 @@ enum Served {
     Nothing,
     /// An operation ran.
     Ran,
+    /// A session joined, its first run done.
+    Joined,
     /// The helper exits; it says goodbye on the stream, if any, once its socket is closed.
     Exit(Option<UnixStream>),
 }
 
-/// Serves the command on `stream`, by the state in `dir`.
-fn serve_one(mut stream: UnixStream, dir: &Path) -> Served {
+/// Serves the command on `stream`, by the state in `dir`; a `skald recv --wait` joins `sessions`.
+fn serve_one(mut stream: UnixStream, dir: &Path, sessions: &mut Sessions) -> Served {
     let ready = stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_read_timeout(Some(GREETING)));
@@ -485,27 +515,20 @@ fn serve_one(mut stream: UnixStream, dir: &Path) -> Served {
     }
     // A command of another version says why it does not run its operation here.
     match receive(&mut stream) {
-        Ok(Some((Kind::Run, request))) => run(stream, dir, &request),
+        Ok(Some((Kind::Run, request))) => run(stream, dir, &request, sessions),
         Ok(Some((Kind::Exit, _))) => Served::Exit(Some(stream)),
         _ => Served::Nothing,
     }
 }
 
 /// Runs the operation of `request` for the command on `stream`, in its working directory, sending
-/// its output and then its exit code. The helper exits after sign-out, and after an operation that
-/// panicked.
-fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
-    // The command answers each write once its own output takes it, however long that is.
-    let Ok(mut answer) = stream
-        .set_read_timeout(None)
-        .and_then(|()| stream.try_clone())
-    else {
-        return Served::Nothing;
-    };
-    let mut sink = stream;
+/// its output and then its exit code; a `skald recv --wait` joins `sessions` instead. The helper
+/// exits after sign-out, and after an operation that panicked.
+fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) -> Served {
     let request: Request = match serde_json::from_slice(request) {
         Ok(request) => request,
         Err(err) => {
+            let mut answer = stream;
             let said = format!("skald: the helper cannot read the command: {err}\n");
             let _ = send(&mut answer, Kind::Err, said.as_bytes());
             let _ = send(&mut answer, Kind::Code, &[1]);
@@ -514,12 +537,100 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
+    if operation.command.waits() {
+        let session = Session {
+            stream,
+            cwd: request.cwd,
+            operation,
+        };
+        return if sessions.start(session, dir) {
+            Served::Joined
+        } else {
+            Served::Exit(None)
+        };
+    }
     let signs_out = matches!(operation.command, Command::SignOut);
+    let code = match on_behalf(&stream, dir, &request.cwd, || {
+        crate::perform(operation).map(|()| true)
+    }) {
+        Some(Outcome::Done(code)) => code,
+        Some(Outcome::Waits) => unreachable!("only a session waits"),
+        None => return Served::Nothing,
+    };
+    let mut answer = stream;
+    let _ = send(&mut answer, Kind::Code, &[code]);
+    if signs_out || code == PANICKED {
+        Served::Exit(None)
+    } else {
+        Served::Ran
+    }
+}
+
+/// Runs `work` for `session`'s operation, its output going to the session's command, with the
+/// state in `dir`; ends the session with its exit code once `work` gave what the session waits
+/// for, or failed.
+pub fn run_for(
+    session: Session,
+    dir: &Path,
+    work: impl FnOnce(&Operation) -> Result<bool, String>,
+) -> Ran {
+    let Session {
+        stream,
+        cwd,
+        operation,
+    } = session;
+    let outcome = on_behalf(&stream, dir, &cwd, || work(&operation));
+    let code = match outcome {
+        Some(Outcome::Waits) => {
+            return Ran::Waits(Box::new(Session {
+                stream,
+                cwd,
+                operation,
+            }));
+        }
+        Some(Outcome::Done(code)) => code,
+        None => return Ran::Ended,
+    };
+    let mut answer = stream;
+    let _ = send(&mut answer, Kind::Code, &[code]);
+    if code == PANICKED {
+        Ran::Panicked
+    } else {
+        Ran::Ended
+    }
+}
+
+/// The exit code of an operation that panicked.
+const PANICKED: u8 = 101;
+
+/// What came of an operation the helper ran.
+enum Outcome {
+    /// It ended with this exit code.
+    Done(u8),
+    /// It waits on: a session's run that showed nothing it waits for.
+    Waits,
+}
+
+/// Runs `work` in `cwd` for the command on `stream`, sending its output, then returns to `dir`:
+/// `work` gives whether the operation is done, or fails with its error, which the command shows.
+/// `None` if the command cannot be answered.
+fn on_behalf(
+    stream: &UnixStream,
+    dir: &Path,
+    cwd: &Path,
+    work: impl FnOnce() -> Result<bool, String>,
+) -> Option<Outcome> {
+    // The command answers each write once its own output takes it, however long that is.
+    let mut answer = stream
+        .set_read_timeout(None)
+        .and_then(|()| stream.try_clone())
+        .ok()?;
+    let mut sink = stream.try_clone().ok()?;
     let ran = output::into(
         move |stream, bytes| {
             let kind = match stream {
-                Stream::Out => Kind::Out,
-                Stream::Err => Kind::Err,
+                output::Stream::Out => Kind::Out,
+                output::Stream::Err => Kind::Err,
             };
             send(&mut sink, kind, bytes)?;
             match receive(&mut sink)? {
@@ -535,23 +646,20 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
         },
         || {
             panic::catch_unwind(AssertUnwindSafe(|| {
-                std::env::set_current_dir(&request.cwd)
+                std::env::set_current_dir(cwd)
                     .map_err(|err| {
-                        format!(
-                            "cannot use the working directory {}: {err}",
-                            request.cwd.display()
-                        )
+                        format!("cannot use the working directory {}: {err}", cwd.display())
                     })
-                    .and_then(|()| crate::perform(operation))
+                    .and_then(|()| work())
                     .inspect_err(|err| eprintln!("skald: {err}"))
-                    .is_ok()
             }))
         },
     );
     let _ = std::env::set_current_dir(dir);
-    let code = match ran {
-        Ok(true) => 0,
-        Ok(false) => 1,
+    Some(match ran {
+        Ok(Ok(true)) => Outcome::Done(0),
+        Ok(Ok(false)) => Outcome::Waits,
+        Ok(Err(_)) => Outcome::Done(1),
         Err(panicked) => {
             let why = panicked
                 .downcast_ref::<String>()
@@ -560,15 +668,9 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8]) -> Served {
                 .unwrap_or("a panic");
             let said = format!("skald: the helper failed: {why}\n");
             let _ = send(&mut answer, Kind::Err, said.as_bytes());
-            101
+            Outcome::Done(PANICKED)
         }
-    };
-    let _ = send(&mut answer, Kind::Code, &[code]);
-    if signs_out || code == 101 {
-        Served::Exit(None)
-    } else {
-        Served::Ran
-    }
+    })
 }
 
 /// Creates `dir`, if missing, readable only by its owner on Unix; on Windows it has the access

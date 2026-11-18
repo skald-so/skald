@@ -25,7 +25,8 @@
 //! creating channels and of agent isolation:
 //! - `skald send <channel> <text>`: sends `<text>` to the channel whose ID is `<channel>`; it says
 //!   the message's ID and a line that says `stored` once the server has stored its envelope, or the
-//!   problem the server refused it with;
+//!   problem the server refused it with; as an agent, once stored, only `sent #<ref>`, as the tests
+//!   of compact output say (`compact_output/main.rs`);
 //! - a run that is left with an envelope the server has not answered fails, its output holding the
 //!   message's ID;
 //! - with no other device in the channel's group, it fails and says `no device` can receive the
@@ -50,6 +51,8 @@ mod keys;
 #[path = "../channel_groups/kit.rs"]
 mod kit;
 mod limits;
+#[path = "../compact_output/lines.rs"]
+mod lines;
 #[path = "../sign_in/machine.rs"]
 mod machine;
 #[path = "../receiving/peer.rs"]
@@ -72,6 +75,7 @@ use fixtures::{
 };
 use front::{Answers, Sent};
 use kit::{Change, create_space, latest, revise, with_channel};
+use lines::assert_says_sent;
 use machine::Finished;
 use played::Played;
 use skald_proto::{MessageId, Role, Scheme};
@@ -458,8 +462,8 @@ fn refused_envelope_is_not_sent_again_and_its_problem_is_shown() {
 }
 
 /// As an agent in `~/work/clientA`, a message to clienta's channel has `from` the agent's address
-/// in clienta; one to clientb's channel is refused, nothing is sent, and the output names nothing
-/// of clientb.
+/// in clienta, and the run says only `sent` and the message's reference; one to clientb's channel
+/// is refused, nothing is sent, and the output names nothing of clientb.
 #[test]
 fn agent_sends_only_in_the_space_of_its_folder() {
     let mut talk = Talk::in_space(
@@ -484,7 +488,8 @@ fn agent_sends_only_in_the_space_of_its_folder() {
     let own = as_agent(talk.channel, FIRST);
 
     let id = one_message_sent(&talk.front, talk.channel, from);
-    assert_says_stored(&own, id);
+    assert!(own.success, "{own:?}");
+    assert_says_sent(&own.shown(), id);
     let address = format!("{CLIENT_A}/{}/{CLAUDE}@{HOST}", talk.ada.handle);
     let bob = &mut talk.played[0];
     bob.take_in(&talk.world.cloud);

@@ -2,6 +2,7 @@
 
 use crate::gaps::{marked, second_dropped};
 use crate::kit::received;
+use crate::lines::agent_line_of;
 use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
 
 /// The texts Bob's device sends; none is anywhere else.
@@ -35,11 +36,11 @@ fn message_after_a_missing_one_reaches_the_agent_marked() {
     assert_handed_once(&claude, SAYS[2], third);
     assert_not_handed(&claude, SAYS[1]);
     assert!(
-        !marked(&claude, first),
+        !agent_line_of(&claude, SAYS[0]).after_missing,
         "the first message marked: {claude}"
     );
     assert!(
-        marked(&claude, third),
+        agent_line_of(&claude, SAYS[2]).after_missing,
         "the third message not marked: {claude}"
     );
 }
