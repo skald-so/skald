@@ -43,6 +43,7 @@
 mod json;
 mod lines;
 mod messages;
+mod outbox;
 mod person_json;
 mod said;
 mod sending;

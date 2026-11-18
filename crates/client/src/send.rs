@@ -152,7 +152,7 @@ pub fn run(
     recv::holding_warnings(dir, agent.is_some(), || {
         let reported = match (json, agent) {
             (true, agent) => Reported::Json(agent.map(Name::as_str)),
-            (false, Some(_)) => Reported::Sent,
+            (false, Some(agent)) => Reported::Sent(agent.as_str()),
             (false, None) => Reported::Full,
         };
         sent(
@@ -612,9 +612,9 @@ pub enum Reported<'a> {
     Full,
     /// Each message as JSON; only those of the agent, if given.
     Json(Option<&'a str>),
-    /// `sent #<ref>` per message once every one is stored, otherwise each in full: an agent's
-    /// `skald send`.
-    Sent,
+    /// `sent #<ref>` per message of the agent once every one is stored, otherwise each in full:
+    /// an agent's `skald send`.
+    Sent(&'a str),
     /// Nothing: an agent's `skald recv`, which shows the refusals of its messages as statuses.
     Quiet,
 }
@@ -643,26 +643,27 @@ pub fn report(
     }
     let outcome = outcome(&messages, delivered, timeout);
     let references = || state.kept_ids().map(References::new).map_err(text);
-    let of = |agent: &str, id: MessageId| {
-        let sent = state.sent(id).map_err(text)?;
-        Ok::<_, String>(sent.and_then(|sent| sent.agent).as_deref() == Some(agent))
-    };
+    if let Reported::Json(Some(agent)) | Reported::Sent(agent) = reported {
+        let mut own = Vec::new();
+        for message in messages {
+            let sent = state.sent(message.0).map_err(text)?;
+            if sent.and_then(|sent| sent.agent).as_deref() == Some(agent) {
+                own.push(message);
+            }
+        }
+        messages = own;
+    }
     match reported {
-        Reported::Sent if outcome.is_ok() => {
+        Reported::Sent(_) if self::outcome(&messages, delivered, timeout).is_ok() => {
             let references = references()?;
             for (id, ..) in &messages {
                 println!("sent #{}", references.of(*id));
             }
         }
-        Reported::Full | Reported::Sent => in_full(&messages, delivered),
-        Reported::Json(agent) => {
+        Reported::Full | Reported::Sent(_) => in_full(&messages, delivered),
+        Reported::Json(_) => {
             let references = references()?;
             for (id, channel, envelopes) in &messages {
-                if let Some(agent) = agent
-                    && !of(agent, *id)?
-                {
-                    continue;
-                }
                 let envelopes: Vec<Value> = (envelopes.iter())
                     .map(|queued| {
                         let recipient = queued.outgoing.recipient.map(|device| device.to_string());

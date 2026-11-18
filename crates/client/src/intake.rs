@@ -113,20 +113,19 @@ impl Intake {
                 .map(|space| Scope::Only(*space))
                 .collect()
         };
-        let (taken, mut said) = captured(|| self.receive(&scopes, noticed.clone(), marks));
+        let (taken, mut said) = captured(|| {
+            self.holding(!person, |intake| {
+                intake.receive(&scopes, noticed.clone(), marks)
+            })
+        });
         taken?;
         let mut told = Told::default();
         for scope in scopes {
-            // The agents' runs hold their warnings for the person, and get their short lines.
-            let agents = scope != Scope::All;
+            // The agents' runs get the short lines of their warnings.
             let (shown, mut by_scope) = captured(|| {
-                let (shown, held) = output::holding_warnings(|| {
-                    recv::show(&mut self.follower, (scope, agents), &mut self.checks)
-                });
-                if !held.is_empty() {
-                    recv::keep_held(self.follower.state.keep_warnings(&held), &held);
-                }
-                shown
+                self.holding(!person, |intake| {
+                    recv::show(&mut intake.follower, (scope, !person), &mut intake.checks)
+                })
             });
             shown?;
             marks.push(("shown", SystemTime::now()));
@@ -141,6 +140,19 @@ impl Intake {
             told.person = said;
         }
         Ok(told)
+    }
+
+    /// Runs `run`, for agents' sessions if `agents`: such a run holds back its warnings and keeps
+    /// them for the person ([`recv::holding_warnings`]).
+    fn holding<R>(&mut self, agents: bool, run: impl FnOnce(&mut Self) -> R) -> R {
+        if !agents {
+            return run(self);
+        }
+        let (ran, held) = output::holding_warnings(|| run(self));
+        if !held.is_empty() {
+            recv::keep_held(self.follower.state.keep_warnings(&held), &held);
+        }
+        ran
     }
 
     /// Catches up, syncs the spaces of `due` and of each `space-notice` that came and brings their

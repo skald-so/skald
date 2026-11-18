@@ -1364,11 +1364,15 @@ impl State {
     }
 
     /// Keeps `lines`, warnings an agent's run gave, each a full line, for the person's run, after
-    /// those kept already.
+    /// those kept already; a line kept already is kept once.
     pub fn keep_warnings(&self, lines: &[String]) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         for line in lines {
-            tx.execute("INSERT INTO kept_warning (line) VALUES (?1)", params![line])?;
+            tx.execute(
+                "INSERT INTO kept_warning (line) SELECT ?1 \
+                 WHERE NOT EXISTS (SELECT 1 FROM kept_warning WHERE line = ?1)",
+                params![line],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -2792,15 +2796,22 @@ pub(crate) mod tests {
         state
             .keep_warnings(&["a".to_owned(), "b".to_owned()])
             .unwrap();
-        state.keep_warnings(&["c".to_owned()]).unwrap();
+        state
+            .keep_warnings(&["c".to_owned(), "a".to_owned()])
+            .unwrap();
         let warnings = state.warnings().unwrap();
         let lines: Vec<&str> = warnings.iter().map(|(_, line)| line.as_str()).collect();
-        assert_eq!(lines, ["a", "b", "c"]);
+        assert_eq!(
+            lines,
+            ["a", "b", "c"],
+            "a line waiting already is kept once"
+        );
         state.warning_shown(warnings[0].0).unwrap();
+        state.keep_warnings(&["a".to_owned()]).unwrap();
         let lines: Vec<String> = (state.warnings().unwrap().into_iter())
             .map(|(_, line)| line)
             .collect();
-        assert_eq!(lines, ["b", "c"]);
+        assert_eq!(lines, ["b", "c", "a"]);
     }
 
     /// The counters accepted from a sending device are kept per channel and scheme with the entry
