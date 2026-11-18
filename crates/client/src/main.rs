@@ -365,6 +365,15 @@ enum Command {
         /// person, also for a status or a warning. It waits until interrupted.
         #[arg(long)]
         wait: bool,
+        /// With --wait through the helper, shows when each step of the helper's intake of what
+        /// it shows ran, for tests.
+        #[arg(
+            long,
+            env = "SKALD_WAIT_TRACE",
+            hide = true,
+            value_parser = FalseyValueParser::new()
+        )]
+        wait_trace: bool,
     },
     /// Shows the history of a channel of a space this device follows; as an agent, only of a
     /// channel in the space of the agent's folder. It first accepts the space's latest roster
@@ -492,9 +501,20 @@ impl Command {
         )
     }
 
+    /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
+    fn traces(&self) -> bool {
+        matches!(
+            self,
+            Command::Recv {
+                wait_trace: true,
+                ..
+            }
+        )
+    }
+
     /// Whether it is a `skald recv --wait` ([`wait`]).
     fn waits(&self) -> bool {
-        matches!(self, Command::Recv { wait: true })
+        matches!(self, Command::Recv { wait: true, .. })
     }
 
     /// Whether the run takes the local state's lock before the command, for the whole run, as one

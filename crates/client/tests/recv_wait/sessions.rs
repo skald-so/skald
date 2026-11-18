@@ -13,8 +13,8 @@ use crate::talk::{
     BOB_HOST, Line, Talk, assert_shows_once, delivered, encrypted, one_message_sent, stored,
 };
 use crate::waits::{
-    ARRIVAL, AT_ONCE, WAIT_FLAG, Waits, assert_got, assert_idle, assert_keeps_waiting,
-    assert_shown_within,
+    ARRIVAL, AT_ONCE, TRACE_SETTING, WAIT_FLAG, Waits, assert_got, assert_idle,
+    assert_keeps_waiting, assert_shown_within,
 };
 use crate::world::{ACME, ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
 
@@ -62,8 +62,9 @@ fn sessions_in_two_folders_wait_through_one_helper_and_each_gets_only_its_own_me
     }
     let helper = helped.one_helper();
     let wait = [AGENT, CLAUDE, RECV, WAIT_FLAG];
-    let mut session_a = helped.start_in(&in_a, &[], &wait);
-    let mut session_b = helped.start_in(&in_b, &[], &wait);
+    let traced = [(TRACE_SETTING, "1")];
+    let mut session_a = helped.start_in(&in_a, &traced, &wait);
+    let mut session_b = helped.start_in(&in_b, &traced, &wait);
     assert_keeps_waiting(&mut session_a);
     assert_keeps_waiting(&mut session_b);
     let bob = &mut talk.played[0];

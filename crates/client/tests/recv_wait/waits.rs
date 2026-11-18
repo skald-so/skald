@@ -2,7 +2,7 @@
 //! its runs through a helper, and how a test watches a run that waits.
 
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use skald_proto::MessageId;
 
@@ -17,6 +17,8 @@ use crate::world::AGENT;
 
 /// The flag of `skald recv` that waits for what is to come.
 pub const WAIT_FLAG: &str = "--wait";
+/// The setting that has a session say when each step of the helper's intake ran.
+pub const TRACE_SETTING: &str = "SKALD_WAIT_TRACE";
 /// The setting of how long a connection on SSE or long-poll waits before it tries WebSocket again,
 /// in seconds.
 pub const RETRY_SETTING: &str = "SKALD_WEBSOCKET_RETRY";
@@ -118,6 +120,11 @@ pub fn assert_keeps_waiting(run: &mut Run) {
 /// failure says how long the text took.
 #[track_caller]
 pub fn assert_shown_within(run: &Run, text: &str, (from, limit): (Instant, Duration)) {
+    let since = SystemTime::now() - from.elapsed();
+    let since = since
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
     while !run.shown().contains(text) && from.elapsed() <= WAIT {
         thread::sleep(Duration::from_millis(10));
     }
@@ -129,7 +136,7 @@ pub fn assert_shown_within(run: &Run, text: &str, (from, limit): (Instant, Durat
     );
     assert!(
         took <= limit,
-        "{text:?} shown after {} ms, over {} ms: {}",
+        "{text:?} shown after {} ms from {since}, over {} ms: {}",
         took.as_millis(),
         limit.as_millis(),
         run.shown()
