@@ -7,7 +7,7 @@ use std::thread;
 use crate::held::{FILL, HEAD, Held, long_text, write_lock};
 use crate::kit::received;
 use crate::talk::{BOB_HOST, Line, assert_shows_once};
-use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
+use crate::{Agents, CLAUDE, assert_handed_line, assert_not_handed};
 
 /// Ada's device has run as claude in `~/work/acme`. Bob's device sends a message with a long text
 /// to the channel, which the person's `skald recv` shows. claude's run, killed while it waits in
@@ -48,7 +48,7 @@ fn cli_killed_before_its_output_or_before_the_mark_hands_the_message_over_again(
 
     let next = agents.run_as(CLAUDE).shown();
 
-    assert_handed_once(&next, &text, id);
+    assert_handed_line(&next, &text, id);
 
     let after_mark = agents.run_as(CLAUDE).shown();
 

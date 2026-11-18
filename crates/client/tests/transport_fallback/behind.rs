@@ -13,29 +13,23 @@ use skald_proto::{
 };
 use skald_server::Settings;
 
-use crate::browser::{APPROVE, Browser};
-use crate::cloud::{Cloud, WAIT, shown_grant};
+use crate::browser::Browser;
+use crate::cloud::{Cloud, WAIT};
 use crate::filter::{EVENTS, Fate, Filter, POLL, SEND, Seen, Stream, WEBSOCKET};
 use crate::fixtures::{TIMEOUT_SETTING, database, hex, send};
 use crate::kit::{RECV, Space, create_space, with_channel};
-use crate::machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
+use crate::machine::{Finished, Machine};
 use crate::played::{Played, Took};
 use crate::proxy::Proxy;
 use crate::talk::{ADA_HOST, BOB_HOST, Line, assert_shows_once, encrypted, stored};
 use crate::times::{MAILBOX, WEEK, moved_back};
-use crate::tls::Ca;
 use crate::tls_front::Front;
+use crate::trust::{HOST, Trust, signed_up};
 use crate::world::{
     ACME, FORK, Person, World, create, members, next_by, serve_revisions, warnings,
 };
 
-/// The setting of the proxy, and that of the root certificates the client trusts instead of the
-/// platform's.
-pub const HTTPS_PROXY: &str = "HTTPS_PROXY";
-pub const CERT_FILE: &str = "SSL_CERT_FILE";
-
-/// The server's host that only the proxy reaches, and the names of the endpoint's certificate.
-pub const HOST: &str = "skald.test";
+/// The names of the endpoint's certificate.
 pub const NAMES: &str = "DNS:skald.test";
 
 /// The request timeout of Ada's runs once she has signed in, in seconds.
@@ -79,8 +73,7 @@ pub struct Behind {
     pub counter: u64,
     pub proxy: Proxy,
     pub front: Front,
-    /// The test CA and the machine whose directory holds its files.
-    pub trust: (Ca, Machine),
+    pub trust: Trust,
 }
 
 impl Behind {
@@ -98,9 +91,8 @@ impl Behind {
         timeout: &str,
         change: impl FnOnce(&mut Settings),
     ) -> Self {
-        let keeper = Machine::new();
-        let ca = Ca::new(&keeper.root().join("ca"));
-        let front = Front::bind(vec![ca.issue(NAMES)]);
+        let trust = Trust::new();
+        let front = Front::bind(vec![trust.ca.issue(NAMES)]);
         let retained = |settings: &mut Settings| {
             settings.mailbox_retention = Some(Duration::from_secs(WEEK));
             change(settings);
@@ -113,12 +105,7 @@ impl Behind {
             browser: Browser::launch(),
         };
         let proxy = Proxy::tunneling();
-        let behind = |host: &str| {
-            Machine::new()
-                .with_env(CERT_FILE, &ca.cert)
-                .with_env(HTTPS_PROXY, proxy.url())
-                .with_host_name(host)
-        };
+        let behind = |host: &str| trust.proxied(&proxy.url()).with_host_name(host);
         let mut ada = signed_up(&world, behind(ADA_HOST), (ids[0], logins[0]), ADA_HOST);
         let bob = signed_up(&world, behind(BOB_HOST), (ids[1], logins[1]), BOB_HOST);
         let space = create_space(&world.cloud, &ada, ACME);
@@ -139,7 +126,7 @@ impl Behind {
             counter: 0,
             proxy,
             front,
-            trust: (ca, keeper),
+            trust,
         }
     }
 
@@ -324,27 +311,6 @@ impl Forked {
             "{what}: the revision was not accepted by its notice: {shown:?}"
         );
     }
-}
-
-/// A new account of GitHub user `id` with `login`, whose first machine, `machine` on the host
-/// `host`, signs in at the server's public address through its proxy, the person approving its
-/// code in Chrome.
-pub fn signed_up(
-    world: &World,
-    machine: Machine,
-    (id, login): (u64, &str),
-    host: &'static str,
-) -> Person {
-    let (cloud, page) = (&world.cloud, world.browser.page());
-    let grants = cloud.grants().len();
-    let user = cloud.user(id, login);
-    let args = [SIGN_IN, SERVER, cloud.public.as_str(), FIRST_DEVICE, YES];
-    let mut signing_in = machine.start(&args);
-    let grant = shown_grant(cloud, &mut signing_in, grants);
-    cloud.decide(&page, &user, &grant, APPROVE);
-    let finished = signing_in.finish();
-    assert!(finished.success, "{login}: {finished:?}");
-    world.person(user, machine, host)
 }
 
 /// Runs `skald recv` on `machine`.

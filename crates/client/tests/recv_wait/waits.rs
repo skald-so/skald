@@ -6,11 +6,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use skald_proto::MessageId;
 
-use crate::agents::{Agents, assert_handed_once};
+use crate::agents::Agents;
 use crate::cloud::WAIT;
 use crate::fixtures::await_running;
 use crate::helped::{Helped, WEBSOCKET};
 use crate::kit::RECV;
+use crate::lines::assert_handed_line;
 use crate::machine::{Finished, Run};
 use crate::talk::Talk;
 use crate::world::AGENT;
@@ -162,7 +163,7 @@ pub fn await_connections(talk: &Talk, run: &mut Run, (since, count): (Instant, u
 #[track_caller]
 pub fn assert_got(finished: &Finished, text: &str, msg_id: MessageId) {
     assert!(finished.success, "{finished:?}");
-    assert_handed_once(&finished.shown(), text, msg_id);
+    assert_handed_line(&finished.shown(), text, msg_id);
 }
 
 /// The processes of the helped copy running now but `runs`: its helpers.
