@@ -1,5 +1,6 @@
 //! Skald wire protocol types, as the protocol spec in `docs/protocol/` defines them.
 
+mod account;
 mod address;
 mod cbor;
 mod cert;
@@ -14,6 +15,7 @@ mod roster;
 mod signed;
 mod version;
 
+pub use account::{ACCOUNT_LABEL, AccountBody, AccountRecord, MasterBackup};
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
 };

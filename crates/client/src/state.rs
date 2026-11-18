@@ -263,6 +263,12 @@ const MIGRATIONS: &[&str] = &[
         recipient TEXT NOT NULL,
         PRIMARY KEY (channel, epoch, kind, recipient)
     ) STRICT",
+    // The account's first device: the account record and the master backup it sends with the
+    // master key while its link is `sent`, in CBOR; and whether a recovery key waits in the
+    // secrets to be shown to the person.
+    "ALTER TABLE device ADD COLUMN record BLOB;
+    ALTER TABLE device ADD COLUMN backup BLOB;
+    ALTER TABLE device ADD COLUMN recovery INTEGER NOT NULL DEFAULT 0 CHECK (recovery IN (0, 1));",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -324,9 +330,16 @@ pub struct Device {
 pub enum Link {
     /// Not yet: it has not learned whether it is the account's first device.
     New,
-    /// As the account's first device: it created the master key, pinned its public key `master`
-    /// and issued its certificate `cert`, in CBOR, with it; the server has not taken them yet.
-    Sent { master: [u8; 32], cert: Vec<u8> },
+    /// As the account's first device: it created the master key, pinned its public key `master`,
+    /// issued its certificate `cert` and signed the account record `record` with it, and sealed it
+    /// to the recovery key in the master backup `backup`, each in CBOR; the server has not taken
+    /// them yet.
+    Sent {
+        master: [u8; 32],
+        cert: Vec<u8>,
+        record: Vec<u8>,
+        backup: Vec<u8>,
+    },
     /// The server took the master key and the certificate: the device holds its certificate.
     Certified { master: [u8; 32], cert: Vec<u8> },
     /// It waits for linking by another device of the account.
@@ -586,22 +599,27 @@ impl State {
         let row = self
             .db
             .query_row(
-                "SELECT device, name, account, registered, link, master, cert FROM device",
+                "SELECT device, name, account, registered, link, master, cert, record, backup \
+                 FROM device",
                 [],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
-                        row.get::<_, bool>(3)?,
+                        (
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, bool>(3)?,
+                        ),
                         row.get::<_, String>(4)?,
                         row.get::<_, Option<Vec<u8>>>(5)?,
                         row.get::<_, Option<Vec<u8>>>(6)?,
+                        row.get::<_, Option<Vec<u8>>>(7)?
+                            .zip(row.get::<_, Option<Vec<u8>>>(8)?),
                     ))
                 },
             )
             .optional()?;
-        let Some((id, name, account, registered, link, master, cert)) = row else {
+        let Some(((id, name, account, registered), link, master, cert, sealed)) = row else {
             return Ok(None);
         };
         let id = id
@@ -616,7 +634,18 @@ impl State {
         };
         let link = match link.as_str() {
             "new" => Link::New,
-            "sent" => pinned().map(|(master, cert)| Link::Sent { master, cert })?,
+            "sent" => {
+                let (master, cert) = pinned()?;
+                let (record, backup) = sealed.ok_or_else(|| {
+                    Error::Malformed("the account record and the master backup".to_owned())
+                })?;
+                Link::Sent {
+                    master,
+                    cert,
+                    record,
+                    backup,
+                }
+            }
             "certified" => pinned().map(|(master, cert)| Link::Certified { master, cert })?,
             "waiting" => Link::Waiting,
             other => return Err(Error::Malformed(format!("the device's link {other:?}"))),
@@ -656,17 +685,45 @@ impl State {
 
     /// Records how the device is linked.
     pub fn set_link(&self, link: &Link) -> Result<(), Error> {
-        let (name, pinned) = match link {
-            Link::New => ("new", None),
-            Link::Sent { master, cert } => ("sent", Some((master, cert))),
-            Link::Certified { master, cert } => ("certified", Some((master, cert))),
-            Link::Waiting => ("waiting", None),
+        let (name, pinned, sealed) = match link {
+            Link::New => ("new", None, None),
+            Link::Sent {
+                master,
+                cert,
+                record,
+                backup,
+            } => ("sent", Some((master, cert)), Some((record, backup))),
+            Link::Certified { master, cert } => ("certified", Some((master, cert)), None),
+            Link::Waiting => ("waiting", None, None),
         };
         let (master, cert) = pinned.unzip();
+        let (record, backup) = sealed.unzip();
         self.db.execute(
-            "UPDATE device SET link = ?1, master = ?2, cert = ?3",
-            params![name, master.map(|master| master.as_slice()), cert],
+            "UPDATE device SET link = ?1, master = ?2, cert = ?3, record = ?4, backup = ?5",
+            params![
+                name,
+                master.map(|master| master.as_slice()),
+                cert,
+                record,
+                backup
+            ],
         )?;
+        Ok(())
+    }
+
+    /// Whether a recovery key waits in the secrets to be shown to the person.
+    pub fn recovery_waits(&self) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .query_row("SELECT recovery FROM device", [], |row| row.get(0))
+            .optional()?
+            .unwrap_or(false))
+    }
+
+    /// Records whether a recovery key waits in the secrets to be shown to the person.
+    pub fn set_recovery_waits(&self, waits: bool) -> Result<(), Error> {
+        self.db
+            .execute("UPDATE device SET recovery = ?1", params![waits])?;
         Ok(())
     }
 
@@ -1845,6 +1902,8 @@ pub(crate) mod tests {
             Link::Sent {
                 master,
                 cert: cert.clone(),
+                record: vec![4, 5],
+                backup: vec![6],
             },
             Link::Certified { master, cert },
             Link::Waiting,
@@ -1858,6 +1917,13 @@ pub(crate) mod tests {
             assert_eq!(device.account.as_deref(), Some("0190"));
             assert_eq!(device.link, link);
         }
+        // Whether a recovery key waits is kept apart from the link.
+        assert!(!state.recovery_waits().unwrap());
+        state.set_recovery_waits(true).unwrap();
+        state.set_link(&Link::Waiting).unwrap();
+        assert!(State::open(&dir).unwrap().recovery_waits().unwrap());
+        state.set_recovery_waits(false).unwrap();
+        assert!(!State::open(&dir).unwrap().recovery_waits().unwrap());
         // The account is set only where none is recorded, and ending the session keeps it.
         state.set_device_account("0191").unwrap();
         state.start_session("http://one.test").unwrap();
@@ -2198,10 +2264,20 @@ pub(crate) mod tests {
             "UPDATE device SET link = 'sent'",
             "UPDATE device SET link = 'sent', master = zeroblob(32)",
             "UPDATE device SET link = 'sent', master = zeroblob(31), cert = x'01'",
+            "UPDATE device SET recovery = 2",
             "UPDATE device SET master = zeroblob(32), cert = x'01'",
             "UPDATE device SET link = 'linked'",
         ] {
             assert!(state.db.execute(update, []).is_err(), "{update}");
+        }
+        // A sent master key needs its account record and master backup.
+        for update in [
+            "UPDATE device SET link = 'sent', master = zeroblob(32), cert = x'01'",
+            "UPDATE device SET record = x'02'",
+        ] {
+            state.db.execute(update, []).unwrap();
+            let error = state.device().expect_err("no record and backup");
+            assert!(matches!(error, Error::Malformed(_)), "{error:?}");
         }
     }
 

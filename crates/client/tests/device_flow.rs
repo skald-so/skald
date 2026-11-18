@@ -9,6 +9,8 @@ mod common;
 #[allow(dead_code)]
 #[path = "sign_in/machine.rs"]
 mod machine;
+#[path = "sign_in/recovery.rs"]
+mod recovery;
 
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -357,6 +359,7 @@ fn sign_in_first(machine: &Machine, stub: &Stub) {
         finished.stdout.contains("holds its certificate"),
         "{finished:?}"
     );
+    recovery::shown_if_waiting(machine, &stub.url, &finished);
 }
 
 /// Runs `skald devices` on `machine` with `args` before it; fails unless the run fails and its

@@ -7,11 +7,11 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
-    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
-    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push,
-    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
-    ServerStatus, SpaceId, Stored, Unknown,
+    AccountBody, AccountId, AccountRecord, Address, Attachment, Body, Cbor, ChannelId, Content,
+    DecodeError, Delegation, DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem,
+    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext,
+    MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, RequestProof,
+    Revocation, RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -265,6 +265,39 @@ pub fn revocation(
     Revocation::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// The account record of [`account`] at revision 1: its master key "TEST 1", its recovery HPKE
+/// key `DeriveKeyPair` of the 32 bytes 00 to 1f, signed by "TEST 1".
+fn account_record() -> AccountRecord {
+    let body = AccountBody {
+        account: account(),
+        master: hex(KEY_1).try_into().unwrap(),
+        recovery: hex("b1f1b840de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b")
+            .try_into()
+            .unwrap(),
+        revision: 1,
+        unknown: Unknown::default(),
+    };
+    let signature = hex(
+        "d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
+         7440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01",
+    );
+    AccountRecord::from_parts(body.to_cbor(), signature.try_into().unwrap()).unwrap()
+}
+
+/// The master private key "TEST 1" sealed to the recovery key 00 to 1f on [`account`], with the
+/// ephemeral key pair `DeriveKeyPair(ikmE)` of RFC 9180, Appendix A.1.2.
+fn master_backup() -> MasterBackup {
+    MasterBackup {
+        enc: hex("0ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b0471c91b")
+            .try_into()
+            .unwrap(),
+        ct: hex(
+            "0ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376adc97b8c6c
+             fd6dfd3e6ec094b32961bb7fc2b97e44",
+        ),
+    }
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -478,5 +511,7 @@ pub fn vectors() -> Vec<Vector> {
             "Revocation by the master key",
             revocation(None, None, Some(NonEmpty::new(server_device()))),
         ),
+        vector("Account record", account_record()),
+        vector("Master backup", master_backup()),
     ]
 }

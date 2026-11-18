@@ -142,6 +142,14 @@ export const getGetMasterKeyResponseMock = (
     faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
     null,
   ]),
+  record: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  backup: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
   ...overrideResponse,
 });
 
@@ -150,6 +158,14 @@ export const getGetMasterKeyResponseMock200 = (
 ): MasterKey => ({
   master: faker.helpers.arrayElement([
     faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  record: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  backup: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     null,
   ]),
   ...overrideResponse,
@@ -202,11 +218,27 @@ export const getPutMasterKeyResponseMock = (
         faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
         null,
       ]),
+      record: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      backup: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
       ...overrideResponse,
     },
     {
       master: faker.helpers.arrayElement([
         faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+        null,
+      ]),
+      record: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      backup: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
         null,
       ]),
       ...overrideResponse,
@@ -220,6 +252,14 @@ export const getPutMasterKeyResponseMock200 = (
     faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
     null,
   ]),
+  record: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  backup: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
   ...overrideResponse,
 });
 
@@ -228,6 +268,14 @@ export const getPutMasterKeyResponseMock201 = (
 ): MasterKey => ({
   master: faker.helpers.arrayElement([
     faker.helpers.fromRegExp("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"),
+    null,
+  ]),
+  record: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  backup: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     null,
   ]),
   ...overrideResponse,
