@@ -57,15 +57,6 @@ pub fn take() -> Option<Intake> {
     LEFT.with(|left| left.borrow_mut().take())
 }
 
-/// The transport of the connection of what was left to take in with, if anything.
-pub fn left_transport() -> Option<Transport> {
-    LEFT.with(|left| {
-        left.borrow()
-            .as_ref()
-            .map(|intake| intake.follower.transport)
-    })
-}
-
 /// What watches for what comes with the session of what was left to take in with, if anything
 /// ([`Watched::of`]).
 pub fn left_watched() -> Option<Watched> {
