@@ -176,9 +176,10 @@ impl Drop for Server {
 pub const SETUP_ATTEMPTS: u32 = 5;
 const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
-/// The result of `step`, `what`, tried again while PostgreSQL resets its connection, up to
-/// [`SETUP_ATTEMPTS`] times; any other error is returned at once. Under the load of the client's
-/// tests PostgreSQL on Windows now and then resets a new connection and goes on serving the others.
+/// The result of `step`, `what`, tried again while PostgreSQL resets its connection or opens none
+/// in time, up to [`SETUP_ATTEMPTS`] times; any other error is returned at once. Under the load of
+/// the client's tests PostgreSQL on Windows now and then resets or delays a new connection and goes
+/// on serving the others.
 pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     mut step: impl FnMut() -> F,
@@ -188,9 +189,12 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     loop {
         match step().await {
             Err(sqlx::Error::Io(err))
-                if err.kind() == io::ErrorKind::ConnectionReset && attempt < SETUP_ATTEMPTS =>
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::ConnectionReset | io::ErrorKind::TimedOut
+                ) && attempt < SETUP_ATTEMPTS =>
             {
-                eprintln!("{what}: PostgreSQL reset the connection: {err}; again in {wait:?}");
+                eprintln!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
                 tokio::time::sleep(wait).await;
                 wait *= 2;
                 attempt += 1;

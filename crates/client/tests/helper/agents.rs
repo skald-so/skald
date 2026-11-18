@@ -1,12 +1,10 @@
 //! Commands through the helper act as in one-shot mode: an agent's space is that of its folder,
 //! and a refused send or a send with the server down shows what one-shot mode shows.
 
-use skald_proto::Role;
-
 use crate::fixtures::{SEND, person_address, sent_after};
 use crate::front::Answers;
-use crate::helped::{Helped, ONE_SHOT, bob_reads, timeout_of};
-use crate::kit::{RECV, bind_client_a, create_space, received, with_channel};
+use crate::helped::{Helped, ONE_SHOT, bob_reads, timeout_of, with_client_b};
+use crate::kit::{RECV, bind_client_a};
 use crate::machine::Finished;
 use crate::talk::{
     BOB_HOST, Line, Talk, assert_read, assert_shows_once, encrypted, one_message_sent, stored,
@@ -48,12 +46,7 @@ fn through_the_helper_an_agent_sends_and_receives_only_in_the_space_of_its_folde
         &["ada-agent-via-helper", "bob-client-via-helper"],
         false,
     );
-    let cloud = &talk.world.cloud;
-    let bob_person = &talk.played[0].person;
-    let other = create_space(cloud, &talk.ada, CLIENT_B);
-    let elsewhere = with_channel(cloud, other.id, &talk.ada, &[(bob_person, Role::Member)]);
-    received(&talk.ada.machine);
-    talk.played[0].take_in(cloud);
+    let (other, elsewhere) = with_client_b(&mut talk);
     let folder = bind_client_a(&talk.ada.machine);
     let helped = Helped::new(&talk.ada.machine);
     let agent = |args: &[&str]| {

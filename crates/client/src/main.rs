@@ -42,6 +42,7 @@ mod groups;
 mod helper;
 mod history;
 mod history_reading;
+mod intake;
 mod key_chain;
 mod key_packages;
 mod lock;
@@ -64,6 +65,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod wait;
 mod wraps;
 
 use std::num::NonZeroU64;
@@ -160,6 +162,17 @@ struct Cli {
         value_parser = FalseyValueParser::new()
     )]
     one_shot: bool,
+
+    /// How long a connection on SSE or long-poll waits before it tries WebSocket again, in seconds,
+    /// for tests; a helper takes it from the command that starts it [default: 60].
+    #[arg(
+        long,
+        env = "SKALD_WEBSOCKET_RETRY",
+        value_name = "SECONDS",
+        global = true,
+        hide = true
+    )]
+    websocket_retry: Option<NonZeroU64>,
 
     #[command(subcommand)]
     command: Command,
@@ -347,7 +360,21 @@ enum Command {
     /// over to the agent: those there to it or to no one in particular that came since this device
     /// first ran as it there, each once; one waits for the agent until it expires, at most 7
     /// days. The person's run shows every message once, whether or not an agent got it.
-    Recv,
+    Recv {
+        /// With nothing to show, waits for the first message to come, shows it and exits; as the
+        /// person, also for a status or a warning. It waits until interrupted.
+        #[arg(long)]
+        wait: bool,
+        /// With --wait through the helper, shows when each step of the helper's intake of what
+        /// it shows ran, for tests.
+        #[arg(
+            long,
+            env = "SKALD_WAIT_TRACE",
+            hide = true,
+            value_parser = FalseyValueParser::new()
+        )]
+        wait_trace: bool,
+    },
     /// Shows the history of a channel of a space this device follows; as an agent, only of a
     /// channel in the space of the agent's folder. It first accepts the space's latest roster
     /// revisions, then reads the copies of the channel's messages the server keeps under its
@@ -424,8 +451,9 @@ enum Command {
     /// Runs the helper of this machine's local state, which the first command that connects as the
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
-    /// state goes through it. Only this OS account reaches it. It exits after an idle time, on
-    /// sign-out, and for a command of a newer skald.
+    /// state goes through it, and each skald recv --wait waits through it. Only this OS account
+    /// reaches it. It exits after an idle time with no command or wait, on sign-out, and for a
+    /// command of a newer skald.
     Helper {
         /// How long it waits idle before it exits, in seconds, for tests [default: 600].
         #[arg(long, env = "SKALD_HELPER_IDLE", value_name = "SECONDS", hide = true)]
@@ -458,7 +486,7 @@ impl Command {
         matches!(
             self,
             Command::Send { .. }
-                | Command::Recv
+                | Command::Recv { .. }
                 | Command::Spaces
                 | Command::Members { .. }
                 | Command::Channels { .. }
@@ -471,6 +499,22 @@ impl Command {
                 | Command::SetHistoryPeriod { .. }
                 | Command::Address
         )
+    }
+
+    /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
+    fn traces(&self) -> bool {
+        matches!(
+            self,
+            Command::Recv {
+                wait_trace: true,
+                ..
+            }
+        )
+    }
+
+    /// Whether it is a `skald recv --wait` ([`wait`]).
+    fn waits(&self) -> bool {
+        matches!(self, Command::Recv { wait: true, .. })
     }
 
     /// Whether the run takes the local state's lock before the command, for the whole run, as one
@@ -544,6 +588,9 @@ const HOST_NAME: &str = "SKALD_HOST_NAME";
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let one_shot = cli.one_shot;
+    if let Some(seconds) = cli.websocket_retry {
+        wait::set_retry(Duration::from_secs(seconds.get()));
+    }
     let operation = Operation {
         speaks: cli.protocol_versions.unwrap_or_default(),
         timeout: cli
@@ -568,11 +615,21 @@ fn main() -> ExitCode {
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
-    let route = state::dir(operation.state_dir.clone()).and_then(|dir| {
-        let starts = !one_shot && operation.command.starts_helper();
-        helper::route(&dir, &operation, create, starts)
-    });
-    match route {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let starts = !one_shot && operation.command.starts_helper();
+    match helper::route(&dir, &operation, create, starts) {
+        Ok(helper::Route::Here(lock)) if operation.command.waits() => {
+            let waited = wait::here(&dir, &operation, lock);
+            mailbox::close_kept();
+            match waited {
+                Ok(Some(code)) => code,
+                Ok(None) => ExitCode::SUCCESS,
+                Err(err) => exit(Err(err)),
+            }
+        }
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
@@ -742,8 +799,9 @@ fn perform(operation: Operation) -> Result<(), String> {
                 agent.as_ref(),
             )
         }),
-        Command::Recv => state::dir(state_dir)
-            .and_then(|dir| recv::run(&dir, key_storage, speaks, timeout, agent.as_ref())),
+        Command::Recv { .. } => state::dir(state_dir).and_then(|dir| {
+            recv::run(&dir, key_storage, (speaks, timeout), agent.as_ref(), false).map(drop)
+        }),
         Command::History { channel, text } => state::dir(state_dir).and_then(|dir| {
             history_reading::run(
                 &dir,
@@ -775,6 +833,16 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Update { github_api_url } => update::run(&github_api_url, timeout),
         Command::Helper { .. } => Err("the helper runs only as itself".to_owned()),
     }
+}
+
+/// One run of `skald recv` for `operation`, a `skald recv --wait`, which leaves its connection to
+/// watch ([`wait`]): whether it showed what the wait waits for.
+fn received(operation: &Operation) -> Result<bool, String> {
+    let agent = operation.agent()?;
+    clock::set_offset(operation.clock_offset);
+    let dir = state::dir(operation.state_dir.clone())?;
+    let settings = (operation.speaks, operation.timeout);
+    recv::run(&dir, operation.key_storage, settings, agent.as_ref(), true)
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
