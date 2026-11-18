@@ -24,7 +24,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use skald_proto::SpaceId;
 
@@ -282,6 +282,7 @@ impl Sessions {
             return Some(false);
         }
         let came = self.watch.came();
+        let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());
         let (mut runs, mut handed) = (Vec::new(), Vec::new());
         for waiting in std::mem::take(&mut self.waiting) {
@@ -301,7 +302,7 @@ impl Sessions {
             let ran = helper::run_for(waiting.session, dir, crate::received);
             panicked |= self.again(ran, recv::last_space());
         }
-        panicked |= self.hand(handed, dir, (&noticed, retry));
+        panicked |= self.hand(handed, dir, (&noticed, retry, seen));
         if panicked {
             return None;
         }
@@ -317,7 +318,7 @@ impl Sessions {
         &mut self,
         handed: Vec<Waiting>,
         dir: &Path,
-        (noticed, retry): (&BTreeSet<SpaceId>, bool),
+        (noticed, retry, seen): (&BTreeSet<SpaceId>, bool, SystemTime),
     ) -> bool {
         if handed.is_empty() {
             return false;
@@ -331,8 +332,10 @@ impl Sessions {
             return panicked;
         };
         let scopes = handed.iter().map(|waiting| waiting.space).collect();
-        let taken =
-            panic::catch_unwind(AssertUnwindSafe(|| intake.take_in(&scopes, noticed, retry)));
+        let mut marks = vec![("came", seen), ("taking in", SystemTime::now())];
+        let taken = panic::catch_unwind(AssertUnwindSafe(|| {
+            intake.take_in(&scopes, noticed, (retry, &mut marks))
+        }));
         let mut panicked = false;
         match taken {
             Ok(Ok(told)) => {
@@ -344,6 +347,9 @@ impl Sessions {
                         None => &told.person,
                     };
                     let ran = helper::run_for(waiting.session, dir, |operation| {
+                        if operation.command.traces() {
+                            trace(&marks);
+                        }
                         let agent = operation.agent()?;
                         intake.hand(said, space.zip(agent.as_ref()), operation.json())
                     });
@@ -376,6 +382,19 @@ impl Sessions {
             Ran::Ended => false,
             Ran::Panicked => true,
         }
+    }
+}
+
+/// Shows when each of `marks` and the handover to a session started, in milliseconds since the
+/// Unix epoch.
+fn trace(marks: &intake::Marks) {
+    let handing = ("handing over", SystemTime::now());
+    for (step, at) in marks.iter().chain([&handing]) {
+        let at = at
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        eprintln!("skald: trace: {step} at {at}");
     }
 }
 

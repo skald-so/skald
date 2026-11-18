@@ -382,10 +382,19 @@ enum Command {
         wait: bool,
         /// Shows each message and status as a JSON object on a line of its own, with every field:
         /// a message's msg_id, ref, space, channel, from, device, device_name, text and
-        /// after_missing; a status's msg_id, ref, space, channel, status, device, device_name and
-        /// timestamp. As an agent, every status of its own messages.
+        /// after_missing; a status's msg_id, ref, space, channel, status, device, device_name,
+        /// problem and timestamp. As an agent, every status of its own messages.
         #[arg(long)]
         json: bool,
+        /// With --wait through the helper, shows when each step of the helper's intake of what
+        /// it shows ran, for tests.
+        #[arg(
+            long,
+            env = "SKALD_WAIT_TRACE",
+            hide = true,
+            value_parser = FalseyValueParser::new()
+        )]
+        wait_trace: bool,
     },
     /// Shows the history of a channel of a space this device follows; as an agent, only of a
     /// channel in the space of the agent's folder. It first accepts the space's latest roster
@@ -510,6 +519,17 @@ impl Command {
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
                 | Command::Address
+        )
+    }
+
+    /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
+    fn traces(&self) -> bool {
+        matches!(
+            self,
+            Command::Recv {
+                wait_trace: true,
+                ..
+            }
         )
     }
 

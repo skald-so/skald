@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::time::SystemTime;
 
 use skald_proto::{Name, SpaceId};
 
@@ -30,6 +31,9 @@ use crate::{key_chain, wraps};
 
 /// What a run wrote to its outputs, in order.
 pub type Said = Vec<(Stream, Vec<u8>)>;
+
+/// When each step of an intake ended, by its name, for a session that traces it.
+pub type Marks = Vec<(&'static str, SystemTime)>;
 
 /// What takes in what comes: the follower of a session's run, what it checks messages with, and
 /// its link.
@@ -94,7 +98,7 @@ impl Intake {
         &mut self,
         scopes: &BTreeSet<Option<SpaceId>>,
         noticed: &BTreeSet<SpaceId>,
-        retry: bool,
+        (retry, marks): (bool, &mut Marks),
     ) -> Result<Told, String> {
         if retry {
             self.follower.transport = Transport::WebSocket;
@@ -109,7 +113,7 @@ impl Intake {
                 .map(|space| Scope::Only(*space))
                 .collect()
         };
-        let (taken, mut said) = captured(|| self.receive(&scopes, noticed.clone()));
+        let (taken, mut said) = captured(|| self.receive(&scopes, noticed.clone(), marks));
         taken?;
         let mut told = Told::default();
         for scope in scopes {
@@ -125,6 +129,7 @@ impl Intake {
                 shown
             });
             shown?;
+            marks.push(("shown", SystemTime::now()));
             match scope {
                 Scope::All => said.append(&mut by_scope),
                 Scope::Only(space) => {
@@ -140,20 +145,28 @@ impl Intake {
 
     /// Catches up, syncs the spaces of `due` and of each `space-notice` that came and brings their
     /// groups in line, and decrypts the application messages within `scopes`.
-    fn receive(&mut self, scopes: &[Scope], mut due: BTreeSet<SpaceId>) -> Result<(), String> {
+    fn receive(
+        &mut self,
+        scopes: &[Scope],
+        mut due: BTreeSet<SpaceId>,
+        marks: &mut Marks,
+    ) -> Result<(), String> {
         let (follower, checks, link) = (&mut self.follower, &mut self.checks, &mut self.link);
         let timeout = follower.timeout;
         let mut mailbox = recv::catch_up_noting(follower, None, timeout, &mut due)?;
+        marks.push(("caught up", SystemTime::now()));
         let roster_changed = !due.is_empty();
         while !due.is_empty() {
             recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced)?;
             due.extend(mailbox.waiting_notices(follower, &link.keys));
         }
         drop(mailbox);
+        marks.push(("synced", SystemTime::now()));
         checks.follow(follower)?;
         for scope in scopes {
             groups::take_in(follower, link, *scope, &mut checks.synced)?;
         }
+        marks.push(("decrypted", SystemTime::now()));
         if roster_changed {
             groups::align_with(follower, link);
             key_chain::upload_missing(follower, link, Scope::All);
