@@ -62,7 +62,7 @@ pub fn show(
     server: &str,
     shows: bool,
 ) -> Result<(), sign_in::Error> {
-    if !state.recovery_waits()? {
+    if state.recovery_waits()?.is_none() {
         return Ok(());
     }
     if !matches!(
@@ -75,7 +75,7 @@ pub fn show(
     let mut stored = secrets.load()?;
     let Some(key) = kept(&stored) else {
         // A run deleted it and stopped before it recorded so.
-        state.set_recovery_waits(false)?;
+        state.set_recovery_waits(None)?;
         return Ok(());
     };
     if !shows {
@@ -104,7 +104,7 @@ pub fn show(
         return Ok(());
     }
     forget(secrets, &mut stored)?;
-    state.set_recovery_waits(false)?;
+    state.set_recovery_waits(None)?;
     println!("The recovery key is deleted from this device.");
     Ok(())
 }
@@ -118,11 +118,9 @@ pub fn say_if_waiting(dir: &Path) {
     let Ok(state) = State::open(dir) else {
         return;
     };
-    if !state.recovery_waits().unwrap_or(false) {
-        return;
+    if let Ok(Some(server)) = state.recovery_waits() {
+        eprintln!("{}", waits(&server));
     }
-    let server = state.session().ok().flatten().map(|session| session.server);
-    eprintln!("{}", waits(server.as_deref().unwrap_or("<URL>")));
 }
 
 #[cfg(test)]

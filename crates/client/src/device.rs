@@ -340,9 +340,11 @@ impl Setup<'_> {
         match self.device.link.clone() {
             Link::Certified { .. } => {
                 println!("This device holds its certificate, signed by the account's master key.");
+                self.say_if_no_recovery_key();
                 Ok(())
             }
             Link::Waiting => {
+                self.say_if_no_recovery_key();
                 waits();
                 Ok(())
             }
@@ -379,6 +381,18 @@ impl Setup<'_> {
         }
     }
 
+    /// `GET /account/master`, then [`no_recovery_key`] on its record; an answer it does not get
+    /// says nothing.
+    fn say_if_no_recovery_key(&mut self) {
+        let answer = self.connection.get_as("/account/master", self.token);
+        if let Ok(body) = answer
+            && let Ok(master) = serde_json::from_slice::<MasterKey>(&body)
+            && master.master.is_some()
+        {
+            no_recovery_key(master.record.as_deref());
+        }
+    }
+
     /// Asks whether this is the account's first device, then the server whether the account has a
     /// master key, and acts on both as "Linking a device" says.
     fn link(self) -> Done {
@@ -407,7 +421,8 @@ impl Setup<'_> {
                 let created = self.create_master()?;
                 // The recovery key is kept before anything that it backs is.
                 recovery::keep(self.secrets, self.stored, &created.recovery)?;
-                self.state.set_recovery_waits(true)?;
+                self.state
+                    .set_recovery_waits(Some(self.connection.server()))?;
                 self.state.set_link(&Link::Sent {
                     master: created.master,
                     cert: created.cert.clone(),
@@ -425,12 +440,7 @@ impl Setup<'_> {
             (false, None) => Err(Error::NoMasterKey.into()),
             (false, Some(_)) => {
                 self.state.set_link(&Link::Waiting)?;
-                if master.record.is_none() {
-                    println!(
-                        "This account has no recovery key: it was made before recovery keys, \
-                         and none can be made for it."
-                    );
-                }
+                no_recovery_key(master.record.as_deref());
                 waits();
                 Ok(())
             }
@@ -484,7 +494,7 @@ impl Setup<'_> {
             }
             Err(connection::Error::Refused { status: 409, .. }) => {
                 recovery::forget(self.secrets, self.stored)?;
-                self.state.set_recovery_waits(false)?;
+                self.state.set_recovery_waits(None)?;
                 self.state.set_link(&Link::Waiting)?;
                 println!(
                     "Another device gave the account's master key first: this device dropped its \
@@ -539,6 +549,17 @@ fn own_certificate(body: &CertBody, keys: &Keys) -> Result<Created, Error> {
         backup: backup.to_cbor(),
         recovery,
     })
+}
+
+/// Says that the account has no recovery key when its master key has no account `record`, as on
+/// an account made before recovery keys.
+fn no_recovery_key(record: Option<&str>) {
+    if record.is_none() {
+        println!(
+            "This account has no recovery key: it was made before recovery keys, and none can be \
+             made for it."
+        );
+    }
 }
 
 /// Says that the device waits for linking.

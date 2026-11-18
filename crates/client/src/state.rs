@@ -264,11 +264,11 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (channel, epoch, kind, recipient)
     ) STRICT",
     // The account's first device: the account record and the master backup it sends with the
-    // master key while its link is `sent`, in CBOR; and whether a recovery key waits in the
-    // secrets to be shown to the person.
+    // master key while its link is `sent`, in CBOR; and, while a recovery key waits in the
+    // secrets to be shown to the person, the server it was made on, which sign-out keeps.
     "ALTER TABLE device ADD COLUMN record BLOB;
     ALTER TABLE device ADD COLUMN backup BLOB;
-    ALTER TABLE device ADD COLUMN recovery INTEGER NOT NULL DEFAULT 0 CHECK (recovery IN (0, 1));",
+    ALTER TABLE device ADD COLUMN recovery TEXT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -711,19 +711,21 @@ impl State {
         Ok(())
     }
 
-    /// Whether a recovery key waits in the secrets to be shown to the person.
-    pub fn recovery_waits(&self) -> Result<bool, Error> {
+    /// The server a recovery key was made on, if it waits in the secrets to be shown to the
+    /// person.
+    pub fn recovery_waits(&self) -> Result<Option<String>, Error> {
         Ok(self
             .db
             .query_row("SELECT recovery FROM device", [], |row| row.get(0))
             .optional()?
-            .unwrap_or(false))
+            .flatten())
     }
 
-    /// Records whether a recovery key waits in the secrets to be shown to the person.
-    pub fn set_recovery_waits(&self, waits: bool) -> Result<(), Error> {
+    /// Records that a recovery key made on `server` waits in the secrets to be shown to the
+    /// person, or with `None` that none does.
+    pub fn set_recovery_waits(&self, server: Option<&str>) -> Result<(), Error> {
         self.db
-            .execute("UPDATE device SET recovery = ?1", params![waits])?;
+            .execute("UPDATE device SET recovery = ?1", params![server])?;
         Ok(())
     }
 
@@ -1918,12 +1920,13 @@ pub(crate) mod tests {
             assert_eq!(device.link, link);
         }
         // Whether a recovery key waits is kept apart from the link.
-        assert!(!state.recovery_waits().unwrap());
-        state.set_recovery_waits(true).unwrap();
+        assert_eq!(state.recovery_waits().unwrap(), None);
+        state.set_recovery_waits(Some("https://one.test")).unwrap();
         state.set_link(&Link::Waiting).unwrap();
-        assert!(State::open(&dir).unwrap().recovery_waits().unwrap());
-        state.set_recovery_waits(false).unwrap();
-        assert!(!State::open(&dir).unwrap().recovery_waits().unwrap());
+        let kept = State::open(&dir).unwrap().recovery_waits().unwrap();
+        assert_eq!(kept.as_deref(), Some("https://one.test"));
+        state.set_recovery_waits(None).unwrap();
+        assert_eq!(State::open(&dir).unwrap().recovery_waits().unwrap(), None);
         // The account is set only where none is recorded, and ending the session keeps it.
         state.set_device_account("0191").unwrap();
         state.start_session("http://one.test").unwrap();
@@ -2264,7 +2267,7 @@ pub(crate) mod tests {
             "UPDATE device SET link = 'sent'",
             "UPDATE device SET link = 'sent', master = zeroblob(32)",
             "UPDATE device SET link = 'sent', master = zeroblob(31), cert = x'01'",
-            "UPDATE device SET recovery = 2",
+            "UPDATE device SET recovery = x'01'",
             "UPDATE device SET master = zeroblob(32), cert = x'01'",
             "UPDATE device SET link = 'linked'",
         ] {
