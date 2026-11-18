@@ -15,11 +15,12 @@
 //!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
 //!   they revoke, before it judges the new epoch.
 //! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
-//!   once its signer and members are admitted, unless it lists the device and a Welcome comes. A
-//!   device whose Welcome it refused joins by itself from that GroupInfo also if it lists the
-//!   device, and one whose Commit it could not process rejoins from a GroupInfo of a later epoch
-//!   than its own; either removes the leaf of its own the GroupInfo lists. One a Commit removed
-//!   while admitted warns and rejoins. A Commit of an epoch it has passed is a replay, dropped.
+//!   once its signer and members are admitted or revoked devices of the channel's member accounts,
+//!   whose Remove it then commits, unless it lists the device and a Welcome comes. A device whose
+//!   Welcome it refused joins by itself from that GroupInfo also if it lists the device, and one
+//!   whose Commit it could not process rejoins from a GroupInfo of a later epoch than its own;
+//!   either removes the leaf of its own the GroupInfo lists. One a Commit removed while admitted
+//!   warns and rejoins. A Commit of an epoch it has passed is a replay, dropped.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
 //!   it is sent, and is sent again with the same bytes until the server answers. After `stored` it
 //!   merges the Commit, uploads the new epoch's GroupInfo, then sends the Welcome to the devices it
@@ -50,8 +51,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
-    ChannelView, Joining, MemberDevice, MlsContent, MlsDevice, MlsError, MlsFraming, Processed,
-    SealedState, StateKey, check_key_package,
+    ChannelView, DeviceCheckError, Joining, MemberDevice, MlsContent, MlsDevice, MlsError,
+    MlsFraming, Processed, SealedState, StateKey, check_device, check_key_package,
+    check_valid_device,
 };
 use skald_proto::{
     Cbor as _, Cert, Channel, ChannelId, Content, DeviceId, Envelope, Frame, Header, MessageId,
@@ -732,8 +734,16 @@ fn align(
         let aligned = match held.get(&id) {
             // A Welcome in the mailbox comes first.
             None if welcomes.contains(&id) => Ok(()),
-            None => outside(follower, link, at, &admitted, rejoining.contains(&id)),
-            Some(_) if rejoining.contains(&id) => behind(follower, link, at, &admitted),
+            None => outside(
+                follower,
+                link,
+                at,
+                (roster, devices, &admitted),
+                rejoining.contains(&id),
+            ),
+            Some(_) if rejoining.contains(&id) => {
+                behind(follower, link, at, (roster, devices, &admitted))
+            }
             Some(members) => keep_group_info(follower, link, space, id).and_then(|()| {
                 keep_in_line(follower, link, at, (roster, devices, &admitted), members)
             }),
@@ -761,14 +771,15 @@ fn welcomes_waiting(follower: &Follower) -> Result<Vec<ChannelId>, String> {
 }
 
 /// Brings this device, admitted to `channel` of `space` but outside its group, into it, with
-/// `others`, the other admitted devices: creates the group if the server has none; otherwise joins
-/// by itself from the GroupInfo of the current epoch, if the server has one, unless it lists this
-/// device, which another device added and whose Welcome comes, or `rejoining`.
+/// `others`, the other admitted devices by `roster` and `devices`: creates the group if the server
+/// has none; otherwise joins by itself from the GroupInfo of the current epoch, if the server has
+/// one, unless it lists this device, which another device added and whose Welcome comes, or
+/// `rejoining`.
 fn outside(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
-    others: &BTreeMap<DeviceId, Cert>,
+    (roster, devices, others): (&Roster, &SpaceDevices, &BTreeMap<DeviceId, Cert>),
     rejoining: bool,
 ) -> Result<(), String> {
     let (group, group_info) = group_on_server(follower, space, channel)?;
@@ -792,18 +803,19 @@ fn outside(
         link,
         (space, channel),
         (&view, &group_info),
-        others,
+        (roster, devices, others),
     )
 }
 
 /// Rejoins `channel` of `space`, whose group this device holds but whose Commit it could not
 /// process or whose Welcome it refused, from the GroupInfo of the current epoch, if the server has
-/// one of an epoch past the device's; with `others`, the other admitted devices.
+/// one of an epoch past the device's; with `others`, the other admitted devices by `roster` and
+/// `devices`.
 fn behind(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
-    others: &BTreeMap<DeviceId, Cert>,
+    (roster, devices, others): (&Roster, &SpaceDevices, &BTreeMap<DeviceId, Cert>),
 ) -> Result<(), String> {
     let epoch = held_epoch(follower, link, channel)?;
     let Some(group_info) = group_on_server(follower, space, channel)?.1 else {
@@ -816,7 +828,7 @@ fn behind(
             link,
             (space, channel),
             (&view, &group_info),
-            others,
+            (roster, devices, others),
         );
     }
     // The device is in the current epoch: what it could not process was not the channel's.
@@ -842,41 +854,87 @@ fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, String>
 }
 
 /// Of `signer` and `members`, a GroupInfo's, those that are not of `others`, the other admitted
-/// devices, nor this device, `this`, with its own key `signing`.
+/// devices, nor of `revoked`, as [`revoked_members`] gives them, nor this device, `this`, with its
+/// own key `signing`.
 fn not_admitted(
     (this, signing): (DeviceId, &[u8; 32]),
-    others: &BTreeMap<DeviceId, Cert>,
+    (others, revoked): (&BTreeMap<DeviceId, Cert>, &BTreeMap<DeviceId, [u8; 32]>),
     (signer, members): (&MemberDevice, &[MemberDevice]),
 ) -> BTreeSet<DeviceId> {
     let own = |member: &&MemberDevice| member.device == this && member.signing == *signing;
     let listed = members.iter().chain([signer]).filter(|member| !own(member));
-    unadmitted(others, listed).into_iter().collect()
+    let revoked = |member: &&MemberDevice| revoked.get(&member.device) == Some(&member.signing);
+    unadmitted(others, listed.filter(|member| !revoked(member)))
+        .into_iter()
+        .collect()
+}
+
+/// The revoked devices of the accounts in `channel`'s `channel-member` entries in `roster`, by
+/// `devices`, each with its signing key: their certificates pass checks 1 and 2 against the master
+/// key [`follow::master_of`] gives, and check 3 or 4 fails ("Group changes").
+fn revoked_members(
+    follower: &Follower,
+    roster: &Roster,
+    devices: &SpaceDevices,
+    channel: ChannelId,
+) -> BTreeMap<DeviceId, [u8; 32]> {
+    let body = roster.body();
+    let mut revoked = BTreeMap::new();
+    let Some(channel) = body.channels.iter().find(|listed| listed.id == channel) else {
+        return revoked;
+    };
+    let SpaceDevices {
+        certs, revocations, ..
+    } = devices;
+    for entry in &channel.members {
+        let Some(master) = follow::master_of(roster, &follower.own, entry.account) else {
+            continue;
+        };
+        for cert in certs
+            .iter()
+            .filter(|cert| cert.body().account == entry.account)
+        {
+            let device = cert.body().device;
+            if let Ok(valid) = check_device(&master, certs, device)
+                && let Err(DeviceCheckError::Revoked { .. }) =
+                    check_valid_device(&master, certs, revocations, device)
+            {
+                revoked.insert(device, valid.body().signing);
+            }
+        }
+    }
+    revoked
 }
 
 /// Joins `channel` of `space` by itself from `group_info`, seen as `view`, if its signer and every
-/// member it lists are admitted, with `others`, the other admitted devices, once the device accepted
-/// the space's latest revisions if one is not; warns naming those that are not. The external
-/// Commit goes through the outbox as the device's other Commits do.
+/// member it lists are admitted, with `others`, the other admitted devices by `roster` and
+/// `devices`, or revoked devices of the channel's member accounts ([`revoked_members`]), once the
+/// device accepted the space's latest revisions if one is not; warns naming the others. The
+/// external Commit goes through the outbox as the device's other Commits do. Once the server
+/// stored it, the device commits the Remove of the revoked devices the group holds.
 fn join_by_itself(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
     (view, group_info): (&ChannelView, &[u8]),
-    others: &BTreeMap<DeviceId, Cert>,
+    (roster, devices, others): (&Roster, &SpaceDevices, &BTreeMap<DeviceId, Cert>),
 ) -> Result<(), String> {
     let own = (follower.this, &link.keys.signing().public_key());
     let listed = (&view.signer(), view.members());
+    let none = BTreeMap::new();
+    let (mut roster, mut devices) = (roster.clone(), devices.clone());
     let mut admitted = others.clone();
-    if !not_admitted(own, &admitted, listed).is_empty() {
+    if !not_admitted(own, (&admitted, &none), listed).is_empty() {
         // Before it holds them not admitted, the device accepts the space's latest revisions.
         let synced = follower.state.spaces().map_err(text)?;
         if let Some(held) = synced.iter().find(|held| held.id == space) {
-            let (roster, devices) = follower.sync(held)?;
+            (roster, devices) = follower.sync(held)?;
             admitted = self::admitted(follower, &roster, &devices, channel);
             admitted.remove(&follower.this);
         }
     }
-    let strangers = not_admitted(own, &admitted, listed);
+    let revoked = revoked_members(follower, &roster, &devices, channel);
+    let strangers = not_admitted(own, (&admitted, &revoked), listed);
     if !strangers.is_empty() {
         let strangers: Vec<String> = strangers.iter().map(ToString::to_string).collect();
         return Err(format!(
@@ -892,9 +950,26 @@ fn join_by_itself(
         changes.joined.push((channel, cursor + 1));
         device.join_by_itself(channel, group_info, now(), |joining| {
             let listed = (&joining.signer, joining.members.as_slice());
-            joining.channel == channel && not_admitted(own, &admitted, listed).is_empty()
+            joining.channel == channel
+                && not_admitted(own, (&admitted, &revoked), listed).is_empty()
         })
-    })
+    })?;
+    let waiting = follower.state.mls_outbox().map_err(text)?;
+    if waiting.iter().any(|outgoing| outgoing.channel == channel)
+        || not_admitted(own, (&admitted, &none), listed).is_empty()
+    {
+        return Ok(());
+    }
+    let Some(members) = members(follower, &link.keys, channel)? else {
+        return Ok(());
+    };
+    keep_in_line(
+        follower,
+        link,
+        (space, channel),
+        (&roster, &devices, &admitted),
+        &members,
+    )
 }
 
 /// Creates the group of `channel` in `space`, which has none on the server, with each of `others`,

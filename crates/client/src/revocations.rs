@@ -2,15 +2,17 @@
 //! "Group changes").
 //!
 //! - `skald revoke-device`: on a device with a valid certificate, it revokes a device of its
-//!   account that has one, itself included, by a revocation it signs without `keep` or `also`. The
-//!   revocation waits in the local state until the server has taken it: each later run that
-//!   connects sends it again, with the same bytes.
+//!   account that has one, itself included, by a revocation it signs without `also`. It shows the
+//!   devices the revoked one certified, and its `keep` lists those its user names: by `--keep`, or
+//!   asked in a terminal; with neither, none. The revocation waits in the local state until the
+//!   server has taken it: each later run that connects sends it again, with the same bytes.
 //! - Every device check applies the revocations the server gives with the certificates and those
 //!   the device holds. The device keeps each one that counts, so a server that later hides it
 //!   restores no device: only voiding undoes a revocation.
 //! - A Commit with the Remove of a revoked device carries the revocations by which its sender holds
 //!   it revoked; a device that processes one keeps those that count.
 
+use std::io::{self, BufRead, IsTerminal as _, Write};
 use std::path::Path;
 use std::time::Duration;
 
@@ -29,18 +31,22 @@ use crate::secrets;
 use crate::spaces::now;
 use crate::state::{self, Link, State};
 
-/// `skald revoke-device <device>`: revokes `device`, a device of the account of the machine whose
-/// state is in `dir`, its secrets in `storage`.
+/// `skald revoke-device <device> [--keep <kept>]...`: revokes `device`, a device of the account of
+/// the machine whose state is in `dir`, its secrets in `storage`, keeping `keep`, devices it
+/// certified; without them, those its user names in a terminal.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     speaks: VersionRange,
     timeout: Duration,
     device: &str,
+    keep: &[String],
 ) -> Result<(), String> {
-    let target: DeviceId = device
-        .parse()
-        .map_err(|_| format!("\"{}\" is not a device ID", connection::printable(device)))?;
+    let target = device_id(device)?;
+    let named = keep
+        .iter()
+        .map(|kept| device_id(kept))
+        .collect::<Result<Vec<_>, _>>()?;
     let (state, server, token, stored, _) = signed_in_with_secrets(dir, storage)?;
     let device = state.device().map_err(text)?;
     let Some(state::Device {
@@ -66,13 +72,32 @@ pub fn run(
              the account's master key this machine pinned; nothing is revoked"
         )
     })?;
+    let name = connection::printable(&cert.body().name);
+    let certified = certified_by(&master, &devices.certs, target);
+    if !certified.is_empty() {
+        println!(
+            "The device {target} ({name}) certified these devices, which are revoked with it \
+             unless kept:"
+        );
+        for (id, name) in &certified {
+            println!("  {id} ({})", connection::printable(name));
+        }
+    }
+    let ids: Vec<DeviceId> = certified.iter().map(|(id, _)| *id).collect();
+    let kept = if named.is_empty() && !ids.is_empty() && io::stdin().is_terminal() {
+        ask_keep(&mut io::stdin().lock(), &mut io::stdout(), &ids)
+            .map_err(|err| format!("cannot ask the user: {err}"))?
+            .ok_or_else(|| "no answer, so nothing is revoked".to_owned())?
+    } else {
+        kept_of(&named, &ids)?
+    };
     let keys = crate::device::known_keys(&stored, device.as_ref())
         .map_err(text)?
         .ok_or_else(|| crate::device::Error::MissingKeys.to_string())?;
     let body = RevocationBody {
         account: own,
         device: target,
-        keep: None,
+        keep: NonEmpty::from_vec(kept.clone()),
         signer: Some(this),
         timestamp: now(),
         also: None,
@@ -84,10 +109,92 @@ pub fn run(
     state
         .add_revocations(std::slice::from_ref(&revocation), true)
         .map_err(text)?;
-    let name = connection::printable(&cert.body().name);
     store(&mut connection, &token, &state, &revocation)?;
     println!("Revoked the device {target} ({name}).");
+    for (id, name) in certified.iter().filter(|(id, _)| kept.contains(id)) {
+        println!(
+            "The device {id} ({}) stays valid.",
+            connection::printable(name)
+        );
+    }
     Ok(())
+}
+
+/// The device ID `given` names, as the command takes it.
+fn device_id(given: &str) -> Result<DeviceId, String> {
+    given
+        .parse()
+        .map_err(|_| format!("\"{}\" is not a device ID", connection::printable(given)))
+}
+
+/// The devices of `certs` that `issuer` certified, with a certificate that passes checks 1 and 2
+/// against the pinned `master` key, each once with its certificate's `name`, in the order of
+/// `certs`.
+fn certified_by(master: &[u8; 32], certs: &[Cert], issuer: DeviceId) -> Vec<(DeviceId, String)> {
+    let mut certified: Vec<(DeviceId, String)> = Vec::new();
+    for cert in certs {
+        let device = cert.body().device;
+        if certified.iter().any(|(id, _)| *id == device) {
+            continue;
+        }
+        if let Ok(valid) = check_device(master, certs, device)
+            && valid.body().issuer == Some(issuer)
+        {
+            certified.push((device, valid.body().name.clone()));
+        }
+    }
+    certified
+}
+
+/// `named`, each once, if each is one of `certified`; otherwise why not, as nothing is revoked.
+fn kept_of(named: &[DeviceId], certified: &[DeviceId]) -> Result<Vec<DeviceId>, String> {
+    let mut kept: Vec<DeviceId> = Vec::new();
+    for id in named {
+        if !certified.contains(id) {
+            return Err(format!(
+                "the device {id} is not one the revoked device certified, so it cannot be kept; \
+                 nothing is revoked"
+            ));
+        }
+        if !kept.contains(id) {
+            kept.push(*id);
+        }
+    }
+    Ok(kept)
+}
+
+/// Asks on `output` which of `certified` stay valid, reading the answer from `input`: their IDs,
+/// separated by spaces or commas, or nothing for none; asks again after an answer that names
+/// anything else. None if `input` ends first.
+pub fn ask_keep(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    certified: &[DeviceId],
+) -> io::Result<Option<Vec<DeviceId>>> {
+    loop {
+        write!(
+            output,
+            "Which of them stay valid? Their IDs, separated by spaces, or nothing for none: "
+        )?;
+        output.flush()?;
+        let mut line = String::new();
+        if input.read_line(&mut line)? == 0 {
+            writeln!(output)?;
+            return Ok(None);
+        }
+        let named: Result<Vec<DeviceId>, String> = line
+            .split(|c: char| c.is_whitespace() || c == ',')
+            .filter(|word| !word.is_empty())
+            .map(device_id)
+            .collect();
+        match named.and_then(|named| kept_of(&named, certified)) {
+            Ok(kept) => return Ok(Some(kept)),
+            Err(_) => writeln!(
+                output,
+                "Please answer with IDs of the devices shown, or nothing."
+            )?,
+        }
+    }
 }
 
 /// What `skald revoke-device` says on a device without a valid certificate.
@@ -377,6 +484,80 @@ mod tests {
             let (id, master) = (self.id, self.master.public_key());
             move |account| (account == id).then_some(master)
         }
+    }
+
+    #[test]
+    fn devices_certified_by_a_device_are_those_with_a_valid_chain_through_it_each_once() {
+        let ada = Account::new();
+        let master = ada.master.public_key();
+        // A fourth device naming the first as its issuer, its certificate signed by the third.
+        let key = SigningKey::generate();
+        let body = CertBody {
+            account: ada.id,
+            device: DeviceId::from_signing_key(&key.public_key()),
+            kind: DeviceKind::Client,
+            signing: key.public_key(),
+            hpke: [3; 32],
+            issuer: Some(ada.device(0)),
+            issued: 1_800_000_000,
+            ssh: None,
+            name: "forged".to_owned(),
+            unknown: Unknown::default(),
+        };
+        let forged = issue(&body, &ada.keys[2], &key).expect("a certificate");
+        let mut certs = ada.certs.clone();
+        certs.extend([ada.certs[1].clone(), forged]);
+
+        let second = (ada.device(1), "laptop".to_owned());
+        assert_eq!(certified_by(&master, &certs, ada.device(0)), vec![second]);
+        assert_eq!(certified_by(&master, &certs, ada.device(1)), vec![]);
+        assert_eq!(certified_by(&master, &certs, ada.device(2)), vec![]);
+        let other = SigningKey::generate().public_key();
+        assert_eq!(certified_by(&other, &certs, ada.device(0)), vec![]);
+    }
+
+    #[test]
+    fn kept_devices_are_those_named_each_once_and_only_certified_ones() {
+        let ada = Account::new();
+        let (first, second) = (ada.device(0), ada.device(1));
+
+        assert_eq!(kept_of(&[], &[first]), Ok(vec![]));
+        assert_eq!(
+            kept_of(&[second, first, second], &[first, second]),
+            Ok(vec![second, first])
+        );
+        let refused = kept_of(&[first, second], &[first]).unwrap_err();
+        assert!(refused.contains(&second.to_string()), "{refused}");
+        assert!(refused.contains("nothing is revoked"), "{refused}");
+    }
+
+    #[test]
+    fn user_names_the_devices_to_keep_by_their_ids_or_none() {
+        let ada = Account::new();
+        let (first, second) = (ada.device(0), ada.device(1));
+        let certified = [first, second];
+        let ask = |answers: &str| {
+            let mut output = Vec::new();
+            let kept = ask_keep(&mut answers.as_bytes(), &mut output, &certified).unwrap();
+            (kept, String::from_utf8(output).unwrap())
+        };
+
+        assert_eq!(ask("\n").0, Some(vec![]));
+        assert_eq!(
+            ask(&format!(" {second}, {first}\n")).0,
+            Some(vec![second, first])
+        );
+        let third = ada.device(2);
+        let (kept, shown) = ask(&format!("laptop\n{third}\n{first} {first}\n"));
+        assert_eq!(kept, Some(vec![first]));
+        assert_eq!(
+            shown.matches("Which of them stay valid?").count(),
+            3,
+            "{shown}"
+        );
+        assert_eq!(shown.matches("Please answer").count(), 2, "{shown}");
+        assert_eq!(ask("").0, None);
+        assert_eq!(ask(&format!("{third}\n")).0, None);
     }
 
     #[test]
