@@ -36,8 +36,9 @@
 //! - for each message it drops for failing a check, a warning: a line saying `warning` that holds
 //!   the sending device's ID when the payload names it, and never the message's text;
 //! - `skald --agent <name> recv`, in a folder bound to a space: only that space's messages,
-//!   statuses and warnings, its output naming nothing of other spaces; a later run of the person
-//!   shows the rest.
+//!   statuses and warnings, in the short forms of the tests of compact output
+//!   (`compact_output/main.rs`), its output naming nothing of other spaces; a later run of the
+//!   person shows the rest, and every status and warning in full.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -60,6 +61,9 @@ mod keys;
 mod kit;
 #[path = "../sign_in/machine.rs"]
 mod machine;
+// What an agent reads, as the tests of compact output have it.
+#[path = "../compact_output/lines.rs"]
+mod lines;
 // The tests of new roster revisions, which share this binary's helpers.
 mod notices;
 mod peer;
@@ -82,12 +86,13 @@ use std::time::{Duration, Instant};
 
 use cloud::{Cloud, WAIT};
 use fixtures::{
-    Channel, Issuer, Keyed, acme, add_device, cert_of, channel_in, database, fronted, fronted_with,
-    hex, keyed, kill_once, killed_once, msg_id, person_address, retrying_for_the_timeout, send,
-    send_args, sent_after, strs,
+    Channel, Issuer, Keyed, acme, add_device, assert_deleted, cert_of, channel_in, database,
+    fronted, fronted_with, hex, keyed, kill_once, killed_once, msg_id, person_address,
+    retrying_for_the_timeout, send, send_args, sent_after, strs,
 };
 use front::{Acks, Answers, Front, Sent};
 use kit::assert_members;
+use lines::{agent_notes, assert_agent_got, lines_referring_to};
 use machine::{Finished, Machine, Run};
 use peer::Peer;
 use played::{Played, Took};
@@ -98,7 +103,7 @@ use skald_proto::{
     MessageId, NonEmpty, PROTOCOL_VERSION, RawEnvelope, Scheme, SpaceId, Unknown,
 };
 use skald_server::Settings;
-use talk::{Line, encrypted, messages_sent, stored};
+use talk::{Line, encrypted, messages_sent, status_lines, stored};
 use times::{DAY, MAILBOX, WEEK, moved_back};
 use world::{
     ACME, AGENT, CLIENT_A, CLIENT_B, Desk, Person, WARNING, World, members, next_with, run, store,
@@ -195,17 +200,6 @@ fn assert_shows_once(shown: &str, message: &Shown) {
     }
 }
 
-/// The lines of `shown` that report `status` for the message `msg_id` to the device `device`.
-fn status_lines(shown: &str, status: &str, msg_id: MessageId, device: DeviceId) -> usize {
-    let (msg_id, device) = (msg_id.to_string(), device.to_string());
-    shown
-        .lines()
-        .filter(|line| {
-            line.to_lowercase().contains(status) && line.contains(&msg_id) && line.contains(&device)
-        })
-        .count()
-}
-
 /// The lines of `shown` that mention the message `msg_id`.
 fn lines_of(shown: &str, msg_id: MessageId) -> usize {
     let msg_id = msg_id.to_string();
@@ -228,19 +222,6 @@ fn warnings_naming(shown: &str, device: DeviceId) -> usize {
         .iter()
         .filter(|line| line.contains(&device))
         .count()
-}
-
-/// Waits for up to [`WAIT`] until the server's database no longer holds `envelope`.
-fn assert_deleted(cloud: &Cloud, envelope: &RawEnvelope) {
-    let deadline = Instant::now() + WAIT;
-    let bytes = hex(envelope.bytes());
-    while database(cloud).contains(&bytes) {
-        assert!(
-            Instant::now() < deadline,
-            "the server still holds the envelope: it was never acked"
-        );
-        thread::sleep(Duration::from_millis(200));
-    }
 }
 
 /// Content a test seals as a sending device would, or as a compromised server or member could.
@@ -886,11 +867,12 @@ const FORGED_IN_A: &str = "forged in clienta's channel";
 const FORGED_IN_B: &str = "forged in the other client's channel";
 
 /// The agent has run once in `~/work/clientA` before Ada sends, so clienta's messages are handed
-/// over to it. As that agent, `skald recv` shows only clienta's message from Bob, the `delivered`
-/// of Ada's message there and the warning of a message dropped there, each under `mls`; its output
-/// names nothing of clientb. The person's next run shows clientb's message, status and warning,
-/// clienta's message from Bob once, as it shows each message whether or not an agent got it, and
-/// nothing else of clienta's.
+/// over to it. As that agent, `skald recv` shows only clienta's message from Bob, as its one line,
+/// and the warning of a message dropped there, one line naming Bob's device, each under `mls`; no
+/// status, as Ada sent her messages as herself; its output names nothing of clientb. The person's
+/// next run shows clientb's message, the `delivered` of Ada's message in each space, each once,
+/// the warnings of both dropped messages, clienta's message from Bob once, as it shows each
+/// message whether or not an agent got it, and no dropped text.
 #[test]
 fn agent_receives_only_in_the_space_of_its_folder() {
     let (world, front) = fronted();
@@ -928,10 +910,12 @@ fn agent_receives_only_in_the_space_of_its_folder() {
         assert_deleted(cloud, &sent.envelope);
     }
     let spaces = [CLIENT_A, CLIENT_B];
+    let mut bob_ids = Vec::new();
     for ((channel, space), text) in channels.iter().zip(spaces).zip([BOB_IN_A, BOB_IN_B]) {
         let line = Line::new(&person_address(space, &bob.person), 1, text);
         let envelope = encrypted(&mut bob, (channel.space, channel.id), channel.id, &line);
         stored(cloud, &bob, &envelope);
+        bob_ids.push(envelope.envelope().header.msg_id);
     }
     let forged: Vec<RawEnvelope> = channels
         .iter()
@@ -956,13 +940,18 @@ fn agent_receives_only_in_the_space_of_its_folder() {
     assert!(agent.success, "{agent:?}");
     assert_eq!(front.injected(), 2, "not put into catch-up: {agent:?}");
     let shown = agent.shown();
-    assert_shows_once(&shown, &bob_in(0, BOB_IN_A));
-    assert_eq!(
-        status_lines(&shown, DELIVERED, ada_ids[0], bob.device),
-        1,
-        "{shown}"
+    let from_a = person_address(CLIENT_A, bob);
+    assert_agent_got(&shown, BOB_IN_A, (bob_ids[0], &from_a, bob.host));
+    let notes = agent_notes(&shown);
+    assert!(
+        matches!(notes.as_slice(), [warning] if warning.contains(bob.host)),
+        "not one warning naming {}: {shown}",
+        bob.host
     );
-    assert_eq!(warnings_naming(&shown, bob.device), 1, "{shown}");
+    for id in &ada_ids {
+        let lines = lines_referring_to(&shown, *id);
+        assert!(lines.is_empty(), "a status of Ada's message: {lines:?}");
+    }
     for named in [
         CLIENT_B.to_owned(),
         channels[1].space.to_string(),
@@ -982,15 +971,24 @@ fn agent_receives_only_in_the_space_of_its_folder() {
 
     let shown = person.shown();
     assert_shows_once(&shown, &bob_in(1, BOB_IN_B));
-    assert_eq!(
-        status_lines(&shown, DELIVERED, ada_ids[1], bob.device),
-        1,
-        "{shown}"
-    );
-    assert_eq!(warnings_naming(&shown, bob.device), 1, "{shown}");
+    for id in &ada_ids {
+        assert_eq!(
+            status_lines(&shown, DELIVERED, *id, bob.device),
+            1,
+            "{shown}"
+        );
+    }
+    for channel in &channels {
+        let warned: Vec<String> = (warnings(&shown).into_iter())
+            .filter(|line| line.contains(&channel.id.to_string()))
+            .filter(|line| line.contains(&bob.device.to_string()))
+            .collect();
+        assert_eq!(warned.len(), 1, "{shown}");
+    }
     assert_shows_once(&shown, &bob_in(0, BOB_IN_A));
-    assert_eq!(lines_of(&shown, ada_ids[0]), 0, "shown again: {shown}");
-    assert_eq!(times(&shown, FORGED_IN_B), 0, "{shown}");
+    for forged in [FORGED_IN_A, FORGED_IN_B] {
+        assert_eq!(times(&shown, forged), 0, "{shown}");
+    }
 }
 
 /// Runs `skald --agent <CLAUDE> recv` on `machine` in `dir`.

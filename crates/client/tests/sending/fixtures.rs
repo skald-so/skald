@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use skald_crypto::{HpkeKey, SigningKey, issue};
 use skald_proto::{
     AccountId, Cbor as _, Cert, CertBody, ChannelId, ChannelMember, DeviceId, DeviceKind,
-    MessageId, NonEmpty, Role, Roster, SpaceId, Unknown,
+    MessageId, NonEmpty, RawEnvelope, Role, Roster, SpaceId, Unknown,
 };
 use skald_server::Settings;
 
@@ -272,6 +272,20 @@ pub fn person_address(space: &str, person: &Person) -> String {
 /// What the server's database holds, in lowercase, byte strings in hex.
 pub fn database(cloud: &Cloud) -> String {
     cloud.rows().concat().to_lowercase()
+}
+
+/// Waits for up to [`WAIT`] until the server's database no longer holds `envelope`.
+#[track_caller]
+pub fn assert_deleted(cloud: &Cloud, envelope: &RawEnvelope) {
+    let deadline = Instant::now() + WAIT;
+    let bytes = hex(envelope.bytes());
+    while database(cloud).contains(&bytes) {
+        assert!(
+            Instant::now() < deadline,
+            "the server still holds the envelope: it was never acked"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
 }
 
 /// Waits for up to [`WAIT`] until `done` holds, then kills `run`; fails if `run` exits first.

@@ -5,8 +5,8 @@ use std::fs;
 use std::time::Duration;
 
 use crate::helped::{
-    EXIT_LIMIT, Helped, IDLE_SETTING, LONG_IDLE, ONE_SHOT, ONE_SHOT_SETTING, TIMEOUT_FLAG,
-    WEBSOCKET, bob_reads,
+    EXIT_LIMIT, Helped, IDLE_SETTING, LONG_IDLE, ONE_SHOT, ONE_SHOT_SETTING, START_TIMEOUT,
+    TIMEOUT_FLAG, WEBSOCKET, bob_reads, timeout_of,
 };
 use crate::kit::RECV;
 use crate::machine::SIGN_OUT;
@@ -68,7 +68,8 @@ fn helper_exits_when_idle_and_the_next_command_starts_a_new_one() {
     );
     let helped = Helped::new(&talk.ada.machine);
     let seconds = SHORT_IDLE.to_string();
-    let idle = [(IDLE_SETTING, seconds.as_str())];
+    let [timeout] = timeout_of(START_TIMEOUT);
+    let idle = [(IDLE_SETTING, seconds.as_str()), timeout];
     let first = helped.send_with(&talk, &idle, FIRST);
     assert!(first.success, "{first:?}");
     let helper = helped.one_helper();

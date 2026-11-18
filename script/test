@@ -35,7 +35,8 @@
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build; the web app's archive of a release (script/release-web-test)
 #   site       the website and docs built from docs/, which fails on a broken internal link
-#              (script/site-test)
+#              (script/site-test), and the main page in Chrome Headless Shell
+#              (script/site-browser-test)
 # The native tests of the Rust code run with cargo-nextest, each in a process of its own, and the
 # doctests, which it does not run, with cargo test. With sccache on PATH, cargo compiles through it
 # (script/lib/sccache.sh).
@@ -178,7 +179,8 @@ sccache_use
 
 # web_packages: installs the packages of web/ from its lockfile, once per run, and the Chrome Headless
 # Shell of its playwright-core, unless SKALD_CHROME names another browser: CONTRIBUTING.md. The web UI
-# needs them, and so do the server's and the client's sign-in and web app tests.
+# needs them, and so do the server's and the client's sign-in and web app tests and the website's
+# browser tests.
 web_packages() {
   if [[ -z ${web_installed:-} ]]; then
     (cd web && npm ci --no-audit --no-fund)
@@ -342,8 +344,11 @@ if checks tooling; then
   script/production-deploy-workflow-test
 fi
 
-# The website and docs: the build of docs/ and its link check, and the build's tests.
+# The website and docs: the build of docs/ and its link check, and the build's tests; the main page
+# in Chrome.
 if checks site; then
   (cd site && npm ci --no-audit --no-fund)
   script/site-test
+  web_packages
+  script/site-browser-test
 fi

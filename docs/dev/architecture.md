@@ -13,6 +13,7 @@
     - Each command that changes the local state hands its operation, working directory and `--agent` to the helper over a unix socket in the state directory, and shows its output and exit code. A command whose helper cannot start runs one-shot.
     - The helper reaches the server with the environment, such as `HTTPS_PROXY`, of the command that started it.
     - A helper older than a command exits for it; a command older than the helper fails, naming both versions, and the helper keeps running.
+    - A `skald recv --wait` waits through it as a session. The helper takes in each arrival once for all its sessions and hands each its own, marking a message handed over once the session has written it out; KeyPackages, GroupInfo and the revocation check stay off that path. A one-shot `skald recv --wait` holds its own connection, takes the lock only while it receives, not while it waits, and goes on through a helper that starts meanwhile.
     - It exits after 10 minutes idle, on sign-out and before a sign-in.
     - Only the OS account that runs it reaches its socket: [threat model](../threat-model.md#another-account-on-the-machine).
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
@@ -74,7 +75,7 @@
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
-- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a connection after its first goes over long-poll. A dropped connection tries WebSocket first again. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
+- The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a WebSocket after its first takes the entries it pushed since, and on an SSE stream goes over long-poll. A dropped connection tries WebSocket first again; so do the helper and a one-shot `skald recv --wait` on SSE or long-poll after a minute. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
   - a notification names a mailbox with new entries, a stored roster revision, an ended session or a revoked device, never an envelope;
   - an instance takes no device connection before it first listens;
