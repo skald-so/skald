@@ -2,7 +2,8 @@
 //! fallback (`transport_fallback/main.rs`): over long-poll, a wait gets what comes, sending only
 //! long-polls that wait while nothing comes; once the proxy lets WebSocket upgrades through, the
 //! helper and a one-shot wait move to WebSocket within the interval; and a helper on long-poll
-//! accepts a revision stored between two of its requests, the person's wait going on through it.
+//! accepts a revision stored between two of its requests, the person's wait going on through it
+//! and through a dropped WebSocket.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -209,6 +210,28 @@ fn person_wait_keeps_waiting_through_a_revision_that_shows_nothing() {
     assert_keeps_waiting(&mut person);
 }
 
+/// Behind the proxy, which blocks nothing, the person's `skald recv --wait` starts a helper, which
+/// waits on a WebSocket. The proxy closes it, as a dropped connection; Bob's device then sends a
+/// message, which the wait shows once.
+#[test]
+fn person_wait_gets_a_message_after_its_websocket_drops() {
+    let mut behind = Behind::start(
+        [4_148_077_001, 4_148_077_002],
+        ["ada-loses-her-websocket", "bob-writes-after-the-drop"],
+    );
+    let helped = Helped::new(&behind.ada.machine);
+    let mut person = helped.start(&[], &[RECV, WAIT_FLAG]);
+    assert_keeps_waiting(&mut person);
+
+    behind.filter.close_tunnels();
+
+    let text = "bob, once her websocket dropped";
+    behind.bob_sends(text);
+    let got = person.finish();
+    assert!(got.success, "{got:?}");
+    behind.assert_shows_bobs(&got.shown(), text);
+}
+
 /// Waits for up to [`WAIT`] while `run`, if any, goes on until the proxy has seen no request for
 /// [`SETTLE`].
 #[track_caller]
@@ -240,8 +263,9 @@ fn not_waiting(seen: &[Seen]) -> Vec<&Seen> {
 /// Behind the proxy, the person's `skald recv --wait` starts a helper, which waits over long-poll.
 /// While nothing comes, for two of the server's longest long-poll waits, the proxy sees only
 /// long-polls with a wait above 0 and the challenges that prove them. Bob's device then sends a
-/// message, which the session shows once; the helper keeps running, and, with no session left,
-/// sends nothing more once its long-poll in flight has ended.
+/// message, which the session shows once, with no WebSocket tried within the retry interval; the
+/// helper keeps running, and, with no session left, sends nothing more once its long-poll in
+/// flight has ended.
 #[test]
 fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_waits() {
     let mut behind = on_long_poll(
@@ -266,10 +290,14 @@ fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_
     assert!(waiting_poll(&seen), "no long-poll that waits: {seen:#?}");
     let helper = await_helper_beside(&helped, &[&session]);
     let text = "bob, to the quiet poller";
+    let sending = behind.filter.mark();
     behind.bob_sends(text);
     let got = session.finish();
     assert!(got.success, "{got:?}");
     behind.assert_shows_bobs(&got.shown(), text);
+    let seen = behind.filter.seen_since(sending);
+    let tried = (seen.iter()).any(|one| one.is("GET", WEBSOCKET));
+    assert!(!tried, "WebSocket tried within the interval: {seen:#?}");
     await_settled(&behind, None);
     let from = behind.filter.mark();
     thread::sleep(POLL_WAIT + SETTLE);

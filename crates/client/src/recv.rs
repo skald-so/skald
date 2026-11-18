@@ -350,13 +350,12 @@ fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-/// What a run checks messages with, besides the state: the spaces it follows, those it synced,
+/// What a run checks messages with, besides the state and the spaces it follows: those it synced,
 /// each one's last accepted revision and its accounts' devices, the server's name, once it asked
 /// for it, and the key that opens what decrypting the mailbox's application messages gave, once it
 /// needed it.
 pub struct Checks {
     keys: crate::device::Keys,
-    followed: Vec<state::Space>,
     pub synced: Rosters,
     server: Option<Option<ServerName>>,
     inbox_key: Option<StateKey>,
@@ -367,7 +366,6 @@ impl Checks {
     pub fn new(follower: &Follower, synced: Rosters) -> Result<Self, String> {
         Ok(Checks {
             keys: follower.keys()?,
-            followed: follower.state.spaces().map_err(text)?,
             synced,
             server: None,
             inbox_key: None,
@@ -379,12 +377,6 @@ impl Checks {
         if self.server.is_none() {
             self.server = Some(server_name(&mut follower.connection)?);
         }
-        Ok(())
-    }
-
-    /// Reads again the spaces `follower` follows.
-    pub fn follow(&mut self, follower: &Follower) -> Result<(), String> {
-        self.followed = follower.state.spaces().map_err(text)?;
         Ok(())
     }
 }
@@ -819,11 +811,8 @@ fn judge(
     (seq, header, sender, group): (u64, &Header, DeviceId, Group),
     content: impl FnOnce(&Cert) -> Result<Content, String>,
 ) -> Result<Verdict, String> {
-    let Some(space) = checks
-        .followed
-        .iter()
-        .find(|space| space.id == header.space)
-    else {
+    let followed = follower.state.spaces().map_err(text)?;
+    let Some(space) = followed.iter().find(|space| space.id == header.space) else {
         return Ok(Verdict::Drop(
             Some(sender),
             format!("its space {} is none this device follows", header.space),

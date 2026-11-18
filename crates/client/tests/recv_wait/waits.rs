@@ -19,6 +19,8 @@ use crate::world::AGENT;
 pub const WAIT_FLAG: &str = "--wait";
 /// The setting that has a session say when each step of the helper's intake ran.
 pub const TRACE_SETTING: &str = "SKALD_WAIT_TRACE";
+/// How each line of the trace starts.
+pub const TRACED: &str = "skald: trace: ";
 /// The setting of how long a connection on SSE or long-poll waits before it tries WebSocket again,
 /// in seconds.
 pub const RETRY_SETTING: &str = "SKALD_WEBSOCKET_RETRY";

@@ -14,7 +14,7 @@ use crate::talk::{
     BOB_HOST, Line, Talk, assert_shows_once, delivered, encrypted, one_message_sent, stored,
 };
 use crate::waits::{
-    ARRIVAL, AT_ONCE, TRACE_SETTING, WAIT_FLAG, Waits, assert_got, assert_idle,
+    ARRIVAL, AT_ONCE, TRACE_SETTING, TRACED, WAIT_FLAG, Waits, assert_got, assert_idle,
     assert_keeps_waiting, assert_shown_within,
 };
 use crate::world::{ACME, ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
@@ -269,8 +269,10 @@ fn session_gets_the_messages_a_command_through_its_helper_makes_its_own() {
 /// The device has run as claude in `~/work/acme`. Through one helper, claude waits in
 /// `~/work/acme`, and codex in `~/work/other`, in the personal space. Bob's device sends a message
 /// to acme's channel: claude's session shows it once, with its `msg_id`, and exits, the helper
-/// having asked for no KeyPackages, GroupInfo, device list or server name on the way; codex's keeps
-/// waiting, the server seeing no request meanwhile: the message woke no session of another space.
+/// having asked for no KeyPackages, GroupInfo, device list or server name, nor long-polled, on the
+/// way; codex's keeps
+/// waiting, the server seeing no request meanwhile, and its trace shows no intake: the message woke
+/// no session of another space.
 #[test]
 fn message_wakes_no_session_of_another_space() {
     let mut waits = Waits::new(
@@ -280,7 +282,8 @@ fn message_wakes_no_session_of_another_space() {
     waits.agents.run_as(CLAUDE);
     let other = dir_of(&waits.agents.talk.ada.machine, "work/other");
     let mut claude = waits.session(CLAUDE);
-    let mut codex = (waits.helped).start_in(&other, &[], &[AGENT, CODEX, RECV, WAIT_FLAG]);
+    let traced = [(TRACE_SETTING, "1")];
+    let mut codex = (waits.helped).start_in(&other, &traced, &[AGENT, CODEX, RECV, WAIT_FLAG]);
     assert_idle(&waits.agents.talk, &mut [&mut claude, &mut codex]);
     let bob = waits.agents.bob();
     let sending = waits.agents.talk.cloud().relay.mark();
@@ -297,6 +300,7 @@ fn message_wakes_no_session_of_another_space() {
                 "/group-info",
                 "get /devices ",
                 "get /server ",
+                "post /mailbox/poll",
             ]
             .iter()
             .any(|path| line.contains(path))
@@ -309,12 +313,17 @@ fn message_wakes_no_session_of_another_space() {
         .filter_map(|sent| sent.head.lines().next().map(str::to_owned))
         .collect();
     assert!(sent.is_empty(), "codex's session ran: {sent:?}");
-    assert!(!codex.shown().contains(FOR_ACME), "{}", codex.shown());
+    let shown = codex.shown();
+    assert!(
+        !shown.contains(FOR_ACME) && !shown.contains(TRACED),
+        "{shown}"
+    );
 }
 
 /// The device has run as claude and codex in `~/work/acme`, and both wait there through one helper.
 /// Bob's device sends a message to codex: codex's session shows it once, with its `msg_id`, and
-/// exits; claude's keeps waiting, having shown nothing of it.
+/// exits; claude's keeps waiting, having shown nothing of it but, as it is traced, the intake's
+/// steps.
 #[test]
 fn message_to_another_agent_of_the_space_wakes_no_session_of_its_own() {
     let mut waits = Waits::new(
@@ -323,7 +332,7 @@ fn message_to_another_agent_of_the_space_wakes_no_session_of_its_own() {
     );
     waits.agents.run_as(CLAUDE);
     waits.agents.run_as(CODEX);
-    let mut claude = waits.session(CLAUDE);
+    let mut claude = waits.session_with(&[(TRACE_SETTING, "1")], CLAUDE);
     let mut codex = waits.session(CODEX);
     assert_keeps_waiting(&mut claude);
     assert_keeps_waiting(&mut codex);
@@ -332,7 +341,17 @@ fn message_to_another_agent_of_the_space_wakes_no_session_of_its_own() {
 
     let id = waits.agents.bob_sends(&line);
 
-    assert_got(&codex.finish(), TO_CODEX, id);
+    let got = codex.finish();
+    assert_got(&got, TO_CODEX, id);
+    assert!(
+        !got.shown().contains(TRACED),
+        "untraced, it traces: {got:?}"
+    );
     assert_keeps_waiting(&mut claude);
-    assert!(!claude.shown().contains(TO_CODEX), "{}", claude.shown());
+    let shown = claude.shown();
+    assert!(!shown.contains(TO_CODEX), "{shown}");
+    assert!(
+        shown.contains(&format!("{TRACED}handing over at ")),
+        "{shown}"
+    );
 }

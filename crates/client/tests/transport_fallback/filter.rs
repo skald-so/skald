@@ -11,7 +11,8 @@
 //! over HTTPS, or the next long-poll, for a while before it goes on, or drop the envelope
 //! unanswered; and cut the machine off once the server has sent it a
 //! given envelope: what the server sends on the connections open then still reaches the machine,
-//! but nothing the machine sends after it reaches the server, such as its ack.
+//! but nothing the machine sends after it reaches the server, such as its ack. It can close the
+//! WebSockets it tunnels, as a dropped connection.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -109,6 +110,8 @@ struct State {
     seen: Vec<Seen>,
     /// What the server sent on the event streams and the filter passed to the machine.
     streamed: Vec<u8>,
+    /// The machine's end of each WebSocket it tunnels.
+    tunnels: Vec<TcpStream>,
 }
 
 impl State {
@@ -160,6 +163,7 @@ impl Filter {
                 cut: false,
                 seen: Vec::new(),
                 streamed: Vec::new(),
+                tunnels: Vec::new(),
             })),
         };
         let (serving, target) = (filter.clone(), target.to_owned());
@@ -221,6 +225,13 @@ impl Filter {
         let mut state = self.state();
         state.cut_after = Some(envelope.to_vec());
         state.cut = false;
+    }
+
+    /// Closes each WebSocket it tunnels.
+    pub fn close_tunnels(&self) {
+        for tunnel in std::mem::take(&mut self.state().tunnels) {
+            let _ = tunnel.shutdown(Shutdown::Both);
+        }
     }
 
     /// Whether the machine was cut off.
@@ -350,10 +361,12 @@ impl Filter {
     /// Forwards a WebSocket upgrade both ways until either side closes; once the machine is cut
     /// off, nothing more of it.
     fn tunnel(&self, machine: TcpStream, server: TcpStream, index: usize) {
-        let (Ok(mut from_machine), Ok(mut to_server)) = (machine.try_clone(), server.try_clone())
+        let (Ok(mut from_machine), Ok(mut to_server), Ok(kept)) =
+            (machine.try_clone(), server.try_clone(), machine.try_clone())
         else {
             return close(machine);
         };
+        self.state().tunnels.push(kept);
         let filter = self.clone();
         thread::spawn(move || {
             let mut buffer = [0; 16 * 1024];

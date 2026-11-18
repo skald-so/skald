@@ -631,9 +631,10 @@ fn over_sse(
 }
 
 /// Catch-up on `socket` after its first: writes with `write` the entries after `cursor` of
-/// `pushed`, those it pushed since, and acks them. A WebSocket pushes each entry stored after its
-/// catch-up, in `seq` order, so nothing else waits. An ack that does not go out is left to the next
-/// connection's cursor.
+/// `pushed`, those it pushed since, and acks up to the last written, which the server takes again
+/// harmlessly if none was new. A WebSocket pushes each entry stored after its catch-up, in `seq`
+/// order, so nothing else waits. An ack that does not go out is left to the next connection's
+/// cursor.
 fn from_pushed(
     socket: &mut WebSocket,
     follower: &mut Follower,
@@ -641,7 +642,7 @@ fn from_pushed(
     write: Write<'_>,
 ) -> Result<(), Stop> {
     let written = write(follower, pushed, cursor).map_err(Stop::Failed)?;
-    if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| written > cursor) {
+    if let Some(seq) = std::num::NonZeroU64::new(written) {
         let _ = socket.send(Message::Binary(Frame::Ack { seq }.to_cbor().into()));
     }
     Ok(())
