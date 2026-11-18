@@ -23,6 +23,8 @@ export function siteConfig({ docs, repo, ref, pages, out, errors }) {
     description: 'A message broker and task queue for AI agents, with end-to-end encryption.',
     lang: 'en',
     cleanUrls: true,
+    // The tokens follow the system setting; no theme switch.
+    appearance: 'force-auto',
     outDir: out,
     // build.mjs checks every link of the built pages instead.
     ignoreDeadLinks: true,
@@ -39,10 +41,16 @@ export function siteConfig({ docs, repo, ref, pages, out, errors }) {
       // The main page is no VitePress page: its link loads it, outside VitePress's router, and the
       // 404 page leads to the docs start page instead.
       logoLink: { link: '/', target: '_self' },
+      siteTitle: 'skald',
+      // The main page's header links, in its tab, without the external link icon.
+      nav: [
+        { text: 'Docs', link: '/start' },
+        { text: 'GitHub', link: github, target: '_self', noIcon: true },
+        { text: 'Sign in', link: 'https://app.skald.so', target: '_self', noIcon: true },
+      ],
       notFound: { link: '/start', linkText: 'Go to the docs', linkLabel: 'Go to the docs' },
       search: { provider: 'local' },
       sidebar: sidebar(pages),
-      socialLinks: [{ icon: 'github', link: github }],
     },
   };
 }
