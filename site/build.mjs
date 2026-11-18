@@ -13,6 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { build as viteBuild } from 'vite';
 import { build } from 'vitepress';
+import { servedFile } from './served.mjs';
 
 const here = path.dirname(new URL(import.meta.url).pathname);
 const [outArg, docsArg, ...extra] = process.argv.slice(2);
@@ -136,15 +137,6 @@ function checkLinks(dir, pages) {
     }
     return ids.get(file);
   };
-  // The file a site path is served from: a page without .html, a directory's index.html.
-  const fileOf = (pathname) => {
-    const name = decodeURIComponent(pathname).replace(/^\//, '');
-    for (const candidate of [name.endsWith('/') || name === '' ? `${name}index.html` : name, `${name}.html`]) {
-      const full = path.join(dir, candidate);
-      if (fs.existsSync(full) && fs.statSync(full).isFile()) return candidate;
-    }
-    return null;
-  };
   const broken = [];
   for (const file of html.sort()) {
     const url = `https://site/${file.replace(/(^|\/)index\.html$/, '$1').replace(/\.html$/, '')}`;
@@ -153,7 +145,7 @@ function checkLinks(dir, pages) {
       const link = decode(raw);
       if (scheme.test(link)) continue;
       const target = new URL(link, url);
-      const targetFile = fileOf(target.pathname);
+      const targetFile = servedFile(dir, target.pathname);
       const shown = `${sources.get(file) ?? file}: ${link}`;
       if (targetFile === null) broken.push(shown);
       else if (target.hash.length > 1 && targetFile.endsWith('.html') && !idsOf(targetFile).has(decodeURIComponent(target.hash.slice(1)))) {

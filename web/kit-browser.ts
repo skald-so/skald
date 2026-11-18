@@ -1,5 +1,5 @@
 // Opens the kit page from a Vite dev server in headless Chrome: for the kit tests and screenshots.
-// The website's browser tests and screenshots take its Chrome too.
+// The website's browser tests and screenshots take its Chrome, pages and checks too.
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -112,23 +112,16 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
   const kit: Kit = {
     origin,
     browser,
-    async open({ width, system, theme, screen = "kit" }) {
-      const page = await browser.newPage({
-        viewport: { width, height: 900 },
-        colorScheme: system,
-      });
-      const requests: string[] = [];
-      page.on("request", (request) => requests.push(request.url()));
+    open({ width, system, theme, screen = "kit" }) {
       const query = new URLSearchParams({
         ...(screen !== "kit" && { screen }),
         ...(theme && { theme }),
       }).toString();
-      await page.goto(`${origin}/kit.html${query ? `?${query}` : ""}`);
-      await page.locator("h1").waitFor();
-      await page.evaluate(async () => {
-        await document.fonts.ready;
-      });
-      return { page, requests };
+      return openPage(
+        browser,
+        `${origin}/kit.html${query ? `?${query}` : ""}`,
+        { width, system },
+      );
     },
     async close() {
       await browser.close();
@@ -144,6 +137,81 @@ export async function startKit({ pinned = false } = {}): Promise<Kit> {
     throw error;
   }
   return kit;
+}
+
+/**
+ * Opens `url` in a new page `width` pixels wide with the system set to `system`, rendered, its h1
+ * shown, and with fonts loaded. `permissions` grants the page browser permissions, e.g. the
+ * clipboard's.
+ */
+export async function openPage(
+  browser: Browser,
+  url: string,
+  {
+    width,
+    system,
+    permissions = [],
+  }: { width: number; system: Theme; permissions?: string[] },
+): Promise<KitView> {
+  const page = await browser.newPage({
+    viewport: { width, height: 900 },
+    colorScheme: system,
+    permissions,
+  });
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+  await page.goto(url);
+  await page.locator("h1").waitFor();
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
+  return { page, requests };
+}
+
+/** The kit's accessibility check: axe-core's violations on the page, each with its elements. */
+export async function accessibilityViolations(
+  page: Page,
+): Promise<{ rule: string; nodes: string[] }[]> {
+  await page.addScriptTag({
+    path: createRequire(import.meta.url).resolve("axe-core"),
+  });
+  return page.evaluate(async () => {
+    const { axe } = window as unknown as {
+      axe: typeof import("axe-core");
+    };
+    const results = await axe.run(document);
+    return results.violations.map((violation) => ({
+      rule: violation.id,
+      nodes: violation.nodes.map((node) => node.target.join(" ")),
+    }));
+  });
+}
+
+/**
+ * Tabs through the page until the focus leaves it or comes back, and gives each element focused
+ * from the keyboard with its outline, `<style> <width> <color>`.
+ */
+export async function keyboardFocus(
+  page: Page,
+): Promise<{ element: string; outline: string }[]> {
+  const focused: { element: string; outline: string }[] = [];
+  for (let i = 0; i < 500; i++) {
+    await page.keyboard.press("Tab");
+    const focus = await page.evaluate(() => {
+      const element = document.activeElement;
+      if (!element || element === document.body) return null;
+      if (element.hasAttribute("data-kit-focused")) return null;
+      element.setAttribute("data-kit-focused", "");
+      const style = getComputedStyle(element);
+      return {
+        element: element.outerHTML.slice(0, 100),
+        outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
+      };
+    });
+    if (!focus) break;
+    focused.push(focus);
+  }
+  return focused;
 }
 
 /**
