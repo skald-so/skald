@@ -302,7 +302,7 @@ fn answers<T>(
         Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
     };
-    let Some(socket) = mailbox.websocket() else {
+    let Some((socket, pushed)) = mailbox.websocket() else {
         link.mailbox = Some(mailbox);
         return Err(
             "history items go to the server over a WebSocket only, and this network lets none \
@@ -326,6 +326,10 @@ fn answers<T>(
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
                 Ok(Frame::HistoryRefused { upload, problem }) => (upload, Some(problem)),
+                Ok(Frame::Push(push)) => {
+                    crate::mailbox::keep_push(pushed, push);
+                    continue;
+                }
                 // Another frame, or one it does not know or that does not decode, ignored.
                 _ => continue,
             },
