@@ -13,6 +13,7 @@ use skald_proto::{AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, Devic
 use zeroize::Zeroizing;
 
 use crate::connection::{self, Connection, Method};
+use crate::link_code;
 use crate::secrets;
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -26,8 +27,8 @@ const STATE_KEY: &str = "mls_state_key";
 /// The `name` of a device whose host name is empty.
 const UNNAMED: &str = "skald device";
 
-/// The problem of a registration beyond the devices an account may have.
-const DEVICES_LIMIT: &str = "https://skald.so/problems/devices-limit";
+/// The problem of a certificate beyond the devices an account may have.
+pub const DEVICES_LIMIT: &str = "https://skald.so/problems/devices-limit";
 
 /// Why the device cannot be set up, beyond the server, the state or the secrets.
 #[derive(Debug)]
@@ -46,7 +47,8 @@ pub enum Error {
     Renamed(String),
     /// The server has the device's ID with other keys or `name`, or on another account.
     DeviceTaken,
-    /// The account has as many devices as the server lets it have.
+    /// The server refused the device's certificate: the account has as many devices as the server
+    /// lets it have.
     DevicesLimit,
     /// The user says it is the account's first device, and the account has a master key.
     NotFirst,
@@ -90,8 +92,9 @@ impl std::fmt::Display for Error {
                 "the server has this device's ID with other keys or name, or on another account",
             ),
             Error::DevicesLimit => f.write_str(
-                "the account has as many devices as it may on this server; this device is not \
-                 registered",
+                "the account has as many devices as it may on this server, so the server does not \
+                 store this device's certificate yet; once a device of the account is revoked, the \
+                 next skald command on this machine stores it",
             ),
             Error::NotFirst => f.write_str(
                 "the account has a master key already: someone else may have created it. This \
@@ -316,6 +319,8 @@ pub struct Setup<'a> {
     pub device: state::Device,
     pub keys: &'a Keys,
     pub first: First,
+    /// Whether its person runs it at a terminal: then, waiting for linking, it shows link codes.
+    pub interactive: bool,
 }
 
 /// What setting up the device gives.
@@ -332,13 +337,30 @@ impl Setup<'_> {
                 println!("This device holds its certificate, signed by the account's master key.");
                 Ok(())
             }
-            Link::Waiting => {
-                waits();
+            Link::Waiting => self.wait(),
+            Link::Granted { master, cert, link } => {
+                link_code::store(self.connection, self.state, self.token, master, cert, link)?;
                 Ok(())
             }
             Link::Sent { master, cert } => self.give_master(master, cert),
             Link::New => self.link(),
         }
+    }
+
+    /// Waits for linking: at a terminal, by link codes it shows ([`link_code::show`]).
+    fn wait(self) -> Done {
+        if !self.interactive {
+            waits();
+            return Ok(());
+        }
+        link_code::show(&mut link_code::NewDevice {
+            connection: self.connection,
+            state: self.state,
+            token: self.token,
+            account: self.account,
+            device: &self.device,
+            keys: self.keys,
+        })
     }
 
     /// `POST /devices`: the same registration again, after a lost answer, is taken too.
@@ -357,9 +379,6 @@ impl Setup<'_> {
         {
             Ok(_) => Ok(()),
             Err(connection::Error::Refused { status: 409, .. }) => Err(Error::DeviceTaken.into()),
-            Err(connection::Error::Refused { kind, .. }) if kind == DEVICES_LIMIT => {
-                Err(Error::DevicesLimit.into())
-            }
             Err(err) => Err(err.into()),
         }
     }
@@ -400,8 +419,7 @@ impl Setup<'_> {
             (false, None) => Err(Error::NoMasterKey.into()),
             (false, Some(_)) => {
                 self.state.set_link(&Link::Waiting)?;
-                waits();
-                Ok(())
+                self.wait()
             }
         }
     }
@@ -454,8 +472,7 @@ impl Setup<'_> {
                     "Another device gave the account's master key first: this device dropped its \
                      own."
                 );
-                waits();
-                Ok(())
+                self.wait()
             }
             Err(err) => Err(err.into()),
         }

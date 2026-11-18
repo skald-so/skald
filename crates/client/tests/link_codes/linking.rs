@@ -7,11 +7,12 @@ use std::time::{Duration, Instant};
 
 use skald_proto::DeviceId;
 
+use crate::browser::APPROVE;
 use crate::cloud::{Cloud, WAIT, ids};
 use crate::keys;
 use crate::machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN};
 use crate::terminal::{Shown, Terminal};
-use crate::world::{APPROVE, Person, World};
+use crate::world::{Person, World};
 
 /// The command that links a new device on a linked one.
 pub const LINK: &str = "link";

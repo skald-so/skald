@@ -293,6 +293,18 @@ const MIGRATIONS: &[&str] = &[
         anchors BLOB NOT NULL,
         pending INTEGER NOT NULL CHECK (pending IN (0, 1))
     ) STRICT",
+    // The grant a device waiting for linking took from a run of its link code: the master public
+    // key it pins, its complete certificate and the link object, in CBOR, until the server stores
+    // the certificate. At most one row. And, as an issuing device, how many runs of `skald link` in
+    // a row failed.
+    "CREATE TABLE link_grant (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        master BLOB NOT NULL CHECK (length(master) = 32),
+        cert BLOB NOT NULL,
+        link BLOB NOT NULL
+    ) STRICT;
+    ALTER TABLE device ADD COLUMN failed_link_runs INTEGER NOT NULL DEFAULT 0
+        CHECK (failed_link_runs >= 0);",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -361,6 +373,24 @@ pub enum Link {
     Certified { master: [u8; 32], cert: Vec<u8> },
     /// It waits for linking by another device of the account.
     Waiting,
+    /// Waiting, it took a grant from a run of its link code: the master public key `master` it
+    /// pins, its complete certificate `cert` and the link object `link`, in CBOR; the server has
+    /// not stored the certificate yet.
+    Granted {
+        master: [u8; 32],
+        cert: Vec<u8>,
+        link: Vec<u8>,
+    },
+}
+
+/// How a device of a list changed since the device last checked it ([`State::device_statuses`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusChange {
+    Revoked,
+    /// Valid again.
+    Valid,
+    /// Valid, and new to a list the device checked before.
+    Added,
 }
 
 /// A space the device accepted a revision of, as the state holds it.
@@ -660,7 +690,7 @@ impl State {
             "new" => Link::New,
             "sent" => pinned().map(|(master, cert)| Link::Sent { master, cert })?,
             "certified" => pinned().map(|(master, cert)| Link::Certified { master, cert })?,
-            "waiting" => Link::Waiting,
+            "waiting" => self.granted()?.unwrap_or(Link::Waiting),
             other => return Err(Error::Malformed(format!("the device's link {other:?}"))),
         };
         Ok(Some(Device {
@@ -696,18 +726,67 @@ impl State {
         Ok(())
     }
 
+    /// The grant a waiting device took, if it holds one.
+    fn granted(&self) -> Result<Option<Link>, Error> {
+        let row = self
+            .db
+            .query_row("SELECT master, cert, link FROM link_grant", [], |row| {
+                Ok((
+                    row.get::<_, Vec<u8>>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .optional()?;
+        row.map(|(master, cert, link)| {
+            let master = master
+                .try_into()
+                .map_err(|_| Error::Malformed("the granted master key".to_owned()))?;
+            Ok(Link::Granted { master, cert, link })
+        })
+        .transpose()
+    }
+
     /// Records how the device is linked.
     pub fn set_link(&self, link: &Link) -> Result<(), Error> {
         let (name, pinned) = match link {
             Link::New => ("new", None),
             Link::Sent { master, cert } => ("sent", Some((master, cert))),
             Link::Certified { master, cert } => ("certified", Some((master, cert))),
-            Link::Waiting => ("waiting", None),
+            Link::Waiting | Link::Granted { .. } => ("waiting", None),
         };
         let (master, cert) = pinned.unzip();
-        self.db.execute(
+        let tx = self.db.unchecked_transaction()?;
+        match link {
+            Link::Granted { master, cert, link } => tx.execute(
+                "INSERT OR REPLACE INTO link_grant (id, master, cert, link) VALUES (1, ?1, ?2, ?3)",
+                params![master.as_slice(), cert, link],
+            )?,
+            _ => tx.execute("DELETE FROM link_grant", [])?,
+        };
+        tx.execute(
             "UPDATE device SET link = ?1, master = ?2, cert = ?3",
             params![name, master.map(|master| master.as_slice()), cert],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// How many runs of `skald link` in a row failed on this device.
+    pub fn failed_link_runs(&self) -> Result<u32, Error> {
+        let failed: Option<i64> = self
+            .db
+            .query_row("SELECT failed_link_runs FROM device", [], |row| row.get(0))
+            .optional()?;
+        let failed = failed.unwrap_or(0);
+        u32::try_from(failed).map_err(|_| Error::Malformed(format!("the failed runs {failed}")))
+    }
+
+    /// Records how many runs of `skald link` in a row failed on this device.
+    pub fn set_failed_link_runs(&self, failed: u32) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE device SET failed_link_runs = ?1",
+            params![i64::from(failed)],
         )?;
         Ok(())
     }
@@ -1044,6 +1123,24 @@ impl State {
     /// fails if the device pinned one.
     pub fn add_personal_space(&self, id: SpaceId, name: &str, first: &[u8]) -> Result<(), Error> {
         self.insert_space(id, name, first, true)
+    }
+
+    /// Records the space `id` named `name` at `revision`, in CBOR, the revision a link gave the
+    /// device, as its anchor and last accepted revision, with none pending; `personal`, pinned as
+    /// the device's personal space. A space the device holds stays as it is.
+    pub fn add_linked_space(
+        &self,
+        id: SpaceId,
+        name: &str,
+        revision: &[u8],
+        personal: bool,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO space (space, name, anchor, accepted, personal) VALUES (?1, ?2, ?3, ?3, ?4)
+             ON CONFLICT (space) DO NOTHING",
+            params![id.to_string(), name, revision, personal],
+        )?;
+        Ok(())
     }
 
     fn insert_space(
@@ -1467,14 +1564,17 @@ impl State {
         Ok(())
     }
 
-    /// Records whether each of `devices` is revoked; gives those the device held otherwise before,
-    /// each with whether it is revoked now. A device it never held either way is recorded only.
+    /// Records whether each of `devices`, the devices of one list, is revoked; gives those the
+    /// device held otherwise before, each as revoked or valid again now, and, if it held any of
+    /// them before, each valid one it never held either way, as added. Any other device it never
+    /// held is recorded only.
     pub fn device_statuses(
         &self,
         devices: &[(DeviceId, bool)],
-    ) -> Result<Vec<(DeviceId, bool)>, Error> {
+    ) -> Result<Vec<(DeviceId, StatusChange)>, Error> {
         let tx = self.db.unchecked_transaction()?;
         let mut changed = Vec::new();
+        let (mut known, mut added) = (false, Vec::new());
         for &(device, revoked) in devices {
             let id = device.to_string();
             let held: Option<bool> = tx
@@ -1484,6 +1584,7 @@ impl State {
                     |row| row.get(0),
                 )
                 .optional()?;
+            known |= held.is_some();
             if held == Some(revoked) {
                 continue;
             }
@@ -1492,11 +1593,17 @@ impl State {
                  ON CONFLICT (device) DO UPDATE SET revoked = excluded.revoked",
                 params![id, revoked],
             )?;
-            if held.is_some() {
-                changed.push((device, revoked));
+            match held {
+                Some(_) if revoked => changed.push((device, StatusChange::Revoked)),
+                Some(_) => changed.push((device, StatusChange::Valid)),
+                None if !revoked => added.push((device, StatusChange::Added)),
+                None => {}
             }
         }
         tx.commit()?;
+        if known {
+            changed.extend(added);
+        }
         Ok(changed)
     }
 
@@ -2095,7 +2202,16 @@ pub(crate) mod tests {
                 master,
                 cert: cert.clone(),
             },
-            Link::Certified { master, cert },
+            Link::Certified {
+                master,
+                cert: cert.clone(),
+            },
+            Link::Waiting,
+            Link::Granted {
+                master,
+                cert: cert.clone(),
+                link: vec![4, 5],
+            },
             Link::Waiting,
             Link::New,
         ] {
@@ -3316,7 +3432,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             state.device_statuses(&[(ada, true), (bob, false)]).unwrap(),
-            vec![(ada, true), (bob, false)]
+            vec![(ada, StatusChange::Revoked), (bob, StatusChange::Valid)]
         );
         assert_eq!(
             state.device_statuses(&[(ada, true), (bob, false)]).unwrap(),
@@ -3324,8 +3440,27 @@ pub(crate) mod tests {
         );
         assert_eq!(
             state.device_statuses(&[(ada, false)]).unwrap(),
-            vec![(ada, false)]
+            vec![(ada, StatusChange::Valid)]
         );
+    }
+
+    /// A valid device new to a list the device checked before is given as added; one new to a
+    /// list it never checked, or revoked, is recorded only.
+    #[test]
+    fn a_valid_device_new_to_a_checked_list_is_added() {
+        let dir = TestDir::new("state-device-added");
+        let state = State::open(&dir).unwrap();
+        let [ada, laptop, stolen, bob] =
+            [1, 2, 3, 4].map(|key| DeviceId::from_signing_key(&[key; 32]));
+
+        assert_eq!(state.device_statuses(&[(ada, false)]).unwrap(), vec![]);
+        assert_eq!(
+            state
+                .device_statuses(&[(ada, false), (laptop, false), (stolen, true)])
+                .unwrap(),
+            vec![(laptop, StatusChange::Added)]
+        );
+        assert_eq!(state.device_statuses(&[(bob, false)]).unwrap(), vec![]);
     }
 
     #[test]

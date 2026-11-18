@@ -30,7 +30,7 @@ const MESSAGES_PATH: &str = "/account/links/messages";
 
 /// A run with the new device as the issuing device plays it, up to the grant: the code, and the
 /// run's keys and what the new device asked for.
-struct Run {
+pub struct Run {
     session: [u8; 16],
     isk: skald_crypto::Isk,
     request: LinkRequestBody,
@@ -38,7 +38,7 @@ struct Run {
 
 /// Plays the issuing device on `first`'s session for the run `new` opened: takes the latest
 /// hello, sends a reply keyed by `new`'s code, and opens its request.
-fn answer(cloud: &Cloud, first: &Person, new: &mut NewDevice) -> Run {
+pub fn answer(cloud: &Cloud, first: &Person, new: &mut NewDevice) -> Run {
     new.open_run(cloud, first);
     let (status, body) = cloud.get_as(HELLO_PATH, &first.token);
     assert_eq!(status, 200, "GET {HELLO_PATH}: {body}");
@@ -104,17 +104,17 @@ fn request_of(cloud: &Cloud, first: &Person, session: &[u8; 16]) -> Vec<u8> {
 
 /// What the played issuing device grants: the certificate body, who signs it, the master key, and
 /// the link object's body and signer. An honest grant has them as the run asks.
-struct Granted {
-    cert: CertBody,
-    cert_signer: SigningKey,
-    master: [u8; 32],
-    link: LinkBody,
-    link_signer: SigningKey,
+pub struct Granted {
+    pub cert: CertBody,
+    pub cert_signer: SigningKey,
+    pub master: [u8; 32],
+    pub link: LinkBody,
+    pub link_signer: SigningKey,
 }
 
 impl Granted {
     /// The honest grant of `first`'s device for `run`.
-    fn honest(cloud: &Cloud, first: &Person, new: &NewDevice, run: &Run) -> Self {
+    pub fn honest(cloud: &Cloud, first: &Person, new: &NewDevice, run: &Run) -> Self {
         let request = &run.request;
         Granted {
             cert: CertBody {
@@ -143,7 +143,7 @@ impl Granted {
     }
 
     /// Sends it, sealed with `run`'s grant key, as `first`'s session.
-    fn send(self, cloud: &Cloud, first: &Person, run: &Run) {
+    pub fn send(self, cloud: &Cloud, first: &Person, run: &Run) {
         let cert = self.cert.to_cbor();
         let grant = LinkGrantBody {
             master: self.master,

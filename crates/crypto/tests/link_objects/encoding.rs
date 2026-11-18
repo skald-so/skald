@@ -52,7 +52,8 @@ fn a_link_object_with_fields_of_later_versions_round_trips_byte_for_byte() {
             ..base
         };
         let body = LinkBody::from_cbor(&linked.body()).expect("a link body with later fields");
-        let kept: Vec<i128> = body.unknown.keys().collect();
+        let mut kept: Vec<i128> = body.unknown.keys().collect();
+        kept.sort_unstable();
         assert_eq!(kept, [-3, 24], "the later fields: {:?}", body.unknown);
         assert_eq!(body.to_cbor(), linked.body(), "the body, byte for byte");
 

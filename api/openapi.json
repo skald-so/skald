@@ -3076,8 +3076,155 @@
               }
             }
           },
+          "409": {
+            "description": "The server has the ID with other keys or `name`, or on another account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/devices/{device}/cert": {
+      "put": {
+        "operationId": "storeDeviceCertificate",
+        "summary": "Store a linked device's certificate",
+        "description": "Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, \"Link code\"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Device"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CertUpload"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The same certificate again: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Stored. The account's sessions get it from `GET /devices` as sent.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Device"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the certificate: a malformed body, or the problem `https://skald.so/problems/invalid-certificate`, a certificate of another device, one that fails the proof check or checks 1 and 2 against the account's master key and the certificates its devices hold, one issued by the master key, or one whose account, kind, keys or `name` differ from the device's registration on the session's account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
           "403": {
-            "description": "The problem `https://skald.so/problems/devices-limit`: a new device of an account that has as many devices with a certificate as the server setting `--devices-limit` allows. Devices without a certificate, `service` devices and revoked devices do not count. Without the setting there is no limit.",
+            "description": "The problem `https://skald.so/problems/devices-limit`: the account has as many devices with a certificate as the server setting `--devices-limit` allows. Devices without a certificate, `service` devices and revoked devices do not count; of certificates sent at once, each counts those stored before it. Without the setting there is no limit.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-device`: the session's account has registered no such device.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3092,7 +3239,7 @@
             }
           },
           "409": {
-            "description": "The server has the ID with other keys or `name`, or on another account.",
+            "description": "The problem `https://skald.so/problems/device-certified`: the device holds another certificate.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -6021,6 +6168,17 @@
         "properties": {
           "anchors": {
             "$ref": "#/components/schemas/Anchors"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CertUpload": {
+        "type": "object",
+        "required": ["cert"],
+        "properties": {
+          "cert": {
+            "description": "The device's complete certificate.",
+            "$ref": "#/components/schemas/Certificate"
           }
         },
         "additionalProperties": false

@@ -9,20 +9,22 @@ use crate::linking::{
     NO_CONFIRM, NewDevice, OWN_DEVICE, RELAYED, STORE_CERT, YES, link, link_failing, link_with,
     start_link, typed,
 };
-use crate::world::World;
+use crate::world::{Person, World};
 
 /// The host name of Ada's new machine.
 const LAPTOP: &str = "ada-laptop";
 
-/// The requests to the link code relay the relay saw since `since`.
-fn relayed_since(cloud: &Cloud, since: Instant) -> Vec<String> {
+/// The requests to the link code relay that `first`'s machine sent since `since`; the new device's
+/// own polls aside.
+fn relayed_since(cloud: &Cloud, first: &Person, since: Instant) -> Vec<String> {
     let path = RELAYED.to_lowercase();
+    let token = first.token.to_lowercase();
     cloud
         .relay
         .sent_since(since)
         .into_iter()
         .map(|sent| sent.head)
-        .filter(|head| head.contains(&path))
+        .filter(|head| head.contains(&path) && head.contains(&token))
         .collect()
 }
 
@@ -40,9 +42,9 @@ fn the_linked_device_reminds_before_the_code_and_issues_nothing_when_declined() 
     let before = cloud.relay.mark();
     let mut asking = start_link(&ada, &[]);
     assert!(
-        relayed_since(cloud, before).is_empty(),
+        relayed_since(cloud, &ada, before).is_empty(),
         "sent before the person typed a code: {:?}",
-        relayed_since(cloud, before)
+        relayed_since(cloud, &ada, before)
     );
     asking.type_line(&typed(&new.code()));
     asking.wait_for("the new device's name and kind", |shown| {
@@ -84,7 +86,7 @@ fn a_malformed_entry_starts_no_run() {
         let before = cloud.relay.mark();
         link_failing(&ada, entry);
         assert_eq!(
-            relayed_since(cloud, before),
+            relayed_since(cloud, &ada, before),
             Vec::<String>::new(),
             "{entry:?} started a run"
         );

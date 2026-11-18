@@ -32,19 +32,14 @@ impl SignedBody for AnchorsBody {
 
 impl Codec for AnchorsBody {
     fn encode(&self) -> Vec<u8> {
-        let anchors = self
-            .anchors
-            .iter()
-            .map(|(space, revision)| cbor::array([cbor::id(space), cbor::bytes(revision)]));
         account_and_device(&self.unknown, &self.account, &self.device)
-            .put(3, cbor::array(anchors))
+            .put(3, encode_anchors(&self.anchors))
             .put_some(4, self.personal.as_ref().map(cbor::id))
             .finish()
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("anchors-body")?;
-        let field = "anchors-body.anchors";
         Ok(Self {
             account: fields
                 .required(1, "anchors-body.account")?
@@ -52,15 +47,10 @@ impl Codec for AnchorsBody {
             device: fields
                 .required(2, "anchors-body.device")?
                 .id("anchors-body.device")?,
-            anchors: fields
-                .required(3, field)?
-                .array(field)?
-                .iter()
-                .map(|anchor| {
-                    let [space, revision] = anchor.tuple(field)?;
-                    Ok((space.id(field)?, revision.fixed(field)?))
-                })
-                .collect::<Result<_, DecodeError>>()?,
+            anchors: decode_anchors(
+                fields.required(3, "anchors-body.anchors")?,
+                "anchors-body.anchors",
+            )?,
             personal: fields
                 .take(4)
                 .map(|item| item.id("anchors-body.personal"))
@@ -68,6 +58,29 @@ impl Codec for AnchorsBody {
             unknown: fields.unknown(),
         })
     }
+}
+
+/// The anchors of an anchors or link body: `[space, revision]` each, in order.
+pub(crate) fn encode_anchors(anchors: &[(SpaceId, [u8; 32])]) -> Vec<u8> {
+    cbor::array(
+        anchors
+            .iter()
+            .map(|(space, revision)| cbor::array([cbor::id(space), cbor::bytes(revision)])),
+    )
+}
+
+/// The anchors `item` holds as `field` of an anchors or link body.
+pub(crate) fn decode_anchors(
+    item: &Item<'_>,
+    field: &'static str,
+) -> Result<Vec<(SpaceId, [u8; 32])>, DecodeError> {
+    item.array(field)?
+        .iter()
+        .map(|anchor| {
+            let [space, revision] = anchor.tuple(field)?;
+            Ok((space.id(field)?, revision.fixed(field)?))
+        })
+        .collect()
 }
 
 cbor::cbor!(AnchorsBody);

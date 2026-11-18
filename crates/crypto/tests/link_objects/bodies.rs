@@ -49,7 +49,9 @@ fn a_link_request_body_decodes_into_its_spec_fields_and_encodes_back() {
 
     let later = Value::Map(and_later(request_fields(), &unknown())).encode();
     let request = LinkRequestBody::from_cbor(&later).expect("a request with later fields");
-    assert_eq!(request.unknown.keys().collect::<Vec<_>>(), [-3, 24]);
+    let mut keys: Vec<i128> = request.unknown.keys().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, [-3, 24]);
     assert_eq!(request.to_cbor(), later, "with later fields, byte for byte");
 }
 
@@ -120,7 +122,9 @@ fn a_link_grant_body_decodes_into_its_spec_fields_and_encodes_back() {
     };
     let later = Value::Map(grant_fields(&cert(), &later_link, &unknown())).encode();
     let grant = LinkGrantBody::from_cbor(&later).expect("a grant with later fields");
-    assert_eq!(grant.unknown.keys().collect::<Vec<_>>(), [-3, 24]);
+    let mut keys: Vec<i128> = grant.unknown.keys().collect();
+    keys.sort_unstable();
+    assert_eq!(keys, [-3, 24]);
     assert_eq!(grant.link.to_cbor(), later_link.encoded());
     assert_eq!(grant.to_cbor(), later, "with later fields, byte for byte");
 }

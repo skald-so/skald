@@ -146,6 +146,9 @@ pub struct Options {
     pub name: Option<String>,
     /// The machine's host name, which names the device unless the user gives a name.
     pub host_name: String,
+    /// Whether its person runs it at a terminal, so that a device waiting for linking shows link
+    /// codes.
+    pub interactive: bool,
 }
 
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
@@ -217,6 +220,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         device,
         keys: &keys,
         first: options.first,
+        interactive: options.interactive,
     }
     .run()?;
     // A device that holds its certificate keeps its KeyPackages on the server.

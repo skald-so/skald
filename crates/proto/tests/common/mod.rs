@@ -9,9 +9,9 @@ use std::num::NonZeroU64;
 use skald_proto::{
     AccountId, Address, Anchors, AnchorsBody, Attachment, Body, Cbor, ChannelId, Content,
     DecodeError, Delegation, DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem,
-    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext,
-    MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation,
-    RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored, Unknown,
+    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, Link,
+    LinkBody, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, RequestProof,
+    Revocation, RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -283,6 +283,19 @@ pub fn anchors() -> Anchors {
     Anchors::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// The link object Alice's device gives the device of "TEST 3" it links: the same anchors as
+/// [`anchors`] and the personal space.
+pub fn link() -> Link {
+    let body = LinkBody {
+        device: server_device(),
+        issuer: alice_device(),
+        anchors: vec![(space(), [0xa1; 32]), (personal_space(), [0xc3; 32])],
+        personal: Some(personal_space()),
+        unknown: Unknown::default(),
+    };
+    Link::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -497,5 +510,6 @@ pub fn vectors() -> Vec<Vector> {
             revocation(None, None, Some(NonEmpty::new(server_device()))),
         ),
         vector("Anchors object", anchors()),
+        vector("Link object", link()),
     ]
 }

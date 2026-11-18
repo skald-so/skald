@@ -13,12 +13,12 @@ mod sealed;
 mod sign;
 mod wrap;
 
-pub use anchors::{check_anchors, sign_anchors};
+pub use anchors::{check_anchors, check_link, sign_anchors, sign_link};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
-pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError};
+pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError, link_session};
 pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,

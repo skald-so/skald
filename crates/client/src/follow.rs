@@ -4,9 +4,9 @@
 //! and every revision built on it, has no effect: the device keeps the last revision it accepted,
 //! warns its user and keeps working with it. Another valid revision with a number it accepted means
 //! the server forked the roster: the device keeps its own and warns. It warns when a revision it
-//! accepts changes a member's `master`, and when a member's device is revoked, or valid again, since
-//! it last checked it ("Device checks"). A revision's signer is checked with the revocations of its
-//! account.
+//! accepts changes a member's `master`, and when a member's device is revoked, valid again or new
+//! since it last checked it ("Device checks"). A revision's signer is checked with the revocations
+//! of its account.
 //!
 //! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
 //! personal space included, which counts as accepted before the server takes it, or the latest
@@ -118,8 +118,8 @@ pub fn sync(
 
 /// Records in `state` whether each device of a member of `roster`, a space's last accepted
 /// revision, is revoked, its certificate checked as [`devices::check`] does among `devices`
-/// against the master key [`master_of`] gives; gives the warning of each revoked, or valid again,
-/// since the device last checked it.
+/// against the master key [`master_of`] gives; gives the warning of each revoked, valid again or
+/// new since the device last checked it.
 pub fn device_changes(
     state: &State,
     roster: &Roster,
