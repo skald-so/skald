@@ -12,7 +12,7 @@ import { EmptyState } from "../ui/EmptyState.tsx";
 import { PageHeader } from "../ui/PageHeader.tsx";
 import { sortRows, type Sort } from "../ui/sort.ts";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
-import { versioned } from "./api.ts";
+import { signedIn, versioned } from "./api.ts";
 import { ago, date, until } from "./time.ts";
 
 /** What follows "skald" for a CLI session: its device. */
@@ -200,11 +200,11 @@ export function AccessScreen({
 async function fetchSessions(
   signal: AbortSignal,
 ): Promise<ListedSession[] | null> {
-  const listed = await listSessions({ headers: versioned, signal });
-  if (listed.status === 401) return null;
-  if (listed.status !== 200)
-    throw new Error(`GET /account/sessions ${listed.status}`);
-  return listed.data.sessions;
+  const listed = signedIn(
+    await listSessions({ headers: versioned, signal }),
+    "GET /account/sessions",
+  );
+  return listed && listed.sessions;
 }
 
 /**

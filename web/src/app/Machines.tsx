@@ -11,7 +11,7 @@ import { PageHeader } from "../ui/PageHeader.tsx";
 import { sortRows, type Sort } from "../ui/sort.ts";
 import { StatusDot, type Tone } from "../ui/Status.tsx";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
-import { versioned } from "./api.ts";
+import { signedIn, versioned } from "./api.ts";
 import { date } from "./time.ts";
 
 /** Each kind of device for people. */
@@ -141,11 +141,11 @@ export function MachinesScreen({
 async function fetchDevices(
   signal: AbortSignal,
 ): Promise<ListedDevice[] | null> {
-  const listed = await listAccountDevices({ headers: versioned, signal });
-  if (listed.status === 401) return null;
-  if (listed.status !== 200)
-    throw new Error(`GET /account/devices ${listed.status}`);
-  return listed.data.devices;
+  const listed = signedIn(
+    await listAccountDevices({ headers: versioned, signal }),
+    "GET /account/devices",
+  );
+  return listed && listed.devices;
 }
 
 /**
