@@ -953,7 +953,7 @@ export const getGetSignInProvidersUrl = () => {
 };
 
 /**
- * Needs no session. Names the providers the server has settings for and whether its sign-up is open, and nothing of the lists of who may sign up while it is closed.
+ * Needs no session. Names the providers the server has settings for, whether its sign-up is open, and nothing of the lists of who may sign up while it is closed; and its privacy policy, if it has one.
  * @summary The sign-in providers and sign-up
  */
 export const getSignInProviders = async (

@@ -25,6 +25,7 @@ use skald_proto::{Role, Roster, SpaceId};
 use crate::cloud::Cloud;
 use crate::fixtures::{await_running, fronted};
 use crate::front::Front;
+use crate::lines::agent_notes;
 use crate::machine::{Finished, Machine, Run};
 use crate::world::{
     ACME, ADMIN, AGENT, CLIENT_A, CLIENT_B, Desk, FORK, GLOBEX, MEMBER, Person, assert_role,
@@ -220,7 +221,8 @@ fn agent_run(machine: &Machine, dir: &Path) -> Run {
 /// As an agent in `~/work/clientA`, `skald recv` waits for the end of its catch-up while Bob's
 /// device stores revision 4 of `clientb`, whose revision 3 the device has not accepted yet either;
 /// the relay gives revision 4 with its signature broken. The agent's output names nothing of
-/// `clientb` and holds no warning; the person's next `skald recv` warns of the broken revision.
+/// `clientb` and holds no warning or status; the person's next `skald recv` warns of the broken
+/// revision.
 #[test]
 fn agent_output_names_nothing_of_another_spaces_revisions() {
     let (world, front) = fronted();
@@ -258,7 +260,11 @@ fn agent_output_names_nothing_of_another_spaces_revisions() {
             "the agent's output names {named}: {agent:?}"
         );
     }
-    assert_eq!(warnings(&agent), Vec::<String>::new(), "{agent:?}");
+    assert_eq!(
+        agent_notes(&agent.shown()),
+        Vec::<String>::new(),
+        "{agent:?}"
+    );
 
     let person = received(&ada.machine);
 

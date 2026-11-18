@@ -169,7 +169,7 @@ fn person_wait_shows_the_first_message_whatever_agent_it_is_for_or_the_first_sta
 /// The device has run as claude in `~/work/acme`, in one-shot mode, and Bob's device sends two
 /// messages to the channel. The person's `skald recv --wait` in one-shot mode shows both, each
 /// once, within [`SHOWN_WITHIN`] of its start, and exits within [`AT_ONCE`] of showing them; so
-/// does claude's `skald recv --wait`, through the helper it starts, each with its `msg_id`.
+/// does claude's `skald recv --wait`, through the helper it starts, each by its reference.
 #[test]
 fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
     let mut waits = Waits::new(

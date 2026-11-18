@@ -1045,6 +1045,10 @@ export const getGetSignInProvidersResponseMock = (
 ): SignInProviders => ({
   providers: faker.helpers.arrayElements(Object.values(SignInProvider)),
   sign_up: faker.helpers.arrayElement(["open", "closed"] as const),
+  privacy_policy_url: faker.helpers.arrayElement([
+    faker.internet.url(),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 
@@ -1053,6 +1057,10 @@ export const getGetSignInProvidersResponseMock200 = (
 ): SignInProviders => ({
   providers: faker.helpers.arrayElements(Object.values(SignInProvider)),
   sign_up: faker.helpers.arrayElement(["open", "closed"] as const),
+  privacy_policy_url: faker.helpers.arrayElement([
+    faker.internet.url(),
+    undefined,
+  ]),
   ...overrideResponse,
 });
 

@@ -329,6 +329,11 @@ export interface SignInProviders {
   providers: SignInProvider[];
   /** `open`: a first sign-in creates an account. `closed`: only for the people the server lists. */
   sign_up: SignInProvidersSignUp;
+  /**
+   * The address of the server's privacy policy, the server setting `--privacy-policy-url`, which its sign-in pages link. Absent without the setting.
+   * @pattern ^https://
+   */
+  privacy_policy_url?: string;
 }
 
 export interface Device {

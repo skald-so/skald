@@ -15,8 +15,8 @@ const TO_CODEX: &str = "codex, please rerun the migration job";
 
 /// Ada's device has run as claude and codex in `~/work/acme` and as gemini in `~/work/globex`,
 /// bound to `globex`. Bob's device sends to `acme`'s channel a message without `to`, then one to
-/// codex. claude's next run shows the first, codex's both, each once with its `msg_id`; gemini's
-/// shows neither. The next run of each shows nothing again.
+/// codex. claude's next run shows the first, codex's both, each once with the reference of its
+/// `msg_id`; gemini's shows neither. The next run of each shows nothing again.
 #[test]
 fn each_agent_in_the_channel_gets_a_message_without_to_and_only_the_to_agent_one_with_it() {
     let mut agents = Agents::new(

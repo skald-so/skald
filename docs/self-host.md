@@ -159,6 +159,14 @@ EOF
 
 A refused person sees that sign-up is closed in the browser, and `skald sign-in` on their machine says so and stops.
 
+### Privacy policy
+
+The sign-in pages link your privacy policy when `.env` gives its `https` address; without it, they link none. Any other value stops the server at start.
+
+```sh self-host=privacy-policy
+echo 'SKALD_PRIVACY_POLICY_URL=<privacy policy URL>' >>.env
+```
+
 ## Start
 
 ```sh self-host=up

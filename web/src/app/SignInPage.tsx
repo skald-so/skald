@@ -21,8 +21,9 @@ const faces: Record<
 
 /**
  * The sign-in page of 03-sign-in.png: a button for each provider the server has, which signs in
- * and returns to `returnTo`, a page of the web app; the note on sign-up; and the terminal box, which
- * opens the device flow's verification page with the code typed in it.
+ * and returns to `returnTo`, a page of the web app; the note on sign-up, with a link to the server's
+ * privacy policy if it has one; and the terminal box, which opens the device flow's verification
+ * page with the code typed in it.
  */
 export function SignInPage({
   providers,
@@ -52,15 +53,19 @@ export function SignInPage({
             Continue with {faces[provider].name}
           </a>
         ))}
-        {providers.providers.length === 0 ? (
-          <p className={styles.note}>This server has no sign-in set up.</p>
-        ) : (
-          <p className={styles.note}>
-            {providers.sign_up === "open"
+        <p className={styles.note}>
+          {providers.providers.length === 0
+            ? "This server has no sign-in set up."
+            : providers.sign_up === "open"
               ? "New here? Signing in creates an account."
               : "New here? Signing in creates an account only for the people this server lists."}
-          </p>
-        )}
+          {providers.privacy_policy_url && (
+            <>
+              <br />
+              <a href={providers.privacy_policy_url}>Privacy policy</a>
+            </>
+          )}
+        </p>
       </section>
       <section aria-labelledby={terminal} className={styles.card}>
         <h2 id={terminal}>Signing in from a terminal?</h2>

@@ -469,6 +469,7 @@ A member device:
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 - A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
+- A device also joins by itself from a GroupInfo whose signer and members that are not admitted are all revoked devices of accounts in the channel's `channel-member` entries, their certificates passing checks 1 and 2 of [Device checks](#device-checks). It then commits their Remove before it sends, as [Admitted devices](#admitted-devices) says. Any other device that is not admitted still makes it refuse the GroupInfo. So a device linked with the recovery key gets into a channel whose other devices it revoked.
 
 ### Rejoining
 - **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
@@ -606,6 +607,7 @@ A reader MUST drop an entry unless:
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
 - A revoked device reads a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation from every member device. A member device that did not process that Commit, such as one that joined later, learns the revocation only from the server: if the server withholds it and lets the device rejoin, that member's links open to it keys of epochs after the Remove.
+- A device that joins a group holding revoked devices ([Group changes](#group-changes)) shares its join epoch with them. That epoch is not clean, and the joiner sends nothing in it.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
 - Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
