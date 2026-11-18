@@ -27,4 +27,4 @@ Its pages are on paths that start with none of the first segments of the spec's 
 - A failed view saves its screenshot and a diff image, differing pixels in red, to `kit-diff/`; CI uploads them as the `kit-diff` artifact.
 - Screenshots come from the Chromium of the Playwright Docker image pinned in `kit-browser.ts`, so macOS and CI render the same pixels; Docker must be running. The image runs as linux/amd64, emulated on Apple silicon.
 - After an intended visual change, `npm run kit:references` updates the references; commit them in the same PR. A reviewer compares the changed references with the design in `skald-cloud`.
-- A playwright-core update needs the image of the same version in `kit-browser.ts` and new references.
+- A playwright-core update needs the image of the same version in `kit-browser.ts` and new references, the website's main page's too ([infrastructure.md](../docs/dev/infrastructure.md#website-and-docs)).

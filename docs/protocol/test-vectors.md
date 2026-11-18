@@ -2,11 +2,11 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Link code keys](#link-code-keys) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
-- Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
+- Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), and a [revocation](membership.md#revocation) by a device and by the master key. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), and the [link code](membership.md#link-code) keys of a fixed ISK. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -36,6 +36,8 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [HTTPS proof](#https-proof)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
+- [Anchors object](#anchors-object)
+- [Link code keys](#link-code-keys)
 
 ## Envelope under `mls`
 
@@ -653,3 +655,47 @@ b1e1583b84bd49c7051a69127c8006815042592ce391c8869ebdf88dff1cbfc2
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a
 ```
+
+## Anchors object
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+        h'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea',
+        h'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3'
+      ]
+    ],
+    4: h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea'
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+8258a1a40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025019ac5f7849388235
+86a6c5809a18f6dd03828250019a6f1e2b3c7d4e8f5061a2b3c4d5e65820a1a1
+a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a18250
+019a6f1e2b3c7d4e8f5061a2b3c4d5ea5820c3c3c3c3c3c3c3c3c3c3c3c3c3c3
+c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30450019a6f1e2b3c7d4e8f5061a2
+b3c4d5ea58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a
+```
+
+## Link code keys
+
+The request and grant keys of the ISK of draft-irtf-cfrg-cpace-21, Appendix B.3.5, and the plaintext `skald link test` sealed with each: ciphertext, then tag. Hex.
+
+- ISK: `b69effbf61b51d56401c0f65601abe428de8206feaaf0e32198896dcae7b35cd2b38950a39dfd5d4a79164614c2984f7daa460b588c1e80c3fa2068af7900447`
+- Request key: `34ef61cde245a794a66fb3a2a1119e06`
+- Grant key: `f59082ca8b39050a140e5a40d4bc616b`
+- Sealed with the request key: `1ac64ce7dc7b6554503c135dc7ce92240353fc905792016f23a2a16c7e79f0`
+- Sealed with the grant key: `d04b154ed6d577f0279c06f14cd70c537cc273da51bdb2cd700312b5337e81`

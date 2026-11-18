@@ -14,7 +14,8 @@
 //! first. It can hold back a device's `auth`, and what the machine sends after it, until released.
 //! It keeps each `history` frame a machine sent, and can close the connection, both ways, at the
 //! next one that carries a link, or a wrap, of a channel, which the server never gets. It can lose the server's
-//! `history-stored` answers or turn them into `history-refused`.
+//! `history-stored` answers or turn them into `history-refused`. It can lose only the `stored`
+//! answers to `mls` envelopes of a channel from an MLS epoch on.
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -24,7 +25,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
-use skald_proto::{Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, Push, RawEnvelope, SpaceId};
+use skald_crypto::MlsFraming;
+use skald_proto::{
+    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
+};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -85,6 +89,9 @@ struct State {
     answered: Vec<Frame>,
     answers: Answers,
     history_answers: Answers,
+    /// The channel and the MLS epoch from which on it loses the `stored` answers to the channel's
+    /// `mls` envelopes, whatever `answers` says.
+    lose_from: Option<(ChannelId, u64)>,
     /// How many `stored` answers were lost.
     lost: usize,
     swallow: bool,
@@ -156,6 +163,25 @@ impl Link {
     }
 }
 
+impl State {
+    /// Whether it loses the `stored` answer to the envelope `msg_id`: one of the channel, at or
+    /// after the epoch, that [`Front::lose_stored_from`] names.
+    fn loses(&self, msg_id: MessageId) -> bool {
+        let Some((channel, from)) = self.lose_from else {
+            return false;
+        };
+        self.sent.iter().any(|sent| {
+            let envelope = sent.envelope.envelope();
+            envelope.header.msg_id == msg_id
+                && envelope.header.channel == channel
+                && matches!(
+                    MlsFraming::read(&envelope.payload),
+                    Some(MlsFraming::Message { epoch, .. }) if epoch >= from
+                )
+        })
+    }
+}
+
 struct Shared {
     /// Where connections go: the relay, set once the cloud has started.
     target: OnceLock<String>,
@@ -190,6 +216,7 @@ impl Front {
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 history_answers: Answers::Forward,
+                lose_from: None,
                 lost: 0,
                 swallow: false,
                 swallowed: 0,
@@ -264,6 +291,13 @@ impl Front {
     /// From now on, does `answers` with the server's `stored` answers.
     pub fn answer(&self, answers: Answers) {
         self.shared.state().answers = answers;
+    }
+
+    /// From now on, loses the server's `stored` answers to the `mls` envelopes of `channel` of the
+    /// MLS epoch `epoch` and later ones, as a network would, and does with the others as
+    /// [`Front::answer`] says; with `None`, loses none of them so.
+    pub fn lose_stored_from(&self, from: Option<(ChannelId, u64)>) {
+        self.shared.state().lose_from = from;
     }
 
     /// From now on, does `answers` with the server's `history-stored` answers.
@@ -608,7 +642,12 @@ fn forward_answers(
             Some(Frame::Stored(stored)) => {
                 let mut state = shared.state();
                 state.answered.push(Frame::Stored(stored.clone()));
-                match state.answers.clone() {
+                let answers = if state.loses(stored.send_key.msg_id) {
+                    Answers::Lose
+                } else {
+                    state.answers.clone()
+                };
+                match answers {
                     Answers::Forward => Some(raw),
                     Answers::Lose => {
                         state.lost += 1;

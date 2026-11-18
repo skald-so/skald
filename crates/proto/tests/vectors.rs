@@ -14,14 +14,18 @@ struct Published {
     hex: String,
 }
 
-/// The vectors of the document: each `##` section but "Contents", with its `cbor-diag` and `hex`
-/// blocks.
+/// The sections of the document that hold no CBOR vector; `skald-crypto`'s tests check the link
+/// code keys.
+const NOT_VECTORS: [&str; 2] = ["Contents", "Link code keys"];
+
+/// The vectors of the document: each `##` section but [`NOT_VECTORS`], with its `cbor-diag` and
+/// `hex` blocks.
 fn published() -> Vec<Published> {
     let mut found = Vec::new();
     let mut lines = DOC.lines();
     while let Some(line) = lines.next() {
         if let Some(name) = line.strip_prefix("## ") {
-            if name != "Contents" {
+            if !NOT_VECTORS.contains(&name) {
                 found.push(Published {
                     name: name.to_owned(),
                     diag: String::new(),

@@ -129,11 +129,13 @@ link-body = {
   1 => id,                 ; device: the new device
   2 => id,                 ; issuer
   3 => [* [space: id, revision: bstr .size 32]],  ; anchors: hash of the latest revision the issuer accepted of each of its spaces
+  ? 4 => id,               ; personal: the account's personal space the issuer pinned
   * int => any,            ; fields of later versions
 }
 ```
 
 - The new device MUST reject a link object unless `device` is itself and the signature verifies with the certificate of `issuer`, a valid `client` device of its account. Each anchor is a revision it starts from: [Roster](#roster).
+- It pins `personal`, if present, as its personal space.
 - A device linked with the recovery key has no link object: it starts from [anchors](#anchors).
 
 ### Link code
@@ -202,13 +204,15 @@ anchors-body = {
   1 => id,                 ; account
   2 => id,                 ; device: a `client` device of the account
   3 => [* [space: id, revision: bstr .size 32]],  ; as in a link object
+  ? 4 => id,               ; personal: as in a link object
   * int => any,            ; fields of later versions
 }
 ```
 
-- A `client` device signs a new anchors object when it accepts a revision; the server keeps the latest per device.
+- A `client` device signs a new anchors object when it accepts a revision; the server keeps the latest per device and gives them only to the account's sessions.
 - A device linked with the recovery key takes the anchors objects after it revokes the stolen devices. It MUST reject one unless `account` is its own and the signature verifies with the certificate of `device`, a `client` device whose certificate passes checks 1 and 2 of [Device checks](#device-checks) and that no master-key revocation marks as stolen. Other revocations do not matter here, so anchors of lost or wiped devices count.
 - For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
+- It pins as its personal space the `personal` of the valid anchors objects that have one. When they name different spaces, it pins none and warns its user.
 
 ## Revocation
 A revocation removes a device from its account.
@@ -469,6 +473,7 @@ A member device:
 - A device's Adds skip devices already in the group, such as one that joined by itself meanwhile.
 - A device that gets a Welcome checks the signer and every member it lists the same way.
 - A device refuses a Welcome whose signer is not admitted, and a GroupInfo whose signer or a member it lists is not; it stays outside the group and warns its user. It joins by itself once the latest GroupInfo passes, also if that lists it. A device that joins from a Welcome listing a member that is not admitted warns its user and removes that member.
+- A device also joins by itself from a GroupInfo whose signer and members that are not admitted are all revoked devices of accounts in the channel's `channel-member` entries, their certificates passing checks 1 and 2 of [Device checks](#device-checks). It then commits their Remove before it sends, as [Admitted devices](#admitted-devices) says. Any other device that is not admitted still makes it refuse the GroupInfo. So a device linked with the recovery key gets into a channel whose other devices it revoked.
 
 ### Rejoining
 - **After missing Commits:** a device that cannot process a channel's next handshake message, or that a Commit removed while it is admitted, rejoins with an external Commit that also removes its old leaf. It MUST warn its user if a Commit removed it while it was admitted. A Commit of an epoch the device has passed is a replay: it is dropped.
@@ -606,6 +611,7 @@ A reader MUST drop an entry unless:
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
 - A revoked device reads a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation from every member device. A member device that did not process that Commit, such as one that joined later, learns the revocation only from the server: if the server withholds it and lets the device rejoin, that member's links open to it keys of epochs after the Remove.
+- A device that joins a group holding revoked devices ([Group changes](#group-changes)) shares its join epoch with them. That epoch is not clean, and the joiner sends nothing in it.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
 - Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).

@@ -1,6 +1,7 @@
 //! Skald wire protocol types, as the protocol spec in `docs/protocol/` defines them.
 
 mod address;
+mod anchors;
 mod cbor;
 mod cert;
 mod content;
@@ -8,6 +9,7 @@ mod envelope;
 mod frame;
 mod history;
 mod id;
+mod link;
 mod receipt;
 mod revocation;
 mod roster;
@@ -17,6 +19,7 @@ mod version;
 pub use address::{
     Address, AddressError, Name, NameError, PERSON, Segment, ServerError, ServerName,
 };
+pub use anchors::{ANCHORS_LABEL, Anchors, AnchorsBody};
 pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };
@@ -35,6 +38,7 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
+pub use link::LinkMessage;
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody, Revocations};
 pub use roster::{

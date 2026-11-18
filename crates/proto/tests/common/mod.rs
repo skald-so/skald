@@ -7,11 +7,11 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
-    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
-    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push,
-    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
-    ServerStatus, SpaceId, Stored, Unknown,
+    AccountId, Address, Anchors, AnchorsBody, Attachment, Body, Cbor, ChannelId, Content,
+    DecodeError, Delegation, DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem,
+    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext,
+    MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation,
+    RevocationBody, Scheme, SendKey, ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -265,6 +265,24 @@ pub fn revocation(
     Revocation::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// Alice's personal space.
+pub fn personal_space() -> SpaceId {
+    "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5ea".parse().unwrap()
+}
+
+/// The anchors object of Alice's device: the space and her personal space, each at a revision whose
+/// hash is a placeholder, and the personal space.
+pub fn anchors() -> Anchors {
+    let body = AnchorsBody {
+        account: account(),
+        device: alice_device(),
+        anchors: vec![(space(), [0xa1; 32]), (personal_space(), [0xc3; 32])],
+        personal: Some(personal_space()),
+        unknown: Unknown::default(),
+    };
+    Anchors::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -478,5 +496,6 @@ pub fn vectors() -> Vec<Vector> {
             "Revocation by the master key",
             revocation(None, None, Some(NonEmpty::new(server_device()))),
         ),
+        vector("Anchors object", anchors()),
     ]
 }
