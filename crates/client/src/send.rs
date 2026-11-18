@@ -536,7 +536,8 @@ fn read_answers<W: Wire>(
                 Ok(Frame::SendRefused { send_key, problem }) => {
                     (send_key, Answer::Refused(problem))
                 }
-                // A frame it does not know or that does not decode, ignored.
+                // A push, which `read_answer` kept, or a frame it does not know or that does not
+                // decode, ignored.
                 _ => continue,
             },
             Ok(Message::Close(frame)) => {

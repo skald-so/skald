@@ -107,21 +107,18 @@ pub fn missed() -> bool {
     MISSED.with(|missed| missed.replace(false))
 }
 
-/// Reads the next message on `socket`, a read for the answers to what it sent, that is not a push:
-/// keeps each push it meets in `pushed`, for the next catch-up to write before it acks, and has a
-/// wait look again, as for what a run dropped.
+/// Reads the next message on `socket`, a read for the answers to what it sent: keeps a push in
+/// `pushed`, for the next catch-up to write before it acks, and has a wait look again, as for what
+/// a run dropped.
 pub fn read_answer(socket: &mut WebSocket, pushed: &mut Vec<Push>) -> tungstenite::Result<Message> {
-    loop {
-        let message = socket.read()?;
-        if let Message::Binary(bytes) = &message
-            && let Ok(Frame::Push(push)) = Frame::from_cbor(bytes)
-        {
-            pushed.push(push);
-            miss();
-            continue;
-        }
-        return Ok(message);
+    let message = socket.read()?;
+    if let Message::Binary(bytes) = &message
+        && let Ok(Frame::Push(push)) = Frame::from_cbor(bytes)
+    {
+        pushed.push(push);
+        miss();
     }
+    Ok(message)
 }
 
 /// Notes that a run dropped what came on its connection.

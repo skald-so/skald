@@ -14,8 +14,8 @@ use crate::talk::{
     BOB_HOST, Line, Talk, assert_shows_once, delivered, encrypted, one_message_sent, stored,
 };
 use crate::waits::{
-    ARRIVAL, AT_ONCE, TRACE_SETTING, TRACED, WAIT_FLAG, Waits, assert_got, assert_idle,
-    assert_keeps_waiting, assert_shown_within,
+    ARRIVAL, AT_ONCE, SHOWN_WITHIN, TRACE_SETTING, TRACED, WAIT_FLAG, Waits, assert_got,
+    assert_idle, assert_keeps_waiting, assert_shown_within,
 };
 use crate::world::{ACME, ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
 
@@ -168,8 +168,8 @@ fn person_wait_shows_the_first_message_whatever_agent_it_is_for_or_the_first_sta
 
 /// The device has run as claude in `~/work/acme`, in one-shot mode, and Bob's device sends two
 /// messages to the channel. The person's `skald recv --wait` in one-shot mode shows both, each
-/// once, and exits within [`AT_ONCE`]; so does claude's `skald recv --wait`, through the helper it
-/// starts, each by its reference.
+/// once, within [`SHOWN_WITHIN`] of its start, and exits within [`AT_ONCE`] of showing them; so
+/// does claude's `skald recv --wait`, through the helper it starts, each by its reference.
 #[test]
 fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
     let mut waits = Waits::new(
@@ -184,33 +184,27 @@ fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
         .collect();
     let channel = waits.agents.talk.channel;
 
-    let started = Instant::now();
-    let person = waits
-        .agents
-        .talk
-        .ada
-        .machine
-        .start(&[RECV, WAIT_FLAG])
-        .finish();
-    let took = started.elapsed();
+    let person = waits.agents.talk.ada.machine.start(&[RECV, WAIT_FLAG]);
+    let (person, [shown, exited]) = person.finish_after_showing(&WAITING);
 
     assert!(person.success, "{person:?}");
     for text in WAITING {
         assert_shows_once(&person.shown(), text, (channel, &bob, BOB_HOST));
     }
     assert!(
-        took < AT_ONCE,
-        "the person's wait took {took:?}: {person:?}"
+        shown < SHOWN_WITHIN && exited < AT_ONCE,
+        "the person's wait showed them after {shown:?}, exited {exited:?} later: {person:?}"
     );
 
-    let started = Instant::now();
-    let agent = waits.session(CLAUDE).finish();
-    let took = started.elapsed();
+    let (agent, [shown, exited]) = waits.session(CLAUDE).finish_after_showing(&WAITING);
 
     for (text, id) in WAITING.iter().zip(&ids) {
         assert_got(&agent, text, *id);
     }
-    assert!(took < AT_ONCE, "claude's wait took {took:?}: {agent:?}");
+    assert!(
+        shown < SHOWN_WITHIN && exited < AT_ONCE,
+        "claude's wait showed them after {shown:?}, exited {exited:?} later: {agent:?}"
+    );
 }
 
 /// The device has run as claude in `~/work/acme`, and the person's `skald recv` has shown what came

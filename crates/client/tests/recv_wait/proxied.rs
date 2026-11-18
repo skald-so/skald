@@ -30,9 +30,9 @@ const POLL_WAIT: Duration = Duration::from_secs(2);
 /// seconds, and how much longer a test gives it to open one, whatever the load on the machine.
 const RETRY: &str = "3";
 const RETRY_SLACK: Duration = Duration::from_secs(3);
-/// As [`RETRY`], for a test that runs a command within the interval: long enough for a slow
-/// machine's run.
-const LONG_RETRY: &str = "10";
+/// As [`RETRY`], for a test that runs a command within the interval: far longer than a run on a
+/// loaded machine, which took 13 s.
+const LONG_RETRY: &str = "120";
 
 /// How long the proxy holds back the helper's next long-poll while a revision is stored.
 const HELD_BACK: Duration = Duration::from_secs(4);
@@ -419,9 +419,10 @@ fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
 
 /// Behind the proxy, which refuses WebSocket upgrades, Ada's `skald recv`, retrying WebSocket every
 /// [`LONG_RETRY`] seconds, starts a helper, which keeps the event stream; no session waits. Her
-/// `skald recv` through the helper within the interval takes the stream kept. The proxy then lets
-/// WebSocket upgrades through: after the interval and [`RETRY_SLACK`], her next `skald recv`
-/// through the helper opens a WebSocket.
+/// `skald recv` through the helper within the interval takes the stream kept. With that helper
+/// gone, her `skald recv`, retrying every [`RETRY`] seconds, starts another one on the event
+/// stream. The proxy then lets WebSocket upgrades through: after the interval and [`RETRY_SLACK`],
+/// her next `skald recv` through the helper opens a WebSocket.
 #[test]
 fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
     let behind = Behind::start_with(
@@ -435,7 +436,6 @@ fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
     let start = behind.filter.mark();
     let first = helped.run_with(&[(RETRY_SETTING, LONG_RETRY)], &[RECV]);
     assert!(first.success, "{first:?}");
-    let interval = Duration::from_secs(LONG_RETRY.parse().expect("seconds"));
     let kept = Instant::now();
     let from = behind.filter.mark();
     let within = helped.run(&[RECV]);
@@ -444,12 +444,18 @@ fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
     let seen = behind.filter.seen_since(from);
     let reconnected = (seen.iter()).any(|one| one.is("GET", WEBSOCKET) || one.is("GET", EVENTS));
     assert!(
-        !reconnected && took < interval,
+        !reconnected && took < Duration::from_secs(LONG_RETRY.parse().expect("seconds")),
         "the stream not kept within the interval, run in {took:?}; since the first run: {:#?}",
         behind.filter.seen_since(start)
     );
+    helped.kill(helped.one_helper());
+    let from = behind.filter.mark();
+    let on_sse = helped.run_with(&[(RETRY_SETTING, RETRY)], &[RECV]);
+    assert!(on_sse.success, "{on_sse:?}");
+    let seen = behind.filter.seen_since(from);
+    assert!(answered(&seen, "GET", EVENTS, 200), "no stream: {seen:#?}");
     behind.leave(Transport::WebSocket);
-    thread::sleep(interval + RETRY_SLACK);
+    thread::sleep(Duration::from_secs(RETRY.parse().expect("seconds")) + RETRY_SLACK);
 
     let from = behind.filter.mark();
     let next = helped.run(&[RECV]);
