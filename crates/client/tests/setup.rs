@@ -1,6 +1,6 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
-//! connection, or by opening none in time, is tried again, a few times; any other error is not; a server that fails to start
-//! drops the database it made, as one that stops does.
+//! connection, or by opening none in time, is tried again, a few times; any other error is not;
+//! a server that fails to start drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
 mod common;
