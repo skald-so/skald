@@ -63,7 +63,7 @@ pub fn check_grant(
     if body.service != service {
         return Err(GrantError::Service);
     }
-    if !body.channels.iter().any(|id| *id == channel) {
+    if !body.channels.contains(&channel) {
         return Err(GrantError::Channel);
     }
 
