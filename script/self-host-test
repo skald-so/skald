@@ -38,6 +38,7 @@
 #   sign-up              closes sign-up in .env: SKALD_SIGN_UP=closed and the lists of who may sign
 #                        up, SKALD_SIGN_UP_GITHUB_LOGINS, SKALD_SIGN_UP_GOOGLE_EMAILS and
 #                        SKALD_SIGN_UP_GOOGLE_DOMAINS, comma-separated
+#   privacy-policy       adds the privacy policy's address to .env: SKALD_PRIVACY_POLICY_URL
 #   github-check         checks the server's GitHub sign-in with script/check-github-sign-in, after
 #                        `up`
 #   google-check         checks the server's Google sign-in with script/check-google-sign-in, after
@@ -82,7 +83,8 @@
 # and `<Google client ID>`, and their secrets on standard input, a line each, GitHub's first; the
 # proxy's container for `<proxy container>`, its network for `<proxy network>`; the listed stand-in
 # GitHub login for `<GitHub logins>`, the Google stand-in's email for `<Google emails>` and a domain
-# no stand-in account has for `<Google domains>`. Before the sign-in
+# no stand-in account has for `<Google domains>`; an https address of the test's for `<privacy policy
+# URL>`. Before the sign-in
 # checks, it exports GITHUB_URL and GOOGLE_ISSUER, the stand-ins' addresses, and SSL_CERT_FILE, the
 # roots of the local ACME server and the test CA, and puts jq, which the checks need, on PATH.
 #
@@ -148,7 +150,9 @@
 #     in the cloud (architecture.md, "Cloud limits"), and lists them. The stack's containers' logs
 #     show neither client secret.
 #   github, google: release, files, env, the one provider's step, up, its check. The verification
-#     page without a session offers sign-in with that provider only.
+#     page without a session offers sign-in with that provider only. github also runs
+#     privacy-policy before `up`: the answer on sign-in gives the address and the verification page
+#     links it; google's gives none.
 #   proxy-host also runs github and google before `up`, and github-check and google-check after it,
 #     through the proxy; the stack's containers' logs show neither client secret.
 #   The sign-in scenario's .env leaves sign-up open, the default: the server's log warns of it.
@@ -269,6 +273,7 @@ github_other_user=4120711302
 github_other_login=bob-self-host
 google_subject=110248495921238990301
 google_email=grace.self-host@example.com
+privacy_policy=https://policies.self-host.test/privacy
 work=$(mktemp -d)
 tag=self-host-test-$$
 machine=
@@ -373,8 +378,8 @@ for provider in github google; do
 done
 extract_blocks "$guide" "$work/blocks"
 before=$failures
-steps='release files web-files web-check web image-check env bucket github google sign-up up status
-  github-check google-check'
+steps='release files web-files web-check web image-check env bucket github google sign-up
+  privacy-policy up status github-check google-check'
 steps+=' proxy-host proxy-host-site proxy-join proxy-join-connect proxy-network proxy-container-site'
 steps+=' backup restore'
 steps+=' upgrade rollback'
@@ -414,6 +419,7 @@ block_text() {
       text=${text//"<GitHub logins>"/$github_login}
       text=${text//"<Google emails>"/$google_email}
       text=${text//"<Google domains>"/no-account.self-host.test}
+      text=${text//"<privacy policy URL>"/$privacy_policy}
       printf '%s\n' "$text"
     fi
   done <"$blocks/list"
@@ -1423,12 +1429,31 @@ fi
 check_env sign-up
 stack_down sign-up
 
-# github, google: one provider's values only.
-scenario github release files web-files web env github :before_up up :wait_https :trust_checks github-check :trust_system
+# privacy_policy_of <scenario>: sets policy to the privacy policy's address that the answer on
+# sign-in gives, empty without one.
+privacy_policy_of() {
+  local answer
+  policy=
+  answer=$(m curl --silent --show-error --fail --cacert /self-host/acme-root.pem \
+    --header 'Skald-Protocol-Version: 1' "https://$domain/auth/providers" 2>&1) || {
+    fail "$1: GET https://$domain/auth/providers: $answer"
+    return
+  }
+  policy=$(jq -r '.privacy_policy_url // empty' <<<"$answer" 2>/dev/null || true)
+}
+
+# github, google: one provider's values only; github's with the privacy policy.
+scenario github release files web-files web env github privacy-policy :before_up up :wait_https :trust_checks github-check :trust_system
 if run_scenario github <<<"$github_secret"; then
   offered github
   [[ $offers == GitHub ]] ||
     fail "github: with GitHub's values only, the verification page offers sign-in with: ${offers:-none}"
+  privacy_policy_of github
+  [[ $policy == "$privacy_policy" ]] ||
+    fail "github: the answer on sign-in gives the privacy policy '$policy', not $privacy_policy"
+  device_page=$(m curl --silent --show-error --cacert /self-host/acme-root.pem "https://$domain/device" 2>&1) || true
+  [[ $device_page == *"<a href=\"$privacy_policy\">Privacy policy</a>"* ]] ||
+    fail "github: the verification page does not link the privacy policy $privacy_policy:"$'\n'"$device_page"
 fi
 check_env github
 stack_down github
@@ -1437,6 +1462,8 @@ if run_scenario google <<<"$google_secret"; then
   offered google
   [[ $offers == Google ]] ||
     fail "google: with Google's values only, the verification page offers sign-in with: ${offers:-none}"
+  privacy_policy_of google
+  [[ -z $policy ]] || fail "google: without the setting, the answer on sign-in gives the privacy policy $policy"
 fi
 check_env google
 stack_down google

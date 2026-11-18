@@ -221,10 +221,17 @@ enum Command {
     /// revocation the server has not taken waits in the local state, and the next skald command
     /// that connects sends it again. The other member devices remove the revoked device from each
     /// channel, and it reads nothing sent after; a revoked device sends and receives nothing.
+    ///
+    /// It shows the devices the revoked device certified, which are revoked with it unless kept:
+    /// without --keep, it asks which to keep when run in a terminal, and keeps none otherwise.
     RevokeDevice {
         /// The device's ID, as skald devices shows it.
         #[arg(value_name = "DEVICE")]
         device: String,
+        /// The ID of a device the revoked one certified that stays valid, for scripts; once per
+        /// device.
+        #[arg(long = "keep", value_name = "DEVICE")]
+        keep: Vec<String>,
     },
     /// Signs this machine out: ends its session on the server it signed in to and deletes the
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
@@ -746,8 +753,8 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Devices => {
             state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
         }
-        Command::RevokeDevice { device } => state::dir(state_dir)
-            .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device)),
+        Command::RevokeDevice { device, keep } => state::dir(state_dir)
+            .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
             state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
         }

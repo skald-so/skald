@@ -9,7 +9,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, sign_revocation};
 use skald_proto::{
-    AccountId, Cbor as _, Cert, DeviceId, Revocation, RevocationBody, SpaceId, Unknown,
+    AccountId, Cbor as _, Cert, ChannelId, DeviceId, Revocation, RevocationBody, SpaceId, Unknown,
 };
 
 use crate::browser::Browser;
@@ -17,6 +17,7 @@ use crate::cloud::{Cloud, unb64};
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
 use crate::kit::b64;
 use crate::machine::{FIRST_DEVICE, Finished, Machine, NO};
+use crate::played::Played;
 use crate::world::{Person, devices_request, handle_of, lines_naming, now, post_as, run};
 
 /// The command that revokes a device, and what the CLI says of a revoked device.
@@ -327,4 +328,33 @@ impl Fixture {
             second,
         }
     }
+}
+
+/// Fails unless `played` entered, from a Commit of `sender`'s device, an epoch of `channel`'s group
+/// without `removed`, and that Commit carries `revocation`, byte for byte, and only revocations of
+/// `removed`.
+#[track_caller]
+pub fn assert_removed_carrying(
+    played: &Played,
+    channel: ChannelId,
+    (sender, removed): (DeviceId, DeviceId),
+    revocation: &Revocation,
+) {
+    let changes = played.changes_of(channel);
+    let change = changes
+        .iter()
+        .find(|change| change.removed.iter().any(|member| member.device == removed))
+        .unwrap_or_else(|| panic!("no Commit removed {removed} from {channel}: {changes:?}"));
+    assert_eq!(change.sender, sender, "the Commit's sender: {change:?}");
+    let revocations = carried_in(&change.authenticated_data);
+    assert!(
+        holds(&revocations, revocation),
+        "the Commit does not carry the revocation: {revocations:?}"
+    );
+    assert!(
+        revocations
+            .iter()
+            .all(|carried| carried.body().device == removed),
+        "the Commit carries another device's revocation: {revocations:?}"
+    );
 }

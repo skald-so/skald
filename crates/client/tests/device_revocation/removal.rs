@@ -3,16 +3,15 @@
 //! it revoked; one that learns of it from such a Commit holds the device revoked. Its waiting
 //! messages expire, and a revision it signs is not accepted.
 
-use skald_proto::{ChannelId, ChannelMember, DeviceId, MessageId, NonEmpty, Revocation, Role};
+use skald_proto::{ChannelMember, MessageId, NonEmpty, Role};
 
 use crate::fixtures::fronted;
 use crate::kit::{
     Change, assert_listed_with, assert_members, channels, create_space, group, latest, received,
     revise, rosters, warnings_naming,
 };
-use crate::played::Played;
 use crate::revocations::{
-    account_revocations, assert_listed, carried, carried_in, hide_revocations, holds, naming,
+    account_revocations, assert_listed, assert_removed_carrying, carried, hide_revocations, naming,
     revoked_by, revoked_by_cli, space_revocations,
 };
 use crate::talk::{ADA_HOST, BOB_HOST, CAROL_HOST, Talk, one_message_sent, received_until};
@@ -20,35 +19,6 @@ use crate::world::{ACME, members, next_with, now, plain_lines, serve_revisions, 
 
 /// What `skald recv` shows of the device's own message that expired for a recipient device.
 const EXPIRED: &str = "expired";
-
-/// Fails unless `played` entered, from a Commit of `sender`'s device, an epoch of `channel`'s group
-/// without `removed`, and that Commit carries `revocation`, byte for byte, and only revocations of
-/// `removed`.
-#[track_caller]
-fn assert_removed_carrying(
-    played: &Played,
-    channel: ChannelId,
-    (sender, removed): (DeviceId, DeviceId),
-    revocation: &Revocation,
-) {
-    let changes = played.changes_of(channel);
-    let change = changes
-        .iter()
-        .find(|change| change.removed.iter().any(|member| member.device == removed))
-        .unwrap_or_else(|| panic!("no Commit removed {removed} from {channel}: {changes:?}"));
-    assert_eq!(change.sender, sender, "the Commit's sender: {change:?}");
-    let revocations = carried_in(&change.authenticated_data);
-    assert!(
-        holds(&revocations, revocation),
-        "the Commit does not carry the revocation: {revocations:?}"
-    );
-    assert!(
-        revocations
-            .iter()
-            .all(|carried| carried.body().device == removed),
-        "the Commit carries another device's revocation: {revocations:?}"
-    );
-}
 
 /// Bob's machine revokes its own device. The server holds the revocation, signed by Bob's device.
 /// Ada's next run warns naming Bob's device and removes it from both of the space's channels by

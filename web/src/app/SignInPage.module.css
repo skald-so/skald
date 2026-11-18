@@ -97,6 +97,10 @@
 
 .note {
   text-align: center;
+
+  a {
+    color: inherit;
+  }
 }
 
 .code {
