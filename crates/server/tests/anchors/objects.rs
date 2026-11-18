@@ -56,7 +56,7 @@ pub fn map(fields: &[(u64, Vec<u8>)]) -> Vec<u8> {
 
 /// The encoded anchors object of `body` and the signature of `key` over `[label, body]`.
 pub fn signed_as(body: &[u8], key: &SigningKey, label: &str) -> Vec<u8> {
-    array_of(&[byte_item(body), byte_item(&key.sign(label, &[body]))])
+    cbor::signed(body, key, label)
 }
 
 /// The encoded anchors object of `body`, signed by `key` over `["skald anchors", body]`.

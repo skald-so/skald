@@ -19,7 +19,7 @@ mod common;
 use std::sync::Barrier;
 use std::thread;
 
-use common::cbor::{array_of, byte_item, head, uint};
+use common::cbor::{array_of, byte_item, head, signed, uint};
 use common::device_flow::{DeviceFlow, json, text};
 use common::devices::{
     Device, Key, MASTER, Machine, account_id, assert_refused, assert_taken, b64, machine, random,
@@ -96,11 +96,6 @@ fn body(
         body.extend(field);
     }
     body
-}
-
-/// The account record of `body` signed by `key` over `label`.
-fn signed(body: &[u8], key: &SigningKey, label: &str) -> Vec<u8> {
-    array_of(&[byte_item(body), byte_item(&key.sign(label, &[body]))])
 }
 
 /// A master backup of the form `[enc, ct]`: random bytes, as the server cannot tell.

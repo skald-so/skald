@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Tests the website's main page, as site/build.mjs builds it, in Chrome Headless Shell (or the binary
-// in SKALD_CHROME), after npm ci in site/ and web/. In both themes of the system setting, at 1440 and
-// 360 px:
+// Tests the website's main page and a docs page, as site/build.mjs builds them, in Chrome Headless
+// Shell (or the binary in SKALD_CHROME), after npm ci in site/ and web/. The main page, in both
+// themes of the system setting, at 1440 and 360 px:
 //   - the page has the design's background and text colors and loads the bundled fonts;
 //   - it requests no other host;
 //   - it does not scroll sideways;
@@ -9,10 +9,23 @@
 //   - it passes the kit's accessibility check, axe-core;
 //   - every element focused from the keyboard has the accent outline;
 //   - each Copy puts its command on the clipboard and announces it.
+// A docs page, the threat model, in both themes at 1440 and 360 px:
+//   - it has the design's background, behind the page and as the header is painted, text color, in
+//     the header's title too, and accent color, the bundled fonts for text, headings and code, and
+//     no theme switch;
+//   - it requests no other host;
+//   - it does not scroll sideways;
+//   - its header has the logo's link to the main page, Docs, GitHub and Sign in, reachable through
+//     the header's menu at 360 px;
+//   - it passes the kit's accessibility check.
 // And that the 404 page's link loads the docs start page, not the 404 page again.
+import { createRequire } from 'node:module';
 import { accessibilityViolations, keyboardFocus, themes, widths } from '../web/kit-browser.ts';
 import { startSite } from '../site/browser.mjs';
 import { reporter } from './lib/report.mjs';
+
+// pngjs of web/, for the header's painted pixels.
+const { PNG } = createRequire(new URL('../web/package.json', import.meta.url))('pngjs');
 
 const { fail, done } = reporter('site-browser-test');
 
@@ -23,21 +36,27 @@ const colors = {
 };
 const fonts = ['Inter Variable', 'Space Grotesk Variable', 'JetBrains Mono Variable'];
 
+// The pages checked, each in both themes at the check widths.
+const pages = [
+  { name: 'the main page', at: '/', check: checkMain },
+  { name: 'the threat model page', at: '/threat-model', check: checkDocs },
+];
+
 const site = await startSite();
 try {
-  for (const theme of themes) {
-    for (const width of widths) {
-      const view = `the main page in the ${theme} theme at ${width} px`;
-      const { page, requests } = await site.open({ width, system: theme });
-      try {
-        await check(view, page, theme);
-      } catch (error) {
-        fail(`${view}: ${error.stack}`);
+  for (const { name, at, check } of pages) {
+    for (const theme of themes) {
+      for (const width of widths) {
+        const view = `${name} in the ${theme} theme at ${width} px`;
+        const { page, requests } = await site.open({ width, system: theme, at });
+        try {
+          await check(view, page, theme);
+        } catch (error) {
+          fail(`${view}: ${error.stack}`);
+        }
+        ownHostOnly(view, requests);
+        await page.close();
       }
-      const others = requests.filter((url) => new URL(url).origin !== site.origin);
-      if (requests.length === 0) fail(`${view}: makes no request`);
-      if (others.length > 0) fail(`${view}: requests other hosts: ${others.join(', ')}`);
-      await page.close();
     }
   }
   try {
@@ -50,14 +69,23 @@ try {
 }
 done();
 
-async function check(view, page, theme) {
-  const look = await page.evaluate(() => {
+// ownHostOnly <view> <requests>: the page made requests, all to the site.
+function ownHostOnly(view, requests) {
+  const others = requests.filter((url) => new URL(url).origin !== site.origin);
+  if (requests.length === 0) fail(`${view}: makes no request`);
+  if (others.length > 0) fail(`${view}: requests other hosts: ${others.join(', ')}`);
+}
+
+// look <view> <page> <theme>: the page has the theme's background and text colors, loads the
+// bundled fonts and no other, and does not scroll sideways.
+async function look(view, page, theme) {
+  const shown = await page.evaluate(() => {
     const style = getComputedStyle(document.body);
     return { background: style.backgroundColor, text: style.color };
   });
   const want = colors[theme];
-  if (look.background !== want.background || look.text !== want.text) {
-    fail(`${view}: has the colors ${JSON.stringify(look)}, not those of the design's ${theme} theme`);
+  if (shown.background !== want.background || shown.text !== want.text) {
+    fail(`${view}: has the colors ${JSON.stringify(shown)}, not those of the design's ${theme} theme`);
   }
 
   const loaded = await page.evaluate(() =>
@@ -67,6 +95,11 @@ async function check(view, page, theme) {
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   if (overflow !== 0) fail(`${view}: scrolls sideways by ${overflow} px`);
+}
+
+async function checkMain(view, page, theme) {
+  const want = colors[theme];
+  await look(view, page, theme);
 
   for (const role of ['banner', 'main', 'contentinfo']) {
     const count = await page.getByRole(role).count();
@@ -99,6 +132,71 @@ async function check(view, page, theme) {
     const said = await status.textContent();
     if (said !== `Copied: ${command}`) fail(`${view}: Copy of ${command} announces '${said}'`);
   }
+}
+
+async function checkDocs(view, page, theme) {
+  await look(view, page, theme);
+  const shown = await page.evaluate(() => {
+    const first = (selector) => getComputedStyle(document.querySelector(selector)).fontFamily.split(',')[0].replaceAll('"', '').trim();
+    return {
+      accent: getComputedStyle(document.querySelector('.vp-doc p a')).color,
+      text: first('.vp-doc p'),
+      heading: first('.vp-doc h1'),
+      code: first('.vp-doc code'),
+    };
+  });
+  if (shown.accent !== colors[theme].accent) fail(`${view}: a link has the color ${shown.accent}, not the design's accent`);
+  // The header as painted, a few pixels in its middle, where it shows nothing; the background
+  // behind the page's bottom, the first one set from the element there up; and the header's title,
+  // which VitePress colors.
+  const spot = await page.evaluate(() => {
+    const header = document.querySelector('header').getBoundingClientRect();
+    return { x: Math.round(innerWidth / 2), y: Math.round(header.top + header.height / 2) };
+  });
+  const painted = PNG.sync.read(await page.screenshot({ clip: { ...spot, width: 4, height: 4 }, animations: 'disabled' }));
+  const pixels = new Set();
+  for (let i = 0; i < painted.data.length; i += 4) pixels.add(`rgb(${painted.data[i]}, ${painted.data[i + 1]}, ${painted.data[i + 2]})`);
+  if (pixels.size !== 1 || !pixels.has(colors[theme].background)) {
+    fail(`${view}: the header is painted ${[...pixels].join(', ')}, not the design's background`);
+  }
+  const below = await page.evaluate(() => {
+    for (let element = document.elementFromPoint(innerWidth / 2, innerHeight - 50); element; element = element.parentElement) {
+      const background = getComputedStyle(element).backgroundColor;
+      if (background !== 'rgba(0, 0, 0, 0)') return background;
+    }
+    return 'none';
+  });
+  if (below !== colors[theme].background) fail(`${view}: the page has the background ${below}, not the design's`);
+  const title = await page.getByRole('banner').locator('a[href="/"]').evaluate((link) => getComputedStyle(link).color);
+  if (title !== colors[theme].text) fail(`${view}: the header's title has the color ${title}, not the design's text color`);
+  const [text, heading, code] = fonts;
+  if (shown.text !== text || shown.heading !== heading || shown.code !== code) {
+    fail(`${view}: sets text, headings and code in ${shown.text}, ${shown.heading} and ${shown.code}, not ${fonts.join(', ')}`);
+  }
+  const switches = await page.getByRole('switch').count();
+  if (switches !== 0) fail(`${view}: has a theme switch`);
+
+  const header = page.getByRole('banner');
+  const logo = await header.locator('a[href="/"]').filter({ has: page.locator('svg') }).count();
+  if (logo !== 1) fail(`${view}: the header has no logo linking to the main page`);
+  const menu = header.getByRole('button', { name: 'Menu', exact: true });
+  if (await menu.isVisible()) {
+    await menu.click();
+    // The menu fades in, starting a frame after the click: checked half shown, its links' contrast
+    // fails.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await page.waitForFunction(() => document.getAnimations().every((animation) => animation.playState === 'finished'));
+  }
+  for (const [name, href] of [
+    ['Docs', '/start'],
+    ['GitHub', 'https://github.com/skald-so/skald'],
+    ['Sign in', 'https://app.skald.so'],
+  ]) {
+    const link = header.getByRole('link', { name, exact: true }).and(page.locator(`[href="${href}"]`)).filter({ visible: true });
+    if ((await link.count()) !== 1) fail(`${view}: the header has no visible link ${name} to ${href}`);
+  }
+
+  for (const { rule, nodes } of await accessibilityViolations(page)) fail(`${view}: fails the accessibility check: ${rule}: ${nodes.join(', ')}`);
 }
 
 // notFound: a missing path shows the 404 page, whose link loads the docs start page.
