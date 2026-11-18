@@ -157,16 +157,31 @@ impl Scheme {
 
 impl Codec for HpkePayload {
     fn encode(&self) -> Vec<u8> {
-        cbor::array([cbor::bytes(&self.enc), cbor::bytes(&self.ct)])
+        encode_sealed(&self.enc, &self.ct)
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        let [enc, ct] = item.tuple("hpke-payload")?;
-        Ok(Self {
-            enc: enc.fixed("hpke-payload.enc")?,
-            ct: ct.bytes("hpke-payload.ct")?.to_vec(),
-        })
+        let (enc, ct) = decode_sealed(
+            item,
+            ["hpke-payload", "hpke-payload.enc", "hpke-payload.ct"],
+        )?;
+        Ok(Self { enc, ct })
     }
+}
+
+/// An HPKE seal as an `[enc, ct]` array: its encapsulated key and its ciphertext.
+pub(crate) fn encode_sealed(enc: &[u8; 32], ct: &[u8]) -> Vec<u8> {
+    cbor::array([cbor::bytes(enc), cbor::bytes(ct)])
+}
+
+/// The encapsulated key and the ciphertext of the `[enc, ct]` array `item`, the CDDL's names of
+/// the array and of its two fields in `names`.
+pub(crate) fn decode_sealed(
+    item: &Item<'_>,
+    [array, enc, ct]: [&'static str; 3],
+) -> Result<([u8; 32], Vec<u8>), DecodeError> {
+    let [enc_item, ct_item] = item.tuple(array)?;
+    Ok((enc_item.fixed(enc)?, ct_item.bytes(ct)?.to_vec()))
 }
 
 impl HpkePlaintext {

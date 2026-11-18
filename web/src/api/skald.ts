@@ -753,7 +753,7 @@ export const getPutMasterKeyUrl = () => {
 };
 
 /**
- * The account's first device gives the master public key with its own certificate, issued by that key (docs/protocol/membership.md, "Linking a device"). The server takes them only while the account has no master key.
+ * The account's first device gives the master public key with its own certificate, issued by that key, the account record and the master backup (docs/protocol/membership.md, "Account", "Linking a device"). The server takes them only while the account has no master key.
  * @summary Give the account's master key
  */
 export const putMasterKey = async (

@@ -370,6 +370,10 @@ To a new release, in `~/skald`:
 6. Behind your reverse proxy, with a `compose.proxy.yaml` that turns Caddy off, `profiles: [caddy]`: the stack keeps serving the API, not the web app. For the web app, write the override and your proxy's site block again from [Behind your reverse proxy](#behind-your-reverse-proxy), in your form, and reload your proxy.
 7. [Start](#start). The server applies the release's new migrations at start.
 
+### From a release without account recovery
+
+Accounts made on a release without account recovery have no recovery key. An upgrade from such a release needs a new stack, from [Settings](#settings) on, so that each account gets one.
+
 ## Rollback
 
 Back to the release before an upgrade, with the backup from that upgrade, `<backup file>`. The rollback replaces the stack's database and attachments with the backup's ([Cloud](dev/infrastructure.md#cloud), "Deployment"): what changed after the upgrade is lost.

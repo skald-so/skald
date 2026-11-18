@@ -1,5 +1,7 @@
 //! CBOR items as the tests write them, byte by byte, apart from the encoder under test.
 
+use skald_crypto::SigningKey;
+
 /// The head of a CBOR item of major type `major` whose argument is `arg`, in the shortest form.
 pub fn head(major: u8, arg: u64) -> Vec<u8> {
     let top = major << 5;
@@ -26,6 +28,12 @@ pub fn array_of(items: &[Vec<u8>]) -> Vec<u8> {
         array.extend_from_slice(item);
     }
     array
+}
+
+/// The signed object `[body, signature]` of the encoded `body`, signed by `key` over
+/// `[label, body]`.
+pub fn signed(body: &[u8], key: &SigningKey, label: &str) -> Vec<u8> {
+    array_of(&[byte_item(body), byte_item(&key.sign(label, &[body]))])
 }
 
 /// The CBOR unsigned integer `n`.

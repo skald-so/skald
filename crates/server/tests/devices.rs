@@ -171,10 +171,9 @@ fn requests_without_a_valid_session_are_refused() {
     let device = Device::new("Laptop");
     let master = Key::generate();
     let registration = serde_json::to_vec(&device.registration()).expect("JSON");
-    let given = serde_json::to_vec(&json!({
-        "master": b64(&master.public()),
-        "cert": b64(&device.cert(&machine.account, &master)),
-    }))
+    let given = serde_json::to_vec(
+        &machine.master_request(&master, &device.cert(&machine.account, &master)),
+    )
     .expect("JSON");
     let unknown = format!("Bearer {}x", machine.token);
     let basic = format!("Basic {}", b64(b"ada:secret"));
@@ -453,17 +452,27 @@ fn invalid_certificates_are_refused() {
         assert_eq!(response.status, 400, "{what}: {}", text(&response));
         assert_refused(&response, 400);
     }
-    let cert = b64(&genuine);
+    let request = machine.master_request(&master, &genuine);
+    let with = |field: &str, value: Value| {
+        let mut sent = request.clone();
+        sent[field] = value;
+        sent
+    };
+    let without = |field: &str| {
+        let mut sent = request.clone();
+        sent.as_object_mut().expect("a JSON object").remove(field);
+        sent
+    };
     for (what, sent) in [
         (
             "a master key of 31 bytes",
-            json!({ "master": b64(&master.public()[..31]), "cert": cert }),
+            with("master", json!(b64(&master.public()[..31]))),
         ),
-        ("no master key", json!({ "cert": cert })),
-        ("no certificate", json!({ "master": b64(&master.public()) })),
+        ("no master key", without("master")),
+        ("no certificate", without("cert")),
         (
             "a certificate not in base64url",
-            json!({ "master": b64(&master.public()), "cert": "not base64url!" }),
+            with("cert", json!("not base64url!")),
         ),
     ] {
         let response = machine.give(&sent);

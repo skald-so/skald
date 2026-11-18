@@ -25,6 +25,8 @@ use super::relay::{Relay, strings_named};
 #[path = "../../../server/tests/common/agent.rs"]
 mod agent;
 pub use agent::{agent, get};
+#[path = "recovery.rs"]
+mod recovery;
 
 /// How long a test waits for the server to see what it expects.
 pub const WAIT: Duration = Duration::from_secs(60);
@@ -454,7 +456,8 @@ impl Cloud {
     }
 
     /// Starts `skald sign-in --server <this server> <extra>` on `machine`, runs `approve` on the
-    /// grant it shows, and waits for the run to finish.
+    /// grant it shows, and waits for the run to finish; then shows the recovery key it leaves
+    /// waiting, as the person does at a terminal.
     fn approved(
         &self,
         machine: &Machine,
@@ -467,7 +470,9 @@ impl Cloud {
         let mut run = machine.start(&args);
         let grant = shown_grant(self, &mut run, before);
         approve(&grant);
-        run.finish()
+        let finished = run.finish();
+        recovery::shown_if_waiting(machine, &self.url, &finished);
+        finished
     }
 
     /// A new machine with the host name `host`, signed in as the first device of `user`'s account

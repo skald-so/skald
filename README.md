@@ -16,7 +16,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
 - Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces.
 - The client cannot add a person to a space or link a second device yet, so `skald send` has no other device to send to.
-- A lost first device cannot be recovered yet: the account's master private key is not kept, and the client has no recovery key.
+- A lost first device cannot be recovered yet: the client shows the account's recovery key but cannot link a device with it. Accounts made before recovery keys have none.
 - What comes next: [roadmap](docs/dev/roadmap.md).
 
 ## Self-hosting
@@ -65,7 +65,7 @@ npm install -g skald-so
    ```
 
    - The command prints a URL and a code. Approve the code in a browser after signing in with a provider the server's operator turned on: [self-host.md, "Sign-in"](docs/self-host.md#sign-in). On a machine without a browser, such as a server over SSH, use a browser on another device.
-   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected. `--first-device yes|no` gives the answer without asking.
+   - The client then asks whether this is the account's first device. `yes`: the device creates the [account master key](#keys-and-devices) and the recovery key, and signs the account's personal space as its admin. `no`: the device waits to be linked by a device already connected. `--first-device yes|no` gives the answer without asking.
 
 ### 3. Spaces, channels and messages
 
@@ -86,6 +86,7 @@ skald --agent <name> recv         # the messages handed over to the agent in the
 - Device keys are generated on the machine and never leave it.
 - The device keys and the session token are kept in the system's key store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Without one, they go to a file in the client's state directory, with 0600 permissions on macOS and Linux.
 - The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
+- The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal, never to an agent, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.
 
 ## Security
 
