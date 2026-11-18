@@ -31,6 +31,9 @@ pub use crate::machine::ONE_SHOT as ONE_SHOT_SETTING;
 pub const IDLE_SETTING: &str = "SKALD_HELPER_IDLE";
 /// The setting of the version a run acts as, for tests.
 pub const VERSION_SETTING: &str = "SKALD_VERSION";
+/// A request timeout, in seconds, long enough for the helper a command starts on a loaded machine
+/// to listen before the command runs without it.
+pub const START_TIMEOUT: &str = "30";
 /// The flag of a run's request timeout, in seconds.
 pub const TIMEOUT_FLAG: &str = "--timeout";
 /// The version of the `skald` these tests build, and of its copy on disk.

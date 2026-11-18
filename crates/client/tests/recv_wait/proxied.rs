@@ -14,7 +14,7 @@ use crate::behind::{Behind, Forked, TIMEOUT, Transport, answered, recv};
 use crate::cloud::WAIT;
 use crate::filter::{EVENTS, POLL, Seen, WEBSOCKET};
 use crate::fixtures::{SEND, await_running};
-use crate::helped::{Helped, ONE_SHOT};
+use crate::helped::{Helped, ONE_SHOT, START_TIMEOUT};
 use crate::kit::RECV;
 use crate::machine::Run;
 use crate::waits::{
@@ -424,9 +424,11 @@ fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
 /// through the helper opens a WebSocket.
 #[test]
 fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
-    let behind = Behind::start(
+    let behind = Behind::start_with(
         [4_148_082_001, 4_148_082_002],
         ["ada-helper-keeps-a-stream", "bob-stays-quiet"],
+        START_TIMEOUT,
+        |_| {},
     );
     behind.leave(Transport::Sse);
     let helped = Helped::new(&behind.ada.machine);
