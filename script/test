@@ -35,8 +35,9 @@
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build; the web app's archive of a release (script/release-web-test)
 #   site       the website and docs built from docs/, which fails on a broken internal link
-#              (script/site-test), and the main page and a docs page in Chrome Headless Shell
-#              (script/site-browser-test)
+#              (script/site-test), the main page and a docs page in Chrome Headless Shell
+#              (script/site-browser-test) and against their reference screenshots
+#              (script/site-references-test)
 # The native tests of the Rust code run with cargo-nextest, each in a process of its own, and the
 # doctests, which it does not run, with cargo test. With sccache on PATH, cargo compiles through it
 # (script/lib/sccache.sh).
@@ -345,10 +346,12 @@ if checks tooling; then
 fi
 
 # The website and docs: the build of docs/ and its link check, and the build's tests; the main page
-# and a docs page in Chrome.
+# and a docs page in Chrome, and their screenshots against site/references/. A failed screenshot
+# saves a diff image to site/references-diff/.
 if checks site; then
   (cd site && npm ci --no-audit --no-fund)
   script/site-test
   web_packages
   script/site-browser-test
+  script/site-references-test
 fi

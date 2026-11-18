@@ -180,7 +180,7 @@ A recipient device drops, without a receipt:
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
 - The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
-- Each handover carries `msg_id`, so an agent or adapter that keeps earlier ones drops a repeat.
+- Each handover carries the `msg_id` or its reference. An agent or adapter that keeps earlier ones drops a repeat by its `msg_id`: a later message can get an earlier one's reference. The reference is the leading characters of the base32 ([RFC 4648](https://www.rfc-editor.org/rfc/rfc4648#section-6), lowercase, without padding) of SHA-256 of the `msg_id`'s 16 bytes: at least 4, more only where two messages the device keeps would share them. Any device computes it from the `msg_id`.
 - After marking a message with `to` handed over, the device issues `read`.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.
 - How each agent and surface takes messages: [Delivery to agent sessions](../agent-sessions.md).

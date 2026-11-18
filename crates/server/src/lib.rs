@@ -57,7 +57,7 @@ pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 use protocol::Statement;
 pub use protocol::Versions;
 pub use requests::LONG_POLL_MAX_WAIT;
-pub use sign_in::{CALLBACK_PATH, PublicUrl, SignInSettings};
+pub use sign_in::{CALLBACK_PATH, PrivacyPolicyUrl, PublicUrl, SignInSettings};
 pub use sign_up::{Listed, SignUp};
 
 /// The OpenAPI spec the server implements: `api/openapi.json`, served at `GET /openapi.json`.
@@ -103,6 +103,9 @@ pub struct Settings {
     pub sign_in: Option<SignInSettings>,
     /// Who may sign up.
     pub sign_up: SignUp,
+    /// The privacy policy that the answer on sign-in and the server's pages that start one link;
+    /// none without it.
+    pub privacy_policy_url: Option<PrivacyPolicyUrl>,
     /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub owned_spaces_limit: Option<u32>,
@@ -142,6 +145,7 @@ struct AppState {
     sign_in: Option<Arc<SignInSettings>>,
     google: Option<Arc<Google>>,
     sign_up: Arc<SignUp>,
+    privacy_policy_url: Option<Arc<PrivacyPolicyUrl>>,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
@@ -385,6 +389,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .map(|google| Arc::new(Google::new(google))),
             sign_in: settings.sign_in.map(Arc::new),
             sign_up: Arc::new(settings.sign_up),
+            privacy_policy_url: settings.privacy_policy_url.map(Arc::new),
         })
 }
 

@@ -216,6 +216,29 @@ pub fn encrypted(
     line: &Line,
 ) -> RawEnvelope {
     let header = header(at, Scheme::Mls, &[]);
+    encrypted_under(played, header, group, line)
+}
+
+/// The `mls` envelope of `at`'s channel with the `msg_id` `msg_id` in which `played` says `line`,
+/// encrypted in the channel's group.
+pub fn encrypted_as(
+    played: &mut Played,
+    at: (SpaceId, ChannelId),
+    msg_id: MessageId,
+    line: &Line,
+) -> RawEnvelope {
+    let mut header = header(at, Scheme::Mls, &[]);
+    header.msg_id = msg_id;
+    encrypted_under(played, header, at.1, line)
+}
+
+/// The envelope with `header` in which `played` says `line`, encrypted in the group of `group`.
+fn encrypted_under(
+    played: &mut Played,
+    header: Header,
+    group: ChannelId,
+    line: &Line,
+) -> RawEnvelope {
     let content = line.content(header.msg_id);
     let payload = (played.mls)
         .encrypt(group, &content.to_cbor())
@@ -371,11 +394,16 @@ pub fn assert_shows_once(
 
 /// The lines of `shown` that say `delivered` for the message `msg_id` to `device`.
 pub fn delivered(shown: &str, msg_id: MessageId, device: DeviceId) -> usize {
+    status_lines(shown, DELIVERED, msg_id, device)
+}
+
+/// The lines of `shown` that report `status` for the message `msg_id` to the device `device`.
+pub fn status_lines(shown: &str, status: &str, msg_id: MessageId, device: DeviceId) -> usize {
     let (msg_id, device) = (msg_id.to_string(), device.to_string());
     shown
         .lines()
         .filter(|line| line.contains(&msg_id) && line.contains(&device))
-        .filter(|line| line.to_lowercase().contains(DELIVERED))
+        .filter(|line| line.to_lowercase().contains(status))
         .count()
 }
 

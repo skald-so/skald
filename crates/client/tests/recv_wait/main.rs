@@ -24,7 +24,8 @@
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of the helper and of handing
 //! messages over to agents:
-//! - `skald recv --wait`, as the person or with `--agent <name>` as an agent;
+//! - `skald recv --wait`, as the person or with `--agent <name>` as an agent, which shows each
+//!   message as the tests of compact output say (`compact_output/main.rs`);
 //! - a session exits once the helper has marked what it showed handed over, so its next run never
 //!   shows it again;
 //! - `SKALD_WEBSOCKET_RETRY=<seconds>` sets how long a connection on SSE or long-poll waits before
@@ -39,24 +40,28 @@ mod proxied;
 mod sessions;
 mod versions;
 mod waits;
+mod warnings;
 
 // Ada's machine and its own copy of `skald`, as the tests of the helper run it; Ada's agents, and a
 // run as an agent whose output a test stops reading, as the tests of handing messages over have
-// them; runs that hold the lock, of the tests of the lock.
+// them; what an agent reads, as the tests of compact output have it; runs that hold the lock, of
+// the tests of the lock.
 #[path = "../agent_handover/agents.rs"]
 mod agents;
 #[path = "../agent_handover/held.rs"]
 mod held;
 #[path = "../helper/helped.rs"]
 mod helped;
+#[path = "../compact_output/lines.rs"]
+mod lines;
 #[path = "../state_lock/held.rs"]
 mod locked;
 #[path = "../sign_in/machine.rs"]
 mod machine;
 
 // The channel of the tests of channel messages, Bob's device in it as the tests of channel groups
-// and of gap detection play it, the server, its relay and its front, people in spaces, and the
-// fixtures of the tests of sending.
+// and of gap detection play it and the tests of channel joins commit, the server, its relay and
+// its front, people in spaces, and the fixtures of the tests of sending.
 #[path = "../sign_in/cloud.rs"]
 mod cloud;
 #[path = "../sending/fixtures.rs"]
@@ -65,6 +70,8 @@ mod fixtures;
 mod front;
 #[path = "../gap_detection/gaps.rs"]
 mod gaps;
+#[path = "../channel_joins/joins.rs"]
+mod joins;
 #[path = "../channel_groups/kit.rs"]
 mod kit;
 #[path = "../receiving/peer.rs"]

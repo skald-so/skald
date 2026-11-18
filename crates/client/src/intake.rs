@@ -10,9 +10,9 @@
 //!   check that the device is not revoked and the server's name come with the session's first run,
 //!   a run of another command or a roster's change.
 //! - Each waiting session is then handed only its own: the person's what the person's `skald recv`
-//!   shows; an agent's the messages kept for it, and, with no person's session waiting, the
-//!   statuses and warnings of its space. A message is marked handed over once the session has
-//!   written it.
+//!   shows; an agent's the messages and statuses kept for it, and, with no person's session
+//!   waiting, the short warnings of its space, whose full lines are kept for the person. A message
+//!   is marked handed over once the session has written it.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,6 +21,7 @@ use std::time::SystemTime;
 
 use skald_proto::{Name, SpaceId};
 
+use crate::forms::Form;
 use crate::groups::{self, Link};
 use crate::mailbox::{Transport, Watched};
 use crate::output::{self, Stream};
@@ -103,12 +104,20 @@ impl Intake {
                 .map(|space| Scope::Only(*space))
                 .collect()
         };
-        let (taken, mut said) = captured(|| self.receive(&scopes, noticed.clone(), marks));
+        let (taken, mut said) = captured(|| {
+            self.holding(!person, |intake| {
+                intake.receive(&scopes, noticed.clone(), marks)
+            })
+        });
         taken?;
         let mut told = Told::default();
         for scope in scopes {
-            let (shown, mut by_scope) =
-                captured(|| recv::show(&mut self.follower, scope, &mut self.checks));
+            // The agents' runs get the short lines of their warnings.
+            let (shown, mut by_scope) = captured(|| {
+                self.holding(!person, |intake| {
+                    recv::show(&mut intake.follower, (scope, !person), &mut intake.checks)
+                })
+            });
             shown?;
             marks.push(("shown", SystemTime::now()));
             match scope {
@@ -122,6 +131,19 @@ impl Intake {
             told.person = said;
         }
         Ok(told)
+    }
+
+    /// Runs `run`, for agents' sessions if `agents`: such a run holds back its warnings and keeps
+    /// them for the person ([`recv::holding_warnings`]).
+    fn holding<R>(&mut self, agents: bool, run: impl FnOnce(&mut Self) -> R) -> R {
+        if !agents {
+            return run(self);
+        }
+        let (ran, held) = output::holding_warnings(|| run(self));
+        if !held.is_empty() {
+            recv::keep_held(self.follower.state.keep_warnings(&held), &held);
+        }
+        ran
     }
 
     /// Catches up, syncs the spaces of `due` and of each `space-notice` that came and brings their
@@ -156,16 +178,23 @@ impl Intake {
     }
 
     /// Hands the session of `agent` in `space`, or the person's if `None`, what is its own: `said`,
-    /// then each message kept for it, marked once written. Whether that is what the session waits
-    /// for: as an agent, a message; as the person, anything.
-    pub fn hand(&self, said: &Said, agent: Option<(SpaceId, &Name)>) -> Result<bool, String> {
+    /// then each status and message kept for it, in the form of its `--json` ([`Form`]), marked
+    /// once written. Whether that is what the session waits for: as an agent, a message; as the
+    /// person, anything.
+    pub fn hand(
+        &self,
+        said: &Said,
+        agent: Option<(SpaceId, &Name)>,
+        json: bool,
+    ) -> Result<bool, String> {
         for (stream, bytes) in said {
             output::write(*stream, bytes)
                 .map_err(|err| format!("cannot write to the output: {err}"))?;
         }
+        let form = Form::of(agent.is_some(), json);
         Ok(match agent {
-            Some((space, agent)) => recv::hand_over(&self.follower, space, agent)? > 0,
-            None => recv::show_to_person(&self.follower)? > 0 || !said.is_empty(),
+            Some((space, agent)) => recv::hand_over(&self.follower, (space, agent), form)? > 0,
+            None => recv::show_to_person(&self.follower, form)? > 0 || !said.is_empty(),
         })
     }
 }

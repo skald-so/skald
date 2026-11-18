@@ -1,0 +1,123 @@
+#!/usr/bin/env node
+// Tests the main page and the threat model page, as site/build.mjs builds them, against their
+// reference screenshots in site/references/, in the pinned Chrome of the kit's screenshots, after
+// npm ci in site/ and web/; Docker must be running:
+//   - each view of site/screenshots.mjs, each page in both themes at 1440 and 360 px, matches its
+//     reference by the kit's comparison, web/kit-references.ts; a view that differs saves its
+//     screenshot and a diff image to site/references-diff/; site/references/ holds no other file;
+//   - for the main page in the light theme at 1440 px the comparison fails on a changed color of
+//     "Get started", marking only it in the diff image, which it saves; on a changed spacing inside
+//     it, marking it; on a changed spacing between blocks, reporting the new size; and passes once
+//     the reference shows the change.
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { compare, redPixels, saveDiff } from '../web/kit-references.ts';
+import { startSite } from '../site/browser.mjs';
+import { diffDir, referenceDir, take, views } from '../site/references.mjs';
+import { reporter } from './lib/report.mjs';
+
+const { fail, done } = reporter('site-references-test');
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const shown = (file) => path.relative(root, file);
+
+fs.rmSync(diffDir, { recursive: true, force: true });
+const extra = fs.readdirSync(referenceDir).filter((file) => !views.some((view) => view.file === file));
+if (extra.length > 0) fail(`site/references/ holds files of no view: ${extra.join(', ')}`);
+
+// check <file> <actual> <dir>: the comparison of a screenshot with the reference <file>; when they
+// differ, it saves the screenshot and the diff image to <dir>. {result, saved, message}.
+const check = (file, actual, dir) => {
+  const reference = path.join(referenceDir, file);
+  if (!fs.existsSync(reference)) {
+    return { message: `${file} has no reference: make the references with \`node site/screenshots.mjs site/references\`` };
+  }
+  const result = compare(actual, fs.readFileSync(reference));
+  if (result.same) return { result };
+  const saved = saveDiff(dir, file, actual, result);
+  const sizes = result.sizes ? `, ${result.sizes.actual} instead of ${result.sizes.expected}` : '';
+  return {
+    result,
+    saved,
+    message: [
+      `${file} differs from its reference in ${result.pixels} pixels${sizes}.`,
+      `Screenshot: ${shown(saved.screenshot)}; diff image: ${shown(saved.diff)}.`,
+      'If the change is intended, update the references with `node site/screenshots.mjs site/references`.',
+    ].join('\n'),
+  };
+};
+
+// The first run pulls the Chrome image.
+const site = await startSite({ pinned: true });
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'site-references-test.')));
+try {
+  for (const view of views) {
+    const { message } = check(view.file, await take(site, view), diffDir);
+    if (message) fail(message);
+  }
+  await changes();
+} catch (error) {
+  fail(error.stack);
+} finally {
+  await site.close();
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+done();
+
+async function changes() {
+  const view = views.find(({ at, theme, width }) => at === '/' && theme === 'light' && width === 1440);
+  // A screenshot of the view after `change` alters "Get started", and the button's box.
+  const changed = async (change) => {
+    let box;
+    const actual = await take(site, view, async (page) => {
+      const button = page.getByRole('link', { name: 'Get started' });
+      await button.evaluate(change);
+      box = await button.boundingBox();
+    });
+    return { actual, box };
+  };
+
+  // The accent of the light theme, #3046C8, with blue 8 steps lighter.
+  const recolor = (button) => {
+    button.style.backgroundColor = 'rgb(48, 70, 208)';
+  };
+  {
+    const { actual, box } = await changed(recolor);
+    const { result, saved } = check(view.file, actual, path.join(scratch, 'color'));
+    if (!result || result.same) fail('a changed color of "Get started" passes the comparison');
+    else {
+      if (result.sizes) fail(`a changed color of "Get started" changes the size: ${JSON.stringify(result.sizes)}`);
+      const red = redPixels(result.diff, box);
+      if (red.inside <= box.width * box.height * 0.5) fail(`the diff image of a changed color marks ${red.inside} pixels of the button, not most of it`);
+      if (red.outside !== 0) fail(`the diff image of a changed color marks ${red.outside} pixels outside the button`);
+      if (!saved || !fs.readFileSync(saved.screenshot).equals(actual) || !fs.readFileSync(saved.diff).equals(result.diff)) {
+        fail('a failed comparison does not save its screenshot and diff image');
+      }
+    }
+  }
+  {
+    // One more pixel of padding on each side widens the button and moves the one after it.
+    const { actual, box } = await changed((button) => {
+      button.style.paddingInline = `${parseFloat(getComputedStyle(button).paddingLeft) + 1}px`;
+    });
+    const { result } = check(view.file, actual, path.join(scratch, 'padding'));
+    if (!result || result.same) fail('a changed spacing inside "Get started" passes the comparison');
+    else if (redPixels(result.diff, box).inside === 0) fail('the diff image of a changed spacing inside "Get started" marks none of it');
+  }
+  {
+    // 4 px more space above the block of "Get started" and "Read the docs".
+    const { actual } = await changed((button) => {
+      button.parentElement.style.marginTop = `${parseFloat(getComputedStyle(button.parentElement).marginTop) + 4}px`;
+    });
+    const { result } = check(view.file, actual, path.join(scratch, 'margin'));
+    const [width, height] = (result?.sizes?.expected ?? '0×0').split('×').map(Number);
+    if (!result || result.same) fail('a changed spacing between blocks passes the comparison');
+    else if (result.sizes?.actual !== `${width}×${height + 4}`) fail(`a changed spacing between blocks reports the sizes ${JSON.stringify(result.sizes)}`);
+    else if (result.pixels === 0) fail('a changed spacing between blocks differs in no pixel');
+  }
+  {
+    const first = await changed(recolor);
+    const second = await changed(recolor);
+    if (!compare(second.actual, first.actual).same) fail('a changed page fails the comparison with a reference that shows the change');
+  }
+}

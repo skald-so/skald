@@ -1,4 +1,5 @@
-// Reference screenshots of the kit page and their comparison with fresh screenshots.
+// Reference screenshots of the kit page and their comparison with fresh screenshots; the website's
+// main page takes the comparison too (site/references.mjs).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import pixelmatch from "pixelmatch";
@@ -128,4 +129,29 @@ export function saveDiff(
   writeFileSync(screenshot, actual);
   writeFileSync(diff, result.diff);
   return { screenshot, diff };
+}
+
+/** Counts the red pixels of a diff image, the differing ones, inside and outside `box`. */
+export function redPixels(
+  diff: Buffer,
+  box: { x: number; y: number; width: number; height: number },
+): { inside: number; outside: number } {
+  const image = PNG.sync.read(diff);
+  let inside = 0;
+  let outside = 0;
+  for (let y = 0; y < image.height; y++) {
+    for (let x = 0; x < image.width; x++) {
+      const i = (y * image.width + x) * 4;
+      const [r, g, b] = image.data.subarray(i, i + 3);
+      if (r !== 255 || g !== 0 || b !== 0) continue;
+      const within =
+        x >= box.x &&
+        x < box.x + box.width &&
+        y >= box.y &&
+        y < box.y + box.height;
+      if (within) inside++;
+      else outside++;
+    }
+  }
+  return { inside, outside };
 }

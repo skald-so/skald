@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 use skald_proto::ServerName;
 use skald_server::{
     AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl, Listed,
-    OidcSettings, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
+    OidcSettings, PrivacyPolicyUrl, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
 };
 use tokio::net::TcpListener;
 
@@ -182,6 +182,12 @@ struct Cli {
         value_delimiter = ','
     )]
     sign_up_google_domains: Vec<String>,
+
+    /// The address of the server's privacy policy, an https URL, e.g.
+    /// https://skald.example/privacy: the web app's sign-in page, the verification page and the page
+    /// of the account's sign-in methods link it [default: no link].
+    #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
+    privacy_policy_url: Option<PrivacyPolicyUrl>,
 
     /// The number of spaces an account may own: the ones it created, its personal space included,
     /// which counts also before it is created [default: no limit].
@@ -476,6 +482,7 @@ impl Cli {
             versions: self.protocol_versions.unwrap_or_default(),
             sign_in,
             sign_up,
+            privacy_policy_url: self.privacy_policy_url,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),

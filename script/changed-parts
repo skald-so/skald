@@ -12,8 +12,8 @@
 #     Chrome with its playwright-core, self-host, and site, whose browser tests do too; what the web
 #     app's build takes, src/, public/, index.html, vite.config.ts and the tsconfig files, also
 #     workspace, whose browser tests run that build, and self-host, whose stack serves it; the theme,
-#     src/theme/, and the browser of the kit tests, kit-browser.ts, also site, whose pages and
-#     browser tests take them
+#     src/theme/, the browser of the kit tests, kit-browser.ts, and their screenshot comparison,
+#     kit-references.ts, also site, whose pages and browser tests take them
 #   docker-compose.yml, Caddyfile: self-host
 #   site/, docs/, Markdown files in the root: site; docs/self-host.md (the self-host stack's guide)
 #     also self-host
@@ -92,7 +92,7 @@ while IFS= read -r path; do
     continue
   elif [[ $path == web/package.json || $path == web/package-lock.json || $path == web/src/theme/* ]]; then
     mark web workspace self-host site
-  elif [[ $path == web/kit-browser.ts ]]; then
+  elif [[ $path == web/kit-browser.ts || $path == web/kit-references.ts ]]; then
     mark web site
   elif [[ $path == web/src/* || $path == web/public/* || $path == web/index.html ||
     $path == web/vite.config.ts || $path == web/tsconfig*.json ]]; then

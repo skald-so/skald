@@ -26,6 +26,7 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde_json::{Value, json};
 use skald_proto::{
     Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame, MessageId,
     Name, Push, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
@@ -39,6 +40,7 @@ use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{self, WebSocket, printable};
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
+use crate::forms::{self, References};
 use crate::groups::{self, Link, Rosters};
 use crate::history;
 use crate::key_chain;
@@ -46,7 +48,7 @@ use crate::mailbox::{self, Mailbox, Transport};
 use crate::recv;
 use crate::secrets;
 use crate::spaces::{self, Follower, Scope, Synced};
-use crate::state::{Outgoing, State};
+use crate::state::{self, Outgoing, State};
 use crate::wraps;
 
 /// The first pause between attempts, and the longest.
@@ -91,8 +93,22 @@ impl Wire for Queued {
 
     fn answered(&self, state: &State, answer: &Answer) {
         let (msg_id, recipient) = (self.outgoing.msg_id, self.outgoing.recipient);
-        let refused = matches!(answer, Answer::Refused(_));
-        if let Err(err) = state.remove_outgoing(msg_id, recipient, refused) {
+        let refused = match answer {
+            Answer::Stored => None,
+            Answer::Refused(problem) => Some(forms::Status {
+                msg_id: msg_id.to_string(),
+                space: Some(self.outgoing.space.to_string()),
+                channel: Some(self.channel.to_string()),
+                status: forms::REFUSED.to_owned(),
+                device: recipient.map(|device| device.to_string()),
+                device_name: None,
+                problem: Some(explained(problem)),
+                timestamp: state::unix_now(),
+            }),
+        };
+        let refused =
+            refused.map(|status| serde_json::to_string(&status).expect("a status encodes"));
+        if let Err(err) = state.remove_outgoing(msg_id, recipient, refused.as_deref()) {
             eprintln!(
                 "skald: warning: the outbox keeps the message {msg_id}{}, which the server \
                  answered, so a later run sends it again: {err}",
@@ -123,15 +139,41 @@ impl Delivered {
 }
 
 /// Sends `text` to the channel whose ID is `channel`, by the state in `dir`, its secrets in
-/// `storage`, as `agent` if given; retries for `timeout`.
+/// `storage`, as `agent` if given, whose run holds its warnings for the person
+/// ([`recv::holding_warnings`]); retries for `timeout`. Reports as JSON if `json`.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
-    channel: &str,
-    text: &str,
+    (speaks, timeout): (VersionRange, Duration),
+    (channel, text): (&str, &str),
     agent: Option<&Name>,
+    json: bool,
+) -> Result<(), String> {
+    recv::holding_warnings(dir, agent.is_some(), || {
+        let reported = match (json, agent) {
+            (true, agent) => Reported::Json(agent.map(Name::as_str)),
+            (false, Some(agent)) => Reported::Sent(agent.as_str()),
+            (false, None) => Reported::Full,
+        };
+        sent(
+            dir,
+            storage,
+            (speaks, timeout),
+            (channel, text),
+            agent,
+            reported,
+        )
+    })
+}
+
+/// [`run`], reporting as `reported` says.
+fn sent(
+    dir: &Path,
+    storage: secrets::Storage,
+    (speaks, timeout): (VersionRange, Duration),
+    (channel, text): (&str, &str),
+    agent: Option<&Name>,
+    reported: Reported,
 ) -> Result<(), String> {
     let channel = channel_id(channel)?;
     let scope = Scope::of_run(dir, agent.is_some())?;
@@ -153,7 +195,7 @@ pub fn run(
     groups::encrypt(
         &follower,
         (&roster, &devices),
-        channel,
+        (channel, agent.map(Name::as_str)),
         |msg_id, counter| content(&from, msg_id, counter, text),
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
@@ -166,7 +208,16 @@ pub fn run(
         }
         Err(err) => eprintln!("skald: warning: {err}"),
     }
-    report(&queued, &delivered, timeout)
+    let reported = report(&follower.state, &queued, &delivered, timeout, reported);
+    if let Some(agent) = agent {
+        // It showed them in full, or as JSON.
+        for (msg_id, _) in queued.iter().map(Wire::key) {
+            if let Err(err) = follower.state.refusals_taken(agent.as_str(), msg_id) {
+                eprintln!("skald: warning: {err}");
+            }
+        }
+    }
+    reported
 }
 
 /// The channel ID `given` names, as a command takes it.
@@ -557,11 +608,33 @@ fn explained(problem: &str) -> String {
     format!("{problem} ({meaning})")
 }
 
-/// Says, for each message of `queued`, its ID and, per envelope, by its recipient device under
-/// `hpke`, whether the server stored it, refused it or has not answered it in `delivered`; fails
-/// unless every one is stored.
-pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Result<(), String> {
-    let mut messages: Vec<(MessageId, ChannelId, Vec<&Queued>)> = Vec::new();
+/// How a run reports the messages it sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reported<'a> {
+    /// Each message in full: the person's runs.
+    Full,
+    /// Each message as JSON; only those of the agent, if given.
+    Json(Option<&'a str>),
+    /// `sent #<ref>` per message of the agent once every one is stored, otherwise each in full:
+    /// an agent's `skald send`.
+    Sent(&'a str),
+    /// Nothing: an agent's `skald recv`, which shows the refusals of its messages as statuses.
+    Quiet,
+}
+
+/// A message of the outbox: its ID, its channel and its envelopes.
+type Queue<'q> = Vec<(MessageId, ChannelId, Vec<&'q Queued>)>;
+
+/// Says what the server answered to each message of `queued`, as `reported` says, by the state
+/// `state` and the answers in `delivered`; fails unless every one is stored, saying which are not.
+pub fn report(
+    state: &State,
+    queued: &[Queued],
+    delivered: &Delivered,
+    timeout: Duration,
+    reported: Reported,
+) -> Result<(), String> {
+    let mut messages: Queue = Vec::new();
     for queued in queued {
         match messages
             .iter_mut()
@@ -571,28 +644,94 @@ pub fn report(queued: &[Queued], delivered: &Delivered, timeout: Duration) -> Re
             None => messages.push((queued.outgoing.msg_id, queued.channel, vec![queued])),
         }
     }
-    let (mut left, mut refused) = (Vec::new(), Vec::new());
-    for (id, channel, envelopes) in &messages {
+    let outcome = outcome(&messages, delivered, timeout);
+    let references = || state.kept_ids().map(References::new).map_err(text);
+    if let Reported::Json(Some(agent)) | Reported::Sent(agent) = reported {
+        let mut own = Vec::new();
+        for message in messages {
+            let sent = state.sent(message.0).map_err(text)?;
+            if sent.and_then(|sent| sent.agent).as_deref() == Some(agent) {
+                own.push(message);
+            }
+        }
+        messages = own;
+    }
+    match reported {
+        Reported::Sent(_) if self::outcome(&messages, delivered, timeout).is_ok() => {
+            let references = references()?;
+            for (id, ..) in &messages {
+                println!("sent #{}", references.of(*id));
+            }
+        }
+        Reported::Full | Reported::Sent(_) => in_full(&messages, delivered),
+        Reported::Json(_) => {
+            let references = references()?;
+            for (id, channel, envelopes) in &messages {
+                let envelopes: Vec<Value> = (envelopes.iter())
+                    .map(|queued| {
+                        let recipient = queued.outgoing.recipient.map(|device| device.to_string());
+                        match delivered.answers.get(&queued.key()) {
+                            Some(Answer::Stored) => {
+                                json!({ "recipient": recipient, "answer": "stored" })
+                            }
+                            Some(Answer::Refused(problem)) => json!({
+                                "recipient": recipient,
+                                "answer": "refused",
+                                "problem": problem,
+                            }),
+                            None => json!({ "recipient": recipient, "answer": "waiting" }),
+                        }
+                    })
+                    .collect();
+                let fields = json!({
+                    "msg_id": id.to_string(),
+                    "ref": references.of(*id),
+                    "channel": channel.to_string(),
+                    "envelopes": envelopes,
+                });
+                println!("{}", forms::object("sent", fields));
+            }
+        }
+        Reported::Quiet => {}
+    }
+    outcome
+}
+
+/// Says, for each of `messages`, its ID and, per envelope, by its recipient device under `hpke`,
+/// whether the server stored it, refused it or has not answered it in `delivered`.
+fn in_full(messages: &Queue, delivered: &Delivered) {
+    for (id, channel, envelopes) in messages {
         println!("The message {id} to the channel {channel}:");
-        let mut waiting = Vec::new();
         for queued in envelopes {
-            let recipient = queued.outgoing.recipient;
-            let device =
-                recipient.map_or_else(|| "channel".to_owned(), |device| device.to_string());
+            let device = (queued.outgoing.recipient)
+                .map_or_else(|| "channel".to_owned(), |device| device.to_string());
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
-                    let problem = explained(problem);
-                    println!("  {device}  refused: {problem}");
-                    refused.push(format!(
-                        "the message {id}{}: {problem}",
-                        to_device(recipient)
-                    ));
+                    println!("  {device}  refused: {}", explained(problem));
                 }
-                None => {
-                    println!("  {device}  no answer yet: it waits in the outbox");
-                    waiting.extend(recipient.map(|device| device.to_string()));
-                }
+                None => println!("  {device}  no answer yet: it waits in the outbox"),
+            }
+        }
+    }
+}
+
+/// Fails unless the server stored every envelope of `messages` in `delivered`, saying which it has
+/// not answered within `timeout`, and why the last attempt failed, or else which it refused.
+fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result<(), String> {
+    let (mut left, mut refused) = (Vec::new(), Vec::new());
+    for (id, _, envelopes) in messages {
+        let mut waiting = Vec::new();
+        for queued in envelopes {
+            let recipient = queued.outgoing.recipient;
+            match delivered.answers.get(&queued.key()) {
+                Some(Answer::Stored) => {}
+                Some(Answer::Refused(problem)) => refused.push(format!(
+                    "the message {id}{}: {}",
+                    to_device(recipient),
+                    explained(problem)
+                )),
+                None => waiting.extend(recipient.map(|device| device.to_string())),
             }
         }
         if !waiting.is_empty() {
@@ -645,6 +784,7 @@ pub(crate) mod tests {
             outgoing,
             channel,
             counter: 1,
+            agent: None,
         };
         crate::state::tests::put(state, &[&message]).unwrap();
     }

@@ -37,6 +37,7 @@ mod devices;
 mod events;
 mod folders;
 mod follow;
+mod forms;
 mod gaps;
 mod groups;
 mod helper;
@@ -220,10 +221,17 @@ enum Command {
     /// revocation the server has not taken waits in the local state, and the next skald command
     /// that connects sends it again. The other member devices remove the revoked device from each
     /// channel, and it reads nothing sent after; a revoked device sends and receives nothing.
+    ///
+    /// It shows the devices the revoked device certified, which are revoked with it unless kept:
+    /// without --keep, it asks which to keep when run in a terminal, and keeps none otherwise.
     RevokeDevice {
         /// The device's ID, as skald devices shows it.
         #[arg(value_name = "DEVICE")]
         device: String,
+        /// The ID of a device the revoked one certified that stays valid, for scripts; once per
+        /// device.
+        #[arg(long = "keep", value_name = "DEVICE")]
+        keep: Vec<String>,
     },
     /// Signs this machine out: ends its session on the server it signed in to and deletes the
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
@@ -336,7 +344,8 @@ enum Command {
     /// group and has the server store it as one envelope to the group. Sends nothing, and says why,
     /// while the group holds a device the channel does not admit or no other device, or while this
     /// device's Commit there waits for the server.
-    /// Says the message's ID and whether the server stored it. What the server has not stored
+    /// Says the message's ID and whether the server stored it; as an agent, only sent #<ref> once
+    /// it is stored, by the message's reference as skald recv says. What the server has not stored
     /// within the request timeout waits in the local state, and the next skald send or skald recv
     /// sends it first.
     Send {
@@ -346,6 +355,10 @@ enum Command {
         /// The text.
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: String,
+        /// Says each message as a JSON object on a line of its own, with every field: msg_id, ref,
+        /// channel, and each envelope's recipient and the server's answer.
+        #[arg(long)]
+        json: bool,
     },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
@@ -360,11 +373,26 @@ enum Command {
     /// over to the agent: those there to it or to no one in particular that came since this device
     /// first ran as it there, each once; one waits for the agent until it expires, at most 7
     /// days. The person's run shows every message once, whether or not an agent got it.
+    ///
+    /// The person's run shows each message, status and warning in full, with its IDs. An agent's
+    /// shows each message as one line, [<from> · <device>] #<ref>: <text>, with (after missing)
+    /// before the colon after missing ones; the reference is the leading characters, at least 4,
+    /// of the base32 of SHA-256 of the message's ID. Of statuses it shows only those of its own
+    /// messages that expired, skald: #<ref> expired before the device <name> got it, or that the
+    /// server refused, skald: #<ref> refused: <problem>; each warning of a message as one line
+    /// without IDs, such as skald: dropped #<ref> from <device>: <reason>. The device keeps every
+    /// status and warning, and the person's next run shows each once, in full.
     Recv {
         /// With nothing to show, waits for the first message to come, shows it and exits; as the
         /// person, also for a status or a warning. It waits until interrupted.
         #[arg(long)]
         wait: bool,
+        /// Shows each message and status as a JSON object on a line of its own, with every field:
+        /// a message's msg_id, ref, space, channel, from, device, device_name, text and
+        /// after_missing; a status's msg_id, ref, space, channel, status, device, device_name,
+        /// problem and timestamp. As an agent, every status of its own messages.
+        #[arg(long)]
+        json: bool,
         /// With --wait through the helper, shows when each step of the helper's intake of what
         /// it shows ran, for tests.
         #[arg(
@@ -658,6 +686,11 @@ struct Operation {
 }
 
 impl Operation {
+    /// Whether it shows as JSON: a `skald recv --json`.
+    fn json(&self) -> bool {
+        matches!(self.command, Command::Recv { json: true, .. })
+    }
+
     /// The agent the run acts as, if any; fails for a name that is not an agent's, or a command of
     /// the person's.
     fn agent(&self) -> Result<Option<skald_proto::Name>, String> {
@@ -720,8 +753,8 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Devices => {
             state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
         }
-        Command::RevokeDevice { device } => state::dir(state_dir)
-            .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device)),
+        Command::RevokeDevice { device, keep } => state::dir(state_dir)
+            .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
             state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
         }
@@ -788,19 +821,29 @@ fn perform(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(channels::list),
-        Command::Send { channel, text } => state::dir(state_dir).and_then(|dir| {
+        Command::Send {
+            channel,
+            text,
+            json,
+        } => state::dir(state_dir).and_then(|dir| {
             send::run(
                 &dir,
                 key_storage,
-                speaks,
-                timeout,
-                &channel,
-                &text,
+                (speaks, timeout),
+                (&channel, &text),
                 agent.as_ref(),
+                json,
             )
         }),
-        Command::Recv { .. } => state::dir(state_dir).and_then(|dir| {
-            recv::run(&dir, key_storage, (speaks, timeout), agent.as_ref(), false).map(drop)
+        Command::Recv { json, .. } => state::dir(state_dir).and_then(|dir| {
+            recv::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                agent.as_ref(),
+                (false, json),
+            )
+            .map(drop)
         }),
         Command::History { channel, text } => state::dir(state_dir).and_then(|dir| {
             history_reading::run(
@@ -842,7 +885,13 @@ fn received(operation: &Operation) -> Result<bool, String> {
     clock::set_offset(operation.clock_offset);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
-    recv::run(&dir, operation.key_storage, settings, agent.as_ref(), true)
+    recv::run(
+        &dir,
+        operation.key_storage,
+        settings,
+        agent.as_ref(),
+        (true, operation.json()),
+    )
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
