@@ -10,9 +10,9 @@ use skald_proto::{
     AccountBody, AccountId, AccountRecord, Address, Anchors, AnchorsBody, Attachment, Body, Cbor,
     ChannelId, Content, DecodeError, Delegation, DelegationBody, DeliveryStatus, DeviceId,
     Envelope, FieldProblem, Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem,
-    HpkePayload, HpkePlaintext, MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
-    ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey, ServerStatus,
-    SpaceId, Stored, Unknown,
+    HpkePayload, HpkePlaintext, Link, LinkBody, MasterBackup, MessageId, NonEmpty, Push,
+    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
+    ServerStatus, SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -317,6 +317,20 @@ pub fn anchors() -> Anchors {
     Anchors::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// The link object Alice's device gives the device of "TEST 3" it links: the same anchors as
+/// [`anchors`] and the personal space.
+pub fn link() -> Link {
+    let held = anchors().body().clone();
+    let body = LinkBody {
+        device: server_device(),
+        issuer: alice_device(),
+        anchors: held.anchors,
+        personal: held.personal,
+        unknown: Unknown::default(),
+    };
+    Link::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -533,5 +547,6 @@ pub fn vectors() -> Vec<Vector> {
         vector("Account record", account_record()),
         vector("Master backup", master_backup()),
         vector("Anchors object", anchors()),
+        vector("Link object", link()),
     ]
 }

@@ -52,6 +52,10 @@ mod wire;
 #[allow(dead_code)]
 #[path = "../cloud_limits/limits.rs"]
 mod limits;
+// Storing the certificate of a device a linked device issued.
+#[allow(dead_code)]
+#[path = "../linked_certificates/upload.rs"]
+mod upload;
 
 mod kit;
 

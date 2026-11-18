@@ -47,6 +47,7 @@ mod history_reading;
 mod intake;
 mod key_chain;
 mod key_packages;
+mod link_code;
 mod lock;
 mod mailbox;
 mod output;
@@ -71,7 +72,6 @@ mod update;
 mod wait;
 mod wraps;
 
-use std::io::{self, IsTerminal as _};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -197,8 +197,10 @@ enum Command {
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
     /// registers the device. The account's first device creates the account's master key, issues
     /// its own certificate with it and signs the account's personal space as its admin; any other
-    /// device waits for linking. A device that holds its certificate keeps its KeyPackages, with
-    /// which others add it to channels, on the server, here and on each skald send and skald recv.
+    /// device waits for linking. Run by its person at a terminal, it shows a link code to type into
+    /// skald link on a linked device of the account, and exits once that device linked it; Enter
+    /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
+    /// others add it to channels, on the server, here and on each skald send and skald recv.
     SignIn {
         /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
         /// http://localhost:8080.
@@ -217,8 +219,13 @@ enum Command {
     /// account's revocations: a device with a valid certificate shows by its certificate's name,
     /// kind and date issued, and a revoked one so too, marked revoked; any other, such as one only
     /// the server signed, is listed apart as not linked, by its ID only. Warns of each device
-    /// revoked, or valid again, since this device last checked it.
+    /// revoked, valid again or new since this device last checked it.
     Devices,
+    /// Links a new device of this account, which shows a link code, on a device with a valid
+    /// certificate, as its person at a terminal: enter only a code shown on your own device. Once
+    /// you confirm the new device's name and kind, this device issues its certificate. After 3
+    /// failed runs in a row, it first asks whether the new device shows a new code.
+    Link,
     /// Revokes a device of the account this machine signed in to, this one included, on a device
     /// with a valid certificate: this device signs the revocation, and the server stores it. A
     /// revocation the server has not taken waits in the local state, and the next skald command
@@ -507,6 +514,7 @@ impl Command {
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
             Command::ApproveBinding { .. } => Some("approve-binding"),
+            Command::Link => Some("link"),
             _ => None,
         }
     }
@@ -530,6 +538,18 @@ impl Command {
                 | Command::SetHistoryPeriod { .. }
                 | Command::Address
         )
+    }
+
+    /// Whether it connects to the server of the machine's session as its device.
+    fn connects(&self) -> bool {
+        self.starts_helper()
+            || matches!(
+                self,
+                Command::Devices
+                    | Command::RevokeDevice { .. }
+                    | Command::SetUsername { .. }
+                    | Command::History { .. }
+            )
     }
 
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
@@ -560,6 +580,9 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
+            // It runs at its person's terminal, so never through the helper, and only reads the
+            // local state but for its count of failed runs.
+            Command::Link => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -720,10 +743,14 @@ fn perform(operation: Operation) -> Result<(), String> {
         command,
         ..
     } = operation;
-    if !matches!(command, Command::SignIn { .. } | Command::Helper { .. })
-        && let Ok(dir) = state::dir(state_dir.clone())
-    {
-        recovery::say_if_waiting(&dir);
+    if let Ok(dir) = state::dir(state_dir.clone()) {
+        // A grant the device took waits for the server to store its certificate.
+        if command.connects() {
+            link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
+        }
+        if !matches!(command, Command::SignIn { .. } | Command::Helper { .. }) {
+            recovery::say_if_waiting(&dir);
+        }
     }
     match command {
         Command::Status { server } => status(&server, speaks, timeout),
@@ -744,8 +771,8 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .unwrap_or_else(gethostname::gethostname)
                     .to_string_lossy()
                     .into_owned(),
-                // A recovery key is shown only to the person, who reads it at a terminal.
-                shows: agent.is_none() && io::stdin().is_terminal() && io::stdout().is_terminal(),
+                // A recovery key or a link code is shown only to the person, at a terminal.
+                shows: agent.is_none() && link_code::at_terminal(),
             };
             state::dir(state_dir).and_then(|dir| {
                 let mut connection =
@@ -762,6 +789,9 @@ fn perform(operation: Operation) -> Result<(), String> {
         }
         Command::Devices => {
             state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
+        }
+        Command::Link => {
+            state::dir(state_dir).and_then(|dir| link_code::run(&dir, key_storage, speaks, timeout))
         }
         Command::RevokeDevice { device, keep } => state::dir(state_dir)
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),

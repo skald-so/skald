@@ -1,6 +1,6 @@
 //! Anchors objects: `docs/protocol/membership.md`, "Anchors".
 
-use crate::cbor::{self, Codec, DecodeError, Item, Unknown};
+use crate::cbor::{self, Codec, DecodeError, Fields, Item, MapOut, Unknown};
 use crate::cert::account_and_device;
 use crate::id::{AccountId, DeviceId, SpaceId};
 use crate::signed::{Signed, SignedBody};
@@ -32,42 +32,72 @@ impl SignedBody for AnchorsBody {
 
 impl Codec for AnchorsBody {
     fn encode(&self) -> Vec<u8> {
-        let anchors = self
-            .anchors
-            .iter()
-            .map(|(space, revision)| cbor::array([cbor::id(space), cbor::bytes(revision)]));
-        account_and_device(&self.unknown, &self.account, &self.device)
-            .put(3, cbor::array(anchors))
-            .put_some(4, self.personal.as_ref().map(cbor::id))
-            .finish()
+        let map = account_and_device(&self.unknown, &self.account, &self.device);
+        finish_anchors(map, &self.anchors, self.personal.as_ref())
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("anchors-body")?;
-        let field = "anchors-body.anchors";
+        let account = (fields.required(1, "anchors-body.account")?).id("anchors-body.account")?;
+        let device = (fields.required(2, "anchors-body.device")?).id("anchors-body.device")?;
+        let names = ["anchors-body.anchors", "anchors-body.personal"];
+        let (anchors, personal) = take_anchors(&mut fields, names)?;
         Ok(Self {
-            account: fields
-                .required(1, "anchors-body.account")?
-                .id("anchors-body.account")?,
-            device: fields
-                .required(2, "anchors-body.device")?
-                .id("anchors-body.device")?,
-            anchors: fields
-                .required(3, field)?
-                .array(field)?
-                .iter()
-                .map(|anchor| {
-                    let [space, revision] = anchor.tuple(field)?;
-                    Ok((space.id(field)?, revision.fixed(field)?))
-                })
-                .collect::<Result<_, DecodeError>>()?,
-            personal: fields
-                .take(4)
-                .map(|item| item.id("anchors-body.personal"))
-                .transpose()?,
+            account,
+            device,
+            anchors,
+            personal,
             unknown: fields.unknown(),
         })
     }
+}
+
+/// An anchors or link body's anchors and personal space.
+type Starts = (Vec<(SpaceId, [u8; 32])>, Option<SpaceId>);
+
+/// Ends `map`, an anchors or link body, with its `anchors` and `personal` space, keys 3 and 4.
+pub(crate) fn finish_anchors(
+    map: MapOut,
+    anchors: &[(SpaceId, [u8; 32])],
+    personal: Option<&SpaceId>,
+) -> Vec<u8> {
+    map.put(3, encode_anchors(anchors))
+        .put_some(4, personal.map(cbor::id))
+        .finish()
+}
+
+/// The anchors and personal space, keys 3 and 4, of an anchors or link body's `fields`, by their
+/// `names` as fields.
+pub(crate) fn take_anchors(
+    fields: &mut Fields<'_, '_>,
+    [anchors, personal]: [&'static str; 2],
+) -> Result<Starts, DecodeError> {
+    let starts = decode_anchors(fields.required(3, anchors)?, anchors)?;
+    let space = (fields.take(4).map(|item| item.id(personal))).transpose()?;
+    Ok((starts, space))
+}
+
+/// The anchors of an anchors or link body: `[space, revision]` each, in order.
+fn encode_anchors(anchors: &[(SpaceId, [u8; 32])]) -> Vec<u8> {
+    cbor::array(
+        anchors
+            .iter()
+            .map(|(space, revision)| cbor::array([cbor::id(space), cbor::bytes(revision)])),
+    )
+}
+
+/// The anchors `item` holds as `field` of an anchors or link body.
+fn decode_anchors(
+    item: &Item<'_>,
+    field: &'static str,
+) -> Result<Vec<(SpaceId, [u8; 32])>, DecodeError> {
+    item.array(field)?
+        .iter()
+        .map(|anchor| {
+            let [space, revision] = anchor.tuple(field)?;
+            Ok((space.id(field)?, revision.fixed(field)?))
+        })
+        .collect()
 }
 
 cbor::cbor!(AnchorsBody);

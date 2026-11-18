@@ -446,6 +446,11 @@ export interface DeviceRegistration {
   name: string;
 }
 
+export interface CertUpload {
+  /** The device's complete certificate. */
+  cert: Certificate;
+}
+
 export interface KeyPackageCount {
   /**
    * The device's unused KeyPackages, the last-resort one aside, that expire in more than 7 days.

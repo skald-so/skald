@@ -7,7 +7,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, Unknown};
+use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, SpaceId, Unknown};
 
 use crate::connection::{Connection, Method};
 use crate::device;
@@ -70,9 +70,24 @@ fn signed(state: &State, signer: &Signer<'_>) -> Result<Option<Vec<u8>>, String>
     Err("other skald runs kept signing anchors objects; the next skald command signs it".to_owned())
 }
 
-/// The body of the anchors object of what `state` holds: the hash of the last accepted revision
-/// of each space, by space ID, and the pinned personal space.
+/// The body of the anchors object of what `state` holds ([`held`]).
 fn current(state: &State, signer: &Signer<'_>) -> Result<AnchorsBody, String> {
+    let (anchors, personal) = held(state)?;
+    Ok(AnchorsBody {
+        account: signer.account,
+        device: signer.device,
+        anchors,
+        personal,
+        unknown: Unknown::default(),
+    })
+}
+
+/// The hash of the last accepted revision of each space, by space ID, and the pinned personal
+/// space.
+pub type Held = (Vec<(SpaceId, [u8; 32])>, Option<SpaceId>);
+
+/// The anchors of what `state` holds, as an anchors object or a link object names them.
+pub fn held(state: &State) -> Result<Held, String> {
     let mut spaces = state.spaces().map_err(text)?;
     spaces.sort_by_key(|space| space.id);
     let anchors = spaces
@@ -84,16 +99,11 @@ fn current(state: &State, signer: &Signer<'_>) -> Result<AnchorsBody, String> {
             ))
         })
         .collect::<Result<_, String>>()?;
-    Ok(AnchorsBody {
-        account: signer.account,
-        device: signer.device,
-        anchors,
-        personal: spaces
-            .iter()
-            .find(|space| space.personal)
-            .map(|space| space.id),
-        unknown: Unknown::default(),
-    })
+    let personal = spaces
+        .iter()
+        .find(|space| space.personal)
+        .map(|space| space.id);
+    Ok((anchors, personal))
 }
 
 /// `POST /account/anchors`: has the server store `anchors`, in CBOR, which `state` holds as
@@ -118,8 +128,6 @@ fn store(
 
 #[cfg(test)]
 mod tests {
-    use skald_proto::SpaceId;
-
     use super::*;
     use crate::spaces::tests::first;
     use crate::test_dir::TestDir;

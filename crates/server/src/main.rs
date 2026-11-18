@@ -240,7 +240,7 @@ struct Cli {
     monthly_messages_limit: Option<u64>,
 
     /// The number of devices with a certificate an account may have, service and revoked devices
-    /// aside; a new device of an account that has as many does not register [default: no limit].
+    /// aside; a certificate that would give an account more is not stored [default: no limit].
     #[arg(
         long,
         env = "SKALD_DEVICES_LIMIT",

@@ -5,6 +5,7 @@ import type {
   AccountAnchors,
   AccountUsage,
   AnchorsRequest,
+  CertUpload,
   ChannelGroup,
   Device,
   DeviceRegistration,
@@ -1589,11 +1590,6 @@ export type registerDeviceResponse401 = {
   status: 401;
 };
 
-export type registerDeviceResponse403 = {
-  data: Problem;
-  status: 403;
-};
-
 export type registerDeviceResponse409 = {
   data: Problem;
   status: 409;
@@ -1612,7 +1608,6 @@ export type registerDeviceResponseSuccess = (
 export type registerDeviceResponseError = (
   | registerDeviceResponse400
   | registerDeviceResponse401
-  | registerDeviceResponse403
   | registerDeviceResponse409
   | registerDeviceResponse500
 ) & {
@@ -1673,6 +1668,121 @@ export const registerDevice = async (
     status: res.status,
     headers: res.headers,
   } as registerDeviceResponse;
+};
+
+export type storeDeviceCertificateResponse200 = {
+  data: Device;
+  status: 200;
+};
+
+export type storeDeviceCertificateResponse201 = {
+  data: Device;
+  status: 201;
+};
+
+export type storeDeviceCertificateResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type storeDeviceCertificateResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type storeDeviceCertificateResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type storeDeviceCertificateResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type storeDeviceCertificateResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type storeDeviceCertificateResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type storeDeviceCertificateResponseSuccess = (
+  storeDeviceCertificateResponse200 | storeDeviceCertificateResponse201
+) & {
+  headers: Headers;
+};
+export type storeDeviceCertificateResponseError = (
+  | storeDeviceCertificateResponse400
+  | storeDeviceCertificateResponse401
+  | storeDeviceCertificateResponse403
+  | storeDeviceCertificateResponse404
+  | storeDeviceCertificateResponse409
+  | storeDeviceCertificateResponse500
+) & {
+  headers: Headers;
+};
+
+export type storeDeviceCertificateResponse =
+  storeDeviceCertificateResponseSuccess | storeDeviceCertificateResponseError;
+
+export const getStoreDeviceCertificateUrl = (device: string) => {
+  return `/devices/${device}/cert`;
+};
+
+/**
+ * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, "Link code"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.
+ * @summary Store a linked device's certificate
+ */
+export const storeDeviceCertificate = async (
+  device: string,
+  certUpload: CertUpload,
+  options?: RequestInit,
+): Promise<storeDeviceCertificateResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getStoreDeviceCertificateUrl(device), {
+    ...options,
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(certUpload),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: storeDeviceCertificateResponse["data"] = body
+    ? JSON.parse(body)
+    : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as storeDeviceCertificateResponse;
 };
 
 export type getKeyPackageCountResponse200 = {

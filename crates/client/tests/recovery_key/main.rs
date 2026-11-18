@@ -29,6 +29,7 @@ mod cloud;
 #[path = "../common/mod.rs"]
 #[allow(dead_code)]
 mod common;
+mod grants;
 #[path = "../device_keys/keys.rs"]
 #[allow(dead_code)]
 mod keys;
@@ -54,6 +55,17 @@ use machine::{FIRST_DEVICE, Machine, YES};
 use serde_json::Value;
 use skald_proto::AccountId;
 use terminal::{Shown, Terminal};
+
+/// What a machine that waits for linking says, at a terminal, before it shows its link code.
+pub const LINK_CODE: &str = "type this code there";
+
+/// Lets `run`, of a machine that waits for linking, go on until it shows its link code, then ends
+/// it, its person linking nothing now; gives what it printed.
+#[track_caller]
+pub fn until_link_code(mut run: Terminal) -> Shown {
+    run.wait_to_show(LINK_CODE);
+    run.kill()
+}
 
 /// A server whose codes live for 2 minutes and poll every second, and a browser for the person.
 pub fn setup() -> (Cloud, Browser) {

@@ -1,12 +1,10 @@
 //! Signing in at the person's terminal, as the tests of the recovery key and of linking with it do:
 //! the run's arguments, approving its code, and reading the recovery key it shows.
 
-use std::time::{Duration, Instant};
-
 use skald_github_stand_in::User;
 
 use crate::browser::{APPROVE, Page};
-use crate::cloud::{Cloud, WAIT};
+use crate::cloud::Cloud;
 use crate::machine::{FIRST_DEVICE, Machine, SERVER, SIGN_IN, YES};
 use crate::terminal::Terminal;
 
@@ -28,18 +26,7 @@ pub fn as_agent<'a>(args: &[&'a str]) -> Vec<&'a str> {
 /// Approves, as `user` at `page`, the code that device authorization gives `run` after the
 /// `before` it gave earlier, once `run` shows it.
 pub fn approve(cloud: &Cloud, page: &Page, user: &User, run: &mut Terminal, before: usize) {
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
-        assert!(!run.exited(), "skald exited: {}", run.shown());
-        assert!(
-            Instant::now() < deadline,
-            "no device authorization: {}",
-            run.shown()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
-    run.wait_to_show(&grant.user_code);
+    let grant = crate::grants::shown_grant(cloud, run, before);
     cloud.decide(page, user, &grant, APPROVE);
 }
 
