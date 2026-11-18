@@ -12,7 +12,8 @@
 //! unanswered; and cut the machine off once the server has sent it a
 //! given envelope: what the server sends on the connections open then still reaches the machine,
 //! but nothing the machine sends after it reaches the server, such as its ack. It can close the
-//! WebSockets it tunnels, as a dropped connection.
+//! WebSockets it tunnels, as a dropped connection, or hold what the machine sends next on one back
+//! for a while.
 
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -112,6 +113,10 @@ struct State {
     streamed: Vec<u8>,
     /// The machine's end of each WebSocket it tunnels.
     tunnels: Vec<TcpStream>,
+    /// How long what the machine sends next on a WebSocket waits before it goes on.
+    delay_tunnel: Option<Duration>,
+    /// How many of its reads waited so.
+    delayed_tunnel: usize,
 }
 
 impl State {
@@ -164,6 +169,8 @@ impl Filter {
                 seen: Vec::new(),
                 streamed: Vec::new(),
                 tunnels: Vec::new(),
+                delay_tunnel: None,
+                delayed_tunnel: 0,
             })),
         };
         let (serving, target) = (filter.clone(), target.to_owned());
@@ -225,6 +232,17 @@ impl Filter {
         let mut state = self.state();
         state.cut_after = Some(envelope.to_vec());
         state.cut = false;
+    }
+
+    /// Holds what the machine sends next on a WebSocket for `delay` before it goes on, and all
+    /// that it sends after on it meanwhile.
+    pub fn delay_next_tunnel_write(&self, delay: Duration) {
+        self.state().delay_tunnel = Some(delay);
+    }
+
+    /// How many of the machine's writes on a WebSocket it held so far.
+    pub fn delayed_tunnel_writes(&self) -> usize {
+        self.state().delayed_tunnel
     }
 
     /// Closes each WebSocket it tunnels.
@@ -371,6 +389,9 @@ impl Filter {
         thread::spawn(move || {
             let mut buffer = [0; 16 * 1024];
             while let Ok(count @ 1..) = from_machine.read(&mut buffer) {
+                if let Some(delay) = filter.tunnel_delay() {
+                    thread::sleep(delay);
+                }
                 if filter.cut_now() || to_server.write_all(&buffer[..count]).is_err() {
                     break;
                 }
@@ -423,6 +444,14 @@ impl Filter {
 
     fn cut_now(&self) -> bool {
         self.state().cut
+    }
+
+    /// How long a write on a WebSocket waits, if it is to, counting it.
+    fn tunnel_delay(&self) -> Option<Duration> {
+        let mut state = self.state();
+        let delay = state.delay_tunnel.take();
+        state.delayed_tunnel += usize::from(delay.is_some());
+        delay
     }
 }
 

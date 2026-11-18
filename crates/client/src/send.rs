@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use skald_proto::{
     Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame, MessageId,
-    Name, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
+    Name, Push, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -384,12 +384,15 @@ pub fn deliver<W: Wire>(
         let attempt = opened.map_err(|err| (err, false)).and_then(|mut opened| {
             let answers = &mut delivered.answers;
             let sent = match opened.websocket() {
-                Some(socket) => (unanswered.iter())
+                Some((socket, pushed)) => (unanswered.iter())
                     .try_for_each(|queued| {
                         (socket.send(Message::Binary(queued.frame().to_vec().into())))
                             .map_err(|err| (broke(err), false))
                     })
-                    .and_then(|()| read_answers(socket, follower, queued, answers, until)),
+                    .and_then(|()| {
+                        let read = (&*follower, &mut *answers, until);
+                        read_answers((socket, pushed), queued, read)
+                    }),
                 None => one_by_one(follower, &keys, &unanswered, answers),
             };
             match sent {
@@ -459,14 +462,13 @@ fn one_by_one<W: Wire>(
 }
 
 /// Reads the server's answers to `queued` on `socket` into `answers` until each one is answered or
-/// `until`, taking each answered envelope out of the outbox; fails if the connection ends, saying
-/// whether the server closed it for a policy violation.
+/// `until`, taking each answered envelope out of the outbox and keeping each push it meets in
+/// `pushed`; fails if the connection ends, saying whether the server closed it for a policy
+/// violation.
 fn read_answers<W: Wire>(
-    socket: &mut WebSocket,
-    follower: &Follower,
+    (socket, pushed): (&mut WebSocket, &mut Vec<Push>),
     queued: &[W],
-    answers: &mut BTreeMap<Key, Answer>,
-    until: Instant,
+    (follower, answers, until): (&Follower, &mut BTreeMap<Key, Answer>, Instant),
 ) -> Result<(), (String, bool)> {
     while queued
         .iter()
@@ -482,6 +484,10 @@ fn read_answers<W: Wire>(
                 Ok(Frame::Stored(stored)) => (stored.send_key, Answer::Stored),
                 Ok(Frame::SendRefused { send_key, problem }) => {
                     (send_key, Answer::Refused(problem))
+                }
+                Ok(Frame::Push(push)) => {
+                    mailbox::keep_push(pushed, push);
+                    continue;
                 }
                 // A frame it does not know or that does not decode, ignored.
                 _ => continue,

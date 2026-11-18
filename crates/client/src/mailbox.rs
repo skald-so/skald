@@ -107,6 +107,13 @@ pub fn missed() -> bool {
     MISSED.with(|missed| missed.replace(false))
 }
 
+/// Keeps `push`, which a read of a WebSocket for the answers to what it sent met, in `pushed`, for
+/// the next catch-up to write before it acks; a wait looks again, as for what a run dropped.
+pub fn keep_push(pushed: &mut Vec<Push>, push: Push) {
+    pushed.push(push);
+    miss();
+}
+
 /// Notes that a run dropped what came on its connection.
 fn miss() {
     MISSED.with(|missed| missed.set(true));
@@ -290,10 +297,11 @@ impl Mailbox {
         Ok(link(Link::Https(None)))
     }
 
-    /// The connection's WebSocket, if it is one.
-    pub fn websocket(&mut self) -> Option<&mut WebSocket> {
+    /// The connection's WebSocket, if it is one, and where a read of it keeps each push it meets
+    /// ([`keep_push`]).
+    pub fn websocket(&mut self) -> Option<(&mut WebSocket, &mut Vec<Push>)> {
         match self.link.as_mut() {
-            Some(Link::WebSocket(socket)) => Some(socket),
+            Some(Link::WebSocket(socket)) => Some((socket, &mut self.pushed)),
             _ => None,
         }
     }

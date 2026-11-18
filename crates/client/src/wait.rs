@@ -91,6 +91,7 @@ pub fn here(
             thread::sleep(TICK);
             if helper::running(dir) {
                 // It goes on through the helper, on the helper's connection.
+                watch.stop_poll();
                 mailbox::close_kept();
                 break;
             }
@@ -175,6 +176,22 @@ impl Watch {
     /// Whether a long-poll in the background watches.
     fn polling(&self) -> bool {
         (self.poll.as_ref()).is_some_and(|(_, thread)| !thread.is_finished())
+    }
+
+    /// With no session waiting: closes the connection kept once it is time to try WebSocket again,
+    /// while it is an event stream, so the next command's connection tries WebSocket first.
+    fn retry_kept(&mut self) {
+        if mailbox::kept_transport() != Some(Transport::Sse) {
+            self.retry_at = None;
+            return;
+        }
+        let at = *self
+            .retry_at
+            .get_or_insert_with(|| Instant::now() + retry());
+        if Instant::now() >= at {
+            self.retry_at = None;
+            mailbox::close_kept();
+        }
     }
 
     /// Stops the long-poll in the background, if any, after its request.
@@ -277,7 +294,10 @@ impl Sessions {
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
-            self.watch = Watch::default();
+            let mut idle = Watch::default();
+            idle.retry_at = self.watch.retry_at;
+            self.watch = idle;
+            self.watch.retry_kept();
             // Only drains it.
             mailbox::kept_came();
             return Some(false);
