@@ -39,9 +39,9 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    # The bucket's, the sign-in providers' and sign-up's settings pass only when .env sets them. No
-    # cloud limit is set: a self-hosted server applies none (docs/dev/architecture.md, "Cloud
-    # limits").
+    # The bucket's, the sign-in providers', sign-up's and the privacy policy's settings pass only when
+    # .env sets them. No cloud limit is set: a self-hosted server applies none
+    # (docs/dev/architecture.md, "Cloud limits").
     environment:
       - SKALD_DATABASE_URL=postgres://skald:${SKALD_DATABASE_PASSWORD:?set SKALD_DATABASE_PASSWORD in .env}@postgres:5432/skald
       - SKALD_PUBLIC_URL=https://${SKALD_DOMAIN:?set SKALD_DOMAIN in .env}
@@ -58,6 +58,7 @@ services:
       - SKALD_SIGN_UP_GITHUB_LOGINS
       - SKALD_SIGN_UP_GOOGLE_EMAILS
       - SKALD_SIGN_UP_GOOGLE_DOMAINS
+      - SKALD_PRIVACY_POLICY_URL
     volumes:
       - attachments:/var/lib/skald/attachments
     networks: [edge, database]

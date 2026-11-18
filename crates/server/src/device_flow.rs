@@ -386,21 +386,23 @@ pub(crate) async fn page(
     }
     let user_code = param(query.as_deref(), "user_code").unwrap_or_default();
     match web_session(&state.db, &headers).await {
-        Ok(Some(session)) => ask(&session, &user_code),
+        Ok(Some(session)) => ask(&session, &user_code, &sign_in::privacy_policy_link(&state)),
         Ok(None) => page_of(
             StatusCode::OK,
             "Sign in a machine",
             &format!(
-                "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>",
-                sign_in_here(&state, &user_code)
+                "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>{}",
+                sign_in_here(&state, &user_code),
+                sign_in::privacy_policy_link(&state)
             ),
         ),
         Err(err) => failed("read a session", err),
     }
 }
 
-/// The page that asks the person of `session` to approve or deny `user_code`.
-fn ask(session: &Session, user_code: &str) -> Response {
+/// The page that asks the person of `session` to approve or deny `user_code`, with `privacy`, the
+/// link to the server's privacy policy, if any.
+fn ask(session: &Session, user_code: &str, privacy: &str) -> Response {
     let body = format!(
         "<h1>Sign in a machine</h1>\
          <p>You are signed in as <strong>{username}</strong>. Approving a code signs the machine that \
@@ -409,7 +411,7 @@ fn ask(session: &Session, user_code: &str) -> Response {
          <p><label>Code <input name=\"user_code\" value=\"{code}\" autocomplete=\"off\" \
          spellcheck=\"false\"></label></p>\
          <p><button name=\"decision\" value=\"approve\">Approve</button> \
-         <button name=\"decision\" value=\"deny\">Deny</button></p></form>",
+         <button name=\"decision\" value=\"deny\">Deny</button></p></form>{privacy}",
         username = escape(&session.username),
         code = escape(user_code),
     );
