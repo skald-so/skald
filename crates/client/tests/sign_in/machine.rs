@@ -375,9 +375,9 @@ impl Run {
         }
     }
 
-    /// Waits for it to exit, as [`Run::finish`] does; also gives how long it ran from when what it
-    /// printed held each of `parts`, or from its exit if that came first.
-    pub fn finish_after_showing(mut self, parts: &[&str]) -> (Finished, Duration) {
+    /// Waits for it to exit, as [`Run::finish`] does; also gives how long it ran until what it
+    /// printed held each of `parts`, or until its exit if that came first, and how long from then.
+    pub fn finish_after_showing(mut self, parts: &[&str]) -> (Finished, [Duration; 2]) {
         let shown = loop {
             let now = Instant::now();
             let exited = self.child.try_wait().expect("wait for skald").is_some();
@@ -387,8 +387,9 @@ impl Run {
             }
             thread::sleep(Duration::from_millis(10));
         };
+        let before = shown.duration_since(self.started);
         let finished = self.finish();
-        (finished, shown.elapsed())
+        (finished, [before, shown.elapsed()])
     }
 
     /// Kills it; gives what it printed until then.

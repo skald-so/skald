@@ -1,5 +1,5 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
-//! connection is tried again, a few times; any other error is not; a server that fails to start
+//! connection, or by opening none in time, is tried again, a few times; any other error is not; a server that fails to start
 //! drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
@@ -26,35 +26,36 @@ fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, 
 }
 
 #[test]
-fn only_a_reset_is_retried_and_only_a_few_times() {
-    // Resets, then success.
-    let calls = Cell::new(0);
-    let result = retried(|| {
-        calls.set(calls.get() + 1);
-        ready(if calls.get() < 3 {
-            Err(io_error(io::ErrorKind::ConnectionReset))
-        } else {
-            Ok(calls.get())
-        })
-    });
-    assert_eq!(result.ok(), Some(3));
+fn only_a_reset_or_a_timeout_is_retried_and_only_a_few_times() {
+    for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::TimedOut] {
+        // Failures, then success.
+        let calls = Cell::new(0);
+        let result = retried(|| {
+            calls.set(calls.get() + 1);
+            ready(if calls.get() < 3 {
+                Err(io_error(kind))
+            } else {
+                Ok(calls.get())
+            })
+        });
+        assert_eq!(result.ok(), Some(3), "{kind:?}");
 
-    // Resets only: the last one is the error.
-    let calls = Cell::new(0);
-    let result: Result<(), _> = retried(|| {
-        calls.set(calls.get() + 1);
-        ready(Err(io_error(io::ErrorKind::ConnectionReset)))
-    });
-    assert_eq!(calls.get(), SETUP_ATTEMPTS);
-    assert!(
-        matches!(&result, Err(sqlx::Error::Io(err)) if err.kind() == io::ErrorKind::ConnectionReset),
-        "{result:?}"
-    );
+        // Failures only: the last one is the error.
+        let calls = Cell::new(0);
+        let result: Result<(), _> = retried(|| {
+            calls.set(calls.get() + 1);
+            ready(Err(io_error(kind)))
+        });
+        assert_eq!(calls.get(), SETUP_ATTEMPTS, "{kind:?}");
+        assert!(
+            matches!(&result, Err(sqlx::Error::Io(err)) if err.kind() == kind),
+            "{result:?}"
+        );
+    }
 
     // Any other error at once.
-    let others: [fn() -> sqlx::Error; 4] = [
+    let others: [fn() -> sqlx::Error; 3] = [
         || io_error(io::ErrorKind::ConnectionRefused),
-        || io_error(io::ErrorKind::TimedOut),
         || sqlx::Error::PoolTimedOut,
         || sqlx::Error::Protocol("a refusal".to_owned()),
     ];
