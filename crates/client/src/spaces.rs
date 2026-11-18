@@ -353,6 +353,8 @@ pub struct Follower {
     pub transport: Transport,
     /// Whether the run has kept the device's KeyPackages on the server.
     kept: bool,
+    /// Whether a send of the device's anchors object failed in this run ([`anchors::keep`]).
+    anchors_unsent: bool,
     /// The revisions the server last gave of each space the run followed or synced.
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
 }
@@ -412,6 +414,7 @@ impl Follower {
                     device: self.this,
                     keys: &keys,
                 },
+                &mut self.anchors_unsent,
             ),
             Err(err) => eprintln!("skald: warning: {err}"),
         }
@@ -447,6 +450,7 @@ impl Follower {
             accepted: groups::Rosters::new(),
             transport: Transport::default(),
             kept: false,
+            anchors_unsent: false,
             given: BTreeMap::new(),
         }))
     }
@@ -532,7 +536,8 @@ impl Follower {
     /// Takes the account's personal space, unless the device pinned one already, whose revision 1
     /// it sends again while the server has not taken it. Otherwise it gets the space from the
     /// server and, unless another device stored its revision 1, signs that revision, pins the
-    /// space and stores the revision as `skald create-space` does. Gives the revision 1 it signed.
+    /// space, stores the revision as `skald create-space` does and keeps the device's anchors
+    /// object ([`Follower::keep_anchors`]). Gives the revision 1 it signed.
     fn take_personal(&mut self) -> Result<Option<Roster>, String> {
         let spaces = self.state.spaces().map_err(text)?;
         if let Some(space) = spaces.iter().find(|space| space.personal) {
@@ -561,6 +566,7 @@ impl Follower {
             .add_personal_space(id, name.as_str(), &bytes)
             .map_err(text)?;
         self.send_first((id, name.as_str()), &bytes, PERSONAL_AGAIN)?;
+        self.keep_anchors();
         Ok(Some(first))
     }
 

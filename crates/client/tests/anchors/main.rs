@@ -25,6 +25,7 @@
 #![allow(dead_code)]
 
 mod objects;
+mod runs;
 mod uploads;
 
 // People in spaces, of the tests of roster revisions, and the devices the tests of sending write

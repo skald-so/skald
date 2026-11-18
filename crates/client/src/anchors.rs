@@ -24,12 +24,22 @@ pub struct Signer<'k> {
 
 /// Signs the device's anchors object if `state` holds other revisions or another personal space
 /// than its last one names, and sends it, as the session `token`, while the server has not taken
-/// it; warns of what fails.
-pub fn keep(connection: &mut Connection, token: &str, state: &State, signer: &Signer<'_>) {
-    if let Err(err) = signed(state, signer).and_then(|waiting| match waiting {
-        Some(anchors) => store(connection, token, state, &anchors),
-        None => Ok(()),
-    }) {
+/// it; warns of what fails. Once a send fails, `unsent` is set and the run only signs: it sends
+/// and warns once.
+pub fn keep(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    signer: &Signer<'_>,
+    unsent: &mut bool,
+) {
+    let kept = signed(state, signer).and_then(|waiting| match waiting {
+        Some(anchors) if !*unsent => {
+            store(connection, token, state, &anchors).inspect_err(|_| *unsent = true)
+        }
+        _ => Ok(()),
+    });
+    if let Err(err) = kept {
         eprintln!("skald: warning: {err}");
     }
 }

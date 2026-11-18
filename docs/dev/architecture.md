@@ -47,7 +47,7 @@
   - each account has one, which it owns; the server creates it at the account's first request for it;
   - its name is the account's username, numbered as a username is when another space has that name: [Data model](#data-model);
   - the account's first device signs its revision 1 once the server has taken the device's certificate, and pins it as its personal space in its local state;
-  - a device never takes a personal space from the server's word: it pins the one whose revision 1 it signed, or the one its link object or the account's anchors objects name ([protocol spec](../protocol/membership.md#linking-a-device)); otherwise it has none.
+  - a device never takes a personal space from the server's word: it pins the one whose revision 1 it signed, or one as the protocol spec's [Linking a device](../protocol/membership.md#linking-a-device) and [Anchors](../protocol/membership.md#anchors) say; otherwise it has none.
 - **Default channel:**
   - every space has one: the first channel the roster lists, with every member of the space, each with `history` true; later revisions keep it first, and every invite names it;
   - an admin's device that accepts a revision of a space without a channel, or whose first channel lacks a member, signs the next revision with a new default channel first and creates its MLS group.
