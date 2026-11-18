@@ -530,15 +530,11 @@ fn read_answers<W: Wire>(
             return Ok(());
         }
         set_read_timeout(socket, wait).map_err(|err| (broke(err.into()), false))?;
-        let (send_key, answer) = match socket.read() {
+        let (send_key, answer) = match mailbox::read_answer(socket, pushed) {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::Stored(stored)) => (stored.send_key, Answer::Stored),
                 Ok(Frame::SendRefused { send_key, problem }) => {
                     (send_key, Answer::Refused(problem))
-                }
-                Ok(Frame::Push(push)) => {
-                    mailbox::keep_push(pushed, push);
-                    continue;
                 }
                 // A frame it does not know or that does not decode, ignored.
                 _ => continue,

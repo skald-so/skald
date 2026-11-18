@@ -322,14 +322,10 @@ fn answers<T>(
             break;
         }
         set_read_timeout(socket, wait).map_err(|err| broke(err.into()))?;
-        let (upload, refused) = match socket.read() {
+        let (upload, refused) = match crate::mailbox::read_answer(socket, pushed) {
             Ok(Message::Binary(bytes)) => match Frame::from_cbor(&bytes) {
                 Ok(Frame::HistoryStored { upload }) => (upload, None),
                 Ok(Frame::HistoryRefused { upload, problem }) => (upload, Some(problem)),
-                Ok(Frame::Push(push)) => {
-                    crate::mailbox::keep_push(pushed, push);
-                    continue;
-                }
                 // Another frame, or one it does not know or that does not decode, ignored.
                 _ => continue,
             },
