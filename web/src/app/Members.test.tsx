@@ -1,15 +1,21 @@
-// Members when a space's members fail to load and that space is chosen again.
+// Members when a space's members fail to load and that space is chosen again, and when the API
+// refuses the session.
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
-import { afterAll, afterEach, beforeAll, expect, test } from "vitest";
+import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
 import { Cabinet } from "./Cabinet.tsx";
 import { Members } from "./Members.tsx";
 
 const own = { space: "01968a2e-0000-7000-8000-000000000601", name: "ana" };
 const team = { space: "01968a2e-0000-7000-8000-000000000602", name: "team-b" };
+/** A space whose members the API answers as to a session it refuses. */
+const refused = {
+  space: "01968a2e-0000-7000-8000-000000000603",
+  name: "team-c",
+};
 const member = (handle: string) => ({
   handle,
   role: "member",
@@ -27,6 +33,12 @@ const server = setupServer(
     asked++ === 0
       ? new HttpResponse(null, { status: 500 })
       : HttpResponse.json({ members: [member("kim-lab")] }),
+  ),
+  http.get(`*/spaces/${refused.space}/members`, () =>
+    HttpResponse.json(
+      { type: "https://skald.so/problems/not-signed-in", status: 401 },
+      { status: 401 },
+    ),
   ),
 );
 
@@ -63,5 +75,23 @@ test("members that load after a failure clear what failed", async () => {
   expect(await screen.findByRole("row", { name: /\bana\b/ })).toBeTruthy();
   await choose(team.name);
   expect(await screen.findByRole("row", { name: /kim-lab/ })).toBeTruthy();
+  expect(screen.queryByText("The members did not load.")).toBeNull();
+});
+
+test("when the API refuses the session, Members shows the sign-in page", async () => {
+  const onSignedOut = vi.fn();
+  render(
+    <MemoryRouter initialEntries={["/members"]}>
+      <Cabinet
+        session={{ account: own.space, username: "ana" }}
+        spaces={[{ ...refused, personal: false }]}
+        onSignedOut={() => {}}
+      >
+        <Members onSignedOut={onSignedOut} />
+      </Cabinet>
+    </MemoryRouter>,
+  );
+
+  await expect.poll(() => onSignedOut.mock.calls.length).toBe(1);
   expect(screen.queryByText("The members did not load.")).toBeNull();
 });
