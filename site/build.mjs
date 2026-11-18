@@ -1,7 +1,9 @@
-// Builds the website and docs from docs/ with VitePress (site/config.mjs) and fails on a broken
-// internal link. A page is each Markdown file of docs/ that git does not ignore, at its path, a
-// README.md as its directory's index; without a docs/index.md, the main page lists the pages.
-// Links between pages, to their headings and to files outside docs/ must resolve.
+// Builds the website and docs and fails on a broken internal link: the main page at / from
+// site/main/ with Vite, and docs/ with VitePress (site/config.mjs). A page is each Markdown file of
+// docs/ that git does not ignore, at its path, a README.md as its directory's index; without a
+// docs/start.md, the docs start page, /start, lists the pages. A page at / fails the build, as the
+// main page is there. Links between pages, to their headings and to files outside docs/ must resolve.
+// The fonts' licenses ship in fonts/.
 // Usage, after npm ci in site/: node site/build.mjs <out dir> [<docs dir>]
 //   <docs dir>  docs/ by default; its parent is the repository root that links leave docs/ for.
 //   SKALD_SITE_REF  the git ref that links to files outside docs/ name on GitHub; main by default.
@@ -9,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { build as viteBuild } from 'vite';
 import { build } from 'vitepress';
 
 const here = path.dirname(new URL(import.meta.url).pathname);
@@ -21,6 +24,8 @@ const docs = fs.realpathSync(docsArg ?? path.join(here, '..', 'docs'));
 const repo = path.dirname(docs);
 const out = path.resolve(outArg);
 const ref = process.env.SKALD_SITE_REF || 'main';
+// The packages of the main page's fonts, in @fontsource-variable/.
+const fonts = ['inter', 'space-grotesk', 'jetbrains-mono'];
 const scheme = /^[a-z][a-z0-9+.-]*:|^\/\//i;
 const decode = (text) =>
   text.replace(/&(amp|lt|gt|quot|#39|#x27);/g, (m, name) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'", '#x27': "'" })[name]);
@@ -52,8 +57,13 @@ async function main() {
     fs.copyFileSync(path.join(docs, file), path.join(src, staged));
     if (file.endsWith('.md')) pages.push({ path: staged, source: file, title: title(path.join(docs, file)) });
   }
-  if (!pages.some((p) => p.path === 'index.md')) {
-    fs.writeFileSync(path.join(src, 'index.md'), mainPage(pages));
+  const root = pages.find((p) => p.path === 'index.md');
+  if (root) {
+    console.error(`site: ${root.source} is a page at /, where the main page is`);
+    return 1;
+  }
+  if (!pages.some((p) => p.path === 'start.md')) {
+    fs.writeFileSync(path.join(src, 'start.md'), startPage(pages));
   }
 
   const errors = path.join(work, 'errors');
@@ -67,6 +77,7 @@ async function main() {
   fs.rmSync(out, { recursive: true, force: true });
   try {
     await build(src);
+    await buildMainPage(out, ref);
   } catch (error) {
     console.error(`site: the build failed: ${error.message}`);
     return 1;
@@ -87,9 +98,26 @@ function title(file) {
   return heading ? heading[1].replace(/`/g, '') : path.basename(file, '.md');
 }
 
-// mainPage <pages>: a page that links to every page.
-function mainPage(pages) {
-  const lines = ['# Skald', ''];
+// buildMainPage <out> <ref>: builds the main page of site/main/ into <out>, its link to a
+// repository file at <ref>, and copies each font's license to fonts/<package>/LICENSE.
+async function buildMainPage(out, ref) {
+  await viteBuild({
+    root: path.join(here, 'main'),
+    configFile: false,
+    logLevel: 'warn',
+    plugins: [{ name: 'skald-site-ref', transformIndexHtml: { order: 'pre', handler: (html) => html.replaceAll('%SKALD_SITE_REF%', ref) } }],
+    // Every asset a file of its own, never a data: URI, as the web app's.
+    build: { outDir: out, emptyOutDir: false, assetsDir: 'assets/main', assetsInlineLimit: 0, modulePreload: { polyfill: false } },
+  });
+  for (const font of fonts) {
+    fs.mkdirSync(path.join(out, 'fonts', font), { recursive: true });
+    fs.copyFileSync(path.join(here, 'node_modules', '@fontsource-variable', font, 'LICENSE'), path.join(out, 'fonts', font, 'LICENSE'));
+  }
+}
+
+// startPage <pages>: a page that links to every page.
+function startPage(pages) {
+  const lines = ['# Docs', ''];
   for (const page of pages) lines.push(`- [${page.title}](${page.path})`);
   return `${lines.join('\n')}\n`;
 }

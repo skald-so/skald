@@ -9,9 +9,11 @@
 #     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
 #   any other path in prototypes/: every part of the Rust code, all but tooling, web and site
 #   web/: web; its package.json and package-lock.json also workspace, whose sign-in tests drive
-#     Chrome with its playwright-core, and self-host; what the web app's build takes, src/, public/,
-#     index.html, vite.config.ts and the tsconfig files, also workspace, whose browser tests run
-#     that build, and self-host, whose stack serves it
+#     Chrome with its playwright-core, self-host, and site, whose browser tests do too; what the web
+#     app's build takes, src/, public/, index.html, vite.config.ts and the tsconfig files, also
+#     workspace, whose browser tests run that build, and self-host, whose stack serves it; the theme,
+#     src/theme/, and the browser of the kit tests, kit-browser.ts, also site, whose main page and
+#     browser tests take them
 #   docker-compose.yml, Caddyfile: self-host
 #   site/, docs/, Markdown files in the root: site; docs/self-host.md (the self-host stack's guide)
 #     also self-host
@@ -88,8 +90,10 @@ linked() {
 while IFS= read -r path; do
   if [[ -z $path ]]; then
     continue
-  elif [[ $path == web/package.json || $path == web/package-lock.json ]]; then
-    mark web workspace self-host
+  elif [[ $path == web/package.json || $path == web/package-lock.json || $path == web/src/theme/* ]]; then
+    mark web workspace self-host site
+  elif [[ $path == web/kit-browser.ts ]]; then
+    mark web site
   elif [[ $path == web/src/* || $path == web/public/* || $path == web/index.html ||
     $path == web/vite.config.ts || $path == web/tsconfig*.json ]]; then
     mark web workspace self-host

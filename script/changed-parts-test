@@ -115,13 +115,16 @@ expect 'workspace self-host web' web/index.html
 expect 'workspace self-host web' web/vite.config.ts
 expect 'workspace self-host web' web/tsconfig.app.json
 expect web web/kit.test.ts
+# The website's main page takes the web UI's theme; its browser tests, the kit's Chrome.
+expect 'workspace self-host web site' web/src/theme/theme.css
+expect 'web site' web/kit-browser.ts
 # Any Markdown file: a link of docs/ can name its headings.
 expect 'web site' web/README.md
-# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
-# self-host stack's part runs for its packages too.
-expect 'workspace self-host web' web/package.json
-expect 'workspace self-host web' web/package-lock.json
-expect 'workspace self-host web' -web/package.json
+# The server's and the client's sign-in tests and the website's browser tests drive Chrome with the
+# playwright-core of web/; the self-host stack's part runs for its packages too.
+expect 'workspace self-host web site' web/package.json
+expect 'workspace self-host web site' web/package-lock.json
+expect 'workspace self-host web site' -web/package.json
 expect 'workspace self-host web site' web/src/App.tsx docs/dev/roadmap.md task.md
 
 expect "$crates" crates/server/src/lib.rs
@@ -383,6 +386,8 @@ reads() {
   apply "$path"
   git add --all
   git commit --quiet --message change
+  # The parts that run npm enter web/ and site/, which the copy's base does not track.
+  mkdir -p "$copy/web" "$copy/site"
   rm -f "$copy/checks"
   if ! env -u SKALD_TEST_PARTS -u SKALD_TEST_SINCE SKALD_TEST_SINCE="$copy_base" PATH="$copy/bin:$PATH" \
     "$copy/script/test" >/dev/null 2>&1; then
@@ -445,21 +450,20 @@ prototype prototypes/agents
 reads prototypes/agents/inbox/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
 prototype prototypes/edits
 reads prototypes/edits/overlap/src/lib.rs "${prototype_checks[@]}" "${tree_checks[@]}"
-# The self-host stack's guide, compose file and Caddy config. A run of every part enters web/, which
-# the copy's base does not track.
+# The self-host stack's guide, compose file and Caddy config.
 for path in docs/self-host.md docker-compose.yml Caddyfile; do
-  mkdir -p "$copy/web" "$copy/site"
   reads "$path" script/self-host-test
 done
 # The website and docs: its packages and build for docs/, any Markdown file and site/.
 for path in docs/dev/roadmap.md README.md web/README.md site/config.mjs; do
-  mkdir -p "$copy/site"
-  reads "$path" 'site: npm ci --no-audit --no-fund' script/site-test
+  reads "$path" 'site: npm ci --no-audit --no-fund' script/site-test script/site-browser-test
 done
-# The server's and the client's sign-in tests drive Chrome with the playwright-core of web/; the
-# self-host stack's part runs for its packages too.
+# The server's and the client's sign-in tests and the website's browser tests drive Chrome with the
+# playwright-core of web/; the self-host stack's part runs for its packages too.
 reads web/package.json 'cargo nextest run --workspace --locked' script/self-host-test 'web: npm run lint' \
-  'web: npm test' 'web: npm run build'
+  'web: npm test' 'web: npm run build' script/site-browser-test
+# The website's browser tests take the kit's Chrome.
+reads web/kit-browser.ts 'web: npm test' script/site-browser-test
 # The self-host stack serves the web app's build.
 reads web/src/App.tsx script/self-host-test 'web: npm run build'
 

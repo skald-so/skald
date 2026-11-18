@@ -36,6 +36,8 @@ export function siteConfig({ docs, repo, ref, pages, out, errors }) {
         md.core.ruler.after('inline', 'skald_repository_links', (state) => repositoryLinks(md, state, { docs, repo, ref, pages, errors })),
     },
     themeConfig: {
+      // The main page is no VitePress page: its link loads it, outside VitePress's router.
+      logoLink: { link: '/', target: '_self' },
       search: { provider: 'local' },
       sidebar: sidebar(pages),
       socialLinks: [{ icon: 'github', link: github }],
