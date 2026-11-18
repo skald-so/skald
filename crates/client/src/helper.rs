@@ -44,7 +44,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, mailbox, state};
+use crate::{Command, Operation, connection, mailbox, state};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -246,18 +246,11 @@ fn greet(
             stream,
             String::from_utf8_lossy(&helper).into_owned(),
         ))),
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Err(format!(
-                "the helper of the local state is busy with another command: gave up waiting \
-                 for it after {} seconds; nothing changed",
-                timeout.as_secs()
-            ))
-        }
+        Err(err) if connection::timed_out(&err) => Err(format!(
+            "the helper of the local state is busy with another command: gave up waiting for it \
+             after {} seconds; nothing changed",
+            timeout.as_secs()
+        )),
         _ => Ok(None),
     }
 }

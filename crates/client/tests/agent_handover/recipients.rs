@@ -4,7 +4,7 @@
 use crate::kit::create_space;
 use crate::talk::Line;
 use crate::world::{ADD_RULE, GLOBEX, dir_of, path, run};
-use crate::{Agents, CLAUDE, CODEX, assert_handed_once, assert_not_handed, run_as_in};
+use crate::{Agents, CLAUDE, CODEX, assert_handed_line, assert_not_handed, run_as_in};
 
 /// An agent of Ada's device in another space.
 const GEMINI: &str = "gemini-r5c8vn";
@@ -40,10 +40,10 @@ fn each_agent_in_the_channel_gets_a_message_without_to_and_only_the_to_agent_one
     let codex = agents.run_as(CODEX).shown();
     let elsewhere = run_as_in(&agents.talk.ada.machine, &other, GEMINI).shown();
 
-    assert_handed_once(&claude, TO_ALL, to_all);
+    assert_handed_line(&claude, TO_ALL, to_all);
     assert_not_handed(&claude, TO_CODEX);
-    assert_handed_once(&codex, TO_ALL, to_all);
-    assert_handed_once(&codex, TO_CODEX, to_codex);
+    assert_handed_line(&codex, TO_ALL, to_all);
+    assert_handed_line(&codex, TO_CODEX, to_codex);
     for text in [TO_ALL, TO_CODEX] {
         assert_not_handed(&elsewhere, text);
     }

@@ -35,8 +35,7 @@ fn helper_killed_while_a_command_waits_fails_it_and_the_next_command_loses_nothi
     );
     let helped = Helped::new(&talk.ada.machine);
     let (from_bob, channel, _) = bob_in(&talk);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     bob_sends(&mut talk, 1, BOB_SAYS);
     talk.front.answer(Answers::Lose);
     let lost = talk.front.lost();

@@ -86,8 +86,8 @@ mod talk;
 mod world;
 
 // Ada's machine behind the proxy of the tests of the transports' fallback, the proxy's filter, the
-// recording proxy of the tests of `HTTPS_PROXY`, and the test CA and TLS endpoint of the tests of
-// HTTPS.
+// recording proxy and the machines behind it of the tests of `HTTPS_PROXY`, and the test CA and TLS
+// endpoint of the tests of HTTPS.
 #[path = "../transport_fallback/behind.rs"]
 mod behind;
 #[path = "../transport_fallback/filter.rs"]
@@ -98,6 +98,8 @@ mod proxy;
 mod tls;
 #[path = "../https/front.rs"]
 mod tls_front;
+#[path = "../https_proxy/trust.rs"]
+mod trust;
 
 // The person's browser, time passing as the server's database shows it, the server's tests'
 // readers of the KeyPackages API's answers, finding keys in bytes, and the helpers of every client

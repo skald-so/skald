@@ -568,8 +568,7 @@ fn read_answers<W: Wire>(
 pub fn timed_out(err: &tungstenite::Error) -> bool {
     matches!(
         err,
-        tungstenite::Error::Io(err)
-            if matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+        tungstenite::Error::Io(err) if connection::timed_out(err)
     )
 }
 

@@ -64,14 +64,16 @@ mod relay;
 #[path = "../roster_revisions/world.rs"]
 mod world;
 
-// The recording proxy of the tests of `HTTPS_PROXY`, and the test CA and TLS endpoint of the tests
-// of HTTPS.
+// The recording proxy and the machines behind it of the tests of `HTTPS_PROXY`, and the test CA
+// and TLS endpoint of the tests of HTTPS.
 #[path = "../https_proxy/proxy.rs"]
 mod proxy;
 #[path = "../common/tls.rs"]
 mod tls;
 #[path = "../https/front.rs"]
 mod tls_front;
+#[path = "../https_proxy/trust.rs"]
+mod trust;
 
 // Finding keys in bytes, and the helpers of every client test.
 #[path = "../common/mod.rs"]
