@@ -258,9 +258,9 @@ impl Sessions {
     /// it waits for or failed. Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
         let ran = helper::run_for(session, dir, crate::received);
-        let panicked = self.again(ran, recv::last_space());
+        let went_on = self.again(ran, recv::last_space()).is_some();
         self.watch.start();
-        !panicked
+        went_on
     }
 
     /// Notes that a command ran.
@@ -272,8 +272,8 @@ impl Sessions {
 
     /// Drops the sessions whose command went away; runs `skald recv` again, with the state in
     /// `dir`, for each other one that a command ran since, and takes in what came for each one it
-    /// may concern, handing each its own. Gives whether a session waits, `None` once a run or the
-    /// intake panicked.
+    /// may concern, handing each its own. Gives whether a session waits, which after a run or a
+    /// handover the next look tells; `None` once a run or the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
@@ -298,48 +298,43 @@ impl Sessions {
         if runs.is_empty() && handed.is_empty() {
             return Some(true);
         }
-        let mut panicked = false;
         for waiting in runs {
             let ran = helper::run_for(waiting.session, dir, crate::received);
-            panicked |= self.again(ran, recv::last_space());
+            self.again(ran, recv::last_space())?;
         }
-        panicked |= self.hand(handed, dir, (&noticed, retry, seen));
-        if panicked {
-            return None;
-        }
+        self.hand(handed, dir, (&noticed, retry, seen))?;
         self.watch.start();
-        Some(!self.waiting.is_empty())
+        // The next look counts the sessions left.
+        Some(true)
     }
 
     /// Takes in once what came for `handed`, sessions with the state in `dir`, with the spaces of
     /// the notices that came, `noticed`, trying WebSocket first again after a `retry`, and hands
-    /// each its own; with nothing to take in with, runs `skald recv` for each. Whether the intake
-    /// or a session's handover panicked.
+    /// each its own; with nothing to take in with, runs `skald recv` for each. `None` once the
+    /// intake or a session's handover panicked: the others are left to the helper's exit.
     fn hand(
         &mut self,
         handed: Vec<Waiting>,
         dir: &Path,
         (noticed, retry, seen): (&BTreeSet<SpaceId>, bool, SystemTime),
-    ) -> bool {
+    ) -> Option<()> {
         if handed.is_empty() {
-            return false;
+            return Some(());
         }
         let Some(mut intake) = intake::take() else {
-            let mut panicked = false;
             for waiting in handed {
                 let ran = helper::run_for(waiting.session, dir, crate::received);
-                panicked |= self.again(ran, recv::last_space());
+                self.again(ran, recv::last_space())?;
             }
-            return panicked;
+            return Some(());
         };
         let scopes = handed.iter().map(|waiting| waiting.space).collect();
         let mut marks = vec![("came", seen), ("taking in", SystemTime::now())];
         let taken = panic::catch_unwind(AssertUnwindSafe(|| {
             intake.take_in(&scopes, noticed, (retry, &mut marks))
         }));
-        let mut panicked = false;
-        match taken {
-            Ok(Ok(told)) => {
+        match taken.ok()? {
+            Ok(told) => {
                 let none = Said::new();
                 for waiting in handed {
                     let space = waiting.space;
@@ -354,23 +349,22 @@ impl Sessions {
                         let agent = operation.agent()?;
                         intake.hand(said, space.zip(agent.as_ref()))
                     });
-                    panicked |= self.again(ran, space);
+                    self.again(ran, space)?;
                 }
             }
-            Ok(Err(err)) => {
+            Err(err) => {
                 for waiting in handed {
                     helper::run_for(waiting.session, dir, |_| Err(err.clone()));
                 }
             }
-            Err(_) => panicked = true,
         }
         intake::leave(intake);
-        panicked
+        Some(())
     }
 
     /// Keeps the session of `ran` waiting, if it waits, with the space it kept to, `space`;
-    /// whether it panicked.
-    fn again(&mut self, ran: Ran, space: Option<SpaceId>) -> bool {
+    /// `None` if it panicked.
+    fn again(&mut self, ran: Ran, space: Option<SpaceId>) -> Option<()> {
         match ran {
             Ran::Waits(session) => {
                 self.waiting.push(Waiting {
@@ -378,10 +372,10 @@ impl Sessions {
                     space,
                     due: false,
                 });
-                false
+                Some(())
             }
-            Ran::Ended => false,
-            Ran::Panicked => true,
+            Ran::Ended => Some(()),
+            Ran::Panicked => None,
         }
     }
 }

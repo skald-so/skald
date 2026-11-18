@@ -143,7 +143,6 @@ impl Intake {
         }
         drop(mailbox);
         marks.push(("synced", SystemTime::now()));
-        checks.follow(follower)?;
         for scope in scopes {
             groups::take_in(follower, link, *scope, &mut checks.synced)?;
         }
