@@ -25,6 +25,7 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+mod behind;
 mod filter;
 
 // The channel of the tests of channel messages, with the kit of channel groups and the device they
@@ -78,41 +79,21 @@ mod common;
 #[path = "../device_keys/keys.rs"]
 mod keys;
 
-use std::num::NonZeroU64;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use browser::{APPROVE, Browser};
-use cloud::{Cloud, WAIT, shown_grant};
-use filter::{EVENTS, Fate, Filter, POLL, SEND, Seen, Stream, WEBSOCKET};
-use fixtures::{TIMEOUT_SETTING, await_running, database, hex, send, send_args};
-use kit::{RECV, Space, create_space, with_channel};
-use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, YES};
-use played::{Played, Took};
-use proxy::Proxy;
-use serde_json::Value;
-use skald_proto::{Body, Cbor as _, ChannelId, Content, Frame, MessageId, Push, RawEnvelope, Role};
-use skald_server::Settings;
-use talk::{ADA_HOST, BOB_HOST, Line, assert_shows_once, delivered, encrypted, stored};
-use times::{MAILBOX, WEEK, moved_back};
-use tls::Ca;
-use tls_front::Front;
-use world::{
-    ACME, FORK, Person, World, create, devices_request, members, next_by, serve_revisions, store,
-    warnings,
+use behind::{
+    Behind, Forked, TIMEOUT, TRANSPORTS, Transport, answered, assert_over, assert_sent_over, first,
+    recv,
 };
-
-/// The setting of the proxy, and that of the root certificates the client trusts instead of the
-/// platform's.
-const HTTPS_PROXY: &str = "HTTPS_PROXY";
-const CERT_FILE: &str = "SSL_CERT_FILE";
-
-/// The server's host that only the proxy reaches, and the names of the endpoint's certificate.
-const HOST: &str = "skald.test";
-const NAMES: &str = "DNS:skald.test";
-
-/// The request timeout of Ada's runs once she has signed in, in seconds.
-const TIMEOUT: &str = "4";
+use cloud::WAIT;
+use filter::{EVENTS, Fate, POLL, SEND, Seen, Stream, WEBSOCKET};
+use fixtures::{await_running, send_args};
+use kit::RECV;
+use machine::Finished;
+use skald_proto::{Cbor as _, Frame, Push};
+use talk::delivered;
+use world::{devices_request, store};
 
 /// The request timeout of Ada's runs, in seconds, and the server's longest long-poll wait, in the
 /// test of runs that exit at the end of catch-up: as long as by default, so that a run that waits
@@ -122,332 +103,6 @@ const LONG_POLL_WAIT: Duration = Duration::from_secs(30);
 
 /// How soon a run whose catch-up ends at once exits, whatever the load on the machine.
 const AT_ONCE: Duration = Duration::from_secs(5);
-
-/// How far back the tests move the server's times: the hours a recipient stays offline.
-const HOURS_LATER: &str = "10 hours";
-
-/// The transports of a device's connection, in the order the client tries them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Transport {
-    WebSocket,
-    Sse,
-    LongPoll,
-}
-
-const TRANSPORTS: [Transport; 3] = [Transport::WebSocket, Transport::Sse, Transport::LongPoll];
-
-impl Transport {
-    /// What the proxy blocks so that this transport is the first one that works: it refuses each
-    /// one before it.
-    fn blocked(self) -> (bool, Stream) {
-        match self {
-            Transport::WebSocket => (false, Stream::Forward),
-            Transport::Sse => (true, Stream::Forward),
-            Transport::LongPoll => (true, Stream::Refuse),
-        }
-    }
-}
-
-/// Ada, whose machine runs the CLI behind the proxy and created `acme`, Bob, whose device the test
-/// plays, and a channel of `acme` with both, whose group holds both devices.
-struct Behind {
-    world: World,
-    filter: Filter,
-    ada: Person,
-    bob: Played,
-    space: Space,
-    channel: ChannelId,
-    /// The counter of Bob's last message in the channel.
-    counter: u64,
-    proxy: Proxy,
-    front: Front,
-    /// The test CA and the machine whose directory holds its files.
-    trust: (Ca, Machine),
-}
-
-impl Behind {
-    /// Ada and Bob, GitHub users `ids` with `logins`, on a server with a mailbox retention of 7
-    /// days; at first the proxy blocks nothing.
-    fn start(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        Self::start_with(ids, logins, TIMEOUT, |_| {})
-    }
-
-    /// As [`Behind::start`], Ada's runs with the request timeout `timeout`, in seconds, and the
-    /// server's settings changed by `change`.
-    fn start_with(
-        ids: [u64; 2],
-        logins: [&str; 2],
-        timeout: &str,
-        change: impl FnOnce(&mut Settings),
-    ) -> Self {
-        let keeper = Machine::new();
-        let ca = Ca::new(&keeper.root().join("ca"));
-        let front = Front::bind(vec![ca.issue(NAMES)]);
-        let retained = |settings: &mut Settings| {
-            settings.mailbox_retention = Some(Duration::from_secs(WEEK));
-            change(settings);
-        };
-        let cloud = Cloud::fronted_over_tls_with(HOST, front.port(), (120, 1), retained);
-        let filter = Filter::start(cloud.relay.address());
-        front.forward_to(&filter.address());
-        let world = World {
-            cloud,
-            browser: Browser::launch(),
-        };
-        let proxy = Proxy::tunneling();
-        let behind = |host: &str| {
-            Machine::new()
-                .with_env(CERT_FILE, &ca.cert)
-                .with_env(HTTPS_PROXY, proxy.url())
-                .with_host_name(host)
-        };
-        let mut ada = signed_up(&world, behind(ADA_HOST), (ids[0], logins[0]), ADA_HOST);
-        let bob = signed_up(&world, behind(BOB_HOST), (ids[1], logins[1]), BOB_HOST);
-        let space = create_space(&world.cloud, &ada, ACME);
-        let mut bob = Played::new(&world.cloud, bob);
-        let added = [(&bob.person, Role::Member)];
-        let channel = with_channel(&world.cloud, space.id, &ada, &added);
-        let joined = recv(&ada.machine);
-        assert!(joined.success, "{joined:?}");
-        bob.take_in(&world.cloud);
-        ada.machine = (ada.machine).with_env(TIMEOUT_SETTING, timeout);
-        Behind {
-            world,
-            filter,
-            ada,
-            bob,
-            space,
-            channel,
-            counter: 0,
-            proxy,
-            front,
-            trust: (ca, keeper),
-        }
-    }
-
-    fn cloud(&self) -> &Cloud {
-        &self.world.cloud
-    }
-
-    /// From now on, the proxy blocks what `transport` needs blocked to be the first that works.
-    fn leave(&self, transport: Transport) {
-        let (websocket, stream) = transport.blocked();
-        self.filter.block(websocket, stream);
-    }
-
-    /// Runs `skald recv` on Ada's machine; gives what it showed, and what the proxy saw of it.
-    fn ada_recv(&self) -> (Finished, Vec<Seen>) {
-        let from = self.filter.mark();
-        let finished = recv(&self.ada.machine);
-        (finished, self.filter.seen_since(from))
-    }
-
-    /// Runs `skald send` of `text` to the channel on Ada's machine; gives what it showed, and what
-    /// the proxy saw of it.
-    fn ada_sends(&self, text: &str) -> (Finished, Vec<Seen>) {
-        let from = self.filter.mark();
-        let finished = send(&self.ada.machine, self.channel, text);
-        (finished, self.filter.seen_since(from))
-    }
-
-    /// Bob's device has the server store its next message of `text` in the channel; gives its
-    /// envelope.
-    fn bob_sends(&mut self, text: &str) -> RawEnvelope {
-        self.counter += 1;
-        let from = self.address(&self.bob.person);
-        let at = (self.space.id, self.channel);
-        let line = Line::new(&from, self.counter, text);
-        let envelope = encrypted(&mut self.bob, at, self.channel, &line);
-        stored(&self.world.cloud, &self.bob, &envelope);
-        envelope
-    }
-
-    /// Bob's device takes in its mailbox; gives the `msg_id`, `counter` and text of each message of
-    /// the channel it read, in order.
-    fn bob_reads(&mut self) -> Vec<(MessageId, u64, String)> {
-        let mut read = Vec::new();
-        for took in self.bob.take_in(&self.world.cloud) {
-            if let Took::Read(channel, msg_id, decrypted) = took
-                && channel == self.channel
-            {
-                let content = Content::from_cbor(&decrypted.plaintext).expect("content");
-                let counter = content.counter.map_or(0, NonZeroU64::get);
-                read.push((msg_id, counter, text_in(&content)));
-            }
-        }
-        read
-    }
-
-    /// `person`'s person address in `acme`, on a server named after its host.
-    fn address(&self, person: &Person) -> String {
-        format!("{}/{}/user@{HOST}", self.space.name, person.handle)
-    }
-
-    /// Fails unless `shown` shows Bob's message `text` once, with the channel, his address and his
-    /// device's name.
-    #[track_caller]
-    fn assert_shows_bobs(&self, shown: &str, text: &str) {
-        let from = self.address(&self.bob.person);
-        assert_shows_once(shown, text, (self.channel, &from, BOB_HOST));
-    }
-
-    /// Waits for up to [`WAIT`] until the server no longer holds `envelope`: every recipient
-    /// device has acked it.
-    #[track_caller]
-    fn assert_acked(&self, envelope: &RawEnvelope) {
-        let bytes = hex(envelope.bytes());
-        let deadline = Instant::now() + WAIT;
-        loop {
-            if !database(self.cloud()).contains(&bytes) {
-                return;
-            }
-            assert!(Instant::now() < deadline, "the envelope was never acked");
-            thread::sleep(Duration::from_millis(200));
-        }
-    }
-
-    /// Moves every time the server keeps of envelopes, sends and mailbox entries back by
-    /// [`HOURS_LATER`].
-    fn hours_pass(&self) {
-        self.cloud().execute(&moved_back(&MAILBOX, HOURS_LATER));
-    }
-
-    /// Runs `skald recv` on Ada's machine; fails unless it succeeds over `transport`. Gives what
-    /// it showed.
-    #[track_caller]
-    fn ada_receives_over(&self, transport: Transport) -> Finished {
-        let (finished, seen) = self.ada_recv();
-        assert!(finished.success, "{transport:?}: {finished:?}");
-        assert_over(&seen, transport, &finished);
-        finished
-    }
-
-    /// Ada's `skald send` of `text` succeeds over `transport` and exits; `meanwhile` runs; then
-    /// Bob's device reads the message once, with the `counter` after Ada's `previous` messages in
-    /// the channel. Gives its `msg_id`.
-    #[track_caller]
-    fn ada_message_reaches_bob(
-        &mut self,
-        transport: Transport,
-        (text, previous): (&str, u64),
-        meanwhile: impl FnOnce(&Self),
-    ) -> MessageId {
-        let (said, seen) = self.ada_sends(text);
-        assert!(said.success, "{transport:?}: {said:?}");
-        assert_over(&seen, transport, &said);
-        assert_sent_over(&seen, transport);
-        meanwhile(self);
-        match self.bob_reads().as_slice() {
-            [(msg_id, counter, read)] => {
-                assert_eq!((*counter, read.as_str()), (previous + 1, text));
-                *msg_id
-            }
-            other => panic!("{transport:?}: Bob's device read {other:?}"),
-        }
-    }
-
-    /// Bob's device sends `text` while Ada is offline; `meanwhile` runs; then Ada's `skald recv`
-    /// shows the message once over `transport` and acks it.
-    #[track_caller]
-    fn bob_message_reaches_ada(
-        &mut self,
-        transport: Transport,
-        text: &str,
-        meanwhile: impl FnOnce(&Self),
-    ) {
-        let envelope = self.bob_sends(text);
-        meanwhile(self);
-        let got = self.ada_receives_over(transport);
-        self.assert_shows_bobs(&got.shown(), text);
-        self.assert_acked(&envelope);
-    }
-}
-
-/// A new account of GitHub user `id` with `login`, whose first machine, `machine` on the host
-/// `host`, signs in at the server's public address through its proxy, the person approving its
-/// code in Chrome.
-fn signed_up(
-    world: &World,
-    machine: Machine,
-    (id, login): (u64, &str),
-    host: &'static str,
-) -> Person {
-    let (cloud, page) = (&world.cloud, world.browser.page());
-    let grants = cloud.grants().len();
-    let user = cloud.user(id, login);
-    let args = [SIGN_IN, SERVER, cloud.public.as_str(), FIRST_DEVICE, YES];
-    let mut signing_in = machine.start(&args);
-    let grant = shown_grant(cloud, &mut signing_in, grants);
-    cloud.decide(&page, &user, &grant, APPROVE);
-    let finished = signing_in.finish();
-    assert!(finished.success, "{login}: {finished:?}");
-    world.person(user, machine, host)
-}
-
-/// Runs `skald recv` on `machine`.
-fn recv(machine: &Machine) -> Finished {
-    machine.start(&[RECV]).finish()
-}
-
-/// The text of the A2A message in `content`.
-fn text_in(content: &Content) -> String {
-    let Some(Body::A2a(json)) = &content.body else {
-        panic!("no A2A message: {content:?}");
-    };
-    let message: Value = serde_json::from_str(json).expect("an A2A message");
-    let text = &message["parts"][0]["text"];
-    text.as_str().expect("a text part").to_owned()
-}
-
-/// Whether the proxy saw `method` `path` answered with `status`.
-fn answered(seen: &[Seen], method: &str, path: &str, status: u16) -> bool {
-    (seen.iter()).any(|one| one.is(method, path) && one.fate == Fate::Answered(status))
-}
-
-/// Where the proxy first saw `method` `path`, if it did.
-fn first(seen: &[Seen], method: &str, path: &str) -> Option<usize> {
-    seen.iter().position(|one| one.is(method, path))
-}
-
-/// Fails unless `seen`, what the proxy saw of `run`, a run that exits at the end of catch-up, shows
-/// that its device's connection went over `transport`, and over no transport before it in the order
-/// the client tries them; over long-poll, with a wait of 0 in each request.
-#[track_caller]
-fn assert_over(seen: &[Seen], transport: Transport, run: &Finished) {
-    let websocket = answered(seen, "GET", WEBSOCKET, 101);
-    let stream = answered(seen, "GET", EVENTS, 200);
-    let poll = answered(seen, "POST", POLL, 200);
-    let used = (websocket, stream, poll);
-    let expected = match transport {
-        Transport::WebSocket => (true, false, false),
-        Transport::Sse => (false, true, false),
-        Transport::LongPoll => (false, false, true),
-    };
-    assert_eq!(
-        used, expected,
-        "(WebSocket, SSE, long-poll) used, not {transport:?} alone: {seen:#?}\n{run:?}"
-    );
-    if transport == Transport::WebSocket {
-        let mailbox: Vec<&Seen> = (seen.iter())
-            .filter(|one| one.path.starts_with("/mailbox/"))
-            .collect();
-        assert!(
-            mailbox.is_empty(),
-            "HTTPS delivery over WebSocket: {mailbox:#?}"
-        );
-    }
-    if transport == Transport::Sse {
-        assert_eq!(
-            first(seen, "POST", POLL),
-            None,
-            "a long-poll over SSE: {seen:#?}"
-        );
-    }
-    let waiting: Vec<&Seen> = (seen.iter())
-        .filter(|one| one.is("POST", POLL) && one.parameter("wait") != Some("0"))
-        .collect();
-    assert!(waiting.is_empty(), "a long-poll with a wait: {waiting:#?}");
-}
 
 /// Fails unless the client tried the transports up to `transport` in order, each before the next,
 /// in `seen`, what the proxy saw of a run.
@@ -467,18 +122,6 @@ fn assert_tried_in_order(seen: &[Seen], transport: Transport) {
     assert!(
         tried.windows(2).all(|two| two[0] < two[1]),
         "not tried in order up to {transport:?}: {seen:#?}"
-    );
-}
-
-/// Fails unless `seen`, what the proxy saw of a run that sent a message, shows that it was sent as
-/// `transport` sends: over the WebSocket, or in `POST /mailbox/send` answered with its `stored`.
-#[track_caller]
-fn assert_sent_over(seen: &[Seen], transport: Transport) {
-    let over_https = answered(seen, "POST", SEND, 200);
-    assert_eq!(
-        over_https,
-        transport != Transport::WebSocket,
-        "sent over HTTPS or not as {transport:?} sends: {seen:#?}"
     );
 }
 
@@ -769,18 +412,13 @@ fn revision_stored_after_the_fetch_is_accepted_by_its_notice_over_sse_and_long_p
         [4_144_041_801, 4_144_041_802],
         ["ada-late-notice", "bob-late-notice"],
     );
-    let (cloud, ada, bob) = (behind.cloud(), &behind.ada, &behind.bob.person);
+    let (cloud, ada) = (behind.cloud(), &behind.ada);
     for (transport, name) in [
         (Transport::Sse, "notices-over-sse"),
         (Transport::LongPoll, "notices-over-poll"),
     ] {
-        let last = create(cloud, ada, name);
-        let space = last.body().space;
-        let kept: Vec<_> = (cloud.revisions(&ada.token, space).into_iter())
-            .map(|(_, roster)| roster)
-            .collect();
-        let late = next_by(&last, ada, |list| list.push(bob.member(Role::Member)));
-        let fork = next_by(&last, ada, |list| list.push(bob.member(Role::Admin)));
+        let forked = Forked::create(&behind, name);
+        let space = forked.space;
         behind.leave(transport);
         let (relay, fetch) = (&cloud.relay, devices_request(space));
         relay.hold(&fetch, 2);
@@ -788,7 +426,7 @@ fn revision_stored_after_the_fetch_is_accepted_by_its_notice_over_sse_and_long_p
         let mut run = ada.machine.start(&[RECV]);
         let fetching = || relay.held() > 0;
         await_running(&mut run, "the devices fetch held back", fetching);
-        store(cloud, &ada.token, &late);
+        store(cloud, &ada.token, &forked.late);
         if transport == Transport::Sse {
             let notice = Frame::Push(Push::SpaceNotice { space }).to_cbor();
             let passed = || behind.filter.streamed().contains(&notice);
@@ -800,14 +438,7 @@ fn revision_stored_after_the_fetch_is_accepted_by_its_notice_over_sse_and_long_p
         let finished = run.finish();
 
         assert!(finished.success, "{transport:?}: {finished:?}");
-        let mut given: Vec<&skald_proto::Roster> = kept.iter().collect();
-        given.push(&fork);
-        serve_revisions(cloud, space, &given);
-        let shown = members(&ada.machine, name);
-        assert!(
-            warnings(&shown).iter().any(|line| line.contains(FORK)),
-            "{transport:?}: the revision was not accepted by its notice: {shown:?}"
-        );
+        forked.assert_late_accepted(&behind, &format!("{transport:?}"));
     }
 }
 

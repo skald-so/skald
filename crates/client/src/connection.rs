@@ -756,6 +756,11 @@ impl Connection {
         })
     }
 
+    /// A new connection to the same server, speaking and waiting as this one does.
+    pub fn again(&self) -> Result<Self, Error> {
+        Self::new(&self.base, self.speaks, self.timeout)
+    }
+
     /// The version the connection states.
     pub fn version(&self) -> NonZeroU64 {
         self.version

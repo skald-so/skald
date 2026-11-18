@@ -2,7 +2,7 @@
 //! command ([`crate::helper`]); then each write goes to that command, which shows it. The crate's
 //! `print!`, `println!` and `eprintln!` write here (`main.rs`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::io::{self, Write};
 
@@ -19,6 +19,13 @@ type Sink<'s> = dyn FnMut(Stream, &[u8]) -> io::Result<()> + 's;
 thread_local! {
     /// The sink of the operation running on this thread, if a helper runs it.
     static SINK: RefCell<Option<Box<Sink<'static>>>> = const { RefCell::new(None) };
+    /// How many writes of this thread's runs went out.
+    static WRITTEN: Cell<u64> = const { Cell::new(0) };
+}
+
+/// How many writes this thread's runs made so far: a run that makes one shows something.
+pub fn written() -> u64 {
+    WRITTEN.with(Cell::get)
 }
 
 /// Runs `run` with each write of its output going to `sink`.
@@ -40,6 +47,15 @@ pub fn into<R>(
 
 /// Writes `bytes` to `stream` and flushes it.
 pub fn write(stream: Stream, bytes: &[u8]) -> io::Result<()> {
+    let written = sent(stream, bytes);
+    if written.is_ok() {
+        WRITTEN.with(|count| count.set(count.get() + 1));
+    }
+    written
+}
+
+/// [`write`], uncounted.
+fn sent(stream: Stream, bytes: &[u8]) -> io::Result<()> {
     let sunk = SINK.with(|sink| sink.borrow_mut().as_mut().map(|sink| sink(stream, bytes)));
     if let Some(result) = sunk {
         return result;
