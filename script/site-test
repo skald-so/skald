@@ -62,6 +62,7 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
         'cookies-and-browser-storage',
         'who-else-processes-data',
         'how-long-the-cloud-keeps-data',
+        'your-rights',
         'deletion-and-other-requests',
         'changes',
       ];

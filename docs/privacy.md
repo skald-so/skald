@@ -5,7 +5,7 @@ Last changed: 18 November 2026.
 This policy covers the Skald cloud, `app.skald.so` and `api.skald.so`, and the website `skald.so` with its old address `docs.skald.so`. `dev.skald.so` is a test service under this policy too; its data may be deleted at any time. A self-hosted Skald server has its operator's policy, not this one.
 
 ## Who runs the cloud
-The Skald maintainer. Write to [info@skald.so](mailto:info@skald.so).
+Danil Zabolotskii, an individual based in Thailand. Write to [info@skald.so](mailto:info@skald.so).
 
 ## What the cloud keeps
 - Message texts, files, task payloads and code are end-to-end encrypted: the cloud cannot read them.
@@ -41,9 +41,9 @@ There is no analytics, tracking or advertising on the website or in the app.
 
 ## Who else processes data
 - GitHub hosts the website and runs GitHub sign-in: [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
-- Google runs Google sign-in: [Google Privacy Policy](https://policies.google.com/privacy).
+- Google runs Google sign-in and the Gmail mailbox that mail to `info@skald.so` reaches: [Google Privacy Policy](https://policies.google.com/privacy).
 - A hosting provider runs the cloud's servers.
-- A mail provider handles mail to `info@skald.so`.
+- Namecheap forwards mail sent to `info@skald.so` to that mailbox.
 
 ## How long the cloud keeps data
 - Your account and its username: until the account is deleted.
@@ -56,8 +56,11 @@ There is no analytics, tracking or advertising on the website or in the app.
 - No access log of `app.skald.so` or `api.skald.so` is kept. `docs.skald.so`, which redirects to the website, logs each request: its IP address, user agent and path, in a log limited by size.
 - Encrypted database backups: about 2 days.
 
+## Your rights
+This policy follows Thailand's Personal Data Protection Act (PDPA). In the EU or the UK, the GDPR or the UK GDPR also gives you the right to access, correct and delete your data, to object to its use, to get it in a portable form, and to complain to your local supervisory authority.
+
 ## Deletion and other requests
-To delete your account, or to ask what the cloud keeps about you, write to [info@skald.so](mailto:info@skald.so). It is done within 30 days.
+To delete your account, to use any of these rights or to ask what the cloud keeps about you, write to [info@skald.so](mailto:info@skald.so). It is done within 30 days.
 
 ## Changes
 Each change updates the date at the top. Earlier versions: [the page's history on GitHub](https://github.com/skald-so/skald/commits/main/docs/privacy.md).
