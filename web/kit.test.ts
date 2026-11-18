@@ -9,7 +9,6 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
@@ -25,6 +24,8 @@ import {
   test,
 } from "vitest";
 import {
+  accessibilityViolations,
+  keyboardFocus,
   startKit,
   themes,
   widths,
@@ -1557,40 +1558,11 @@ describe.each(views)(
     });
 
     test("passes the accessibility check", async () => {
-      await view.page.addScriptTag({
-        path: createRequire(import.meta.url).resolve("axe-core"),
-      });
-      const violations = await view.page.evaluate(async () => {
-        const { axe } = window as unknown as {
-          axe: typeof import("axe-core");
-        };
-        const results = await axe.run(document);
-        return results.violations.map((violation) => ({
-          rule: violation.id,
-          nodes: violation.nodes.map((node) => node.target.join(" ")),
-        }));
-      });
-      expect(violations).toEqual([]);
+      expect(await accessibilityViolations(view.page)).toEqual([]);
     });
 
     test("outlines every element focused from the keyboard", async () => {
-      const focused: { element: string; outline: string }[] = [];
-      for (let i = 0; i < 500; i++) {
-        await view.page.keyboard.press("Tab");
-        const focus = await view.page.evaluate(() => {
-          const element = document.activeElement;
-          if (!element || element === document.body) return null;
-          if (element.hasAttribute("data-kit-focused")) return null;
-          element.setAttribute("data-kit-focused", "");
-          const style = getComputedStyle(element);
-          return {
-            element: element.outerHTML.slice(0, 100),
-            outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}`,
-          };
-        });
-        if (!focus) break;
-        focused.push(focus);
-      }
+      const focused = await keyboardFocus(view.page);
       expect(focused.length).toBeGreaterThan(0);
       expect(focused).toEqual(
         focused.map(({ element }) => ({
