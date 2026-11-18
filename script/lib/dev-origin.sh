@@ -23,15 +23,23 @@ dev_origin() {
   git -C "$1/clone" push --quiet origin "$older:refs/heads/feature/dev"
 }
 
-# expect_malformed_refused [<argument>...]: `run <argument>... <commit> <digest>` with a malformed
-# commit or digest fails without acting: expect_refused of each case. The test defines both.
+# expect_malformed_refused [<argument>...] [-- <after>...]: `run <argument>... <commit> <digest>
+# <after>...` with a malformed commit or digest fails without acting: expect_refused of each case. The
+# test defines both.
 expect_malformed_refused() {
-  run "$@" "${head:0:7}" "$digest"
+  local before=() after=()
+  while [[ $# -gt 0 && $1 != -- ]]; do
+    before+=("$1")
+    shift
+  done
+  [[ $# -eq 0 ]] || shift
+  after=("$@")
+  run ${before[@]+"${before[@]}"} "${head:0:7}" "$digest" ${after[@]+"${after[@]}"}
   expect_refused "short commit"
-  run "$@" "$head" "${digest#sha256:}"
+  run ${before[@]+"${before[@]}"} "$head" "${digest#sha256:}" ${after[@]+"${after[@]}"}
   expect_refused "digest without algorithm"
-  run "$@" "$head" "sha256:${digest: -63}"
+  run ${before[@]+"${before[@]}"} "$head" "sha256:${digest: -63}" ${after[@]+"${after[@]}"}
   expect_refused "short digest"
-  run "$@" "$head" "$digest; echo injected"
+  run ${before[@]+"${before[@]}"} "$head" "$digest; echo injected" ${after[@]+"${after[@]}"}
   expect_refused "digest with a command"
 }

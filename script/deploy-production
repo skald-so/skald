@@ -23,5 +23,5 @@ fi
 check_ssh_secrets deploy-production PRODUCTION
 
 echo "deploy-production: deploying $version"
-ssh_deploy deploy-production PRODUCTION deploy "$version"
+ssh_deploy deploy-production PRODUCTION deploy "$version" </dev/null
 echo "deploy-production: production runs $version"
