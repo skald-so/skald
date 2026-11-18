@@ -127,6 +127,9 @@ pub fn holds(bytes: &[u8], form: &str) -> bool {
 
 /// A new device of a person's account, signed in as no first device at a terminal.
 pub struct NewDevice {
+    /// Dropped first, so its run ends before the machine's directories go: Windows removes no file
+    /// a running process holds.
+    run: Option<Terminal>,
     pub machine: Machine,
     pub host: &'static str,
     /// Its session token and its device.
@@ -136,7 +139,6 @@ pub struct NewDevice {
     pub started: Instant,
     /// The hellos it sent that a run took.
     pub runs: usize,
-    run: Option<Terminal>,
 }
 
 impl NewDevice {
