@@ -6,6 +6,7 @@ import type { DropdownOption } from "../ui/Dropdown.tsx";
 import { Shell, type ShellAccount, type ShellSection } from "../ui/Shell.tsx";
 import { accountPath, providerNames } from "./names.ts";
 import { versioned } from "./api.ts";
+import { NoSpace } from "./NoSpace.tsx";
 import { ChosenSpace } from "./space.ts";
 
 /** The cabinet's sections, each on its page. */
@@ -64,8 +65,7 @@ export function Cabinet({
       spaces={options}
       noSpaces={
         <p>
-          No space yet. Sign in a machine with <code>skald</code> to make your
-          personal space.
+          <NoSpace />
         </p>
       }
       space={space}
