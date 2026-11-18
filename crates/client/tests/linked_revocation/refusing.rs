@@ -5,11 +5,12 @@
 use skald_proto::NonEmpty;
 
 use crate::joins::{forked_group_info, intruder, serve_group_info};
+use crate::kit::group;
 use crate::kit::{
     RECV, assert_listed_not_in, assert_members, channels, latest, received, tell_groups,
     warnings_naming,
 };
-use crate::linked::{Revoked, THIRD_HOST, revoke_keeping, revoked_group};
+use crate::linked::{Revoked, THIRD_HOST, revoke_keeping, revoked_group, revoked_talk};
 use crate::talk::commit_sent;
 use crate::world::{ACME, next_with, run, store};
 
@@ -100,4 +101,49 @@ fn group_info_also_listing_an_excluded_device_is_refused_with_a_warning() {
     received(&fourth.machine);
 
     assert_members(&revoked.group().members, &[fourth.device]);
+}
+
+/// Ada and Bob in a channel of `acme`, each with a device in its group; Ada's first machine's
+/// device and Bob's are revoked, and her fourth machine, valid, is outside the groups. A revision
+/// her fourth machine's device signs, as an admin's, takes Bob out of the channel and keeps him in
+/// the space. As Bob's account is no longer in the channel's `channel-member` entries, the fourth
+/// machine's `skald recv` warns naming Bob's device and the channel, sends no Commit in it, and the
+/// server's group still holds both devices.
+#[test]
+fn group_info_also_listing_a_revoked_device_of_a_member_outside_the_channel_is_refused() {
+    let (talk, fourth) = revoked_talk(
+        [4_840_008_001, 4_840_008_002],
+        ["ada-meets-a-leaver", "bob-leaves-the-channel"],
+    );
+    let cloud = talk.cloud();
+    let (space, channel) = (talk.space.id, talk.channel);
+    let bob = talk.played[0].person.account;
+    let previous = latest(cloud, &fourth.token, space);
+    let leaving = next_with(&previous, (fourth.device, &fourth.key), |body| {
+        for listed in &mut body.channels {
+            if listed.id == channel {
+                listed.members.retain(|member| member.account != bob);
+            }
+        }
+    });
+    store(cloud, &fourth.token, &leaving);
+    let from = talk.front.sent().len();
+
+    let refused = run(&fourth.machine, &[RECV]);
+
+    let bob_device = talk.played[0].device();
+    assert!(
+        warnings_naming(&refused, bob_device)
+            .iter()
+            .any(|line| line.contains(&channel.to_string())),
+        "no warning naming {bob_device} and {channel}: {refused:?}"
+    );
+    assert!(
+        !commit_sent(&talk.front, channel, from),
+        "a Commit sent in the channel: {refused:?}"
+    );
+    assert_members(
+        &group(cloud, &fourth.token, space, channel).members,
+        &[talk.ada.device, bob_device],
+    );
 }

@@ -13,7 +13,7 @@ use crate::front::Front;
 use crate::kit::{Space, assert_members, create_space, group, received};
 use crate::machine::{DEVICES, Finished, Machine};
 use crate::revocations::{REVOKE_DEVICE, body, signed, space_revocations, store_revocation};
-use crate::talk::{ADA_HOST, is_commit, is_message, sent_in};
+use crate::talk::{ADA_HOST, Talk, is_commit, is_message, sent_in};
 use crate::world::{ACME, Person, World, lines_naming, run, space_certs};
 
 /// The option of the revocation command that names a certified device to keep.
@@ -24,6 +24,7 @@ pub const SECOND_HOST: &str = "ada-laptop";
 pub const THIRD_HOST: &str = "ada-tablet";
 pub const FOURTH_HOST: &str = "ada-new-desk";
 pub const FIFTH_HOST: &str = "ada-phone";
+pub const SIXTH_HOST: &str = "ada-spare";
 
 /// Runs `skald revoke-device <device>` on `machine`, with `--keep <kept>` for each of `keep`.
 pub fn revoke_keeping(machine: &Machine, device: DeviceId, keep: &[DeviceId]) -> Finished {
@@ -213,4 +214,19 @@ pub fn revoked_group((id, login): (u64, &str), with_third: bool) -> Revoked {
         space,
         epoch,
     }
+}
+
+/// Ada and Bob in a channel of `acme`, as [`Talk::new`] sets them up, Ada GitHub user `ids[0]` with
+/// `logins[0]`; and Ada's fourth machine, linked by her first, which has not run yet. Then her
+/// first machine's device revokes itself keeping the fourth's, and Bob's device revokes itself:
+/// revocations the tests sign and store. Gives the fourth machine.
+#[track_caller]
+pub fn revoked_talk(ids: [u64; 2], logins: [&str; 2]) -> (Talk, Person) {
+    let talk = Talk::new(&ids, &logins, false);
+    let fourth = second_machine(&talk.world, &talk.ada, FOURTH_HOST);
+    let cloud = &talk.world.cloud;
+    signed_keeping(cloud, &talk.ada, talk.ada.device, &[fourth.device]);
+    let bob = &talk.played[0].person;
+    signed_keeping(cloud, bob, bob.device, &[]);
+    (talk, fourth)
 }

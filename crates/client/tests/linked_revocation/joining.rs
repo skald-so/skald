@@ -6,8 +6,8 @@
 
 use crate::devices::second_machine;
 use crate::fixtures::{retrying_for_the_timeout, send};
-use crate::kit::received;
-use crate::linked::{FIFTH_HOST, Kind, revoked_group, sent_kinds};
+use crate::kit::{assert_members, group, received};
+use crate::linked::{FIFTH_HOST, Kind, SIXTH_HOST, revoked_group, revoked_talk, sent_kinds};
 use crate::reading::{assert_history, sends, shown_history};
 use crate::talk::{NO_DEVICE, messages_sent, one_message_sent};
 use crate::world::ACME;
@@ -22,8 +22,9 @@ const SECOND: &str = "the new desk reports in";
 /// message, as no other device is then in the group: it fails and says no device can receive it.
 /// The server's group is at e + 2 with the fourth machine's device alone, which signs its
 /// GroupInfo. Ada's fifth machine, linked by her fourth, joins the channel by itself at e + 3; the
-/// fourth's next `skald send` sends its message in epoch e + 3, and, once the fourth has run since,
-/// the fifth's `skald history` shows it.
+/// fourth's next `skald send` sends its message in epoch e + 3. Her sixth machine, linked by her
+/// fourth after that, joins the channel by itself at e + 4, and, once the fourth has run since, the
+/// sixth's `skald history` shows the message.
 #[test]
 fn device_joins_a_group_of_revoked_devices_by_itself_removes_them_then_sends() {
     let revoked = revoked_group((4_840_003_001, "ada-starts-over"), false);
@@ -63,8 +64,15 @@ fn device_joins_a_group_of_revoked_devices_by_itself_removes_them_then_sends() {
         [(Kind::Message, e + 3)],
         "not the message alone"
     );
+    let sixth = second_machine(&revoked.world, fourth, SIXTH_HOST);
+    received(&sixth.machine);
+    revoked
+        .group()
+        .assert_is(e + 4, &[fourth.device, fifth.device, sixth.device]);
     received(&fourth.machine);
-    let shown = shown_history(&fifth.machine, channel);
+
+    let shown = shown_history(&sixth.machine, channel);
+
     assert_history(&shown, channel, &[said], &[]);
 }
 
@@ -133,5 +141,29 @@ fn remove_whose_stored_is_lost_is_committed_once_and_nothing_is_sent_meanwhile()
             .all(|(_, epoch)| *epoch == e + 3),
         "a message outside epoch {}: {sent:?}",
         e + 3
+    );
+}
+
+/// Ada and Bob in a channel of `acme`, each with a device in its group; Ada's first machine's
+/// device and Bob's are revoked, and her fourth machine, valid, is outside the groups. As Bob's
+/// account is in the channel's `channel-member` entries, the fourth machine's `skald recv` joins
+/// the channel by itself and removes both devices: the server's group holds its device alone.
+#[test]
+fn group_also_holding_a_revoked_device_of_another_channel_member_is_joined_and_it_removed() {
+    let (talk, fourth) = revoked_talk(
+        [4_840_007_001, 4_840_007_002],
+        ["ada-joins-past-bob", "bob-revokes-himself"],
+    );
+    let (space, channel) = (talk.space.id, talk.channel);
+    assert_members(
+        &group(talk.cloud(), &talk.ada.token, space, channel).members,
+        &[talk.ada.device, talk.played[0].device()],
+    );
+
+    received(&fourth.machine);
+
+    assert_members(
+        &group(talk.cloud(), &fourth.token, space, channel).members,
+        &[fourth.device],
     );
 }
