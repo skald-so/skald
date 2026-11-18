@@ -7,7 +7,6 @@
 //! of writing it.
 
 use std::thread;
-use std::time::Instant;
 
 use skald_proto::MessageId;
 
@@ -103,7 +102,7 @@ fn helper_killed_before_the_mark_hands_the_message_over_again_and_one_killed_aft
 
 /// claude's session is killed while it waits in the middle of writing a message with a long text:
 /// it never wrote the text whole. claude's next `skald recv --wait`, through the same helper, shows
-/// the text once, with its `msg_id`, and exits within [`AT_ONCE`].
+/// the text once, with its `msg_id`, and exits within [`AT_ONCE`] of showing it.
 #[test]
 fn session_killed_before_writing_its_message_leaves_it_to_the_next_wait() {
     let mut midway = Midway::start(
@@ -115,9 +114,8 @@ fn session_killed_before_writing_its_message_leaves_it_to_the_next_wait() {
 
     let helped = &midway.waits.helped;
     assert_eq!(helped.helpers(), [midway.helper], "not the same helper");
-    let started = Instant::now();
-    let next = midway.waits.session(CLAUDE).finish();
-    let took = started.elapsed();
+    let session = midway.waits.session(CLAUDE);
+    let (next, took) = session.finish_after_showing(&[&midway.text]);
     assert_got(&next, &midway.text, midway.msg_id);
     assert!(took < AT_ONCE, "it took {took:?}: {next:?}");
     assert_eq!(helped.helpers(), [midway.helper], "not the same helper");

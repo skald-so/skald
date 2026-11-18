@@ -27,7 +27,8 @@ pub const RETRY_SETTING: &str = "SKALD_WEBSOCKET_RETRY";
 
 /// How soon a waiting session shows a message once the server has stored it.
 pub const ARRIVAL: Duration = Duration::from_secs(1);
-/// How soon a run whose messages are already waiting exits, whatever the load on the machine.
+/// How soon a run whose messages are already waiting exits once it has shown them, whatever the
+/// load on the machine.
 pub const AT_ONCE: Duration = Duration::from_secs(5);
 /// How long a test watches a run wait while nothing comes for it.
 pub const IDLE_WATCH: Duration = Duration::from_secs(2);

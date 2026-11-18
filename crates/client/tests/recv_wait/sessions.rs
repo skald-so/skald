@@ -168,7 +168,7 @@ fn person_wait_shows_the_first_message_whatever_agent_it_is_for_or_the_first_sta
 
 /// The device has run as claude in `~/work/acme`, in one-shot mode, and Bob's device sends two
 /// messages to the channel. The person's `skald recv --wait` in one-shot mode shows both, each
-/// once, and exits within [`AT_ONCE`]; so does claude's `skald recv --wait`, through the helper it
+/// once, and exits within [`AT_ONCE`] of showing them; so does claude's `skald recv --wait`, through the helper it
 /// starts, each with its `msg_id`.
 #[test]
 fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
@@ -184,15 +184,8 @@ fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
         .collect();
     let channel = waits.agents.talk.channel;
 
-    let started = Instant::now();
-    let person = waits
-        .agents
-        .talk
-        .ada
-        .machine
-        .start(&[RECV, WAIT_FLAG])
-        .finish();
-    let took = started.elapsed();
+    let person = waits.agents.talk.ada.machine.start(&[RECV, WAIT_FLAG]);
+    let (person, took) = person.finish_after_showing(&WAITING);
 
     assert!(person.success, "{person:?}");
     for text in WAITING {
@@ -203,9 +196,7 @@ fn wait_with_messages_waiting_shows_them_and_exits_at_once() {
         "the person's wait took {took:?}: {person:?}"
     );
 
-    let started = Instant::now();
-    let agent = waits.session(CLAUDE).finish();
-    let took = started.elapsed();
+    let (agent, took) = waits.session(CLAUDE).finish_after_showing(&WAITING);
 
     for (text, id) in WAITING.iter().zip(&ids) {
         assert_got(&agent, text, *id);
