@@ -18,6 +18,11 @@ import type {
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
+  LinkHello,
+  LinkHelloRequest,
+  LinkMessageRequest,
+  LinkMessages,
+  LinkSession,
   ListedDevices,
   ListedMembers,
   MasterKey,
@@ -43,6 +48,7 @@ import type {
   StoredRevocation,
   StoredRosterRevision,
   UsernameRequest,
+  WaitingDevices,
 } from "./skald.schemas";
 
 export type listAccountDevicesResponse200 = {
@@ -104,6 +110,385 @@ export const listAccountDevices = async (
     status: res.status,
     headers: res.headers,
   } as listAccountDevicesResponse;
+};
+
+export type openLinkRunResponse201 = {
+  data: void;
+  status: 201;
+};
+
+export type openLinkRunResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type openLinkRunResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type openLinkRunResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type openLinkRunResponse409 = {
+  data: Problem;
+  status: 409;
+};
+
+export type openLinkRunResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type openLinkRunResponseSuccess = openLinkRunResponse201 & {
+  headers: Headers;
+};
+export type openLinkRunResponseError = (
+  | openLinkRunResponse400
+  | openLinkRunResponse401
+  | openLinkRunResponse404
+  | openLinkRunResponse409
+  | openLinkRunResponse500
+) & {
+  headers: Headers;
+};
+
+export type openLinkRunResponse =
+  openLinkRunResponseSuccess | openLinkRunResponseError;
+
+export const getOpenLinkRunUrl = () => {
+  return `/account/links`;
+};
+
+/**
+ * The new device's hello opens a run of CPace keyed by its link code (docs/protocol/membership.md, "Link code"): the server relays it between sessions of the account and never sees the code. The hello names a device of the session's account registered without a certificate, and replaces that device's open run, whose messages are then refused. The run ends on a `link-abort` from either side, once its device has a certificate, and when its code expires: the server setting `--link-code-lifetime` after the hello, 5 minutes unset.
+ * @summary Open a link code's run
+ */
+export const openLinkRun = async (
+  linkHelloRequest: LinkHelloRequest,
+  options?: RequestInit,
+): Promise<openLinkRunResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getOpenLinkRunUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(linkHelloRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: openLinkRunResponse["data"] = body ? JSON.parse(body) : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as openLinkRunResponse;
+};
+
+export type getLinkHelloResponse200 = {
+  data: LinkHello;
+  status: 200;
+};
+
+export type getLinkHelloResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getLinkHelloResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getLinkHelloResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getLinkHelloResponseSuccess = getLinkHelloResponse200 & {
+  headers: Headers;
+};
+export type getLinkHelloResponseError = (
+  getLinkHelloResponse400 | getLinkHelloResponse401 | getLinkHelloResponse500
+) & {
+  headers: Headers;
+};
+
+export type getLinkHelloResponse =
+  getLinkHelloResponseSuccess | getLinkHelloResponseError;
+
+export const getGetLinkHelloUrl = () => {
+  return `/account/links/hello`;
+};
+
+/**
+ * The hello of the account's open run that opened last, for a `client` device of the account to answer (docs/protocol/membership.md, "Link code").
+ * @summary The account's latest hello
+ */
+export const getLinkHello = async (
+  options?: RequestInit,
+): Promise<getLinkHelloResponse> => {
+  const res = await fetch(getGetLinkHelloUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getLinkHelloResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getLinkHelloResponse;
+};
+
+export type relayLinkMessageResponse201 = {
+  data: void;
+  status: 201;
+};
+
+export type relayLinkMessageResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type relayLinkMessageResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type relayLinkMessageResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type relayLinkMessageResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type relayLinkMessageResponseSuccess = relayLinkMessageResponse201 & {
+  headers: Headers;
+};
+export type relayLinkMessageResponseError = (
+  | relayLinkMessageResponse400
+  | relayLinkMessageResponse401
+  | relayLinkMessageResponse404
+  | relayLinkMessageResponse500
+) & {
+  headers: Headers;
+};
+
+export type relayLinkMessageResponse =
+  relayLinkMessageResponseSuccess | relayLinkMessageResponseError;
+
+export const getRelayLinkMessageUrl = () => {
+  return `/account/links/messages`;
+};
+
+/**
+ * A later message of the account's open run its `session` names: `link-reply`, `link-request`, `link-grant` or `link-abort` (docs/protocol/membership.md, "Link code"). The server stores it as the bytes it got and gives it with the run's messages; a `link-abort` ends the run instead.
+ * @summary Relay a run's later message
+ */
+export const relayLinkMessage = async (
+  linkMessageRequest: LinkMessageRequest,
+  options?: RequestInit,
+): Promise<relayLinkMessageResponse> => {
+  const getHeaders = (
+    h?: NonNullable<RequestInit["headers"]>,
+  ): Record<string, string | readonly string[]> => {
+    if (!h) return {};
+    if (h instanceof Headers) return Object.fromEntries(h.entries());
+    if (Symbol.iterator in h) {
+      return Object.fromEntries(
+        Array.from(
+          h as Iterable<Iterable<string>>,
+          (entry) => Array.from(entry) as [string, string],
+        ),
+      );
+    }
+    const headers: Record<string, string | readonly string[]> = {};
+    for (const [name, value] of Object.entries<
+      string | readonly string[] | undefined
+    >(h)) {
+      if (value !== undefined) headers[name] = value;
+    }
+    return headers;
+  };
+  const res = await fetch(getRelayLinkMessageUrl(), {
+    ...options,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...getHeaders(options?.headers),
+    },
+    body: JSON.stringify(linkMessageRequest),
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: relayLinkMessageResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as relayLinkMessageResponse;
+};
+
+export type getLinkMessagesResponse200 = {
+  data: LinkMessages;
+  status: 200;
+};
+
+export type getLinkMessagesResponse400 = {
+  data: ProtocolProblem | Problem;
+  status: 400;
+};
+
+export type getLinkMessagesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getLinkMessagesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type getLinkMessagesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getLinkMessagesResponseSuccess = getLinkMessagesResponse200 & {
+  headers: Headers;
+};
+export type getLinkMessagesResponseError = (
+  | getLinkMessagesResponse400
+  | getLinkMessagesResponse401
+  | getLinkMessagesResponse404
+  | getLinkMessagesResponse500
+) & {
+  headers: Headers;
+};
+
+export type getLinkMessagesResponse =
+  getLinkMessagesResponseSuccess | getLinkMessagesResponseError;
+
+export const getGetLinkMessagesUrl = (session: LinkSession) => {
+  return `/account/links/messages/${session}`;
+};
+
+/**
+ * The later messages of the account's open run with `session` (docs/protocol/membership.md, "Link code"), from both sides, in the order the server took them.
+ * @summary A run's later messages
+ */
+export const getLinkMessages = async (
+  session: LinkSession,
+  options?: RequestInit,
+): Promise<getLinkMessagesResponse> => {
+  const res = await fetch(getGetLinkMessagesUrl(session), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getLinkMessagesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getLinkMessagesResponse;
+};
+
+export type getWaitingDevicesResponse200 = {
+  data: WaitingDevices;
+  status: 200;
+};
+
+export type getWaitingDevicesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getWaitingDevicesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getWaitingDevicesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getWaitingDevicesResponseSuccess = getWaitingDevicesResponse200 & {
+  headers: Headers;
+};
+export type getWaitingDevicesResponseError = (
+  | getWaitingDevicesResponse400
+  | getWaitingDevicesResponse401
+  | getWaitingDevicesResponse500
+) & {
+  headers: Headers;
+};
+
+export type getWaitingDevicesResponse =
+  getWaitingDevicesResponseSuccess | getWaitingDevicesResponseError;
+
+export const getGetWaitingDevicesUrl = () => {
+  return `/account/links/waiting`;
+};
+
+/**
+ * The devices of the session's account with an open run (docs/protocol/membership.md, "Link code"), by the kind and `name` they registered with: what a linked device tells its user to link. Only a prompt: a device takes the new device's keys only from the run.
+ * @summary The account's devices waiting for linking
+ */
+export const getWaitingDevices = async (
+  options?: RequestInit,
+): Promise<getWaitingDevicesResponse> => {
+  const res = await fetch(getGetWaitingDevicesUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getWaitingDevicesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getWaitingDevicesResponse;
 };
 
 export type getMasterKeyResponse200 = {

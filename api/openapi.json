@@ -88,6 +88,512 @@
         }
       }
     },
+    "/account/links": {
+      "post": {
+        "operationId": "openLinkRun",
+        "summary": "Open a link code's run",
+        "description": "The new device's hello opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"): the server relays it between sessions of the account and never sees the code. The hello names a device of the session's account registered without a certificate, and replaces that device's open run, whose messages are then refused. The run ends on a `link-abort` from either side, once its device has a certificate, and when its code expires: the server setting `--link-code-lifetime` after the hello, 5 minutes unset.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkHelloRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The run is open.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-link-message`, for `hello` bytes that do not decode as a `link-hello`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-device`: the session's account has no such device.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The problem `https://skald.so/problems/device-certified`, for a device with a certificate; or `https://skald.so/problems/link-session-taken`, for a `session` an open run of another device of the account has. No run opens.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/links/hello": {
+      "get": {
+        "operationId": "getLinkHello",
+        "summary": "The account's latest hello",
+        "description": "The hello of the account's open run that opened last, for a `client` device of the account to answer (docs/protocol/membership.md, \"Link code\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The latest hello, as the server got it, or `null` while the account has no open run.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkHello"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/links/messages": {
+      "post": {
+        "operationId": "relayLinkMessage",
+        "summary": "Relay a run's later message",
+        "description": "A later message of the account's open run its `session` names: `link-reply`, `link-request`, `link-grant` or `link-abort` (docs/protocol/membership.md, \"Link code\"). The server stores it as the bytes it got and gives it with the run's messages; a `link-abort` ends the run instead.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Taken: relayed, or for a `link-abort`, the run ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-link-message`, for bytes that do not decode as a link message, or a `link-hello`, which opens a run at `POST /account/links`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-link-run`: the session's account has no open run with this `session`: it ended, was replaced or never opened. Nothing is relayed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/links/messages/{session}": {
+      "get": {
+        "operationId": "getLinkMessages",
+        "summary": "A run's later messages",
+        "description": "The later messages of the account's open run with `session` (docs/protocol/membership.md, \"Link code\"), from both sides, in the order the server took them.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "name": "session",
+            "in": "path",
+            "required": true,
+            "description": "The run's `session`.",
+            "schema": {
+              "$ref": "#/components/schemas/LinkSession"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run's later messages, as the server got them.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkMessages"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the problem `https://skald.so/problems/invalid-request`, for a `session` that is not 16 bytes in base64url without padding.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-link-run`: the session's account has no open run with this `session`: it ended, was replaced or never opened. Nothing is relayed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/links/waiting": {
+      "get": {
+        "operationId": "getWaitingDevices",
+        "summary": "The account's devices waiting for linking",
+        "description": "The devices of the session's account with an open run (docs/protocol/membership.md, \"Link code\"), by the kind and `name` they registered with: what a linked device tells its user to link. Only a prompt: a device takes the new device's keys only from the run.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The devices, in the order their runs opened.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitingDevices"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/master": {
       "get": {
         "operationId": "getMasterKey",
@@ -5681,6 +6187,72 @@
         },
         "additionalProperties": false
       },
+      "LinkHello": {
+        "type": "object",
+        "required": ["hello"],
+        "properties": {
+          "hello": {
+            "description": "The latest hello; `null` while the account has no open run.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LinkMessage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinkHelloRequest": {
+        "type": "object",
+        "required": ["device", "hello"],
+        "properties": {
+          "device": {
+            "description": "The new device, registered without a certificate.",
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "hello": {
+            "description": "Its `link-hello`.",
+            "$ref": "#/components/schemas/LinkMessage"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinkMessage": {
+        "description": "A link message's CBOR bytes (docs/protocol/membership.md, \"Link code\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "LinkMessageRequest": {
+        "type": "object",
+        "required": ["message"],
+        "properties": {
+          "message": {
+            "$ref": "#/components/schemas/LinkMessage"
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinkMessages": {
+        "type": "object",
+        "required": ["messages"],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkMessage"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "LinkSession": {
+        "description": "A link run's `session`: 16 bytes in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$"
+      },
       "ListedDevice": {
         "description": "A device of the account as the web app shows it: no key or certificate.",
         "type": "object",
@@ -6329,6 +6901,38 @@
         "properties": {
           "username": {
             "$ref": "#/components/schemas/Username"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WaitingDevice": {
+        "type": "object",
+        "required": ["device", "kind", "name"],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "kind": {
+            "description": "The kind the device registered with.",
+            "type": "string",
+            "enum": ["client", "browser", "service"]
+          },
+          "name": {
+            "description": "The name the device registered with.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WaitingDevices": {
+        "type": "object",
+        "required": ["devices"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaitingDevice"
+            }
           }
         },
         "additionalProperties": false

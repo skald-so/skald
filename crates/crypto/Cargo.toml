@@ -10,8 +10,12 @@ license.workspace = true
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+# The link codes' CPace, on ristretto255.
+curve25519-dalek = "5"
 ed25519-dalek = "3"
 getrandom = "0.4"
+# The link codes' request and grant keys.
+hkdf = "0.13"
 # Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
@@ -20,6 +24,7 @@ mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_p
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.23"
+sha2 = { version = "0.11", default-features = false }
 skald-proto = { path = "../proto" }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
