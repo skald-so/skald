@@ -9,13 +9,11 @@
 //   - it passes the kit's accessibility check, axe-core;
 //   - every element focused from the keyboard has the accent outline;
 //   - each Copy puts its command on the clipboard and announces it.
-import { createRequire } from 'node:module';
-import path from 'node:path';
-import { themes, widths } from '../web/kit-browser.ts';
+// And that the 404 page's link loads the docs start page, not the 404 page again.
+import { accessibilityViolations, keyboardFocus, themes, widths } from '../web/kit-browser.ts';
 import { startSite } from '../site/browser.mjs';
 import { reporter } from './lib/report.mjs';
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const { fail, done } = reporter('site-browser-test');
 
 // The design's background, text and accent colors, as the browser computes them.
@@ -24,7 +22,6 @@ const colors = {
   dark: { background: 'rgb(15, 16, 19)', text: 'rgb(236, 237, 239)', accent: 'rgb(147, 163, 255)' },
 };
 const fonts = ['Inter Variable', 'Space Grotesk Variable', 'JetBrains Mono Variable'];
-const axe = createRequire(path.join(root, 'web/package.json')).resolve('axe-core');
 
 const site = await startSite();
 try {
@@ -42,6 +39,11 @@ try {
       if (others.length > 0) fail(`${view}: requests other hosts: ${others.join(', ')}`);
       await page.close();
     }
+  }
+  try {
+    await notFound();
+  } catch (error) {
+    fail(`the 404 page: ${error.stack}`);
   }
 } finally {
   await site.close();
@@ -73,28 +75,13 @@ async function check(view, page, theme) {
   const diagram = await page.getByRole('img', { name: /^Agents on different machines and accounts connect through Skald/ }).count();
   if (diagram !== 1) fail(`${view}: has no diagram with a text alternative`);
 
-  await page.addScriptTag({ path: axe });
-  const violations = await page.evaluate(async () => {
-    const results = await window.axe.run(document);
-    return results.violations.map((violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(' ')).join(', ')}`);
-  });
-  for (const violation of violations) fail(`${view}: fails the accessibility check: ${violation}`);
+  for (const { rule, nodes } of await accessibilityViolations(page)) fail(`${view}: fails the accessibility check: ${rule}: ${nodes.join(', ')}`);
 
-  let focused = 0;
-  for (let i = 0; i < 100; i++) {
-    await page.keyboard.press('Tab');
-    const focus = await page.evaluate(() => {
-      const element = document.activeElement;
-      if (!element || element === document.body || element.hasAttribute('data-focused')) return null;
-      element.setAttribute('data-focused', '');
-      const style = getComputedStyle(element);
-      return { element: element.outerHTML.slice(0, 80), outline: `${style.outlineStyle} ${style.outlineWidth} ${style.outlineColor}` };
-    });
-    if (!focus) break;
-    focused++;
-    if (focus.outline !== `solid 2px ${want.accent}`) fail(`${view}: ${focus.element} focused from the keyboard has the outline ${focus.outline}`);
+  const focus = await keyboardFocus(page);
+  for (const { element, outline } of focus) {
+    if (outline !== `solid 2px ${want.accent}`) fail(`${view}: ${element} focused from the keyboard has the outline ${outline}`);
   }
-  if (focused === 0) fail(`${view}: no element takes the keyboard focus`);
+  if (focus.length === 0) fail(`${view}: no element takes the keyboard focus`);
 
   const commands = page.locator('.command');
   const count = await commands.count();
@@ -112,4 +99,16 @@ async function check(view, page, theme) {
     const said = await status.textContent();
     if (said !== `Copied: ${command}`) fail(`${view}: Copy of ${command} announces '${said}'`);
   }
+}
+
+// notFound: a missing path shows the 404 page, whose link loads the docs start page.
+async function notFound() {
+  const { page } = await site.open({ width: 1440, system: 'light', at: '/missing-page' });
+  await page.getByRole('link', { name: 'Go to the docs' }).click();
+  const shown = await page.locator('h1').filter({ hasText: /^Docs/ }).waitFor({ timeout: 10_000 }).then(() => true, () => false);
+  const at = new URL(page.url()).pathname;
+  if (!shown || at !== '/start') {
+    fail(`the 404 page's link leads to ${at}, headed '${await page.locator('h1').first().textContent()}', not the docs start page`);
+  }
+  await page.close();
 }

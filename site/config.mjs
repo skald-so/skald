@@ -36,8 +36,10 @@ export function siteConfig({ docs, repo, ref, pages, out, errors }) {
         md.core.ruler.after('inline', 'skald_repository_links', (state) => repositoryLinks(md, state, { docs, repo, ref, pages, errors })),
     },
     themeConfig: {
-      // The main page is no VitePress page: its link loads it, outside VitePress's router.
+      // The main page is no VitePress page: its link loads it, outside VitePress's router, and the
+      // 404 page leads to the docs start page instead.
       logoLink: { link: '/', target: '_self' },
+      notFound: { link: '/start', linkText: 'Go to the docs', linkLabel: 'Go to the docs' },
       search: { provider: 'local' },
       sidebar: sidebar(pages),
       socialLinks: [{ icon: 'github', link: github }],
