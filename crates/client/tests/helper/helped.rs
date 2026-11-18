@@ -31,6 +31,9 @@ pub use crate::machine::ONE_SHOT as ONE_SHOT_SETTING;
 pub const IDLE_SETTING: &str = "SKALD_HELPER_IDLE";
 /// The setting of the version a run acts as, for tests.
 pub const VERSION_SETTING: &str = "SKALD_VERSION";
+/// A request timeout, in seconds, long enough for the helper a command starts on a loaded machine
+/// to listen before the command runs without it.
+pub const START_TIMEOUT: &str = "30";
 /// The flag of a run's request timeout, in seconds.
 pub const TIMEOUT_FLAG: &str = "--timeout";
 /// The version of the `skald` these tests build, and of its copy on disk.
@@ -382,26 +385,70 @@ fn running(tail: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// The processes whose executable's path ends with `tail`.
+/// The processes whose executable's path ends with `tail`, from a snapshot of the system's: a
+/// helper with a short idle time is listed before it exits, however loaded the machine.
 #[cfg(windows)]
 fn running(tail: &Path) -> Vec<u32> {
-    let script = format!(
-        "Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -like '*\\{}' }} \
-         | ForEach-Object {{ $_.ProcessId }}",
-        tail.display()
-    );
-    let listed = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .output()
-        .expect("list the processes");
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+
+    // SAFETY: it takes no pointer; the snapshot is closed below.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     assert!(
-        listed.status.success(),
-        "listing the processes failed: {listed:?}"
+        snapshot != INVALID_HANDLE_VALUE,
+        "listing the processes failed: {}",
+        std::io::Error::last_os_error()
     );
-    String::from_utf8_lossy(&listed.stdout)
-        .lines()
-        .filter_map(|line| line.trim().parse().ok())
+    // SAFETY: an entry of plain integers and characters, all zeros a valid one.
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).expect("an entry's size");
+    let mut pids = Vec::new();
+    // SAFETY: `entry` is an entry with its size set, for the snapshot taken.
+    let mut more = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+    while more {
+        pids.push(entry.th32ProcessID);
+        // SAFETY: as for the first entry.
+        more = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+    }
+    // SAFETY: the snapshot taken above, closed once.
+    unsafe { CloseHandle(snapshot) };
+    pids.into_iter()
+        .filter(|&pid| image_of(pid).is_some_and(|exe| exe.ends_with(tail)))
         .collect()
+}
+
+/// The path of the executable of the process `pid`, if it runs and this one may ask.
+#[cfg(windows)]
+fn image_of(pid: u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+
+    // SAFETY: it takes no pointer; the handle is closed below.
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+    let mut path = vec![0_u16; 32 << 10];
+    let mut length = u32::try_from(path.len()).expect("a path's room");
+    // SAFETY: `path` holds `length` characters, and `length` is the room it gives.
+    let named = unsafe {
+        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut length)
+    } != 0;
+    // SAFETY: the handle opened above, closed once.
+    unsafe { CloseHandle(process) };
+    if !named {
+        return None;
+    }
+    let wide = path.get(..usize::try_from(length).ok()?)?;
+    Some(PathBuf::from(OsString::from_wide(wide)))
 }
 
 #[cfg(unix)]
