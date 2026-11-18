@@ -561,15 +561,27 @@ impl Transport for Socket {
     /// Whether the connection is still open, so that the agent may send another request on it: no
     /// byte waits on it, and it is not closed.
     fn is_open(&mut self) -> bool {
-        if self.stream.set_nonblocking(true).is_err() {
-            return false;
-        }
-        let idle = matches!(
-            (&self.stream).read(&mut [0]),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock
-        );
-        self.stream.set_nonblocking(false).is_ok() && idle
+        idle(
+            |on| self.stream.set_nonblocking(on),
+            |byte| (&self.stream).read(byte),
+        )
     }
+}
+
+/// Whether a stream is open with no byte waiting on it: once `set_nonblocking(true)` has made it
+/// nonblocking, `read` would block, and `set_nonblocking(false)` makes it blocking again.
+pub(crate) fn idle(
+    set_nonblocking: impl Fn(bool) -> io::Result<()>,
+    read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+) -> bool {
+    if set_nonblocking(true).is_err() {
+        return false;
+    }
+    let idle = matches!(
+        read(&mut [0]),
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock
+    );
+    set_nonblocking(false).is_ok() && idle
 }
 
 /// What `read` gives, read again while a signal interrupts it.

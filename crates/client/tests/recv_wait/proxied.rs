@@ -352,8 +352,7 @@ fn push_that_comes_while_a_send_through_the_helper_waits_for_its_answer_is_shown
         ["ada-sends-through-her-helper", "bob-writes-meanwhile"],
     );
     let helped = Helped::new(&behind.ada.machine);
-    let first = helped.run(&[RECV]);
-    assert!(first.success, "{first:?}");
+    helped.received();
     let delayed = behind.filter.delayed_tunnel_writes();
     behind.filter.delay_next_tunnel_write(SEND_HELD_BACK);
     let channel = behind.channel.to_string();
@@ -367,8 +366,7 @@ fn push_that_comes_while_a_send_through_the_helper_waits_for_its_answer_is_shown
 
     let sent = sending.finish();
     assert!(sent.success, "{sent:?}");
-    let next = helped.run(&[RECV]);
-    assert!(next.success, "{next:?}");
+    let next = helped.received();
     behind.assert_shows_bobs(&next.shown(), text);
 }
 
@@ -426,8 +424,7 @@ fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
     assert!(first.success, "{first:?}");
     let kept = Instant::now();
     let from = behind.filter.mark();
-    let within = helped.run(&[RECV]);
-    assert!(within.success, "{within:?}");
+    helped.received();
     let took = kept.elapsed();
     let seen = behind.filter.seen_since(from);
     let reconnected = (seen.iter()).any(|one| one.is("GET", WEBSOCKET) || one.is("GET", EVENTS));
@@ -446,9 +443,8 @@ fn helper_with_no_session_on_sse_tries_websocket_again_after_the_interval() {
     thread::sleep(Duration::from_secs(RETRY.parse().expect("seconds")) + RETRY_SLACK);
 
     let from = behind.filter.mark();
-    let next = helped.run(&[RECV]);
+    helped.received();
 
-    assert!(next.success, "{next:?}");
     let seen = behind.filter.seen_since(from);
     assert!(
         answered(&seen, "GET", WEBSOCKET, 101),
