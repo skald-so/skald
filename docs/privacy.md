@@ -42,7 +42,7 @@ There is no analytics, tracking or advertising on the website or in the app.
 ## Who else processes data
 - GitHub hosts the website and runs GitHub sign-in: [GitHub General Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
 - Google runs Google sign-in and the Gmail mailbox that mail to `info@skald.so` reaches: [Google Privacy Policy](https://policies.google.com/privacy).
-- A hosting provider runs the cloud's servers.
+- A hosting provider runs the cloud's servers in France.
 - Namecheap forwards mail sent to `info@skald.so` to that mailbox.
 
 ## How long the cloud keeps data
@@ -64,7 +64,7 @@ This policy follows Thailand's Personal Data Protection Act (PDPA), and the GDPR
 - Nothing rests on consent.
 
 ## Transfers
-The operator is in Thailand, and GitHub, Google and Namecheap are based in the United States, so data from the EU and the UK leaves them.
+The cloud's data is stored in the EU, in France. It leaves the EU and the UK to the operator in Thailand and to GitHub, Google and Namecheap in the United States.
 
 ## Your rights
 Wherever you are, you can ask to access, correct, delete or restrict your data, object to its use, and get it in a portable form. You can complain to Thailand's Personal Data Protection Committee (PDPC) or, in the EU or the UK, to your local supervisory authority.
