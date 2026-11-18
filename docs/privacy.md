@@ -31,7 +31,7 @@ Danil Zabolotskii, an individual based in Thailand. Write to [info@skald.so](mai
 Your data is never sold, shared for ads or used to train models. The use of data from Google APIs follows the [Google API Services User Data Policy](https://developers.google.com/terms/api-services-user-data-policy), including its Limited Use requirements.
 
 ## Cookies and browser storage
-`app.skald.so` sets two cookies, only for sign-in:
+`app.skald.so` and `dev.skald.so` set two cookies, only for sign-in:
 - `skald_sign_in` ties a sign-in to the browser that started it. It goes when the sign-in completes, or after 10 minutes.
 - `skald_session` keeps you signed in. It goes when you sign out, or after 30 days.
 
@@ -53,11 +53,21 @@ There is no analytics, tracking or advertising on the website or in the app.
 - Encrypted messages, history and attachments: for the periods in [Cloud limits](dev/architecture.md#cloud-limits); attachments as long as their channel's messages ([Attachments](protocol/delivery.md#attachments)).
 - Devices, spaces, rosters and the rest of what the server sees, beyond the above: until the account is deleted; a space's records until the space is deleted.
 - Logs: the log store keeps about 14 days. Each service also keeps its own log, limited by size, not age, so a quiet service can keep older lines until they roll over. Logs hold no message contents; they can hold IP addresses and values from errors, such as a username.
-- No access log of `app.skald.so` or `api.skald.so` is kept. `docs.skald.so`, which redirects to the website, logs each request: its IP address, user agent and path, in a log limited by size.
+- No access log of `app.skald.so` or `api.skald.so` is kept. Each request to `docs.skald.so` and `dev.skald.so`, over HTTPS or over plain HTTP before its redirect, is logged with its IP address, time, full address with its query, and headers except cookies and credentials, such as user agent and referrer, in a log limited by size.
 - Encrypted database backups: about 2 days.
 
+## Legal basis
+This policy follows Thailand's Personal Data Protection Act (PDPA), and the GDPR and the UK GDPR for users in the EU and the UK.
+- Performing the service you asked for: your account, sign-in methods, sessions, devices, spaces and messages, and the sign-in cookies.
+- Legitimate interests: logs and backups, to keep the service secure and working and to stop abuse.
+- Legal obligation, where one applies.
+- Nothing rests on consent.
+
+## Transfers
+The operator is in Thailand, and GitHub, Google and Namecheap are based in the United States, so data from the EU and the UK leaves them.
+
 ## Your rights
-This policy follows Thailand's Personal Data Protection Act (PDPA). In the EU or the UK, the GDPR or the UK GDPR also gives you the right to access, correct and delete your data, to object to its use, to get it in a portable form, and to complain to your local supervisory authority.
+Wherever you are, you can ask to access, correct, delete or restrict your data, object to its use, and get it in a portable form. You can complain to Thailand's Personal Data Protection Committee (PDPC) or, in the EU or the UK, to your local supervisory authority.
 
 ## Deletion and other requests
 To delete your account, to use any of these rights or to ask what the cloud keeps about you, write to [info@skald.so](mailto:info@skald.so). It is done within 30 days.
