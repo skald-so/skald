@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 // Tests the build of the website and docs, site/build.mjs, after npm ci in site/:
-//   - docs/ builds, with a page for each of its Markdown files and a main page;
-//   - on a scratch repository: a README.md is its directory's page; the main page links to every
-//     page; a heading gets GitHub's ID, which a link to it from another page resolves to; a link to a
-//     file outside docs/ goes to it on GitHub at SKALD_SITE_REF, main by default, a directory as a
-//     tree; a file git ignores is not built;
+//   - docs/ builds, with a page for each of its Markdown files, a docs start page at /start that
+//     links to every page, and the main page at /;
+//   - the main page's links: Docs, Get started and Read the docs to the docs start page, GitHub to
+//     the repository, Sign in to the cloud's web app, the first point to "The server sees" of the
+//     threat model, Security to the threat model, Trademarks to TRADEMARKS.md on GitHub at
+//     SKALD_SITE_REF, and the mail address; its only command is the README's npm install; each
+//     bundled font's license ships with the build; the docs' title leads to it outside VitePress's
+//     router;
+//   - on a scratch repository: a README.md is its directory's page; the docs start page links to
+//     every page, unless docs/start.md replaces it; a heading gets GitHub's ID, which a link to it
+//     from another page resolves to; a link to a file outside docs/ goes to it on GitHub at
+//     SKALD_SITE_REF, main by default, a directory as a tree; a file git ignores is not built;
 //   - the build fails, naming the link, on a link to a missing page, to a missing heading of a page,
 //     to a missing file outside docs/ or a missing heading of one, and to a path outside the
-//     repository.
+//     repository; and, naming the file, on a page of docs/ at /, where the main page is.
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -41,7 +48,68 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
       const page = file.replace(/^docs\//, '').replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html');
       if (!fs.existsSync(path.join(out, page))) fail(`the site has no page ${page} for ${file}`);
     }
-    if (!fs.existsSync(path.join(out, 'index.html'))) fail('the site has no main page, index.html');
+    const start = read(path.join(out, 'start.html'));
+    for (const file of listed.stdout.split('\n').filter(Boolean)) {
+      const link = `href="./${file.replace(/^docs\//, '').replace(/(^|\/)README\.md$/, '$1').replace(/\.md$/, '')}"`;
+      if (!start.includes(link)) fail(`the docs start page, start.html, has no link ${link} to ${file}`);
+    }
+    mainPage(out, 'main');
+    if (!read(path.join(out, 'threat-model.html')).includes('<a class="title" href="/" target="_self"')) {
+      fail("a docs page's title does not lead to the main page outside VitePress's router: no target");
+    }
+  }
+}
+{
+  const { status, output, out } = build(undefined, { SKALD_SITE_REF: 'v1.2.3' });
+  if (status !== 0) fail(`docs/ does not build with SKALD_SITE_REF: ${output.trim().split('\n').slice(-3).join(' | ')}`);
+  else if (!read(path.join(out, 'index.html')).includes('href="https://github.com/skald-so/skald/blob/v1.2.3/TRADEMARKS.md"')) {
+    fail('with SKALD_SITE_REF=v1.2.3, the main page has no Trademarks link at v1.2.3');
+  }
+}
+
+// mainPage <out> <ref>: checks the main page of the build in <out>, its links to files on GitHub at
+// <ref>.
+function mainPage(out, ref) {
+  const html = read(path.join(out, 'index.html'));
+  if (!html.includes('<h1>Encrypted messages and tasks for AI agents</h1>')) fail('index.html is not the main page');
+  if (!/<title>Skald[:<]/.test(html) || !/<meta\s+name="description"\s+content="Skald[: ]/.test(html)) {
+    fail("the main page's title or description does not name Skald");
+  }
+  const text = (part) => part.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  const links = [...html.matchAll(/<a\s[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/g)].map(([, href, label]) => `${text(label)} -> ${href}`);
+  const github = 'https://github.com/skald-so/skald';
+  const want = [
+    'skald -> /',
+    'Docs -> /start',
+    `GitHub -> ${github}`,
+    'Sign in -> https://app.skald.so',
+    'Get started -> /start',
+    'Read the docs -> /start',
+    'What the server sees -> /threat-model#the-server-sees',
+    'Docs -> /start',
+    `GitHub -> ${github}`,
+    'Security -> /threat-model',
+    `Trademarks -> ${github}/blob/${ref}/TRADEMARKS.md`,
+    'info@skald.so -> mailto:info@skald.so',
+  ];
+  if (JSON.stringify(links) !== JSON.stringify(want)) fail(`the main page's links are ${JSON.stringify(links)}, not ${JSON.stringify(want)}`);
+  if (!fs.existsSync(path.join(root, 'TRADEMARKS.md'))) fail('the Trademarks link leads to no TRADEMARKS.md');
+  // The build fails on a link to a missing page or heading, so these resolve: the page itself.
+  if (!/<h2 id="the-server-sees"/.test(read(path.join(out, 'threat-model.html')))) fail('the threat model has no heading the-server-sees');
+
+  const commands = [...html.matchAll(/<code>([^<]*)<\/code>/g)].map(([, command]) => command);
+  if (JSON.stringify(commands) !== JSON.stringify(['npm install -g skald-so'])) fail(`the main page's commands are ${JSON.stringify(commands)}, not the npm install alone`);
+  for (const command of commands) {
+    if (!read(path.join(root, 'README.md')).includes(`\n${command}\n`)) fail(`README.md does not give the main page's command ${command}`);
+  }
+
+  const assets = fs.readdirSync(path.join(out, 'assets/main'));
+  for (const font of ['inter', 'space-grotesk', 'jetbrains-mono']) {
+    if (!assets.some((file) => file.startsWith(`${font}-`) && file.endsWith('.woff2'))) fail(`the main page bundles no ${font} font`);
+    if (!read(path.join(out, 'fonts', font, 'LICENSE')).includes('SIL Open Font License')) fail(`the build has no license of the ${font} font, fonts/${font}/LICENSE`);
+  }
+  for (const file of assets.filter((file) => file.endsWith('.woff2'))) {
+    if (!['inter', 'space-grotesk', 'jetbrains-mono'].some((font) => file.startsWith(`${font}-`))) fail(`the build has a font without its license: ${file}`);
   }
 }
 
@@ -57,9 +125,10 @@ write('docs/.gitignore', 'private.md\n');
 write('docs/private.md', '# Private\n');
 write('docs/guide.md', '# Guide\n\n## 1. Install the `client`\n\nText.\n');
 write('docs/sub/README.md', '# Sub\n\n[Guide step](../guide.md#1-install-the-client)\n');
-const page = (links) => `# Start\n\n${links.map((link) => `- [link](${link})`).join('\n')}\n`;
-const good = ['guide.md', 'sub/README.md', 'sub/README.md#sub', '../NOTES.md#second-part', '../tools', '../tools/run.sh', '#start'];
-write('docs/start.md', page(good));
+write('docs/threat-model.md', '# Threat model\n\n## The server sees\n');
+const page = (links) => `# Links\n\n${links.map((link) => `- [link](${link})`).join('\n')}\n`;
+const good = ['guide.md', 'sub/README.md', 'sub/README.md#sub', '../NOTES.md#second-part', '../tools', '../tools/run.sh', '#links'];
+write('docs/links.md', page(good));
 spawnSync('git', ['init', '--quiet'], { cwd: repo });
 const docs = path.join(repo, 'docs');
 
@@ -67,25 +136,26 @@ const docs = path.join(repo, 'docs');
   const { status, output, out } = build(docs);
   if (status !== 0) fail(`the scratch docs do not build: ${output.trim().split('\n').slice(-5).join(' | ')}`);
   else {
+    const links = read(path.join(out, 'links.html'));
     const start = read(path.join(out, 'start.html'));
-    const main = read(path.join(out, 'index.html'));
     for (const want of ['href="./guide"', 'href="./sub/"', 'href="./sub/#sub"']) {
-      if (!start.includes(want)) fail(`start.html has no link ${want} to a page`);
+      if (!links.includes(want)) fail(`links.html has no link ${want} to a page`);
     }
     for (const want of [
       'href="https://github.com/skald-so/skald/blob/main/NOTES.md#second-part"',
       'href="https://github.com/skald-so/skald/tree/main/tools"',
       'href="https://github.com/skald-so/skald/blob/main/tools/run.sh"',
     ]) {
-      if (!start.includes(want)) fail(`start.html has no link ${want} to a file outside docs/ on GitHub`);
+      if (!links.includes(want)) fail(`links.html has no link ${want} to a file outside docs/ on GitHub`);
     }
     if (!fs.existsSync(path.join(out, 'sub/index.html'))) fail('sub/README.md is not the page sub/index.html');
     if (!read(path.join(out, 'guide.html')).includes('id="1-install-the-client"')) {
       fail("a heading of guide.html has no GitHub ID, 1-install-the-client");
     }
-    for (const want of ['href="./guide"', 'href="./start"', 'href="./sub/"']) {
-      if (!main.includes(want)) fail(`the main page has no link ${want}`);
+    for (const want of ['href="./guide"', 'href="./links"', 'href="./sub/"', 'href="./threat-model"']) {
+      if (!start.includes(want)) fail(`the docs start page has no link ${want}`);
     }
+    if (!read(path.join(out, 'index.html')).includes('<h1>Encrypted messages and tasks for AI agents</h1>')) fail('the scratch build has no main page');
     if (fs.existsSync(path.join(out, 'private.html'))) fail('a file git ignores, private.md, is built');
   }
 }
@@ -93,12 +163,28 @@ const docs = path.join(repo, 'docs');
   const { status, output, out } = build(docs, { SKALD_SITE_REF: 'v1.2.3' });
   const want = 'href="https://github.com/skald-so/skald/blob/v1.2.3/NOTES.md#second-part"';
   if (status !== 0) fail(`the scratch docs do not build with SKALD_SITE_REF: ${output.trim().split('\n').slice(-3).join(' | ')}`);
-  else if (!read(path.join(out, 'start.html')).includes(want)) fail(`with SKALD_SITE_REF=v1.2.3, start.html has no link ${want}`);
+  else if (!read(path.join(out, 'links.html')).includes(want)) fail(`with SKALD_SITE_REF=v1.2.3, links.html has no link ${want}`);
+}
+
+// A docs/start.md is the docs start page; a page at / fails the build.
+write('docs/start.md', '# Quick start\n');
+{
+  const { status, output, out } = build(docs);
+  if (status !== 0) fail(`the scratch docs with start.md do not build: ${output.trim().split('\n').slice(-3).join(' | ')}`);
+  else if (!read(path.join(out, 'start.html')).includes('<h1 id="quick-start"')) fail('docs/start.md is not the docs start page');
+}
+fs.rmSync(path.join(repo, 'docs/start.md'));
+for (const file of ['docs/index.md', 'docs/README.md']) {
+  write(file, '# Home\n');
+  const { status, output } = build(docs);
+  if (status === 0) fail(`a page at /, ${file}, builds`);
+  else if (!output.includes(file.replace(/^docs\//, ''))) fail(`the build fails on a page at /, ${file}, without naming it: ${output.trim().split('\n').slice(-3).join(' | ')}`);
+  fs.rmSync(path.join(repo, file));
 }
 
 // Broken links.
 for (const link of ['missing.md', 'guide.md#missing', '#missing', 'sub/missing/README.md', '../MISSING.md', '../NOTES.md#missing', '../../outside.md']) {
-  write('docs/start.md', page([...good, link]));
+  write('docs/links.md', page([...good, link]));
   const { status, output } = build(docs);
   if (status === 0) fail(`a link to ${link} builds`);
   else if (![link, link.replace(/\.md(?=#|$)/, ''), link.replace(/README\.md$/, '')].some((name) => output.includes(name))) {

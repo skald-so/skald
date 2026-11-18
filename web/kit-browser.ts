@@ -1,4 +1,5 @@
 // Opens the kit page from a Vite dev server in headless Chrome: for the kit tests and screenshots.
+// The website's browser tests and screenshots take its Chrome too.
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -160,7 +161,8 @@ export function screenshot(
   });
 }
 
-async function launchChrome(): Promise<Browser> {
+/** Starts Chrome Headless Shell of playwright-core, or the binary in `SKALD_CHROME`. */
+export async function launchChrome(): Promise<Browser> {
   const executablePath = process.env.SKALD_CHROME;
   try {
     return await chromium.launch(executablePath ? { executablePath } : {});
@@ -177,7 +179,7 @@ async function launchChrome(): Promise<Browser> {
  * the local playwright-core, mounted read-only; the browser reaches the dev server on this machine
  * through the connection. The container is removed when the browser closes.
  */
-async function connectPinnedChrome(): Promise<Browser> {
+export async function connectPinnedChrome(): Promise<Browser> {
   const require = createRequire(import.meta.url);
   const playwright = dirname(require.resolve("playwright-core/package.json"));
   const version = (
