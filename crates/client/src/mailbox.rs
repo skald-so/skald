@@ -107,11 +107,21 @@ pub fn missed() -> bool {
     MISSED.with(|missed| missed.replace(false))
 }
 
-/// Keeps `push`, which a read of a WebSocket for the answers to what it sent met, in `pushed`, for
-/// the next catch-up to write before it acks; a wait looks again, as for what a run dropped.
-pub fn keep_push(pushed: &mut Vec<Push>, push: Push) {
-    pushed.push(push);
-    miss();
+/// Reads the next message on `socket`, a read for the answers to what it sent, that is not a push:
+/// keeps each push it meets in `pushed`, for the next catch-up to write before it acks, and has a
+/// wait look again, as for what a run dropped.
+pub fn read_answer(socket: &mut WebSocket, pushed: &mut Vec<Push>) -> tungstenite::Result<Message> {
+    loop {
+        let message = socket.read()?;
+        if let Message::Binary(bytes) = &message
+            && let Ok(Frame::Push(push)) = Frame::from_cbor(bytes)
+        {
+            pushed.push(push);
+            miss();
+            continue;
+        }
+        return Ok(message);
+    }
 }
 
 /// Notes that a run dropped what came on its connection.
@@ -298,7 +308,7 @@ impl Mailbox {
     }
 
     /// The connection's WebSocket, if it is one, and where a read of it keeps each push it meets
-    /// ([`keep_push`]).
+    /// ([`read_answer`]).
     pub fn websocket(&mut self) -> Option<(&mut WebSocket, &mut Vec<Push>)> {
         match self.link.as_mut() {
             Some(Link::WebSocket(socket)) => Some((socket, &mut self.pushed)),
