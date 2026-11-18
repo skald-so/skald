@@ -2,7 +2,7 @@
 //! fallback (`transport_fallback/main.rs`): over long-poll, a wait gets what comes, sending only
 //! long-polls that wait while nothing comes; once the proxy lets WebSocket upgrades through, the
 //! helper and a one-shot wait move to WebSocket within the interval; and a helper on long-poll
-//! accepts a revision stored between two of its requests.
+//! accepts a revision stored between two of its requests, the person's wait going on through it.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -180,6 +180,32 @@ fn helper_on_long_poll_accepts_a_revision_stored_while_its_next_request_is_held_
     await_running(&mut helper, "the space's devices fetched", fetched);
     thread::sleep(SETTLE);
     forked.assert_late_accepted(&behind, "the helper on long-poll");
+}
+
+/// Behind the proxy, which blocks nothing, the person's `skald recv --wait` starts a helper, and a
+/// revision of a space adding Bob is stored. The helper fetches the space's devices; the wait,
+/// which the revision shows nothing, keeps waiting.
+#[test]
+fn person_wait_keeps_waiting_through_a_revision_that_shows_nothing() {
+    let behind = Behind::start(
+        [4_148_076_001, 4_148_076_002],
+        ["ada-waits-through-a-revision", "bob-joins-unseen"],
+    );
+    let forked = Forked::create(&behind, "revision-to-a-wait");
+    let (cloud, ada) = (behind.cloud(), &behind.ada);
+    let followed = recv(&ada.machine);
+    assert!(followed.success, "{followed:?}");
+    let helped = Helped::new(&ada.machine);
+    let mut person = helped.start(&[], &[RECV, WAIT_FLAG]);
+    assert_keeps_waiting(&mut person);
+    let since = cloud.relay.mark();
+
+    store(cloud, &ada.token, &forked.late);
+
+    let devices = devices_request(forked.space);
+    let fetched = || cloud.count_sent(since, &devices) > 0;
+    await_running(&mut person, "the space's devices fetched", fetched);
+    assert_keeps_waiting(&mut person);
 }
 
 /// Waits for up to [`WAIT`] while `run`, if any, goes on until the proxy has seen no request for

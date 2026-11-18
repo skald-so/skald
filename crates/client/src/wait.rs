@@ -125,7 +125,8 @@ impl Watch {
         if mailbox::missed() {
             self.polled.lock().expect("what came").came = Came::Anything;
         }
-        self.retry_at = match kept.or_else(intake::left_transport) {
+        // A run that ends on WebSocket keeps it.
+        self.retry_at = match kept {
             Some(Transport::WebSocket) => None,
             _ => self.retry_at.or_else(|| Some(Instant::now() + retry())),
         };

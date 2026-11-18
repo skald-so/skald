@@ -1,6 +1,7 @@
 //! Sessions that wait through one helper, each for its own messages; the person's wait for anything
 //! the person's `skald recv` shows; a wait with messages already there; waits that reach the server
-//! for nothing while nothing comes; and a session that a command beside it gives its messages.
+//! for nothing while nothing comes; a session that a command beside it gives its messages; and
+//! messages that wake no session they are not for.
 
 use std::time::Instant;
 
@@ -32,6 +33,7 @@ const WAITING: [&str; 2] = [
 const AFTER_QUIET: &str = "wait test: the backup finished overnight";
 const KEPT_FOR_CLAUDE: &str = "wait test: claude, the acme invoices are due";
 const FOR_ACME: &str = "wait test: acme's standup moved to ten";
+const TO_CODEX: &str = "wait test: codex, review the migration";
 
 /// Ada's machine follows `clienta` and `clientb`, each with a channel that holds Bob's device;
 /// `~/work/clientA` is bound to `clienta` and `~/work/clientB` to `clientb`, and the device has
@@ -308,4 +310,29 @@ fn message_wakes_no_session_of_another_space() {
         .collect();
     assert!(sent.is_empty(), "codex's session ran: {sent:?}");
     assert!(!codex.shown().contains(FOR_ACME), "{}", codex.shown());
+}
+
+/// The device has run as claude and codex in `~/work/acme`, and both wait there through one helper.
+/// Bob's device sends a message to codex: codex's session shows it once, with its `msg_id`, and
+/// exits; claude's keeps waiting, having shown nothing of it.
+#[test]
+fn message_to_another_agent_of_the_space_wakes_no_session_of_its_own() {
+    let mut waits = Waits::new(
+        [4_148_094_001, 4_148_094_002],
+        ["ada-runs-claude-and-codex", "bob-writes-to-codex"],
+    );
+    waits.agents.run_as(CLAUDE);
+    waits.agents.run_as(CODEX);
+    let mut claude = waits.session(CLAUDE);
+    let mut codex = waits.session(CODEX);
+    assert_keeps_waiting(&mut claude);
+    assert_keeps_waiting(&mut codex);
+    let mut line = Line::new(&waits.agents.bob(), 1, TO_CODEX);
+    line.to = Some(waits.agents.address(CODEX));
+
+    let id = waits.agents.bob_sends(&line);
+
+    assert_got(&codex.finish(), TO_CODEX, id);
+    assert_keeps_waiting(&mut claude);
+    assert!(!claude.shown().contains(TO_CODEX), "{}", claude.shown());
 }
