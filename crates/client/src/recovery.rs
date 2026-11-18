@@ -47,11 +47,10 @@ fn kept(stored: &secrets::Map) -> Option<RecoveryKey> {
     Some(RecoveryKey::from_bytes(key))
 }
 
-/// The line that says a recovery key waits, with the command that shows it, on `server`.
+/// The line that says a recovery key waits, with the command that shows it, on `server`. A
+/// notice, not an error: no `skald:` before it.
 fn waits(server: &str) -> String {
-    format!(
-        "skald: a recovery key waits to be shown: run skald sign-in --server {server} at a terminal"
-    )
+    format!("A recovery key waits to be shown: run skald sign-in --server {server} at a terminal.")
 }
 
 /// At the end of `skald sign-in` on `server`, the device in `state` holding its certificate: a
@@ -161,5 +160,6 @@ mod tests {
             "{line}"
         );
         assert!(!line.contains('\n'), "one line: {line}");
+        assert!(!line.starts_with("skald:"), "no error: {line}");
     }
 }
