@@ -8,7 +8,8 @@
 //!   that runs; one whose helper cannot start runs here, holding the lock itself.
 //! - On the socket, the command and the helper first say their versions. A helper older than the
 //!   command exits once it has closed its socket, and the command goes on as if none ran. A command
-//!   older than the helper fails, naming both versions, and leaves it running.
+//!   older than the helper fails, naming both versions, and leaves it running; an MCP server's tool
+//!   call goes through it ([`route_into`]).
 //! - A command hands its operation and working directory over; the helper runs it there, and the
 //!   command shows its output and exits with its exit code. A write of the operation's output
 //!   returns once the command has written it, or fails as the command's write did, so the
@@ -139,15 +140,41 @@ pub fn version() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// What takes the output of an operation a helper runs, on the command's side: each write, to
+/// standard output or standard error, which it gives back whether it wrote.
+pub type Sink<'s> = dyn FnMut(output::Stream, &[u8]) -> io::Result<()> + 's;
+
 /// Where `operation`, of a command that changes the state in `dir`, runs: through the helper that
 /// runs, or one it starts if `starts` and there is a state; otherwise here, once it holds the lock,
 /// waiting for it as [`lock::take`] does, with a missing `dir` created if `create`, unless a helper
-/// starts meanwhile.
+/// starts meanwhile. What a helper's run of it shows goes to standard output and standard error.
 pub fn route(
     dir: &Path,
     operation: &Operation,
     create: bool,
     starts: bool,
+) -> Result<Route, String> {
+    route_into(dir, operation, (create, starts, false), &mut shown)
+}
+
+/// Writes `bytes` to the standard output or standard error, as `stream` says.
+fn shown(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
+    match stream {
+        output::Stream::Out => {
+            let mut out = io::stdout().lock();
+            out.write_all(bytes).and_then(|()| out.flush())
+        }
+        output::Stream::Err => io::stderr().lock().write_all(bytes),
+    }
+}
+
+/// As [`route`], what a helper's run of `operation` shows going to `sink`; through a helper newer
+/// than this run too if `newer`, as an MCP server's tool call goes ([`crate::mcp`]).
+pub fn route_into(
+    dir: &Path,
+    operation: &Operation,
+    (create, starts, newer): (bool, bool, bool),
+    sink: &mut Sink,
 ) -> Result<Route, String> {
     let dir = std::path::absolute(dir)
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
@@ -159,7 +186,10 @@ pub fn route(
             if let Some(stream) = connect(&dir) {
                 if let Some((stream, helper)) = greet(stream, timeout)? {
                     match compare(&version(), &helper) {
-                        Ordering::Equal => return hand(stream, operation).map(Route::Helped),
+                        Ordering::Equal => return hand(stream, operation, sink).map(Route::Helped),
+                        Ordering::Less if newer => {
+                            return hand(stream, operation, sink).map(Route::Helped);
+                        }
                         Ordering::Greater => dismiss(stream, timeout),
                         Ordering::Less => return Err(older(&version(), &helper)),
                     }
@@ -264,9 +294,13 @@ fn dismiss(mut stream: UnixStream, timeout: Duration) {
     }
 }
 
-/// Hands `operation` over on `stream` and shows what the helper's run of it shows, saying whether
-/// each write of it worked; gives its exit code.
-fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, String> {
+/// Hands `operation` over on `stream` and gives `sink` what the helper's run of it shows, saying
+/// whether each write of it worked; gives its exit code.
+fn hand(
+    mut stream: UnixStream,
+    operation: &Operation,
+    sink: &mut Sink,
+) -> Result<ExitCode, String> {
     let cwd = std::env::current_dir()
         .map_err(|err| format!("cannot read the working directory: {err}"))?;
     let request = serde_json::to_vec(&Handed { cwd, operation })
@@ -279,11 +313,8 @@ fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, Strin
         .map_err(|_| gone.to_owned())?;
     loop {
         let written = match receive(&mut stream) {
-            Ok(Some((Kind::Out, bytes))) => {
-                let mut out = io::stdout().lock();
-                out.write_all(&bytes).and_then(|()| out.flush())
-            }
-            Ok(Some((Kind::Err, bytes))) => io::stderr().lock().write_all(&bytes),
+            Ok(Some((Kind::Out, bytes))) => sink(output::Stream::Out, &bytes),
+            Ok(Some((Kind::Err, bytes))) => sink(output::Stream::Err, &bytes),
             Ok(Some((Kind::Code, code))) => {
                 return Ok(ExitCode::from(code.first().copied().unwrap_or(1)));
             }

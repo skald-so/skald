@@ -43,7 +43,13 @@ impl Form {
 
 /// The whole reference of `msg_id`: each reference of the message is a prefix of it.
 pub fn whole_reference(msg_id: MessageId) -> String {
-    let hash = Sha256::digest(msg_id.as_bytes());
+    hashed(msg_id.as_bytes())
+}
+
+/// The base32 of SHA-256 of `bytes`, as a reference is made: a device's reference in an agent's
+/// default name too ([`crate::mcp`]).
+pub fn hashed(bytes: &[u8]) -> String {
+    let hash = Sha256::digest(bytes);
     // Each character takes the next 5 of the hash's 256 bits; the last one, 1 bit and 4 zero bits.
     (0..256_usize.div_ceil(5))
         .map(|index| {

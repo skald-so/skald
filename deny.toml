@@ -13,6 +13,9 @@ ignore = [
     # 0.9 keeps libsqlite3-sys below 0.38: its unused SQLite driver is in Cargo.lock too. Drop this
     # once sqlx allows 0.39.
     { id = "RUSTSEC-2026-0459", reason = "local only; sqlx 0.9 holds libsqlite3-sys below the fix" },
+    # chrono is unmaintained, with no known vulnerability. rmcp 3.11, the client's MCP server, depends
+    # on it, and on schemars with its chrono feature. Drop this once rmcp does not.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained only; rmcp depends on it" },
 ]
 
 [licenses]

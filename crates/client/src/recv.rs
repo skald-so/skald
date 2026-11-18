@@ -92,7 +92,28 @@ pub fn run(
 ) -> Result<bool, String> {
     holding_warnings(dir, agent.is_some(), || {
         let form = Form::of(agent.is_some(), json);
-        received(dir, storage, (speaks, timeout), agent, (waits, form))
+        received(dir, storage, (speaks, timeout), agent, (waits, form, false))
+    })
+}
+
+/// The `inbox` of `agent`'s MCP session ([`crate::mcp`]): [`run`] as the agent, in its short form,
+/// which writes the lines it hands over in one write and marks them handed over once that write
+/// is done, and only if the run did not fail.
+pub fn inbox(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    agent: &Name,
+) -> Result<(), String> {
+    holding_warnings(dir, true, || {
+        received(
+            dir,
+            storage,
+            settings,
+            Some(agent),
+            (false, Form::Short, true),
+        )
+        .map(drop)
     })
 }
 
@@ -123,13 +144,13 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
     }
 }
 
-/// [`run`], showing in `form`.
+/// [`run`], showing in `form`; as [`inbox`] if `whole`.
 fn received(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
-    (waits, form): (bool, Form),
+    (waits, form, whole): (bool, Form, bool),
 ) -> Result<bool, String> {
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
@@ -177,6 +198,11 @@ fn received(
         Err(err) => Err(err.clone()),
     };
     let handed = match ran_as {
+        // A failed run hands nothing over.
+        Some((space, agent)) if whole => match (&received, &aligned, &shown) {
+            (Ok(()), Ok(()), Ok(())) => hand_over_whole(&follower, (space, agent), form),
+            _ => Ok(0),
+        },
         Some((space, agent)) => hand_over(&follower, (space, agent), form),
         None => show_to_person(&follower, form),
     };
@@ -587,14 +613,19 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
     }
     let references = References::new(state.kept_ids().map_err(text)?);
     let statuses = state.statuses_for_person().map_err(text)?;
-    shown += shown_statuses(statuses, (form, &references), |seq| {
-        state.status_shown_to_person(seq)
-    })?;
+    shown += shown_statuses(
+        statuses,
+        (form, &references),
+        (written("a status"), |seq| state.status_shown_to_person(seq)),
+    )?;
     let kept = state.for_person().map_err(text)?;
     Ok(shown
-        + shown_kept(follower, kept, (form, &references), |seq| {
-            state.shown_to_person(seq)
-        })?)
+        + shown_kept(
+            follower,
+            kept,
+            (form, &references),
+            (written("a message"), |seq| state.shown_to_person(seq)),
+        )?)
 }
 
 /// Hands each kept status of a message `agent` sent in `space`, then each kept message that waits
@@ -606,24 +637,127 @@ pub fn hand_over(
     form: Form,
 ) -> Result<usize, String> {
     let state = &follower.state;
-    let references = References::new(state.kept_ids().map_err(text)?);
-    let statuses = (state.statuses_for_agent(space, agent.as_str())).map_err(text)?;
-    shown_statuses(statuses, (form, &references), |seq| {
-        state.status_taken_by_agent(seq)
-    })?;
-    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
-    shown_kept(follower, kept, (form, &references), |seq| {
-        state.handed_over(seq, agent.as_str())
-    })
+    handing_over(
+        follower,
+        (space, agent),
+        form,
+        |what, line| written(what)(line),
+        (
+            |seq| state.status_taken_by_agent(seq),
+            |seq| state.handed_over(seq, agent.as_str()),
+        ),
+    )
 }
 
-/// Writes each of `kept`, kept statuses by `seq` as JSON, in `form` with `references`, to the
-/// output, unless the form leaves it out, then calls `mark` with its `seq`; one that does not
-/// decode is warned of and marked. Gives how many it wrote.
+/// As [`hand_over`], gathering the lines and writing them in one write, after which it marks
+/// each status and message handed over; a failed write marks none.
+fn hand_over_whole(
+    follower: &Follower,
+    (space, agent): (SpaceId, &Name),
+    form: Form,
+) -> Result<usize, String> {
+    let state = &follower.state;
+    let mut lines = String::new();
+    let (mut statuses, mut messages) = (Vec::new(), Vec::new());
+    let shown = handing_over(
+        follower,
+        (space, agent),
+        form,
+        |_, line| {
+            lines.push_str(&line);
+            Ok(())
+        },
+        (
+            |seq| {
+                statuses.push(seq);
+                Ok(())
+            },
+            |seq| {
+                messages.push(seq);
+                Ok(())
+            },
+        ),
+    )?;
+    if !lines.is_empty() {
+        output::write(Stream::Out, lines.as_bytes())
+            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+    }
+    for seq in statuses {
+        state.status_taken_by_agent(seq).map_err(text)?;
+    }
+    for seq in messages {
+        state.handed_over(seq, agent.as_str()).map_err(text)?;
+    }
+    Ok(shown)
+}
+
+/// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits
+/// for it there, in `form`, in `seq` order, with `put`, which takes what it is, such as a status,
+/// and its line; then marks it with the status's or the message's of `marks`. Gives how many
+/// messages it put.
+fn handing_over(
+    follower: &Follower,
+    (space, agent): (SpaceId, &Name),
+    form: Form,
+    mut put: impl FnMut(&'static str, String) -> Result<(), String>,
+    (status, message): (
+        impl FnMut(u64) -> Result<(), state::Error>,
+        impl FnMut(u64) -> Result<(), state::Error>,
+    ),
+) -> Result<usize, String> {
+    let state = &follower.state;
+    let references = References::new(state.kept_ids().map_err(text)?);
+    let statuses = (state.statuses_for_agent(space, agent.as_str())).map_err(text)?;
+    shown_statuses(
+        statuses,
+        (form, &references),
+        (|line| put("a status", line), status),
+    )?;
+    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
+    shown_kept(
+        follower,
+        kept,
+        (form, &references),
+        (|line| put("a message", line), message),
+    )
+}
+
+/// Writes each line it is given, with its end, to the output: `what`, such as a message.
+fn written(what: &'static str) -> impl FnMut(String) -> Result<(), String> {
+    move |line| {
+        output::write(Stream::Out, line.as_bytes())
+            .map_err(|err| format!("cannot write {what} to the output: {err}"))
+    }
+}
+
+/// What puts each line shown, with its end, and then marks its status or message by `seq`: a pair
+/// of the two.
+trait Shows {
+    fn put(&mut self, line: String) -> Result<(), String>;
+    fn mark(&mut self, seq: u64) -> Result<(), state::Error>;
+}
+
+impl<P, M> Shows for (P, M)
+where
+    P: FnMut(String) -> Result<(), String>,
+    M: FnMut(u64) -> Result<(), state::Error>,
+{
+    fn put(&mut self, line: String) -> Result<(), String> {
+        (self.0)(line)
+    }
+
+    fn mark(&mut self, seq: u64) -> Result<(), state::Error> {
+        (self.1)(seq)
+    }
+}
+
+/// Puts each of `kept`, kept statuses by `seq` as JSON, in `form` with `references`, with
+/// `shows`, unless the form leaves it out, then marks its `seq`; one that does
+/// not decode is warned of and marked. Gives how many it put.
 fn shown_statuses(
     kept: Vec<(u64, String)>,
     (form, references): (Form, &References),
-    mark: impl Fn(u64) -> Result<(), state::Error>,
+    mut shows: impl Shows,
 ) -> Result<usize, String> {
     let mut shown = 0;
     for (seq, json) in kept {
@@ -632,8 +766,7 @@ fn shown_statuses(
         match (status, msg_id) {
             (Some(status), Some(msg_id)) => {
                 if let Some(line) = status.shown(form, &references.of(msg_id)) {
-                    output::write(Stream::Out, format!("{line}\n").as_bytes())
-                        .map_err(|err| format!("cannot write a status to the output: {err}"))?;
+                    shows.put(format!("{line}\n"))?;
                     shown += 1;
                 }
             }
@@ -641,19 +774,19 @@ fn shown_statuses(
                 "skald: warning: a status this device kept does not decode, so it is not shown"
             ),
         }
-        mark(seq).map_err(text)?;
+        shows.mark(seq).map_err(text)?;
     }
     Ok(shown)
 }
 
-/// Writes each of `kept`, kept messages by `seq` with their sealed lines, in `form` with
-/// `references`, to the output, then calls `mark` with its `seq`; one that does not open is warned
-/// of and marked. A line an older client kept is written as it is. Gives how many it wrote.
+/// Puts each of `kept`, kept messages by `seq` with their sealed lines, in `form` with
+/// `references`, with `shows`, then marks its `seq`; one that does not open
+/// is warned of and marked. A line an older client kept is put as it is. Gives how many it put.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
     (form, references): (Form, &References),
-    mark: impl Fn(u64) -> Result<(), state::Error>,
+    mut shows: impl Shows,
 ) -> Result<usize, String> {
     if kept.is_empty() {
         return Ok(0);
@@ -664,15 +797,14 @@ fn shown_kept(
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
                 let line = kept_line(&opened, form, references);
-                output::write(Stream::Out, format!("{line}\n").as_bytes())
-                    .map_err(|err| format!("cannot write a message to the output: {err}"))?;
+                shows.put(format!("{line}\n"))?;
                 shown += 1;
             }
             None => eprintln!(
                 "skald: warning: a message this device kept does not open, so it is not shown"
             ),
         }
-        mark(seq).map_err(text)?;
+        shows.mark(seq).map_err(text)?;
     }
     Ok(shown)
 }
