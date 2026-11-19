@@ -4477,6 +4477,56 @@ pub(crate) mod tests {
         assert_eq!(state.sent_status(sent).unwrap(), None);
     }
 
+    /// On one device, the `to` agent's reply to a message of the device's own makes it `replied`,
+    /// at the time the server stores the reply.
+    #[test]
+    fn reply_on_one_device_makes_the_message_replied() {
+        let dir = TestDir::new("state-replied-here");
+        let state = with_entries(&dir, &[]);
+        let space = space_of_kept();
+        for agent in ["api", "web"] {
+            state.add_agent(space, agent).unwrap();
+        }
+        let channel = ChannelId::generate();
+        let asked = put_own(&state, (channel, 1), (Some("api"), Some(Some("web"))), None).0;
+        let tracked = Tracked {
+            msg_id: asked,
+            wait: 600,
+            recipients: Vec::new(),
+        };
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    tracked: vec![tracked],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+        state.remove_outgoing(asked, None, None).unwrap();
+        let replied = |state: &State| state.sent_status(asked).unwrap().unwrap().replied;
+        assert_eq!(replied(&state), None, "replied before the reply");
+
+        let reply = Replied {
+            msg_id: asked,
+            space,
+            status: "replied".to_owned(),
+            agent: Some("api".to_owned()),
+        };
+        let answer = (Some("web"), Some(Some("api")));
+        let answer = put_own(&state, (channel, 2), answer, Some(reply)).0;
+        assert_eq!(
+            replied(&state),
+            None,
+            "replied before the server stored the reply"
+        );
+        let before = unix_now();
+        state.remove_outgoing(answer, None, None).unwrap();
+
+        let at = replied(&state).expect("not replied");
+        assert!((before..=unix_now()).contains(&at), "{at}");
+    }
+
     /// A receipt is taken out of the inbox with its counters, or as received without them, and
     /// keeps a `read` of each message it lists for the person and the agent that sent it, once per
     /// message.
