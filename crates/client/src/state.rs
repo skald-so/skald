@@ -3641,8 +3641,8 @@ pub(crate) mod tests {
         state
             .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
             .unwrap();
-        let (space, other) = (space_of_kept(), SpaceId::generate());
         let sender = DeviceId::from_signing_key(&[2; 32]);
+        let (space, other) = (space_of_kept(), SpaceId::generate());
         state
             .write_entries(&[(1, vec![1]), (2, vec![2]), (3, vec![3])])
             .unwrap();

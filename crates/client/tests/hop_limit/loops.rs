@@ -85,10 +85,10 @@ impl From<Finished> for Said {
 
 /// The roles of the tests of `read` receipts, with A's and B's MCP sessions for the tools.
 pub struct Chain {
+    /// A's session, then B's, for the tools. Dropped before `roles`, whose folders they use.
+    sessions: Vec<Session>,
     pub roles: Roles,
     pub way: Way,
-    /// A's session, then B's, for the tools.
-    sessions: Vec<Session>,
 }
 
 impl Chain {
