@@ -61,7 +61,7 @@ use skald_proto::{
 };
 
 use crate::clock;
-use crate::connection::Method;
+use crate::connection::{Connection, Method};
 use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
@@ -218,7 +218,13 @@ pub fn admitted(
     let excluded = own
         .and_then(|member| member.excluded.as_ref())
         .is_some_and(|excluded| excluded.contains(&follower.this));
-    if own.is_some() && listed && !excluded {
+    // A `service` device is admitted where the channel's `services` list it.
+    let this = match follower.service {
+        Some(_) => (body.channels.iter())
+            .any(|listed| listed.id == channel && listed.services.contains(&follower.this)),
+        None => own.is_some() && listed && !excluded,
+    };
+    if this {
         admitted.insert(follower.this, follower.cert.clone());
     }
     admitted
@@ -553,9 +559,33 @@ fn group_on_server(
     space: SpaceId,
     channel: ChannelId,
 ) -> Result<(bool, Option<Vec<u8>>), String> {
-    let body = follower
-        .connection
-        .get_as(&group_info_path(space, channel), &follower.token)
+    let token = follower.token.clone();
+    fetch_group(&mut follower.connection, &token, (space, channel))
+}
+
+/// Whether the GroupInfo of the current epoch of `channel` of `space` that the server gives the
+/// session or service token `token`, if it has one, lists `device`.
+pub fn group_info_lists(
+    connection: &mut Connection,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+    device: DeviceId,
+) -> Result<bool, String> {
+    let (_, group_info) = fetch_group(connection, token, (space, channel))?;
+    Ok(group_info.is_some_and(|bytes| {
+        ChannelView::observe(channel, &bytes)
+            .is_ok_and(|view| view.members().iter().any(|member| member.device == device))
+    }))
+}
+
+/// As [`group_on_server`], on `connection` as the session or service token `token`.
+fn fetch_group(
+    connection: &mut Connection,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+) -> Result<(bool, Option<Vec<u8>>), String> {
+    let body = connection
+        .get_as(&group_info_path(space, channel), token)
         .map_err(text)?;
     let unexpected = || "unexpected answer from the server: a channel's group".to_owned();
     let given: ChannelGroup = serde_json::from_slice(&body).map_err(|_| unexpected())?;
@@ -772,9 +802,9 @@ fn welcomes_waiting(follower: &Follower) -> Result<Vec<ChannelId>, String> {
 
 /// Brings this device, admitted to `channel` of `space` but outside its group, into it, with
 /// `others`, the other admitted devices by `roster` and `devices`: creates the group if the server
-/// has none; otherwise joins by itself from the GroupInfo of the current epoch, if the server has
-/// one, unless it lists this device, which another device added and whose Welcome comes, or
-/// `rejoining`.
+/// has none, unless it is a `service` device, which waits for a member's; otherwise joins by itself
+/// from the GroupInfo of the current epoch, if the server has one, unless it lists this device,
+/// which another device added and whose Welcome comes, or `rejoining`.
 fn outside(
     follower: &mut Follower,
     link: &mut Link,
@@ -783,7 +813,7 @@ fn outside(
     rejoining: bool,
 ) -> Result<(), String> {
     let (group, group_info) = group_on_server(follower, space, channel)?;
-    if !group {
+    if !group && follower.service.is_none() {
         return create(follower, link, (space, channel), others);
     }
     let Some(group_info) = group_info else {

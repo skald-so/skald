@@ -10,10 +10,20 @@
       "get": {
         "operationId": "listAnchors",
         "summary": "The account's anchors objects",
-        "description": "The last anchors object of each device of the session's account (docs/protocol/membership.md, \"Anchors\"), revoked devices included, each as the bytes the server got.",
+        "description": "The last anchors object of each device of the account (docs/protocol/membership.md, \"Anchors\"), revoked devices included, each as the bytes the server got: to a session of the account, or to a service token of its device with the device's proof. A service token without the proof gets none.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "name": "Skald-Device-Proof",
+            "in": "header",
+            "required": false,
+            "description": "With a service token, the device's proof, required, as `Skald-Device-Proof` of `GET /mailbox/events` has it; a session goes without it.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
           }
         ],
         "security": [
@@ -22,6 +32,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -56,7 +69,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "`not-signed-in`: the request has no session or service token that has not ended. A service token's request without its device's valid proof is refused for the reason a WebSocket's `auth` is (docs/protocol/delivery.md, \"Connecting\"): `auth-required`, `challenge-refused`, `device-refused` or `signature-refused`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"

@@ -74,18 +74,40 @@ fn count(connection: &mut Connection, token: &str, path: &str) -> Result<Count, 
         .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())
 }
 
+/// The count of KeyPackages the server of `connection` gives at `path` for an upload of none, as
+/// the service token `token`, which cannot `GET` it.
+fn counted_by_upload(
+    connection: &mut Connection,
+    token: &str,
+    path: &str,
+) -> Result<Count, String> {
+    let none = serde_json::to_vec(&Upload {
+        key_packages: Vec::new(),
+        last_resort: None,
+    })
+    .expect("an upload is JSON");
+    let answer = (connection.send_json_as(Method::Post, path, token, &none)).map_err(text)?;
+    serde_json::from_slice(&answer)
+        .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())
+}
+
 /// The device of `keys` keeps its KeyPackages on the server of `connection`, as the session
 /// `token`: it asks how many the server holds and, if it needs more, makes them in its MLS state in
-/// `state`, sealed under the state key in `secrets`, saves that state, then uploads them.
+/// `state`, sealed under the state key in `secrets`, saves that state, then uploads them. A
+/// `service` device, whose token counts none, asks with an upload of none.
 pub fn keep(
     connection: &mut Connection,
     token: &str,
-    state: &State,
+    (state, secrets): (&State, &Secrets),
     keys: &Keys,
-    secrets: &Secrets,
+    service: bool,
 ) -> Result<(), String> {
     let path = format!("/devices/{}/key-packages", keys.id());
-    let count = count(connection, token, &path)?;
+    let count = if service {
+        counted_by_upload(connection, token, &path)?
+    } else {
+        count(connection, token, &path)?
+    };
     let (others, last) = wanted(&count);
     if others == 0 && !last {
         return Ok(());
