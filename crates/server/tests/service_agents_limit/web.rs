@@ -82,7 +82,6 @@ fn usage_in_the_web_app_shows_the_service_agents_of_their_limit_also_at_360_px()
     let phone = browser.page_of_width(PHONE);
     phone.add_cookies(&page.cookies());
     phone.goto(&spa.at("/usage"));
-    wait_for_cabinet(&phone, login);
     wait_until(
         &phone,
         "Usage at 360 px with 2 of 3 service agents",

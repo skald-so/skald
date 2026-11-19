@@ -134,6 +134,9 @@ pub struct Settings {
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
+    /// The number of service agent entries a space's latest revision may list
+    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    pub service_agents_limit: Option<u32>,
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
     pub long_poll_max_wait: Option<Duration>,
@@ -160,6 +163,7 @@ struct AppState {
     history_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
+    service_agents_limit: Option<u32>,
     long_poll_max_wait: Duration,
     sse_keep_alive: Duration,
     link_code_lifetime: Duration,
@@ -430,6 +434,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 monthly_messages: settings.monthly_messages_limit,
             },
             devices_limit: settings.devices_limit,
+            service_agents_limit: settings.service_agents_limit,
             long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
             sse_keep_alive: settings.sse_keep_alive.unwrap_or(SSE_KEEP_ALIVE),
             link_code_lifetime: settings.link_code_lifetime.unwrap_or(LINK_CODE_LIFETIME),

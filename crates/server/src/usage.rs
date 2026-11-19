@@ -1,6 +1,6 @@
 //! What the web app's Usage section shows (`docs/dev/architecture.md`, "Cloud limits"): an
-//! account's owned spaces and devices, and a space's messages this month, each counted as its limit
-//! counts it, with the limit while the server has its setting.
+//! account's owned spaces and devices, and a space's messages this month and service agents, each
+//! counted as its limit counts it, with the limit while the server has its setting.
 
 use axum::Json;
 use axum::extract::State;
@@ -8,6 +8,7 @@ use axum::response::IntoResponse;
 use serde::Serialize;
 
 use crate::AppState;
+use crate::mailboxes;
 use crate::refusal::{Answer, Refusal, SignedIn};
 use crate::spaces::{Gotten, Space};
 
@@ -49,6 +50,7 @@ struct SpaceUsage {
     message_size: UsageLimit,
     mailbox_retention: UsageLimit,
     history_retention: UsageLimit,
+    service_agents: UsageCount,
 }
 
 /// A count the database gives, never negative.
@@ -98,7 +100,8 @@ pub(crate) async fn account(State(state): State<AppState>, SignedIn(account): Si
 }
 
 /// `GET /spaces/<space>/usage`: the space's messages this calendar month in UTC, as the monthly
-/// limit counts them, and the limits on its messages and history.
+/// limit counts them, the limits on its messages and history, and the service agent entries of its
+/// latest revision.
 pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let messages: Option<(i64,)> = sqlx::query_as(
         "SELECT messages FROM message_counts
@@ -108,6 +111,10 @@ pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) 
     .fetch_optional(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's messages this month", err))?;
+    let latest = mailboxes::latest(&state.db, found.id)
+        .await
+        .map_err(|err| Refusal::Database("read the latest revision", err))?;
+    let agents = latest.map_or(0, |roster| roster.body().service_agents.len());
     Ok(Json(SpaceUsage {
         monthly_messages: UsageCount {
             count: messages.map_or(0, |(count,)| counted(count)),
@@ -121,6 +128,10 @@ pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) 
         },
         history_retention: UsageLimit {
             limit: state.history_retention.map(|retention| retention.as_secs()),
+        },
+        service_agents: UsageCount {
+            count: agents as u64,
+            limit: state.service_agents_limit.map(u64::from),
         },
     })
     .into_response())
