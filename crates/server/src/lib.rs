@@ -43,6 +43,7 @@ mod protocol;
 mod refusal;
 mod requests;
 mod revocations;
+mod service_tokens;
 mod sessions;
 mod sign_in;
 mod sign_up;
@@ -342,6 +343,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route("/server", get(server).layer(checked(Statement::Header)))
         .route(
+            "/service-token",
+            get(service_tokens::own).layer(checked(Statement::Header)),
+        )
+        .route(
             "/session",
             get(sign_in::session)
                 .delete(sessions::sign_out)
@@ -393,6 +398,16 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::revisions)
                 .post(spaces::store)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/service-tokens",
+            get(service_tokens::list)
+                .post(service_tokens::create)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/service-tokens/{token}",
+            delete(service_tokens::revoke).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/usage",

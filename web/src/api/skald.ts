@@ -38,6 +38,8 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Server,
+  ServiceTokenId,
+  ServiceTokens,
   Session,
   SessionId,
   Sessions,
@@ -3282,6 +3284,159 @@ export const storeRosterRevision = async (
     status: res.status,
     headers: res.headers,
   } as storeRosterRevisionResponse;
+};
+
+export type listServiceTokensResponse200 = {
+  data: ServiceTokens;
+  status: 200;
+};
+
+export type listServiceTokensResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listServiceTokensResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listServiceTokensResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listServiceTokensResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listServiceTokensResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listServiceTokensResponseSuccess = listServiceTokensResponse200 & {
+  headers: Headers;
+};
+export type listServiceTokensResponseError = (
+  | listServiceTokensResponse400
+  | listServiceTokensResponse401
+  | listServiceTokensResponse403
+  | listServiceTokensResponse404
+  | listServiceTokensResponse500
+) & {
+  headers: Headers;
+};
+
+export type listServiceTokensResponse =
+  listServiceTokensResponseSuccess | listServiceTokensResponseError;
+
+export const getListServiceTokensUrl = (space: string) => {
+  return `/spaces/${space}/service-tokens`;
+};
+
+/**
+ * The space's tokens that have not ended, oldest first, without their values. Only for a session of an account that is an admin in the space's latest revision.
+ * @summary The space's service tokens
+ */
+export const listServiceTokens = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listServiceTokensResponse> => {
+  const res = await fetch(getListServiceTokensUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listServiceTokensResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listServiceTokensResponse;
+};
+
+export type revokeServiceTokenResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type revokeServiceTokenResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type revokeServiceTokenResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type revokeServiceTokenResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type revokeServiceTokenResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type revokeServiceTokenResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type revokeServiceTokenResponseSuccess =
+  revokeServiceTokenResponse204 & {
+    headers: Headers;
+  };
+export type revokeServiceTokenResponseError = (
+  | revokeServiceTokenResponse400
+  | revokeServiceTokenResponse401
+  | revokeServiceTokenResponse403
+  | revokeServiceTokenResponse404
+  | revokeServiceTokenResponse500
+) & {
+  headers: Headers;
+};
+
+export type revokeServiceTokenResponse =
+  revokeServiceTokenResponseSuccess | revokeServiceTokenResponseError;
+
+export const getRevokeServiceTokenUrl = (
+  space: string,
+  token: ServiceTokenId,
+) => {
+  return `/spaces/${space}/service-tokens/${token}`;
+};
+
+/**
+ * Ends a token of the space at once: every later request with it is refused. Only for a session of an account that is an admin in the space's latest revision. A web session's cookie only from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary Revoke a service token
+ */
+export const revokeServiceToken = async (
+  space: string,
+  token: ServiceTokenId,
+  options?: RequestInit,
+): Promise<revokeServiceTokenResponse> => {
+  const res = await fetch(getRevokeServiceTokenUrl(space, token), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: revokeServiceTokenResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as revokeServiceTokenResponse;
 };
 
 export type getSpaceUsageResponse200 = {

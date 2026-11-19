@@ -69,6 +69,10 @@ pub(crate) enum Refusal {
     LinkSessionTaken,
     /// No such open run of the session's account.
     NoLinkRun,
+    /// A grant the server does not take, for the reason it holds.
+    Grant(String),
+    /// No such service token of the space.
+    NoServiceToken,
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -220,6 +224,13 @@ impl IntoResponse for Refusal {
                 "no-link-run",
                 "No such link run",
                 "The session's account has no open run with this session: it ended or never opened.",
+            ),
+            Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
+            Refusal::NoServiceToken => problem(
+                StatusCode::NOT_FOUND,
+                "no-service-token",
+                "No such service token",
+                "The space has no such service token, or it has ended.",
             ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }

@@ -10,6 +10,9 @@ use crate::cbor::{
 use crate::id::{BlobId, ChannelId, DeviceId, MessageId};
 use crate::receipt::Receipt;
 
+/// The label of a [`Grant`]'s signature.
+pub const GRANT_LABEL: &str = "skald grant";
+
 /// What an application message carries inside its payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
@@ -44,9 +47,6 @@ pub enum Body {
     /// `receipt`: `held`, `refused` or `read` for messages of one sending device.
     Receipt(Receipt),
 }
-
-/// What a [`Grant`]'s signature is labelled with.
-pub const GRANT_LABEL: &str = "skald grant";
 
 /// A space admin's permission for a service device to send in some channels.
 #[derive(Debug, Clone, PartialEq, Eq)]

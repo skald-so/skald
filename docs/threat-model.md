@@ -100,6 +100,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 **Defenses:**
 - A session alone reads, acks and sends nothing: a WebSocket, each HTTPS mailbox request and each SSE stream take a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
 - A session alone uploads no history link, wrap or entry: that takes a member device's key ([Uploads](protocol/membership.md#uploads)).
+- A session alone creates no service token: that takes a proof by a `client` device of an admin, and a grant signed by an admin's device (`createServiceToken` in the [OpenAPI spec](../api/openapi.json)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
