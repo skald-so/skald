@@ -429,6 +429,7 @@ export type DeviceRegistrationKind =
 
 export const DeviceRegistrationKind = {
   client: "client",
+  service: "service",
 } as const;
 
 export interface DeviceRegistration {
@@ -444,6 +445,11 @@ export interface DeviceRegistration {
    * @maxLength 64
    */
   name: string;
+}
+
+export interface CertUpload {
+  /** The device's complete certificate. */
+  cert: Certificate;
 }
 
 export interface KeyPackageCount {

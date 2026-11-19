@@ -14,6 +14,7 @@ mod link;
 mod receipt;
 mod revocation;
 mod roster;
+mod service_key;
 mod signed;
 mod version;
 
@@ -49,6 +50,7 @@ pub use roster::{
     Ceilings, Channel, ChannelMember, HISTORY_MIN, Member, Mode, NEW_SPACE_HISTORY, Policy,
     ROSTER_LABEL, Role, Roster, RosterBody, ServiceAgent,
 };
+pub use service_key::ServiceKey;
 pub use signed::{Signed, SignedBody};
 pub use version::{
     LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,

@@ -234,7 +234,7 @@ A service agent's server token, and its device key with the token: they usually 
 - A `service` device releases, restarts and cancels no task, so neither leak makes an `at-most-once` task run twice ([Claims and leases](protocol/queues.md#claims-and-leases), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device sends only as its roster entry, only in its grant's channels until the grant expires, and never answers a question ([Envelope](protocol/README.md#envelope), [Service grant](protocol/README.md#service-grant), [Person](protocol/agents.md#person)).
 - Its tasks run at the `service` trust level: only where a device's user turned on `service` tasks and, unless that user approves them, `read-only` in a new space's policy ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
-- Once the service device is revoked, clients that hold its revocation trust it no more, and it claims no task ([Device checks](protocol/membership.md#device-checks), [Claim checks](protocol/queues.md#claim-checks)); a token has scopes and an expiry and is revoked in the web UI.
+- Once the service device is revoked, clients that hold its revocation trust it no more, and it claims no task ([Device checks](protocol/membership.md#device-checks), [Claim checks](protocol/queues.md#claim-checks)); a token has scopes and an expiry and is revoked in the web UI or the CLI ([Service agents](service-agents.md#tokens)).
 
 ### An agent on the person's own device
 An agent session, such as Claude Code, on one of the person's `client` devices, possibly steered by prompt injection.

@@ -3162,6 +3162,7 @@ dependencies = [
  "js-sys",
  "sha2 0.11.1",
  "wasm-bindgen-test",
+ "zeroize",
 ]
 
 [[package]]

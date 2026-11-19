@@ -4,6 +4,10 @@
 //! Every response is checked against the OpenAPI spec in `api/openapi.json`.
 
 mod common;
+// Storing the certificate of a device a linked device issued.
+#[allow(dead_code)]
+#[path = "linked_certificates/upload.rs"]
+mod upload;
 
 use std::collections::BTreeMap;
 use std::sync::Barrier;
@@ -135,9 +139,8 @@ fn invalid_registrations_are_refused() {
             Some(json!(device.id.to_string().to_uppercase())),
         ),
         with(&registration, "device", None),
-        // Other kinds come with later stories.
+        // Only `client` and `service` devices register here.
         with(&registration, "kind", Some(json!("browser"))),
-        with(&registration, "kind", Some(json!("service"))),
         with(&registration, "kind", Some(json!("toaster"))),
         with(&registration, "kind", None),
         // `name` is 1 to 64 bytes.
@@ -287,10 +290,12 @@ fn first_device_gives_the_master_key_and_its_certificate() {
     holds();
 }
 
-/// With `--devices-limit`, only a new device counts against it: at 1, once the first device holds
-/// its certificate, its registration's retry is taken and another device's is refused.
+/// With `--devices-limit`, a registration does not count against it, only a certificate does: at
+/// 1, once the first device holds its certificate, its registration's retry is taken and another
+/// device registers, while that device's certificate, issued by the first device, is refused with
+/// `403` and the account keeps one certificate.
 #[test]
-fn at_the_devices_limit_a_registered_device_registers_again() {
+fn at_the_devices_limit_a_device_registers_and_its_certificate_is_refused() {
     let flow = DeviceFlow::start_with(&["--devices-limit", "1"]);
     let ada = flow.stand.user(3_120_665_030, "ada-limit-retry-standin");
     let first = machine(&flow, &ada);
@@ -303,8 +308,21 @@ fn at_the_devices_limit_a_registered_device_registers_again() {
 
     // A retry after a lost answer.
     assert_taken(&first.register(&registration));
-    assert_refused(&first.register(&phone.registration()), 403);
-    assert_eq!(first.devices(), listed(&[], &[(&laptop, &laptop_cert)]));
+    assert_taken(&first.register(&phone.registration()));
+    assert_eq!(
+        first.devices(),
+        listed(&[&phone], &[(&laptop, &laptop_cert)])
+    );
+
+    let account = account_id(&first.account);
+    let phone_cert = upload::issued_by(&phone, account, DeviceKind::Client, &laptop);
+    let base = flow.stand.server.base();
+    let refused = upload::put_cert(base, &first.token, phone.id, &phone_cert);
+    upload::assert_over_limit(&refused, "the phone's certificate");
+    assert_eq!(
+        first.devices(),
+        listed(&[&phone], &[(&laptop, &laptop_cert)])
+    );
 }
 
 #[test]

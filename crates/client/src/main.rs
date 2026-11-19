@@ -57,6 +57,7 @@ mod recv;
 mod revocations;
 mod secrets;
 mod send;
+mod service_agents;
 mod set_username;
 mod sign_in;
 mod sign_out;
@@ -280,6 +281,56 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Creates a service agent of a space this device follows, on a device of an admin of it: a
+    /// device of the admin's account that runs without a person, such as in CI, at the address
+    /// OWNER/AGENT. Its keys are made here; it is registered and certified, and the space's next
+    /// roster revision, which the device signs as skald create-channel does, lists it. Writes its
+    /// key secret and first token to standard output as SKALD_SERVICE_KEY=... and
+    /// SKALD_SERVICE_TOKEN=..., once: nothing keeps them.
+    CreateServiceAgent {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot. The owner is no
+        /// member's handle.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+    },
+    /// Creates a token of a service agent of a space this device follows, on a device of an admin
+    /// of it, with a new grant; revokes the agent's earlier tokens. Writes the token to standard
+    /// output as SKALD_SERVICE_TOKEN=..., once: nothing keeps it.
+    CreateServiceToken {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+        /// Keeps the agent's earlier tokens working.
+        #[arg(long)]
+        keep_earlier: bool,
+    },
+    /// Lists the live tokens of the service agents of a space this device follows, on a device of
+    /// an admin of it: each one's ID, address, permissions, channels, expiry and last use.
+    ServiceTokens {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
+    /// Revokes a token of a service agent of a space this device follows, on a device of an admin
+    /// of it.
+    RevokeServiceToken {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The token's ID, as skald service-tokens shows it.
+        #[arg(value_name = "TOKEN")]
+        id: String,
+    },
     /// Removes a member from a space this device follows and from every channel of it, on a device
     /// of an admin of it, by the space's next roster revision, which the device signs as skald
     /// create-channel does. Member devices then remove the member's devices from the channels.
@@ -498,6 +549,10 @@ impl Command {
         match self {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
+            Command::CreateServiceAgent { .. } => Some("create-service-agent"),
+            Command::CreateServiceToken { .. } => Some("create-service-token"),
+            Command::ServiceTokens { .. } => Some("service-tokens"),
+            Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
             Command::ExcludeDevice { .. } => Some("exclude-device"),
             Command::AddToChannel { .. } => Some("add-to-channel"),
@@ -794,6 +849,27 @@ fn perform(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(channels::create),
+        Command::CreateServiceAgent {
+            space,
+            address,
+            granted,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::create(synced, &address, &granted)),
+        Command::CreateServiceToken {
+            space,
+            address,
+            granted,
+            keep_earlier,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::renew(synced, &address, &granted, keep_earlier)),
+        Command::ServiceTokens { space } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(service_agents::list)
+        }
+        Command::RevokeServiceToken { space, id } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(|synced| service_agents::revoke(synced, &id))
+        }
         Command::RemoveMember { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),
             &space,

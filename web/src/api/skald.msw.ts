@@ -15,6 +15,7 @@ import type {
   AccountAnchors,
   AccountUsage,
   AnchorsRequest,
+  CertUpload,
   ChannelGroup,
   Device,
   DeviceRegistration,
@@ -1781,16 +1782,6 @@ export const getRegisterDeviceResponseMock401 = (
   ...overrideResponse,
 });
 
-export const getRegisterDeviceResponseMock403 = (
-  overrideResponse: Partial<Extract<Problem, object>> = {},
-): Problem => ({
-  type: faker.internet.url(),
-  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  status: faker.number.int({ min: 400, max: 599 }),
-  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
-  ...overrideResponse,
-});
-
 export const getRegisterDeviceResponseMock409 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
@@ -1802,6 +1793,147 @@ export const getRegisterDeviceResponseMock409 = (
 });
 
 export const getRegisterDeviceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device =>
+  faker.helpers.arrayElement([
+    {
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+    {
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getStoreDeviceCertificateResponseMock200 = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device => ({
+  device: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  cert: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock201 = (
+  overrideResponse: Partial<Extract<Device, object>> = {},
+): Device => ({
+  device: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  cert: faker.helpers.arrayElement([
+    faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    null,
+  ]),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getStoreDeviceCertificateResponseProtocolProblemMock() },
+    { ...getStoreDeviceCertificateResponseProblemMock() },
+  ]);
+
+export const getStoreDeviceCertificateResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreDeviceCertificateResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -6918,37 +7050,6 @@ export const getRegisterDeviceMockHandler401 = (
   );
 };
 
-export const getRegisterDeviceMockHandler403 = (
-  overrideResponse?:
-    | Problem
-    | ((
-        info: Parameters<
-          HttpResponseResolver<PathParams, DeviceRegistration>
-        >[0],
-      ) => Promise<Problem> | Problem),
-  options?: RequestHandlerOptions,
-) => {
-  return http.post<PathParams, DeviceRegistration>(
-    "*/devices",
-    async (
-      info: Parameters<HttpResponseResolver<PathParams, DeviceRegistration>>[0],
-    ) => {
-      return HttpResponse.json(
-        overrideResponse !== undefined
-          ? typeof overrideResponse === "function"
-            ? await overrideResponse(info)
-            : overrideResponse
-          : getRegisterDeviceResponseMock403(),
-        {
-          status: 403,
-          headers: { "Content-Type": "application/problem+json" },
-        },
-      );
-    },
-    options,
-  );
-};
-
 export const getRegisterDeviceMockHandler409 = (
   overrideResponse?:
     | Problem
@@ -7001,6 +7102,277 @@ export const getRegisterDeviceMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getRegisterDeviceResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler200 = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler201 = (
+  overrideResponse?:
+    | Device
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Device> | Device),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreDeviceCertificateMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ device: string }, CertUpload>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ device: string }, CertUpload>(
+    "*/devices/:device/cert",
+    async (
+      info: Parameters<HttpResponseResolver<{ device: string }, CertUpload>>[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreDeviceCertificateResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -11123,6 +11495,7 @@ export const getSkaldAPIMock = () => [
   getGetSignInProvidersMockHandler(),
   getGetDevicesMockHandler(),
   getRegisterDeviceMockHandler(),
+  getStoreDeviceCertificateMockHandler(),
   getGetKeyPackageCountMockHandler(),
   getUploadKeyPackagesMockHandler(),
   getGetHealthMockHandler(),

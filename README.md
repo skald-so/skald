@@ -81,9 +81,11 @@ skald --agent <name> recv         # the messages handed over to the agent in the
 
 `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
 
+Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
+
 ## Keys and devices
 
-- Device keys are generated on the machine and never leave it.
+- Device keys are generated on the machine and never leave it, except a service agent's: [service agents](docs/service-agents.md).
 - The device keys and the session token are kept in the system's key store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Without one, they go to a file in the client's state directory, with 0600 permissions on macOS and Linux.
 - The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
 - The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal, never to an agent, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.
