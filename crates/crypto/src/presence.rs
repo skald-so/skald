@@ -394,6 +394,12 @@ mod tests {
         );
     }
 
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_presence_key_is_never_shown() {
+        assert_eq!(format!("{:?}", key()), "PresenceKey(..)");
+    }
+
     /// Each reason names the check that failed.
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
