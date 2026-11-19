@@ -1,6 +1,7 @@
 //! The devices limit counts certificates: with `--devices-limit`, a certificate that would give the
 //! account more devices with a certificate than the limit is refused with `403` and the problem
-//! `https://skald.so/problems/devices-limit`, and is not stored, also when two arrive at once. A
+//! `https://skald.so/problems/devices-limit`, and is not stored, also when two arrive at once; the
+//! same one sent twice at once is taken twice, also for the last place. A
 //! registration is no certificate, so one is taken at the limit. Devices without a certificate and
 //! `service` devices do not count.
 
@@ -95,6 +96,32 @@ fn devices_without_a_certificate_and_service_devices_do_not_count() {
     assert_cert_over_limit(&flow, &alice, &waiting[1], "the fourth");
 }
 
+/// Sends each of `sent`, a device and its certificate, from `person`'s session at once; gives each
+/// answer's status and text, checking that a refusal is over the limit.
+fn at_once(flow: &DeviceFlow, person: &Person, sent: [(&Device, &[u8]); 2]) -> Vec<(u16, String)> {
+    let barrier = Barrier::new(2);
+    thread::scope(|scope| {
+        let sending: Vec<_> = sent
+            .into_iter()
+            .map(|(device, cert)| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let response = put(flow, &person.session, device, cert);
+                    if response.status == 403 {
+                        assert_over_limit(&response, "the one refused");
+                    }
+                    (response.status, text(&response))
+                })
+            })
+            .collect();
+        sending
+            .into_iter()
+            .map(|sending| sending.join().expect("a request"))
+            .collect()
+    })
+}
+
 /// At 2, in each of 3 accounts with one place left, the certificates of two devices arrive at once:
 /// the server stores one and refuses the other as over the limit.
 #[test]
@@ -107,29 +134,7 @@ fn of_two_certificates_at_once_for_the_last_place_one_is_stored() {
         let phone = register(person, "Phone");
         let pair = [&person.uncertified, &phone];
         let certs = pair.map(|device| by_laptop(person, device));
-        let barrier = Barrier::new(2);
-        let statuses: Vec<(u16, String)> = thread::scope(|scope| {
-            let sent: Vec<_> = pair
-                .iter()
-                .zip(&certs)
-                .map(|(device, cert)| {
-                    let barrier = &barrier;
-                    let flow = &flow;
-                    scope.spawn(move || {
-                        barrier.wait();
-                        let response = put(flow, &person.session, device, cert);
-                        let over = response.status == 403;
-                        if over {
-                            assert_over_limit(&response, "the one refused");
-                        }
-                        (response.status, text(&response))
-                    })
-                })
-                .collect();
-            sent.into_iter()
-                .map(|sent| sent.join().expect("a request"))
-                .collect()
-        });
+        let statuses = at_once(&flow, person, [(pair[0], &certs[0]), (pair[1], &certs[1])]);
         let mut codes: Vec<u16> = statuses.iter().map(|(status, _)| *status).collect();
         codes.sort_unstable();
         assert_eq!(codes, [201, 403], "{}: {statuses:?}", person.handle);
@@ -141,5 +146,26 @@ fn of_two_certificates_at_once_for_the_last_place_one_is_stored() {
             "{}: one of the two",
             person.handle
         );
+    }
+}
+
+/// At 3, in each of 5 accounts, the same certificate of one device arrives twice at once: with two
+/// places left and with the last one. The server stores it once and takes both.
+#[test]
+fn the_same_certificate_twice_at_once_is_taken_twice() {
+    let flow = DeviceFlow::start_with(&[INTERVAL, "1", "--devices-limit", "3"]);
+    for at in 0..5 {
+        let person = Person::new(&flow, 3_175_300_031 + at, &format!("twice{at}"));
+        let phone = register(&person, "Phone");
+        for (device, places) in [(&person.uncertified, 2), (&phone, 1)] {
+            let cert = by_laptop(&person, device);
+            let statuses = at_once(&flow, &person, [(device, &cert), (device, &cert)]);
+            let mut codes: Vec<u16> = statuses.iter().map(|(status, _)| *status).collect();
+            codes.sort_unstable();
+            let what = format!("{}, {places} places left", person.handle);
+            assert_eq!(codes, [200, 201], "{what}: {statuses:?}");
+            assert_eq!(held(&person, device), Some(cert), "{what}");
+        }
+        assert_eq!(certified(&person), 3, "{}", person.handle);
     }
 }

@@ -4,15 +4,18 @@
 //! of the linked device, its personal space too; and no request and nothing the server stores holds
 //! the code.
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde_json::Value;
 use skald_crypto::check_valid_device;
-use skald_proto::{Cert, DeviceKind, Role};
+use skald_proto::{Cbor as _, Cert, DeviceKind, Role};
 
 use crate::anchors::held;
 use crate::cloud::Cloud;
 use crate::linking::{NewDevice, forms, holds, link};
 use crate::machine::{DEVICES, NOT_LINKED};
 use crate::world::{
-    ACME, GLOBEX, Person, World, create, lines_naming, members, next_by, plain_lines, run,
+    ACME, GLOBEX, Person, WARNING, World, create, lines_naming, members, next_by, plain_lines, run,
     space_certs, space_id, spaces, store, warnings,
 };
 
@@ -33,6 +36,26 @@ fn certs(cloud: &Cloud, token: &str) -> Vec<Cert> {
         .into_iter()
         .filter_map(|device| device.cert)
         .collect()
+}
+
+/// Fails unless the anchors object of `new`, a device of `first`'s account, is at the revisions of
+/// `first`'s and pins the same personal space.
+#[track_caller]
+fn assert_starts_as_first(cloud: &Cloud, first: &Person, new: &Person) {
+    let objects = held(cloud, &first.token);
+    let of = |device| {
+        objects
+            .iter()
+            .find(|object| object.device == device)
+            .unwrap_or_else(|| panic!("no anchors object of {device}: {objects:?}"))
+    };
+    let (by_first, by_new) = (of(first.device), of(new.device));
+    assert_eq!(
+        by_new.anchors, by_first.anchors,
+        "the revisions it starts from"
+    );
+    assert_eq!(by_new.personal, by_first.personal, "the personal space");
+    assert!(by_first.personal.is_some(), "{objects:?}");
 }
 
 /// Ada's account follows `globex`, which she created, and her personal space; Bob created `acme`
@@ -61,7 +84,7 @@ fn a_device_linked_with_a_code_is_certified_by_the_linked_one_and_follows_its_sp
 
     let mut new = NewDevice::start(&world, &ada, LAPTOP);
     let codes = crate::linking::codes_in(&new.shown());
-    link(cloud, &ada, &mut new);
+    let linking = link(cloud, &ada, &mut new);
     let laptop = new.into_person(cloud, &ada);
 
     // The certificate.
@@ -84,9 +107,13 @@ fn a_device_linked_with_a_code_is_certified_by_the_linked_one_and_follows_its_sp
     let id = laptop.device.to_string().to_lowercase();
     let on_first = devices(&ada);
     assert!(!lines_naming(&on_first, LAPTOP).is_empty(), "{on_first:?}");
+    // Its run of skald link syncs its spaces to add the new device, or a later run does.
+    let warned_linking = (linking.text.lines().map(str::to_lowercase))
+        .any(|line| line.contains(WARNING) && line.contains(&id));
     assert!(
-        warnings(&on_first).iter().any(|line| line.contains(&id)),
-        "the first device does not warn of the new one: {on_first:?}"
+        warned_linking || warnings(&on_first).iter().any(|line| line.contains(&id)),
+        "the first device does not warn of the new one: {}, {on_first:?}",
+        linking.text
     );
     let on_laptop = devices(&laptop);
     assert!(
@@ -109,20 +136,7 @@ fn a_device_linked_with_a_code_is_certified_by_the_linked_one_and_follows_its_sp
     // The spaces it follows, and its anchors.
     let on_new = spaces(&laptop.machine);
     assert_eq!(plain_lines(&on_new), plain_lines(&on_ada), "{on_new:?}");
-    let objects = held(cloud, &ada.token);
-    let of = |device| {
-        objects
-            .iter()
-            .find(|object| object.device == device)
-            .unwrap_or_else(|| panic!("no anchors object of {device}: {objects:?}"))
-    };
-    let (first, new_one) = (of(ada.device), of(laptop.device));
-    assert_eq!(
-        new_one.anchors, first.anchors,
-        "the revisions it starts from"
-    );
-    assert_eq!(new_one.personal, first.personal, "the personal space");
-    assert!(first.personal.is_some(), "{objects:?}");
+    assert_starts_as_first(cloud, &ada, &laptop);
 
     // The code.
     assert!(!codes.is_empty(), "no code shown");
@@ -158,4 +172,32 @@ fn a_new_device_with_a_linked_ones_name_gets_a_warning_naming_both() {
         .filter(|line| line.contains(&ada.device.to_string().to_lowercase()))
         .collect();
     assert_eq!(named.len(), 1, "one warning naming both: {on_first:?}");
+}
+
+/// Ada's first machine follows `globex`, which she created. As her new machine starts from its link
+/// object, the relay gives it, before the server's revisions of `globex`, a revision 3 Ada's device
+/// signed that the link does not name. The new device starts from the revision the link names: its
+/// anchors object is at the revisions her first device accepted.
+#[test]
+fn the_new_device_starts_only_from_the_revisions_its_link_names() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_175_101_031, "ada-gets-other-revisions", "ada-workstation");
+    let second = create(cloud, &ada, GLOBEX);
+    let other = URL_SAFE_NO_PAD.encode(next_by(&second, &ada, |_| {}).to_cbor());
+    spaces(&ada.machine);
+
+    let mut new = NewDevice::start(&world, &ada, LAPTOP);
+    let revisions = format!("GET /spaces/{}/revisions", second.body().space);
+    cloud.relay.rewrite_once(&revisions, move |body| {
+        let mut answer: Value = serde_json::from_str(body).unwrap_or(Value::Null);
+        if let Some(listed) = answer["revisions"].as_array_mut() {
+            listed.insert(0, Value::from(other.as_str()));
+        }
+        answer.to_string()
+    });
+    link(cloud, &ada, &mut new);
+    let laptop = new.into_person(cloud, &ada);
+    spaces(&laptop.machine);
+    assert_starts_as_first(cloud, &ada, &laptop);
 }

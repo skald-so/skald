@@ -265,7 +265,7 @@ impl NewDevice {
 
 /// Approves, as the person of `first`'s account, the device authorization `run` shows after the
 /// `before` ones the server granted.
-fn approve(world: &World, first: &Person, run: &mut Terminal, before: usize) {
+pub fn approve(world: &World, first: &Person, run: &mut Terminal, before: usize) {
     let cloud = &world.cloud;
     let grant = crate::terminal_grants::shown_grant(cloud, run, before);
     cloud.decide(&world.browser.page(), &first.user, &grant, APPROVE);

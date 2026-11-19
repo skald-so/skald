@@ -251,7 +251,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
 - Run as an agent, the CLI shows no recovery key or link code and takes none, nor a new device's confirmation: a recovery key waits for the person's `skald sign-in` in a terminal ([Account](protocol/membership.md#account)).
-- `skald link` takes a link code and its confirmation only from a terminal, so an agent cannot pipe them in. An agent that opens a terminal of its own is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald link` takes a link code and its confirmation only from a terminal, so an agent cannot pipe them in. An agent that opens a terminal of its own, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.

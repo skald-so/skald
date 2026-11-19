@@ -226,6 +226,9 @@ enum Command {
     /// you confirm the new device's name and kind, this device issues its certificate. After 3
     /// failed runs in a row, it first asks whether the new device shows a new code.
     Link,
+    /// A step of skald link after its person's answers, which skald link hands to the helper.
+    #[command(skip)]
+    LinkStep { step: link_code::Step },
     /// Revokes a device of the account this machine signed in to, this one included, on a device
     /// with a valid certificate: this device signs the revocation, and the server stores it. A
     /// revocation the server has not taken waits in the local state, and the next skald command
@@ -514,7 +517,7 @@ impl Command {
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
             Command::ApproveBinding { .. } => Some("approve-binding"),
-            Command::Link => Some("link"),
+            Command::Link | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
     }
@@ -580,8 +583,7 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
-            // It runs at its person's terminal, so never through the helper, and only reads the
-            // local state but for its count of failed runs.
+            // It takes its person's answers here and its steps lock ([`link`]).
             Command::Link => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
@@ -666,6 +668,9 @@ fn main() -> ExitCode {
                 .and_then(|dir| helper::serve(&dir, idle, operation.timeout)),
         );
     }
+    if let Command::Link = operation.command {
+        return link(operation, !one_shot);
+    }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
@@ -689,6 +694,35 @@ fn main() -> ExitCode {
         Ok(helper::Route::Helped(code)) => code,
         Err(err) => exit(Err(err)),
     }
+}
+
+/// `skald link` as `operation` says ([`link_code::run`]): each step goes through the helper that
+/// runs, or one it starts if `starts`; otherwise it runs here, holding the lock until the run ends.
+fn link(operation: Operation, starts: bool) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    recovery::say_if_waiting(&dir);
+    let mut held: Option<Option<lock::Lock>> = None;
+    let mut starts = starts;
+    link_code::run(&dir, |step| {
+        let operation = Operation {
+            command: Command::LinkStep { step },
+            state_dir: operation.state_dir.clone(),
+            agent: None,
+            ..operation
+        };
+        if held.is_none() {
+            // A later step needs the helper that holds its run.
+            match helper::route(&dir, &operation, false, std::mem::take(&mut starts)) {
+                Ok(helper::Route::Here(lock)) => held = Some(lock),
+                Ok(helper::Route::Helped(code)) => return code,
+                Err(err) => return exit(Err(err)),
+            }
+        }
+        exit(here(operation))
+    })
 }
 
 /// Runs `operation` in this process, then closes the connection it kept.
@@ -748,7 +782,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
         }
-        if !matches!(command, Command::SignIn { .. } | Command::Helper { .. }) {
+        if !matches!(
+            command,
+            Command::SignIn { .. } | Command::Helper { .. } | Command::LinkStep { .. }
+        ) {
             recovery::say_if_waiting(&dir);
         }
     }
@@ -790,9 +827,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Devices => {
             state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
         }
-        Command::Link => {
-            state::dir(state_dir).and_then(|dir| link_code::run(&dir, key_storage, speaks, timeout))
-        }
+        // It runs through `link`.
+        Command::Link => Err("skald link runs only at its person's terminal".to_owned()),
+        Command::LinkStep { step } => state::dir(state_dir)
+            .and_then(|dir| link_code::step(&dir, key_storage, speaks, timeout, step)),
         Command::RevokeDevice { device, keep } => state::dir(state_dir)
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {

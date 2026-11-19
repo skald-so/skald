@@ -63,11 +63,7 @@ pub(crate) async fn store(
     .map_err(|err| Refusal::Database("read a device", err))?;
     let (kind, signing, hpke, name, held) = registered.ok_or(Refusal::NoDevice)?;
     if let Some(held) = held {
-        return if held == sent {
-            taken(false, Stored::of(device, &sent))
-        } else {
-            Err(Refusal::DeviceCertified)
-        };
+        return again(device, &sent, &held);
     }
     // A linked device issues only `client` devices for now: those are the ones that register.
     let matches = body.account.to_string() == account
@@ -98,6 +94,16 @@ pub(crate) async fn store(
         .execute(&mut *tx)
         .await
         .map_err(failed)?;
+    // One sent at once with this one may have been stored meanwhile.
+    let (held,): (Option<Vec<u8>>,) =
+        sqlx::query_as("SELECT cert FROM devices WHERE id = $1::uuid")
+            .bind(&device)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(failed)?;
+    if let Some(held) = held {
+        return again(device, &sent, &held);
+    }
     if let Some(limit) = state.devices_limit {
         let (certified,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM devices
@@ -128,8 +134,17 @@ pub(crate) async fn store(
             .fetch_one(db)
             .await
             .map_err(|err| Refusal::Database("read a device", err))?;
-    if held.as_deref() == Some(sent.as_slice()) {
-        taken(false, Stored::of(device, &sent))
+    match held {
+        Some(held) => again(device, &sent, &held),
+        None => Err(Refusal::DeviceCertified),
+    }
+}
+
+/// The answer to `sent`, a certificate of `device`, which holds `held`: taken again if it is the
+/// same, otherwise refused.
+fn again(device: String, sent: &[u8], held: &[u8]) -> Answer {
+    if held == sent {
+        taken(false, Stored::of(device, sent))
     } else {
         Err(Refusal::DeviceCertified)
     }
