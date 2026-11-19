@@ -1,6 +1,7 @@
 //! The account's recovery key on its first device (`docs/protocol/membership.md`, "Account"): kept
 //! in the secrets from its creation until its person has seen it, shown only by `skald sign-in` at
-//! the person's terminal, never as an agent; meanwhile every other command says that it waits.
+//! the person's terminal or on its local page, never in an agent's output; meanwhile every other
+//! command says that it waits.
 
 use std::io::{self, BufRead};
 use std::path::Path;
@@ -11,6 +12,7 @@ use skald_crypto::RecoveryKey;
 use zeroize::Zeroizing;
 
 use crate::output::{self, Stream};
+use crate::person::Person;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -50,17 +52,24 @@ fn kept(stored: &secrets::Map) -> Option<RecoveryKey> {
 /// The line that says a recovery key waits, with the command that shows it, on `server`. A
 /// notice, not an error: no `skald:` before it.
 fn waits(server: &str) -> String {
-    format!("A recovery key waits to be shown: run skald sign-in --server {server} at a terminal.")
+    format!(
+        "A recovery key waits to be shown: run skald sign-in --server {server} at a terminal, or \
+         add --browser to see it on a local page."
+    )
 }
 
+/// What the person reads under the recovery key.
+const KEEP_IT: &str = "Write it down and keep it apart from your devices: it is the only way back \
+                       to the account and its history when no linked device is left.";
+
 /// At the end of `skald sign-in` on `server`, the device in `state` holding its certificate: a
-/// recovery key that waits in `secrets` is shown when `shows`, the run being the person's at a
-/// terminal, and deleted once the person presses Enter; otherwise the run says that it waits.
+/// recovery key that waits in `secrets` is shown to `person`, if the run has one, and deleted once
+/// the person says it is written down; otherwise the run says that it waits.
 pub fn show(
     state: &State,
     secrets: &Secrets,
     server: &str,
-    shows: bool,
+    person: Option<Person<'_>>,
 ) -> Result<(), sign_in::Error> {
     if state.recovery_waits()?.is_none() {
         return Ok(());
@@ -78,20 +87,45 @@ pub fn show(
         state.set_recovery_waits(None)?;
         return Ok(());
     };
-    if !shows {
-        eprintln!("{}", waits(server));
-        return Ok(());
+    let page = match person {
+        None => {
+            eprintln!("{}", waits(server));
+            return Ok(());
+        }
+        Some(Person::Page(page)) => page,
+        Some(Person::Terminal) => return at_terminal(state, secrets, &mut stored, &key),
+    };
+    page.show(Some(key.shown().as_str()))
+        .map_err(sign_in::Error::Io)?;
+    let question = format!(
+        "The account's recovery key, shown only this once, is above. {KEEP_IT} Once it is written \
+         down, press the button: this device then deletes it."
+    );
+    let answered = page.ask(&question, &["Written down"], None, true);
+    let answered = answered.map_err(sign_in::Error::Io)?.recv().is_ok();
+    page.show(None).map_err(sign_in::Error::Io)?;
+    if answered {
+        written_down(state, secrets, &mut stored)?;
     }
+    Ok(())
+}
+
+/// Shows `key`, of `stored`, the secrets, at the person's terminal, and has it written down once
+/// the person presses Enter.
+fn at_terminal(
+    state: &State,
+    secrets: &Secrets,
+    stored: &mut secrets::Map,
+    key: &RecoveryKey,
+) -> Result<(), sign_in::Error> {
     let shown = key.shown();
     let mut text = Zeroizing::new(String::from(
         "\nThe account's recovery key, shown only this once:\n\n    ",
     ));
     text.push_str(&shown);
-    text.push_str(
-        "\n\nWrite it down and keep it apart from your devices: it is the only way back to the \
-         account and its history when no linked device is left. Press Enter once it is written \
-         down: ",
-    );
+    text.push_str("\n\n");
+    text.push_str(KEEP_IT);
+    text.push_str(" Press Enter once it is written down: ");
     output::write(Stream::Out, text.as_bytes())
         .map_err(|err| sign_in::Error::Io(format!("cannot show the recovery key: {err}")))?;
     let mut line = String::new();
@@ -103,7 +137,16 @@ pub fn show(
         println!();
         return Ok(());
     }
-    forget(secrets, &mut stored)?;
+    written_down(state, secrets, stored)
+}
+
+/// Deletes the recovery key, which its person wrote down, from `stored`, the secrets.
+fn written_down(
+    state: &State,
+    secrets: &Secrets,
+    stored: &mut secrets::Map,
+) -> Result<(), sign_in::Error> {
+    forget(secrets, stored)?;
     state.set_recovery_waits(None)?;
     println!("The recovery key is deleted from this device.");
     Ok(())

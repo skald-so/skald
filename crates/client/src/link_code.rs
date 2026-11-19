@@ -1,5 +1,6 @@
 //! Linking a device with a link code (`docs/protocol/membership.md`, "Linking a device" and "Link
-//! code"), only by its person at a terminal.
+//! code"), only by its person: at a terminal, or on the local page `--browser` opens
+//! ([`crate::page`]).
 //!
 //! - The new device, waiting for linking, shows a code and runs it through the server's relay: a
 //!   hello per run, at most 3 runs that take a reply, until the code expires or its person asks for
@@ -16,10 +17,10 @@
 
 use std::cell::RefCell;
 use std::env;
-use std::io::{self, BufRead, IsTerminal as _, Write};
+use std::io::{self, IsTerminal as _};
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,7 @@ use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::follow;
 use crate::groups;
 use crate::key_packages;
+use crate::person::Person;
 use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
@@ -152,23 +154,27 @@ enum Run {
     Fresh,
 }
 
-/// Shows link codes until a run links the device, then stores its certificate ([`store`]); waits
-/// for its person to ask for a fresh code once a code ends, and stops once its input ends.
-pub fn show(new: &mut NewDevice<'_>) -> Result<(), sign_in::Error> {
+/// Shows `person` link codes until a run links the device, then stores its certificate
+/// ([`store`]); waits for its person to ask for a fresh code once a code ends, and stops once its
+/// input ends.
+pub fn show(new: &mut NewDevice<'_>, person: Person<'_>) -> Result<(), sign_in::Error> {
     let lifetime = lifetime()?;
-    let enters = enters();
+    let enters = person.presses("Fresh code").map_err(sign_in::Error::Io)?;
     println!(
-        "This device is not linked yet. To link it, run skald link at a terminal on a linked \
-         device of this account and type this code there:"
+        "This device is not linked yet. To link it, run skald link at a terminal, or skald link \
+         --browser, on a linked device of this account and type this code there:"
     );
     loop {
         while enters.try_recv().is_ok() {}
         let code = LinkCode::generate();
         let ends = Instant::now() + lifetime;
-        println!("  {code}");
+        person
+            .show(Some(&format!("  {code}")))
+            .map_err(sign_in::Error::Io)?;
         println!(
-            "It works for {}; press Enter for a fresh code.",
-            shown_lifetime(lifetime)
+            "It works for {}. {}",
+            shown_lifetime(lifetime),
+            person.fresh_code()
         );
         let mut failed = 0;
         let fresh = loop {
@@ -192,14 +198,15 @@ pub fn show(new: &mut NewDevice<'_>) -> Result<(), sign_in::Error> {
                     if failed == ATTEMPTS {
                         println!(
                             "The link code failed {ATTEMPTS} times; if you did not type it each \
-                             time, someone else may have tried. Press Enter for a fresh code."
+                             time, someone else may have tried. {}",
+                            person.fresh_code()
                         );
                         break false;
                     }
                 }
                 Run::Ended => thread::sleep(POLL),
                 Run::Expired => {
-                    println!("The link code expired. Press Enter for a fresh code.");
+                    println!("The link code expired. {}", person.fresh_code());
                     break false;
                 }
                 Run::Fresh => break true,
@@ -378,19 +385,6 @@ fn shown_lifetime(lifetime: Duration) -> String {
         seconds if seconds % 60 == 0 => format!("{} minutes", seconds / 60),
         seconds => format!("{seconds} seconds"),
     }
-}
-
-/// Each line its person enters, from now on, until its input ends.
-fn enters() -> Receiver<()> {
-    let (entered, enters) = mpsc::channel();
-    thread::spawn(move || {
-        for line in io::stdin().lock().lines() {
-            if line.is_err() || entered.send(()).is_err() {
-                return;
-            }
-        }
-    });
-    enters
 }
 
 /// `PUT /devices/{device}/cert`: has the server store `cert`, in CBOR, the certificate of the
@@ -609,13 +603,14 @@ thread_local! {
     static RUNS: RefCell<Runs<Waiting>> = const { RefCell::new(Runs::new()) };
 }
 
-/// `skald link` at its person's terminal, on the machine whose state is in `dir`: takes the
-/// person's answers in this process and has `step` run each step that follows them ([`Step`]),
-/// stopping at the first that fails; gives the exit code.
-pub fn run(dir: &Path, mut step: impl FnMut(Step) -> ExitCode) -> ExitCode {
-    if !at_terminal() {
+/// `skald link` on the machine whose state is in `dir`, its person at a terminal or on the page:
+/// takes the person's answers in this process and has `step` run each step that follows them
+/// ([`Step`]), stopping at the first that fails; gives the exit code.
+pub fn run(dir: &Path, person: Person<'_>, mut step: impl FnMut(Step) -> ExitCode) -> ExitCode {
+    if matches!(person, Person::Terminal) && !at_terminal() {
         return crate::exit(Err(
-            "skald link takes a link code only from its person at a terminal; nothing is sent"
+            "skald link takes a link code only from its person at a terminal, or on its local \
+             page with --browser; nothing is sent"
                 .to_owned(),
         ));
     }
@@ -623,8 +618,7 @@ pub fn run(dir: &Path, mut step: impl FnMut(Step) -> ExitCode) -> ExitCode {
     if checked != ExitCode::SUCCESS {
         return checked;
     }
-    let mut input = io::stdin().lock();
-    let (entry, fresh) = match take_code(dir, &mut input) {
+    let (entry, fresh) = match take_code(dir, person) {
         Ok(taken) => taken,
         Err(err) => return crate::exit(Err(err)),
     };
@@ -638,17 +632,13 @@ pub fn run(dir: &Path, mut step: impl FnMut(Step) -> ExitCode) -> ExitCode {
         return opened;
     }
     // An answer that cannot be read is no yes.
-    let confirmed = matches!(
-        ask(&mut input, "Link it to this account? [yes/no]: "),
-        Ok(Some(true))
-    );
+    let confirmed = matches!(person.ask("Link it to this account?"), Ok(Some(true)));
     step(Step::Answer { run, confirmed })
 }
 
-/// The link code its person enters on `input`, on the machine whose state is in `dir`, checked
-/// for its form, and whether the person confirmed the new device shows a new code after 3 failed
-/// runs in a row.
-fn take_code(dir: &Path, input: &mut impl BufRead) -> Result<(String, bool), String> {
+/// The link code `person` enters, on the machine whose state is in `dir`, checked for its form,
+/// and whether the person confirmed the new device shows a new code after 3 failed runs in a row.
+fn take_code(dir: &Path, person: Person<'_>) -> Result<(String, bool), String> {
     let failed = State::open(dir)
         .and_then(|state| state.failed_link_runs())
         .map_err(text)?;
@@ -657,7 +647,7 @@ fn take_code(dir: &Path, input: &mut impl BufRead) -> Result<(String, bool), Str
         println!(
             "The last {ATTEMPTS} runs of skald link failed: get a new code on the new device first."
         );
-        let shows = ask(input, "Does the new device show a new code? [yes/no]: ")?;
+        let shows = person.ask("Does the new device show a new code?")?;
         if shows != Some(true) {
             return Err("no new code, so no code is run".to_owned());
         }
@@ -666,7 +656,7 @@ fn take_code(dir: &Path, input: &mut impl BufRead) -> Result<(String, bool), Str
         "Enter only a link code shown on your own device: whoever has a device that shows the \
          code gets that device into this account."
     );
-    let entry = read(input, "Link code: ")?.ok_or_else(|| "no code entered".to_owned())?;
+    let entry = (person.enter("Link code", "Link")?).ok_or_else(|| "no code entered".to_owned())?;
     let entry = entry.trim();
     LinkCode::from_entry(entry).map_err(|_| {
         format!(
@@ -1054,35 +1044,6 @@ impl Issuer {
 enum Ended {
     Failed(String),
     Declined(String),
-}
-
-/// The line its person enters on `input` after `prompt`, without its end; `None` once the input
-/// ends.
-fn read(input: &mut impl BufRead, prompt: &str) -> Result<Option<String>, String> {
-    let mut output = io::stdout();
-    let asked = write!(output, "{prompt}").and_then(|()| output.flush());
-    asked.map_err(|err| format!("cannot ask: {err}"))?;
-    let mut line = String::new();
-    let read = input
-        .read_line(&mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
-    Ok((read > 0).then(|| line.trim_end_matches(['\r', '\n']).to_owned()))
-}
-
-/// Whether its person answers yes to `prompt` on `input`, asked again until yes or no; `None` once
-/// the input ends.
-fn ask(input: &mut impl BufRead, prompt: &str) -> Result<Option<bool>, String> {
-    loop {
-        let Some(answer) = read(input, prompt)? else {
-            println!();
-            return Ok(None);
-        };
-        match answer.trim().to_lowercase().as_str() {
-            "yes" | "y" => return Ok(Some(true)),
-            "no" | "n" => return Ok(Some(false)),
-            _ => println!("Please answer yes or no."),
-        }
-    }
 }
 
 #[cfg(test)]

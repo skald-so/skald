@@ -41,6 +41,11 @@
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
 - The recovery key is entered only in the CLI, never in a web page.
+- **Local page:** `skald sign-in --browser` and `skald link --browser` take the link code's steps on a page `skald` opens in the browser, as their person or an agent runs them: the "first device?" question, the code and a fresh one, the reminder and the new device's confirmation; the sign-in page also shows a waiting recovery key. The commands' output holds no code, confirmation or recovery key; the page takes no recovery key.
+  - It listens only on 127.0.0.1, on a port the system picks, while its command runs.
+  - It answers only requests whose query holds its one-time secret, with its own Host and its own Origin or none; every answer carries `Cache-Control: no-store`.
+  - `skald` never prints the secret: the browser opens a file in the state directory, readable only by its user, that takes it to the page, as Jupyter does; the file is deleted when the command ends.
+  - Without a browser to open, the command says so and to run it in a terminal, and sends nothing.
 - **A browser is also a linked device**, linked only with the link code it shows, entered on an already linked `client` device. Its key is stored in IndexedDB and can be revoked. The browser does not become a full MLS member:
   - it reads through history keys wrapped to its key;
   - it sends the person's messages to their own agents and actions (approve, answer `ask_user`) as signed messages via HPKE;

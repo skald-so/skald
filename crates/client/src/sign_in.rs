@@ -13,6 +13,7 @@ use skald_proto::AccountId;
 use crate::connection::{self, Connection, printable};
 use crate::device::{self, First, Keys, Setup};
 use crate::key_packages;
+use crate::person::Person;
 use crate::recovery;
 use crate::recovery_link;
 use crate::secrets::{self, Secrets};
@@ -142,7 +143,7 @@ impl From<secrets::Error> for Error {
 }
 
 /// What `skald sign-in` is given beyond the server.
-pub struct Options {
+pub struct Options<'p> {
     /// Where the secrets go.
     pub storage: secrets::Storage,
     /// Whether this is the account's first device, or ask the user.
@@ -151,9 +152,9 @@ pub struct Options {
     pub name: Option<String>,
     /// The machine's host name, which names the device unless the user gives a name.
     pub host_name: String,
-    /// Whether the run is the person's, not an agent's, at a terminal: only then may it show a
-    /// recovery key or link codes.
-    pub shows: bool,
+    /// Where its person answers: at the terminal, if the run is the person's there, or on its
+    /// local page. Only there may it show a recovery key or link codes.
+    pub person: Option<Person<'p>>,
     /// With the recovery key, the devices its person names: then, waiting for linking, the device
     /// links with the account's recovery key.
     pub recovery: Option<recovery_link::Named>,
@@ -162,7 +163,7 @@ pub struct Options {
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
 /// as `options` says, then sets up its device. A session the machine has on that server is checked
 /// with it instead; a session the server refuses is dropped and a new one is signed in.
-pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result<(), Error> {
+pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Result<(), Error> {
     let unusable = |err| {
         Error::Io(format!(
             "cannot use the state directory {}: {err}",
@@ -230,7 +231,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         device,
         keys: &keys,
         first: options.first,
-        interactive: options.shows,
+        person: options.person,
         recovery: options.recovery.as_ref(),
     }
     .run()?;
@@ -241,7 +242,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
     {
         key_packages::warn(&err);
     }
-    recovery::show(&state, &secrets, connection.server(), options.shows)
+    recovery::show(&state, &secrets, connection.server(), options.person)
 }
 
 /// The machine's session on the server of `connection`, with `stored`, the secrets: the one it

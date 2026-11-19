@@ -18,6 +18,8 @@ base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 gethostname = "1"
+# The local page's secret.
+getrandom = "0.4"
 # Parses an RFC 3339 expiry; no time zone database.
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
