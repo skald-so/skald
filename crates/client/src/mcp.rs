@@ -8,6 +8,8 @@
 //!   write, which returns once the tool's result is written to the client, and only then marks
 //!   them handed over ([`recv::inbox`]): a result not written, or a call that fails, leaves them
 //!   for the next call. [`Written`] says whether each result was written.
+//! - The send tool sends as the agent's `skald send` does and returns what it says: `to` is its
+//!   `--to`, or `*` its `--all`.
 //! - The registration and each tool call are operations, as a command's: through the helper, or
 //!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
 //!   server's binary was is newer, as after an update while the server runs, that `skald` runs each
@@ -29,7 +31,7 @@ use rmcp::service::{NotificationContext, RequestContext, RxJsonRpcMessage, TxJso
 use rmcp::transport::{IntoTransport, Transport};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use skald_proto::{DeviceId, Name, VersionRange};
 use tokio::sync::oneshot;
 
@@ -37,13 +39,32 @@ use crate::devices::text;
 use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
-use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, secrets};
+use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, secrets, send};
 
 /// The tool that returns the agent's messages.
 pub const INBOX: &str = "inbox";
 
 const INBOX_DESCRIPTION: &str = "Returns the Skald messages that came for this session, each \
                                  once: a line per message, [<from> · <device>] #<ref>: <text>.";
+
+/// The tool that sends a message as the agent, and its arguments.
+pub const SEND: &str = "send";
+const TO: &str = "to";
+const TEXT: &str = "text";
+const CHANNEL: &str = "channel";
+
+/// What `to` takes for every agent in the channel.
+const EVERYONE: &str = "*";
+
+const SEND_DESCRIPTION: &str = "Sends a Skald message as this session: sent #<ref>.";
+const TO_DESCRIPTION: &str = "An agent's address, space/owner/agent@server or owner/agent, or * for \
+                              every agent in the channel. Every member device still gets the \
+                              message: an addressee does not make it private.";
+const CHANNEL_DESCRIPTION: &str = "The channel's ID; by default the space's default channel.";
+
+/// What the send tool says without `to`.
+const NO_TO: &str = "name the addressee in `to`: an agent's address, or * for every agent in the \
+                     channel; nothing is sent";
 
 /// What `inbox` returns with nothing waiting.
 const NOTHING: &str = "No new messages.";
@@ -58,12 +79,19 @@ const NAME_MOST: usize = 63;
 const REFERENCE: usize = 6;
 
 /// An operation of the server's, which it hands over as a command does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Call {
     /// Registers the session's agent in its folder's space.
     Register,
     /// The `inbox` tool.
     Inbox,
+    /// The send tool: `skald send` with `--to` the agent `to` names, or `--all` without it, the
+    /// channel `channel` names, if any, and the text `text`.
+    Send {
+        to: Option<String>,
+        channel: Option<String>,
+        text: String,
+    },
 }
 
 /// Runs `call` as `agent`, by the state in `dir`, its secrets in `storage`.
@@ -92,7 +120,37 @@ pub fn perform(
                 Ok(())
             }
         },
+        Call::Send { to, channel, text } => {
+            match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
+                Ok(_) => send::run(
+                    dir,
+                    storage,
+                    settings,
+                    (to.as_deref(), channel.as_deref(), &text),
+                    Some(agent),
+                    false,
+                ),
+                Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
+            }
+        }
     }
+}
+
+/// The call of the send tool with `arguments`; fails, saying why, without `to` or `text`, or with
+/// one of its fields not a string.
+fn send_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, String> {
+    let field = |name: &str| match arguments.and_then(|arguments| arguments.get(name)) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(given)) => Ok(Some(given.clone())),
+        Some(_) => Err(format!("`{name}` is not a string; nothing is sent")),
+    };
+    let to = field(TO)?.ok_or(NO_TO)?;
+    let text = field(TEXT)?.ok_or("give the text in `text`; nothing is sent")?;
+    Ok(Call::Send {
+        to: (to != EVERYONE).then_some(to),
+        channel: field(CHANNEL)?,
+        text,
+    })
 }
 
 /// The default name of an agent of the MCP client named `client` on the device `device` named
@@ -193,9 +251,8 @@ pub fn relayed(one_shot: bool) -> Result<(), String> {
                     call: Some(call), ..
                 },
                 Some(agent),
-            ) => {
-                Settings::of(&operation, one_shot, None).run(*call, &agent, || helper::to_relaying)
-            }
+            ) => Settings::of(&operation, one_shot, None)
+                .run(call.clone(), &agent, || helper::to_relaying),
             _ => Err("skald mcp relays only its own calls".to_owned()),
         });
     let code = match ran {
@@ -327,6 +384,24 @@ impl Server {
             (false, _) => CallToolResult::error(vec![ContentBlock::text(text)]),
         }
     }
+
+    /// Runs `call`, of the send tool, as `agent`: gives what its run said.
+    async fn send(&self, agent: Name, call: Call) -> CallToolResult {
+        let settings = self.settings.clone();
+        let said = Said::default();
+        let ran = tokio::task::spawn_blocking({
+            let said = said.clone();
+            move || said.ran(settings.run(call, &agent, || said.sink()))
+        })
+        .await
+        .unwrap_or(false);
+        let text = vec![ContentBlock::text(said.text())];
+        if ran {
+            CallToolResult::success(text)
+        } else {
+            CallToolResult::error(text)
+        }
+    }
 }
 
 impl ServerHandler for Server {
@@ -363,13 +438,24 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut schema = serde_json::Map::new();
-        schema.insert("type".to_owned(), json!("object"));
-        Ok(ListToolsResult::with_all_items(vec![Tool::new(
-            INBOX,
-            INBOX_DESCRIPTION,
-            schema,
-        )]))
+        let schema = |schema: Value| match schema {
+            Value::Object(schema) => schema,
+            _ => unreachable!("a schema is an object"),
+        };
+        let inbox = schema(json!({ "type": "object" }));
+        let send = schema(json!({
+            "type": "object",
+            "properties": {
+                TO: { "type": "string", "description": TO_DESCRIPTION },
+                TEXT: { "type": "string" },
+                CHANNEL: { "type": "string", "description": CHANNEL_DESCRIPTION },
+            },
+            "required": [TO, TEXT],
+        }));
+        Ok(ListToolsResult::with_all_items(vec![
+            Tool::new(INBOX, INBOX_DESCRIPTION, inbox),
+            Tool::new(SEND, SEND_DESCRIPTION, send),
+        ]))
     }
 
     async fn call_tool(
@@ -377,19 +463,33 @@ impl ServerHandler for Server {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        if request.name != INBOX {
-            return Err(ErrorData::invalid_params(
-                format!("no tool named {}", request.name),
-                None,
-            ));
-        }
+        let send = match request.name.as_ref() {
+            INBOX => None,
+            SEND => match send_call(request.arguments.as_ref()) {
+                Ok(call) => Some(call),
+                Err(why) => {
+                    let why = format!("skald: {why}");
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(why)]).into());
+                }
+            },
+            name => {
+                return Err(ErrorData::invalid_params(
+                    format!("no tool named {name}"),
+                    None,
+                ));
+            }
+        };
         let client = (context.peer.peer_info())
             .map(|info| info.client_info.name.clone())
             .unwrap_or_default();
         let Some(agent) = self.agent(&client) else {
             return Ok(CallToolResult::error(vec![ContentBlock::text(NO_DEVICE)]).into());
         };
-        Ok(self.inbox(agent, context.id).await.into())
+        Ok(match send {
+            Some(call) => self.send(agent, call).await,
+            None => self.inbox(agent, context.id).await,
+        }
+        .into())
     }
 
     async fn on_cancelled(
@@ -754,6 +854,39 @@ mod tests {
 
         assert!(info.capabilities.tools.is_some(), "no tools: {info:?}");
         assert_eq!(info.server_info.name, "skald");
+    }
+
+    /// The send tool's call: `*` is every agent, with no `to`; without `to` or `text`, or with a
+    /// field not a string, there is none, and the error says which field.
+    #[test]
+    fn send_call_takes_to_text_and_an_optional_channel() {
+        let call = |arguments: Value| send_call(arguments.as_object());
+        let send = |to: Option<&str>, channel: Option<&str>| Call::Send {
+            to: to.map(str::to_owned),
+            channel: channel.map(str::to_owned),
+            text: "hi".to_owned(),
+        };
+        assert_eq!(
+            call(json!({ TO: "bob/claude", TEXT: "hi", CHANNEL: "c1" })),
+            Ok(send(Some("bob/claude"), Some("c1")))
+        );
+        assert_eq!(call(json!({ TO: "*", TEXT: "hi" })), Ok(send(None, None)));
+        assert_eq!(
+            call(json!({ TO: " *", TEXT: "hi", CHANNEL: null })),
+            Ok(send(Some(" *"), None))
+        );
+        assert_eq!(call(json!({ TEXT: "hi" })), Err(NO_TO.to_owned()));
+        assert_eq!(send_call(None), Err(NO_TO.to_owned()));
+        assert_eq!(call(json!({ TO: null, TEXT: "hi" })), Err(NO_TO.to_owned()));
+        for (arguments, field) in [
+            (json!({ TO: "*" }), "`text`"),
+            (json!({ TO: 7, TEXT: "hi" }), "`to`"),
+            (json!({ TO: "*", TEXT: ["hi"] }), "`text`"),
+            (json!({ TO: "*", TEXT: "hi", CHANNEL: 1 }), "`channel`"),
+        ] {
+            let why = call(arguments.clone()).expect_err(&arguments.to_string());
+            assert!(why.contains(field), "{arguments}: {why}");
+        }
     }
 
     /// Two devices of one name give one client two names.
