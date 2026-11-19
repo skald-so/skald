@@ -146,7 +146,7 @@ impl Codec for CertBody {
             device: fields
                 .required(2, "cert-body.device")?
                 .id("cert-body.device")?,
-            kind: DeviceKind::decode(fields.required(3, "cert-body.kind")?)?,
+            kind: DeviceKind::decode(fields.required(3, "cert-body.kind")?, "cert-body.kind")?,
             signing: fields
                 .required(4, "cert-body.signing")?
                 .fixed("cert-body.signing")?,
@@ -164,20 +164,20 @@ impl Codec for CertBody {
                 .take(8)
                 .map(|item| item.bytes("cert-body.ssh").map(<[u8]>::to_vec))
                 .transpose()?,
-            name: name(fields.required(9, "cert-body.name")?)?,
+            name: device_name(fields.required(9, "cert-body.name")?, "cert-body.name")?,
             unknown: fields.unknown(),
         })
     }
 }
 
-/// `name`: `tstr .size (1..64)`.
-fn name(item: &Item<'_>) -> Result<String, DecodeError> {
-    let name = item.text("cert-body.name")?;
+/// A device's `name`, `field`: `tstr .size (1..64)`.
+pub(crate) fn device_name(item: &Item<'_>, field: &'static str) -> Result<String, DecodeError> {
+    let name = item.text(field)?;
     if (1..=CERT_NAME_MAX).contains(&name.len()) {
         Ok(name.to_owned())
     } else {
         Err(field_error(
-            "cert-body.name",
+            field,
             FieldProblem::Size {
                 min: 1,
                 max: CERT_NAME_MAX,
@@ -188,13 +188,14 @@ fn name(item: &Item<'_>) -> Result<String, DecodeError> {
 }
 
 impl DeviceKind {
-    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        match item.uint("cert-body.kind")? {
+    /// The `device-kind` `item` holds as `field`.
+    pub(crate) fn decode(item: &Item<'_>, field: &'static str) -> Result<Self, DecodeError> {
+        match item.uint(field)? {
             1 => Ok(Self::Client),
             2 => Ok(Self::Browser),
             3 => Ok(Self::Service),
             // 4 and 5 are reserved.
-            other => Err(field_error("cert-body.kind", FieldProblem::Value(other))),
+            other => Err(field_error(field, FieldProblem::Value(other))),
         }
     }
 }
