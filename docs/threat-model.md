@@ -257,9 +257,9 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A browser runs no agent, so an answer from a linked browser is not an agent's ([agents.md](protocol/agents.md#security-considerations)).
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
-- Run as an agent, the CLI shows no recovery key or link code and takes none, nor a new device's confirmation: a recovery key waits for the person's `skald sign-in` in a terminal ([Account](protocol/membership.md#account)).
+- Run as an agent, the CLI shows no recovery key or link code in its output and takes none, nor a new device's confirmation: they go only to the person's terminal or to the local page `--browser` opens, so they stay out of the agent's context ([Account](protocol/membership.md#account), [architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 - The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
-- `skald link` takes a link code and its confirmation only from a terminal, so an agent cannot pipe them in. An agent that opens a terminal of its own, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.
@@ -270,6 +270,7 @@ An OS account on the device's machine other than the one that runs the client.
 **Defenses:**
 - The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
+- The local page of `--browser` listens on loopback, which other accounts reach, but answers only its secret, handed to the browser only through a file in the state directory ([architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 
 ## The server sees
 - accounts: sign-in methods and usernames;

@@ -53,6 +53,8 @@ mod lock;
 mod mailbox;
 mod mcp;
 mod output;
+mod page;
+mod person;
 mod plain_path;
 mod proxy;
 mod receipts;
@@ -88,6 +90,7 @@ use clap::builder::FalseyValueParser;
 use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use device::First;
+use person::Person;
 use serde::{Deserialize, Serialize};
 use skald_proto::{DeviceId, VersionRange};
 use spaces::Scope;
@@ -209,6 +212,10 @@ enum Command {
     /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
     /// others add it to channels, on the server, here and on each skald send and skald recv.
     ///
+    /// With --browser, as its person or as an agent, it asks its person on a local page it opens in
+    /// the browser instead: whether this is the first device, and the link codes or the recovery
+    /// key it shows. Its output holds neither.
+    ///
     /// With --with-recovery-key, a device that waits for linking links with the account's recovery
     /// key instead, only as its person at a terminal, who types the key there without echo. It
     /// issues its own certificate with the account's master key and shows the account's devices.
@@ -232,6 +239,10 @@ enum Command {
         /// the terminal.
         #[arg(long)]
         with_recovery_key: bool,
+        /// Asks its person on a local page it opens in the browser: the program BROWSER names, or
+        /// the system's default browser.
+        #[arg(long, conflicts_with = "with_recovery_key")]
+        browser: bool,
         /// The ID of a device that is stolen, revoked with the master key, for scripts; once per
         /// device.
         #[arg(long = "stolen", value_name = "DEVICE", requires = "with_recovery_key")]
@@ -265,7 +276,12 @@ enum Command {
     /// certificate, as its person at a terminal: enter only a code shown on your own device. Once
     /// you confirm the new device's name and kind, this device issues its certificate. After 3
     /// failed runs in a row, it first asks whether the new device shows a new code.
-    Link,
+    Link {
+        /// Takes the code and the confirmation on a local page it opens in the browser, also as an
+        /// agent: the program BROWSER names, or the system's default browser.
+        #[arg(long)]
+        browser: bool,
+    },
     /// A step of skald link after its person's answers, which skald link hands to the helper.
     #[command(skip)]
     LinkStep { step: link_code::Step },
@@ -681,7 +697,7 @@ impl Command {
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
             Command::ApproveBinding { .. } => Some("approve-binding"),
-            Command::Link | Command::LinkStep { .. } => Some("link"),
+            Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
     }
@@ -764,7 +780,7 @@ impl Command {
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
             // It takes its person's answers here and its steps lock ([`link`]).
-            Command::Link => None,
+            Command::Link { .. } => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -908,8 +924,8 @@ fn main() -> ExitCode {
                 .and_then(|dir| helper::serve(&dir, idle, operation.timeout)),
         );
     }
-    if let Command::Link = operation.command {
-        return link(operation, !one_shot);
+    if let Command::Link { browser } = operation.command {
+        return link(operation, !one_shot, browser);
     }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
@@ -968,27 +984,53 @@ fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> Ex
     }
 }
 
-/// `skald link` as `operation` says ([`link_code::run`]): each step goes through the helper that
-/// runs, or one it starts if `starts`; otherwise it runs here, holding the lock until the run ends.
-fn link(operation: Operation, starts: bool) -> ExitCode {
+/// `skald link` as `operation` says ([`link_code::run`]), its person on its local page if
+/// `browser`: each step goes through the helper that runs, or one it starts if `starts`; otherwise
+/// it runs here, holding the lock until the run ends.
+fn link(operation: Operation, starts: bool, browser: bool) -> ExitCode {
+    let opener = match browser.then(page::Opener::find).transpose() {
+        Ok(opener) => opener,
+        Err(err) => return exit(Err(err)),
+    };
     let dir = match state::dir(operation.state_dir.clone()) {
         Ok(dir) => dir,
         Err(err) => return exit(Err(err)),
     };
-    recovery::say_if_waiting(&dir);
+    let Some(opener) = opener else {
+        return link_steps(&operation, &dir, starts, Person::Terminal);
+    };
+    let page = page::Page::new(&dir, opener);
+    let code = output::into(page.tee(operation.agent.is_some()), || {
+        link_steps(&operation, &dir, starts, Person::Page(&page))
+    });
+    page.finish(None);
+    recv::keep(&dir, &page.held());
+    code
+}
+
+/// The steps of `skald link` as `operation` says, on the machine whose state is in `dir`, its
+/// person's answers taken from `person` ([`link`]).
+fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -> ExitCode {
+    recovery::say_if_waiting(dir);
     let mut held: Option<Option<lock::Lock>> = None;
     let mut starts = starts;
-    link_code::run(&dir, |step| {
+    link_code::run(dir, person, |step| {
         let operation = Operation {
-            command: Command::LinkStep { step },
+            speaks: operation.speaks,
+            timeout: operation.timeout,
+            clock_offset: operation.clock_offset,
             state_dir: operation.state_dir.clone(),
+            key_storage: operation.key_storage,
             agent: None,
+            command: Command::LinkStep { step },
             said: link_prompt::Said::default(),
-            ..operation
         };
         if held.is_none() {
-            // A later step needs the helper that holds its run.
-            match helper::route(&dir, &operation, false, std::mem::take(&mut starts)) {
+            // A later step needs the helper that holds its run. What it shows goes to the run's
+            // output, and to its page.
+            let starts = (false, std::mem::take(&mut starts), false);
+            let mut shown = |stream, bytes: &[u8]| output::write(stream, bytes);
+            match helper::route_into(dir, &operation, starts, &mut shown) {
                 Ok(helper::Route::Here(lock)) => held = Some(lock),
                 Ok(helper::Route::Helped(code)) => return code,
                 Err(err) => return exit(Err(err)),
@@ -1089,7 +1131,10 @@ fn perform(operation: Operation) -> Result<(), String> {
             lost,
             keep,
             keep_revoked,
+            browser,
         } => {
+            // Without a browser, nothing is sent and nothing listens.
+            let opener = browser.then(page::Opener::find).transpose()?;
             let recovery = with_recovery_key
                 .then(|| {
                     recovery_named(
@@ -1099,41 +1144,58 @@ fn perform(operation: Operation) -> Result<(), String> {
                     )
                 })
                 .transpose()?;
-            let options = sign_in::Options {
-                storage: key_storage,
-                first: match first_device {
-                    Some(Answer::Yes) => First::Yes,
-                    Some(Answer::No) => First::No,
-                    None if recovery.is_some() => First::No,
-                    None => First::Ask,
-                },
-                name,
-                host_name: std::env::var_os(HOST_NAME)
-                    .unwrap_or_else(gethostname::gethostname)
-                    .to_string_lossy()
-                    .into_owned(),
-                // A recovery key or a link code is shown only to the person, at a terminal.
-                shows: agent.is_none() && link_code::at_terminal(),
-                recovery,
-            };
+            let host_name = std::env::var_os(HOST_NAME)
+                .unwrap_or_else(gethostname::gethostname)
+                .to_string_lossy()
+                .into_owned();
             state::dir(state_dir).and_then(|dir| {
-                let mut connection =
-                    Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
-                helper::stop(&dir, timeout)?;
-                let _lock = lock::take(&dir, true, timeout)?;
-                sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
-                // An agent's run takes nothing of another space than its folder's.
-                if agent.is_none() {
-                    spaces::take_personal(&dir, options.storage, speaks, timeout);
-                }
-                Ok(())
+                let page = opener.map(|opener| page::Page::new(&dir, opener));
+                // A recovery key or a link code is shown only to the person: at a terminal, or on
+                // the page.
+                let person = match &page {
+                    Some(page) => Some(Person::Page(page)),
+                    None if agent.is_none() && link_code::at_terminal() => Some(Person::Terminal),
+                    None => None,
+                };
+                let options = sign_in::Options {
+                    storage: key_storage,
+                    first: match first_device {
+                        Some(Answer::Yes) => First::Yes,
+                        Some(Answer::No) => First::No,
+                        None if recovery.is_some() => First::No,
+                        None => First::Ask,
+                    },
+                    name,
+                    host_name,
+                    person,
+                    recovery,
+                };
+                let signed_in = || {
+                    let mut connection =
+                        Connection::new(&server, speaks, timeout).map_err(|err| err.to_string())?;
+                    helper::stop(&dir, timeout)?;
+                    let _lock = lock::take(&dir, true, timeout)?;
+                    sign_in::run(&mut connection, &dir, &options).map_err(|err| err.to_string())?;
+                    // An agent's run takes nothing of another space than its folder's.
+                    if agent.is_none() {
+                        spaces::take_personal(&dir, options.storage, speaks, timeout);
+                    }
+                    Ok(())
+                };
+                let Some(page) = &page else {
+                    return signed_in();
+                };
+                let result = output::into(page.tee(agent.is_some()), signed_in);
+                page.finish(result.as_ref().err().map(String::as_str));
+                recv::keep(&dir, &page.held());
+                result
             })
         }
         Command::Devices => {
             state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
         }
         // It runs through `link`.
-        Command::Link => Err("skald link runs only at its person's terminal".to_owned()),
+        Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
             .and_then(|dir| link_code::step(&dir, key_storage, speaks, timeout, step)),
         Command::RevokeDevice { device, keep } => state::dir(state_dir)

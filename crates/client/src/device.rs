@@ -17,6 +17,7 @@ use zeroize::Zeroizing;
 
 use crate::connection::{self, Connection, Method};
 use crate::link_code;
+use crate::person::Person;
 use crate::recovery;
 use crate::recovery_link;
 use crate::secrets::{self, Secrets};
@@ -276,15 +277,16 @@ fn host_name(host: &str) -> String {
     }
 }
 
+/// What a new device asks its person first.
+const FIRST_QUESTION: &str = "Is this the account's first device? Answer yes only if no other \
+                              device of the account has signed in; yes creates the account's \
+                              master key";
+
 /// Whether this is the account's first device, as the user answers on `input` the question
 /// written to `output`; `None` once `input` ends without an answer.
 pub fn ask_first(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<Option<bool>> {
     loop {
-        write!(
-            output,
-            "Is this the account's first device? Answer yes only if no other device of the \
-             account has signed in; yes creates the account's master key [yes/no]: "
-        )?;
+        write!(output, "{FIRST_QUESTION} [yes/no]: ")?;
         output.flush()?;
         let mut line = String::new();
         if input.read_line(&mut line)? == 0 {
@@ -358,8 +360,9 @@ pub struct Setup<'a> {
     pub device: state::Device,
     pub keys: &'a Keys,
     pub first: First,
-    /// Whether its person runs it at a terminal: then, waiting for linking, it shows link codes.
-    pub interactive: bool,
+    /// Where its person answers, if the run is the person's or has its page: then, waiting for
+    /// linking, it shows link codes there.
+    pub person: Option<Person<'a>>,
     /// With the recovery key, the devices its person names: then, waiting for linking, it links
     /// with the account's recovery key instead.
     pub recovery: Option<&'a recovery_link::Named>,
@@ -406,27 +409,30 @@ impl Setup<'_> {
         }
     }
 
-    /// Waits for linking: at a terminal, by link codes it shows ([`link_code::show`]), first saying,
-    /// if `offered`, that the account's recovery key links it too.
+    /// Waits for linking: by link codes it shows its person ([`link_code::show`]), first saying, if
+    /// `offered`, that the account's recovery key links it too.
     fn wait(self, offered: bool) -> Done {
-        if !self.interactive {
+        let Some(person) = self.person else {
             waits();
             return Ok(());
-        }
+        };
         if offered {
             println!(
                 "To link this device with the account's recovery key instead, run skald sign-in \
                  --first-device no --with-recovery-key at a terminal."
             );
         }
-        link_code::show(&mut link_code::NewDevice {
-            connection: self.connection,
-            state: self.state,
-            token: self.token,
-            account: self.account,
-            device: &self.device,
-            keys: self.keys,
-        })
+        link_code::show(
+            &mut link_code::NewDevice {
+                connection: self.connection,
+                state: self.state,
+                token: self.token,
+                account: self.account,
+                device: &self.device,
+                keys: self.keys,
+            },
+            person,
+        )
     }
 
     /// `POST /devices`: the same registration again, after a lost answer, is taken too.
@@ -484,8 +490,13 @@ impl Setup<'_> {
             First::Yes => true,
             First::No => false,
             First::Ask => {
-                let answer = ask_first(&mut io::stdin().lock(), &mut io::stdout())
-                    .map_err(|err| sign_in::Error::Io(format!("cannot ask the user: {err}")))?;
+                let answer = match self.person {
+                    Some(person @ Person::Page(_)) => {
+                        person.ask(FIRST_QUESTION).map_err(sign_in::Error::Io)?
+                    }
+                    _ => ask_first(&mut io::stdin().lock(), &mut io::stdout())
+                        .map_err(|err| sign_in::Error::Io(format!("cannot ask the user: {err}")))?,
+                };
                 let Some(first) = answer else {
                     println!(
                         "This device is not linked yet: it needs to know whether it is the \
