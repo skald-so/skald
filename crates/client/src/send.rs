@@ -8,10 +8,10 @@
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
 //! there waits for the server or no other device is in the group and no service agent gets a copy
-//! (`docs/protocol/membership.md`, "Admitted devices"). The content is from the person address or the agent's, to the agent
-//! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
-//! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
-//! "Content"). With it go its copies under `hpke` to service agents outside the channel's group
+//! (`docs/protocol/membership.md`, "Admitted devices"). The content is from the person address or
+//! the agent's, to the agent `--to` names or, for `--all`, to no one in particular, with `hops` 0,
+//! the device's next `counter` in the channel and an A2A message with the text
+//! (`docs/protocol/README.md`, "Content"). With it go its copies under `hpke` to service agents outside the channel's group
 //! ([`crate::copies`]), each with the counter the device keeps for that agent in the channel; the
 //! run warns when it sends an agent its first copy of the channel's messages.
 //!
