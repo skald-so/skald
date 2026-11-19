@@ -98,8 +98,8 @@ pub fn perform(
 /// The default name of an agent of the MCP client named `client` on the device `device` named
 /// `device_name`: the client's name, the device's name and the first [`REFERENCE`] characters of
 /// the base32 of SHA-256 of the device ID's bytes, joined with `-`. Each name is made as
-/// [`name_part`] makes it, and left out if empty. Over 63 characters, the device's name is cut from its end, then, once it is gone, the
-/// client's, each cut name's `-` at its end trimmed.
+/// [`name_part`] makes it, and left out if empty. Over 63 characters, the device's name is cut
+/// from its end, then, once it is gone, the client's, each cut name's `-` at its end trimmed.
 pub fn default_name(client: &str, device_name: &str, device: DeviceId) -> Name {
     let reference = &forms::hashed(device.as_bytes())[..REFERENCE];
     let room = NAME_MOST - REFERENCE - 1;

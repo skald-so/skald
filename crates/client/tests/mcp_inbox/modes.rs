@@ -1,4 +1,4 @@
-//! Tool calls one-shot and through the helper, as a command runs (`helper/main.rs`), and calls
+//! Tool calls one-shot and through the helper, as a command runs (`helper/main.rs`), and a call
 //! after the binary was replaced by a newer one while the server runs.
 
 use std::path::Path;
@@ -7,9 +7,8 @@ use std::time::{Duration, Instant};
 
 use crate::agents::Agents;
 use crate::common::CLIENT as SKALD;
-use crate::helped::{
-    EXIT_LIMIT, Helped, ONE_SHOT, ONE_SHOT_SETTING, VERSION_SETTING, older, times,
-};
+use crate::helped::EXIT_LIMIT;
+use crate::helped::{Helped, ONE_SHOT, ONE_SHOT_SETTING, VERSION_SETTING, older, times};
 use crate::lines::assert_handed_line;
 use crate::talk::Line;
 use crate::{CLIENT, MCP, Session, assert_nothing_waiting};
@@ -25,9 +24,10 @@ const REPLACED: [&str; 3] = [
     "replace test: kept while the update ran",
     "replace test: after the update",
 ];
-const UPDATED: [&str; 2] = [
+const UPDATED: [&str; 3] = [
     "replace test: read with no helper running",
     "replace test: read one-shot",
+    "replace test: read one-shot with no newer copy",
 ];
 
 /// The settings and the arguments before `mcp` of a session.
@@ -114,7 +114,9 @@ fn call_after_the_binary_is_replaced_by_a_newer_one_is_served_and_loses_nothing(
         ],
     );
     let helped = Helped::new(&agents.talk.ada.machine);
-    let mut session = older_session(&helped, &agents.folder, &[]);
+    let older = older();
+    let as_older = [(VERSION_SETTING, older.as_str())];
+    let mut session = helped_session(&helped, &agents.folder, (&as_older, &[]));
     let bob = agents.bob();
     let first = agents.bob_sends(&Line::new(&bob, 1, REPLACED[0]));
     assert_handed_line(&session.inbox(), REPLACED[0], first);
@@ -167,22 +169,13 @@ fn call_after_the_binary_is_replaced_with_no_helper_running_is_served_by_the_new
     assert_eq!(after, [newer], "the helper was not of the newer version");
 }
 
-/// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
-/// with `--one-shot` and acts as an older version. The copy is replaced by a newer one that
-/// records each of its runs' arguments. Bob's device sends a message to the channel, and the
-/// session's `inbox` shows it once, by its reference: the newer copy ran it, one-shot.
+/// Replaces `helped`'s copy with one of the same version that records the arguments of each of its
+/// runs; gives the runs it recorded so far, a line each.
 #[cfg(unix)]
-#[test]
-fn one_shot_call_after_the_binary_is_replaced_is_run_by_the_newer_one() {
+fn recording(helped: &Helped) -> impl Fn() -> String {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    let mut agents = Agents::new(
-        [4_627_044_001, 4_627_044_002],
-        ["ada-updates-one-shot", "bob-writes-past-a-one-shot-update"],
-    );
-    let helped = Helped::new(&agents.talk.ada.machine);
-    let mut session = older_session(&helped, &agents.folder, &[ONE_SHOT]);
     let bin = helped.exe().parent().expect("the copy is in bin/");
     let (real, runs, recording) = (bin.join("real"), bin.join("runs"), bin.join("recording"));
     fs::copy(SKALD, &real).expect("copy skald");
@@ -194,19 +187,86 @@ fn one_shot_call_after_the_binary_is_replaced_is_run_by_the_newer_one() {
     fs::write(&recording, script).expect("write the recording copy");
     fs::set_permissions(&recording, fs::Permissions::from_mode(0o755)).expect("make it runnable");
     helped.replace(&recording);
+    move || fs::read_to_string(&runs).unwrap_or_default()
+}
+
+/// Whether one of `runs`, as [`recording`] gives them, was `skald mcp` with `--one-shot`.
+#[cfg(unix)]
+fn ran_one_shot_mcp(runs: &str) -> bool {
+    runs.lines().any(|run| {
+        let args: Vec<&str> = run.split_whitespace().collect();
+        args.contains(&MCP) && args.contains(&ONE_SHOT)
+    })
+}
+
+/// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
+/// with `--one-shot` and acts as an older version. The copy is replaced by a newer one that
+/// records each of its runs' arguments. Bob's device sends a message to the channel, and the
+/// session's `inbox` shows it once, by its reference: the newer copy ran it, one-shot.
+#[cfg(unix)]
+#[test]
+fn one_shot_call_after_the_binary_is_replaced_is_run_by_the_newer_one() {
+    let mut agents = Agents::new(
+        [4_627_044_001, 4_627_044_002],
+        ["ada-updates-one-shot", "bob-writes-past-a-one-shot-update"],
+    );
+    let helped = Helped::new(&agents.talk.ada.machine);
+    let mut session = older_session(&helped, &agents.folder, &[ONE_SHOT]);
+    let runs = recording(&helped);
     let bob = agents.bob();
     let id = agents.bob_sends(&Line::new(&bob, 1, UPDATED[1]));
 
     let shown = session.inbox();
 
     assert_handed_line(&shown, UPDATED[1], id);
-    let runs = fs::read_to_string(&runs).unwrap_or_default();
-    let ran = runs.lines().any(|run| {
-        let args: Vec<&str> = run.split_whitespace().collect();
-        args.contains(&MCP) && args.contains(&ONE_SHOT)
-    });
+    let runs = runs();
     assert!(
-        ran,
+        ran_one_shot_mcp(&runs),
         "the newer copy did not run the call one-shot: {runs:?}"
     );
+}
+
+/// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
+/// with `--one-shot`. The copy is replaced by one of the same version that records each of its
+/// runs' arguments. Bob's device sends a message to the channel, and the session's `inbox` shows
+/// it once, by its reference: the session ran it, as the installed copy is not newer.
+#[cfg(unix)]
+#[test]
+fn one_shot_call_with_no_newer_binary_installed_is_run_by_the_session() {
+    let mut agents = Agents::new(
+        [4_627_046_001, 4_627_046_002],
+        ["ada-keeps-her-version", "bob-writes-to-a-current-session"],
+    );
+    let helped = Helped::new(&agents.talk.ada.machine);
+    let mut session = helped_session(&helped, &agents.folder, (&[], &[ONE_SHOT]));
+    let runs = recording(&helped);
+    let bob = agents.bob();
+    let id = agents.bob_sends(&Line::new(&bob, 1, UPDATED[2]));
+
+    let shown = session.inbox();
+
+    assert_handed_line(&shown, UPDATED[2], id);
+    let runs = runs();
+    assert!(
+        !ran_one_shot_mcp(&runs),
+        "the installed copy ran the call: {runs:?}"
+    );
+}
+
+/// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
+/// through a helper of its own version. Its `inbox` with nothing waiting gives one short line, and
+/// no error.
+#[test]
+fn inbox_through_a_helper_with_nothing_waiting_gives_one_short_line() {
+    let agents = Agents::new(
+        [4_627_045_001, 4_627_045_002],
+        ["ada-reads-an-empty-inbox", "bob-says-nothing-yet"],
+    );
+    let helped = Helped::new(&agents.talk.ada.machine);
+    let mut session = helped_session(&helped, &agents.folder, (&[], &[]));
+
+    let shown = session.inbox();
+
+    assert_nothing_waiting(&shown);
+    one_helper_beside(&helped, &session);
 }
