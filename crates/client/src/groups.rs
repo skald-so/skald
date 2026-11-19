@@ -69,6 +69,7 @@ use crate::history;
 use crate::key_chain;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
+use crate::recv;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
@@ -1570,10 +1571,11 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 /// Encrypts the content `content` gives for a new message ID and the device's next counter in
 /// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
 /// devices, in the channel's group, and puts the `mls` envelope in the outbox, as from `agent` if
-/// given, with the state it leaves and the message's history entry ([`crate::history`]); gives its
-/// message ID. Sends
-/// nothing, and says why, while a member device of the group is not admitted, while a Commit of
-/// this device in the channel waits for the server, or when no other device is in the group.
+/// given, with the state it leaves, the message's history entry ([`crate::history`]) and what keeps
+/// it for this device once the server stores it ([`recv::own_message`]); gives its message ID.
+/// Sends nothing, and says why, while a member device of the group is not admitted, while a Commit
+/// of this device in the channel waits for the server, or when no other device is in the group
+/// and nothing on this device gets the message.
 pub fn encrypt(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
@@ -1661,12 +1663,6 @@ fn encrypted(
                  nothing is sent there until the server stores it"
             ));
         }
-        if members.iter().all(|member| member.device == follower.this) {
-            return unsent(format!(
-                "no device can receive the message: the group of the channel {channel} holds no \
-                 other device; nothing is sent"
-            ));
-        }
         let last = follower.state.channel_counter(channel).map_err(text)?;
         let counter = last
             .checked_add(1)
@@ -1674,6 +1670,23 @@ fn encrypted(
             .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
         let msg_id = MessageId::generate();
         let content = content(msg_id, counter);
+        let (own, gets) = match &sending {
+            Sending::Message(agent) => {
+                let key = key_packages::state_key(&follower.secrets, sealed)?;
+                let seq = follower.state.next_own_seq().map_err(text)?;
+                let at = ((space, channel, msg_id), seq);
+                let (own, gets) = recv::own_message(follower, &key, at, (&content, *agent))?;
+                (Some(own), gets)
+            }
+            Sending::Receipt(_) => (None, false),
+        };
+        if !gets && members.iter().all(|member| member.device == follower.this) {
+            return unsent(format!(
+                "no device can receive the message: the group of the channel {channel} holds no \
+                 other device, and no agent of this device in the space, nor its person, gets it; \
+                 nothing is sent"
+            ));
+        }
         let epoch = device.epoch(channel).map_err(|err| failed(channel, err))?;
         let judgments = follower.state.judgments(channel).map_err(text)?;
         let entry = history::entry(
@@ -1707,6 +1720,7 @@ fn encrypted(
             messages: vec![message],
             entries: entry.into_iter().collect(),
             issued: issued.unwrap_or_default(),
+            own: own.into_iter().collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), changes, Ok(msg_id)))

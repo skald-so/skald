@@ -31,6 +31,12 @@ fn retained(settings: &mut Settings) {
     settings.mailbox_retention = Some(Duration::from_secs(WEEK));
 }
 
+/// The lines of `shown`, an agent's output, that refer to `msg_id` and are no message.
+fn statuses_referring_to(shown: &str, msg_id: MessageId) -> Vec<String> {
+    let lines = lines_referring_to(shown, msg_id).into_iter();
+    lines.filter(|line| agent_line(line).is_none()).collect()
+}
+
 /// Fails unless `shown`, an agent's output, says `expired` on one line, which is no message, by a
 /// reference of `msg_id`.
 #[track_caller]
@@ -48,8 +54,9 @@ fn assert_says_expired(shown: &str, msg_id: MessageId) {
 /// With a mailbox retention of a week, claude sends a message to the channel from `~/work/acme`
 /// while Bob's device is offline, and the server expires it once its storing time is moved back
 /// past the retention. claude then sends another message, and codex one; Bob's device reads both.
-/// claude's next `skald recv` says `expired` of its first message, by its reference, and nothing of
-/// its second or of codex's message; codex's says nothing of any of them; neither holds a UUID.
+/// claude's next `skald recv` says `expired` of its first message, by its reference, and no status
+/// of its second or of codex's message; codex's says no status of any of them; neither holds a
+/// UUID. Each shows the other's messages, as the device hands its own messages to its agents.
 /// The person's next `skald recv` then shows each of the three statuses once, in full: `expired`
 /// of claude's first message and `delivered` of the other two, each with Bob's device.
 #[test]
@@ -83,13 +90,13 @@ fn agent_sees_only_expired_of_its_own_messages_and_the_person_sees_every_status(
     assert_says_expired(&claude, expires);
     for shown in [&claude, &codex] {
         for id in [reaches, of_codex] {
-            let lines = lines_referring_to(shown, id);
+            let lines = statuses_referring_to(shown, id);
             assert!(lines.is_empty(), "a status of {id}: {lines:?}");
         }
         assert!(!shown.to_lowercase().contains(DELIVERED), "{shown}");
         assert_no_uuid(shown);
     }
-    let lines = lines_referring_to(&codex, expires);
+    let lines = statuses_referring_to(&codex, expires);
     assert!(lines.is_empty(), "codex is told of claude's: {lines:?}");
 
     let person = received(&agents.talk.ada.machine).shown();

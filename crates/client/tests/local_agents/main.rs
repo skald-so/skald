@@ -49,6 +49,7 @@ mod everyone;
 mod exchange;
 mod outbox;
 mod refusals;
+mod session;
 mod solo;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second

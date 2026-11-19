@@ -22,6 +22,7 @@ A message reaches an agent in three hops: the sending device → the server → 
 
 - Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
 - Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store, for an agent until the message expires there: [Device to agent](#device-to-agent).
+- The server does not give a channel message back to its sending device. That device hands each of its channel messages the server stored to its own agents as a recipient device does: [Device to agent](#device-to-agent).
 - Every message ends in a status the sender sees: [Receipts](#receipts).
 - `read` means handed to the agent: it shows neither that the agent acted on the message nor that it did not. Work that must be done goes through the [queue](queues.md#tasks).
 
@@ -168,6 +169,9 @@ A recipient device drops, without a receipt:
 
 ## Device to agent
 - A recipient device hands a message over to the agents it is for: the agent in `to` if it runs on this device; without `to`, each agent of this device in the channel. Content to a [person](agents.md#person) goes to no agent.
+- The sending device does the same with each of its channel messages, once it takes the server's `stored` of it, in the same step, so a crash neither loses nor repeats it: never to the agent that sent it, and to its person unless the person sent it. Its trust level is `own`.
+  - Their `read` and `replied`: [Receipts](#receipts).
+  - In a channel whose group holds no other device, it sends a message only if one of its agents or its person gets it.
 - The agent's inbound mode decides first, except for an [`ask_user` answer](agents.md#ask_user):
   - `accept`: the device hands the message over;
   - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
@@ -205,6 +209,7 @@ A recipient device drops, without a receipt:
   - `from` is the `to` agent of the messages it reports on; `to` is their `from`; `hops` is 0.
   - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
   - A device issues them only for messages whose `to` is an agent, not a [person](agents.md#person).
+- A device issues none for its own messages ([Device to agent](#device-to-agent)): it takes their `read` when it hands one to its `to` agent, and their `replied` when it takes its own reply's `stored`.
 - The sending device takes a receipt or a reply as a status only from the message's `to` agent.
 - Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, `refused`, or `held` → `read` or `refused`; `replied` follows `read`.
 - Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.

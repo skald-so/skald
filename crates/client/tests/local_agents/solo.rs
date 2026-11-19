@@ -9,9 +9,9 @@ use skald_proto::{ChannelId, MessageId, Role};
 
 use crate::client::{Called, MCP, Session};
 use crate::kit::{Change, bind_client_a, create_space, latest, received, revise};
-use crate::lines::{SENT, agent_line_of, assert_handed_line, assert_says_sent};
+use crate::lines::{SENT, agent_line_of, assert_no_uuid, assert_says_sent, refers_to};
 use crate::machine::{Finished, Machine};
-use crate::senders::assert_labelled;
+use crate::senders::{assert_labelled, labelled_of};
 use crate::talk::{BOB_HOST, Talk, messages_sent, one_message_sent};
 use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, Person, dir_of, path, run};
 
@@ -200,10 +200,17 @@ pub fn session_in(machine: &Machine, dir: &Path, agent: &str) -> Session {
 }
 
 /// Fails unless `shown`, an agent's output, shows `text` once as the message `msg_id`, from
-/// `sender`'s `(from, device, level)`: `from` by the device named `device` at `level`.
+/// `sender`'s `(from, device, level)`: `from` by the device named `device` at `level`. A reply's
+/// line names the message it answers after its reference: `#<ref> (reply to #<ref>): <text>`.
 #[track_caller]
 pub fn assert_got(shown: &str, text: &str, msg_id: MessageId, sender: (&str, &str, &str)) {
-    assert_handed_line(shown, text, msg_id);
+    let got = labelled_of(shown, text, text);
+    let reference = got.reference.split(' ').next().unwrap_or_default();
+    assert!(
+        refers_to(reference, msg_id),
+        "#{reference} does not refer to {msg_id}: {shown}"
+    );
+    assert_no_uuid(shown);
     assert_labelled(shown, text, sender);
 }
 

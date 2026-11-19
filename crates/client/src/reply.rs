@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use skald_crypto::StateKey;
-use skald_proto::{Address, DeviceId, Header, MessageId, Name, VersionRange};
+use skald_proto::{Address, ChannelId, DeviceId, MessageId, Name, SpaceId, VersionRange};
 
 use crate::connection::printable;
 use crate::devices::text;
@@ -214,28 +214,28 @@ fn open(key: &StateKey, this: DeviceId, target: &Target) -> Option<Sealed> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// The `replied` a message with `header` from the device `sender`, named `name`, from `from`, a
-/// reply to `original`, gives the message `original` the device sent, by `state`: only if it is in
-/// that message's space and channel, and from its `to`, an agent.
+/// The `replied` a message in `channel` of `space` from the device `sender`, named `name`, from
+/// `from`, a reply to `original`, gives the message `original` the device sent, by `state`: only if
+/// it is in that message's space and channel, and from its `to`, an agent.
 pub fn replied(
     state: &State,
-    (header, sender, from, name): (&Header, DeviceId, &Address, &str),
+    ((space, channel), sender, from, name): ((SpaceId, ChannelId), DeviceId, &Address, &str),
     original: MessageId,
 ) -> Result<Option<Replied>, String> {
     let Some(sent) = state.sent(original).map_err(text)? else {
         return Ok(None);
     };
     let to = (sent.addressee.as_deref()).and_then(|to| to.parse::<Address>().ok());
-    let answers = sent.space == header.space
-        && sent.channel == header.channel
+    let answers = sent.space == space
+        && sent.channel == channel
         && to.is_some_and(|to| !to.is_person() && &to == from);
     if !answers {
         return Ok(None);
     }
     let status = forms::Status {
         msg_id: original.to_string(),
-        space: Some(header.space.to_string()),
-        channel: Some(header.channel.to_string()),
+        space: Some(space.to_string()),
+        channel: Some(channel.to_string()),
         status: forms::REPLIED.to_owned(),
         device: Some(sender.to_string()),
         device_name: Some(name.to_owned()),
@@ -244,7 +244,7 @@ pub fn replied(
     };
     Ok(Some(Replied {
         msg_id: original,
-        space: header.space,
+        space,
         status: serde_json::to_string(&status).expect("a status encodes"),
         agent: sent.agent,
     }))
@@ -252,8 +252,6 @@ pub fn replied(
 
 #[cfg(test)]
 mod tests {
-    use skald_proto::{ChannelId, SpaceId};
-
     use super::*;
 
     /// A message to reply to, of `msg_id`, by its entry `seq`.

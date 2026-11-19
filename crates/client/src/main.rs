@@ -411,8 +411,10 @@ enum Command {
     /// an agent, only in the space of the agent's folder. It first accepts the space's latest
     /// roster revisions and goes through the mailbox as skald recv does, showing nothing, then
     /// encrypts the message in the channel's MLS group and has the server store it as one envelope
-    /// to the group. Sends nothing, and says why, while the group holds a device the channel does
-    /// not admit or no other device, or while this device's Commit there waits for the server.
+    /// to the group; once stored, this device's other agents it is for get it, and its person,
+    /// unless the person sent it. Sends nothing, and says why, while the group holds a device the
+    /// channel does not admit, or no other device and nothing on this device gets the message, or
+    /// while this device's Commit there waits for the server.
     /// Says the message's ID and whether the server stored it; as an agent, only sent #<ref> once
     /// it is stored, by the message's reference as skald recv says. What the server has not stored
     /// within the request timeout waits in the local state, and the next skald send or skald recv
