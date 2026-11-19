@@ -755,13 +755,15 @@ fn recovery_named(
 ) -> Result<recovery_link::Named, String> {
     if !person_at_terminal {
         return Err(
-            "skald reads the recovery key only from its person typing it at a terminal, never              from a pipe, an argument or the environment, and not as an agent; nothing is signed"
+            "skald reads the recovery key only from its person typing it at a terminal, never \
+             from a pipe, an argument or the environment, and not as an agent; nothing is signed"
                 .to_owned(),
         );
     }
     if matches!(first_device, Some(Answer::Yes)) {
         return Err(
-            "the account's first device has no recovery key to link with: run skald sign-in              --first-device no --with-recovery-key"
+            "the account's first device has no recovery key to link with: run skald sign-in \
+             --first-device no --with-recovery-key"
                 .to_owned(),
         );
     }

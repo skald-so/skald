@@ -1,6 +1,6 @@
 //! Revocations a device linked with the recovery key signed whose answers were lost: the next run
 //! that connects sends them again, with the same bytes, and a later run with the recovery key on
-//! the same device finishes what a killed run left.
+//! the same device finishes what a killed run left, with the certificate it stored.
 
 use crate::linked::devices_of;
 use crate::machine::Machine;
@@ -8,8 +8,8 @@ use crate::relay::Lose;
 use crate::revocations::STORE_REVOCATION;
 use crate::world::World;
 use crate::{
-    ADA_HOST, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, new_device, played,
-    recovered, revoked_once_by, sign_up,
+    ADA_HOST, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, cert_of, new_device,
+    played, recovered, revocations_of, revoked_once_by, sign_up,
 };
 
 /// The relay withholds the server's answer to the master-key revocation of Ada's stolen first
@@ -66,4 +66,39 @@ fn a_lost_answer_to_the_new_devices_revocation_is_recovered_by_the_next_run() {
         let sent = cloud.count_sent(since, STORE_REVOCATION);
         assert!(sent >= 2, "{how:?}: sent {sent} times: {ended:?}");
     }
+}
+
+/// The request whose answer gives the account's anchors objects, as its line starts.
+const GIVE_ANCHORS: &str = "GET /account/anchors ";
+
+/// The relay withholds the server's answer to the anchors request of Ada's new machine, after the
+/// server stored its certificate and before it revokes her lost first device, and the run is
+/// killed. A later run with the recovery key on the same machine finishes with that certificate:
+/// the server holds it still, and a revocation of the first device by the new one.
+#[test]
+fn a_run_killed_after_its_certificate_is_stored_is_finished_with_that_certificate() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = sign_up(&world, (4_176_700_301, "ada-recovery-stored"), ADA_HOST);
+    let first = ada.person.device;
+    let machine = Machine::new().with_host_name(NEW_HOST);
+    let named = [(LOST, first)];
+    cloud.relay.lose_answer(GIVE_ANCHORS, Lose::Withhold);
+
+    let losing = || cloud.relay.lost() > 0;
+    let key = (ada.user(), Some(ada.key.as_str()));
+    let killed = played(&world, key, &machine, &named, losing).kill();
+    assert_eq!(cloud.relay.lost(), 1, "no answer lost: {killed:?}");
+    let new = new_device(cloud, &ada.person, &[first]);
+    let stored = cert_of(cloud, &ada.person, new).expect("the certificate stored");
+    assert!(
+        revocations_of(cloud, &ada.person, first).is_empty(),
+        "the first device revoked: {killed:?}"
+    );
+
+    recovered(&world, &ada, &machine, &named);
+
+    assert_eq!(cert_of(cloud, &ada.person, new), Some(stored));
+    assert_certified_by_the_master_key(cloud, &ada.person, new);
+    revoked_once_by(cloud, &ada.person, first, Some(new));
 }

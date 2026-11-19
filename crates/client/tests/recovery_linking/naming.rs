@@ -2,8 +2,11 @@
 //! the master key, keeping the devices named kept, which voids the revocations the stolen devices
 //! signed, unless named kept revoked; lost or wiped ones it revokes with its own key.
 
-use skald_crypto::DeviceCheckError;
-use skald_proto::DeviceId;
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde_json::Value;
+use skald_crypto::{DeviceCheckError, SigningKey, sign_revocation};
+use skald_proto::{Cbor as _, DeviceId, RevocationBody, Unknown};
 
 use crate::devices::second_machine;
 use crate::linked::{SECOND_HOST, THIRD_HOST, checked_by_member, revoke_keeping};
@@ -142,5 +145,55 @@ fn a_device_named_kept_revoked_stays_revoked_after_its_revoker_is_revoked_as_sto
         }
         let first = checked_by_member(cloud, member, &ada.person.master, ada.person.device);
         assert!(first.is_ok(), "the first device: {first:?}");
+    }
+}
+
+/// The request whose answer lists the account's devices and revocations, as its line starts.
+const LIST_DEVICES: &str = "GET /devices ";
+
+/// The proxy lists, beside the account's revocations, one of Ada's first device signed by another
+/// key in place of the master key, when she names it stolen, or in place of her new device's, when
+/// she names it lost, as a compromised server would. Her new machine revokes it all the same: the
+/// server then holds one revocation of the first device, by the master key or by the new device.
+#[test]
+fn a_listed_revocation_that_does_not_verify_does_not_stand_for_the_new_devices_own() {
+    for (option, user) in [
+        (STOLEN, (4_176_200_301, "ada-recovery-forged-stolen")),
+        (LOST, (4_176_200_401, "ada-recovery-forged-lost")),
+    ] {
+        let world = World::start();
+        let cloud = &world.cloud;
+        let ada = sign_up(&world, user, ADA_HOST);
+        let (first, account) = (ada.person.device, ada.person.account);
+        let by_master = option == STOLEN;
+        let forger = SigningKey::generate().to_bytes();
+        cloud.relay.rewrite(LIST_DEVICES, move |answer| {
+            let mut list: Value = serde_json::from_str(answer).unwrap_or(Value::Null);
+            let new = (list["devices"].as_array().into_iter().flatten())
+                .filter_map(|entry| entry["device"].as_str()?.parse::<DeviceId>().ok())
+                .find(|device| *device != first);
+            let body = RevocationBody {
+                account,
+                device: first,
+                keep: None,
+                signer: if by_master { None } else { new },
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            };
+            let forged =
+                sign_revocation(&body, &SigningKey::from_bytes(&forger)).expect("a revocation");
+            if let Some(listed) = list["revocations"].as_array_mut() {
+                listed.push(Value::String(URL_SAFE_NO_PAD.encode(forged.to_cbor())));
+            }
+            list.to_string()
+        });
+        let machine = Machine::new().with_host_name(NEW_HOST);
+
+        recovered(&world, &ada, &machine, &[(option, first)]);
+
+        let new = new_device(cloud, &ada.person, &[first]);
+        let signer = if by_master { None } else { Some(new) };
+        revoked_once_by(cloud, &ada.person, first, signer);
     }
 }

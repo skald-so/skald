@@ -18,11 +18,11 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
     RecoveryKey, SigningKey, check_account, check_anchors, check_device, counts, marked_stolen,
-    open_master_backup, sign_revocation,
+    open_master_backup, sign_revocation, verify,
 };
 use skald_proto::{
     AccountId, AccountRecord, Anchors, Cbor as _, Cert, CertBody, DeviceId, DeviceKind,
-    MasterBackup, NonEmpty, Revocation, RevocationBody, Roster, SpaceId, Unknown,
+    MasterBackup, NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, Roster, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
@@ -485,7 +485,7 @@ impl Plan {
         let mut signed = Vec::new();
         let mut also_listed: Vec<DeviceId> = Vec::new();
         for &device in &self.named.stolen {
-            if let Some(held) = held_by(&all, device, None) {
+            if let Some(held) = held_by(&all, (account, device), (None, master)) {
                 also_listed.extend(held.body().also.iter().flat_map(|also| also.iter()));
                 continue;
             }
@@ -535,7 +535,8 @@ impl Plan {
     ) -> Result<Vec<Revocation>, sign_in::Error> {
         let mut signed = Vec::new();
         for &device in &self.named.lost {
-            if held_by(&devices.revocations, device, Some(this)).is_some() {
+            let held = (Some(this), &key.public_key());
+            if held_by(&devices.revocations, (account, device), held).is_some() {
                 continue;
             }
             let body = RevocationBody {
@@ -559,15 +560,27 @@ fn sign(body: &RevocationBody, key: &SigningKey) -> Result<Revocation, sign_in::
         .map_err(|err| sign_in::Error::Recovery(format!("a revocation does not encode: {err}")))
 }
 
-/// A revocation among `revocations` of `device` by `signer`, the master key if `None`.
-fn held_by(
-    revocations: &[Revocation],
-    device: DeviceId,
-    signer: Option<DeviceId>,
-) -> Option<&Revocation> {
-    revocations
-        .iter()
-        .find(|revocation| revocation.body().device == device && revocation.body().signer == signer)
+/// A revocation among `revocations` of `device` of `account` by `signer`, the master key if
+/// `None`, that verifies with `key`, the signer's public key: one the server lists that does not
+/// verify counts as none.
+fn held_by<'r>(
+    revocations: &'r [Revocation],
+    (account, device): (AccountId, DeviceId),
+    (signer, key): (Option<DeviceId>, &[u8; 32]),
+) -> Option<&'r Revocation> {
+    revocations.iter().find(|revocation| {
+        let body = revocation.body();
+        body.account == account
+            && body.device == device
+            && body.signer == signer
+            && verify(
+                key,
+                REVOCATION_LABEL,
+                &[revocation.body_bytes()],
+                revocation.signature(),
+            )
+            .is_ok()
+    })
 }
 
 /// The devices named by the revocations of `all` that `stolen`, a master-key revocation, voids:
@@ -990,6 +1003,46 @@ mod tests {
             .by_device(&key, &ada.devices, ada.id, this)
             .expect("none");
         assert_eq!(again, vec![]);
+    }
+
+    #[test]
+    fn a_listed_revocation_that_does_not_verify_does_not_stop_the_device_revoking() {
+        let key = SigningKey::generate();
+        let this = DeviceId::from_signing_key(&key.public_key());
+        let mut ada = Account {
+            this,
+            ..Account::new()
+        };
+        let (a, c) = (ada.device(A), ada.device(C));
+        let other = SigningKey::generate();
+        let forged = |device, signer| {
+            let body = RevocationBody {
+                account: ada.id,
+                device,
+                keep: None,
+                signer,
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            };
+            sign_revocation(&body, &other).expect("a revocation")
+        };
+        let listed = [forged(a, None), forged(c, Some(this))];
+        ada.devices.revocations.extend(listed);
+        let named = Named {
+            stolen: vec![a],
+            lost: vec![c],
+            ..Named::default()
+        };
+
+        let by_master = ada.by_master(&named).expect("signed");
+        let plan = ada.plan(&named).expect("a plan");
+        let by_device = (plan.by_device(&key, &ada.devices, ada.id, this)).expect("signed");
+
+        assert_eq!(by_master.len(), 1, "{by_master:?}");
+        assert!(signed_by(&by_master[0], &ada.master), "{by_master:?}");
+        assert_eq!(by_device.len(), 1, "{by_device:?}");
+        assert!(signed_by(&by_device[0], &key), "{by_device:?}");
     }
 
     /// Whether `revocation` verifies with `key`.

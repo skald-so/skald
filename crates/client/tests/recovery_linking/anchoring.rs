@@ -168,8 +168,8 @@ fn the_new_device_starts_from_the_anchors_of_devices_not_named_stolen() {
 }
 
 /// The server gives, in place of the third device's anchors object, one signed with its key that
-/// anchors `acme` at a fork of revision 5, off the chain of the second device's anchor. The new
-/// machine warns of `acme` and does not follow it.
+/// anchors `acme` at a fork of revision 5, off the chain of the second device's anchor, and gives
+/// that fork among `acme`'s revisions. The new machine warns of `acme` and does not follow it.
 #[test]
 fn an_anchor_off_the_chain_keeps_the_new_device_out_of_the_space() {
     let anchored = Anchored::new(
@@ -186,6 +186,19 @@ fn an_anchor_off_the_chain_keeps_the_new_device_out_of_the_space() {
         body.anchors.retain(|(space, _)| *space != acme);
         body.anchors.push((acme, forked));
     });
+    let listed = Value::String(URL_SAFE_NO_PAD.encode(fork.to_cbor()));
+    let revisions = format!("GET /spaces/{acme}/revisions");
+    anchored
+        .world
+        .cloud
+        .relay
+        .rewrite(&revisions, move |answer| {
+            let mut given: Value = serde_json::from_str(answer).unwrap_or(Value::Null);
+            if let Some(list) = given["revisions"].as_array_mut() {
+                list.push(listed.clone());
+            }
+            given.to_string()
+        });
 
     let (machine, shown) = anchored.recover();
 
