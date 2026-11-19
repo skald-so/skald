@@ -642,6 +642,8 @@ enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
     Json(Method, &'a [u8]),
+    /// JSON, `POST`ed with the device's proof `proof`.
+    ProvedJson { json: &'a [u8], proof: &'a str },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
     /// the timeout.
     Frame {
@@ -834,6 +836,16 @@ impl Connection {
         self.http(path, Some(token), Body::Json(method, json))
     }
 
+    /// `POST <path>` of the JSON `json` as the device of `proof`, on the device session of `token`.
+    pub fn post_json_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        json: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::ProvedJson { json, proof })
+    }
+
     /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
     /// of the answer that serves it, awaited for `wait` more than the timeout.
     pub fn post_frame_as(
@@ -871,6 +883,12 @@ impl Connection {
                 }
                 .content_type("application/json")
                 .send(json),
+                Body::ProvedJson { json, proof } => {
+                    with_headers(agent.post(&url), &version, bearer)
+                        .header(PROOF_HEADER, proof)
+                        .content_type("application/json")
+                        .send(json)
+                }
                 Body::Frame { frame, proof, .. } => {
                     with_headers(agent.post(&url), &version, bearer)
                         .header(PROOF_HEADER, proof)

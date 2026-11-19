@@ -4,17 +4,17 @@
 
 use skald_proto::DeviceKind;
 
-use crate::api::assert_refused;
 use crate::common::devices::{DEVICES as REGISTER, Device};
 use crate::limits::{DEVICES, add_devices};
+use crate::upload::{assert_over_limit, issued_by, put_cert};
 use crate::usage::{Web, account_usage, of};
 
 /// With the setting at 4: alice's laptop is certified and her desktop waits for linking: 1 of 4.
 /// Her laptop certifies `Tablet`, `Phone` and a `service` device: 3 of 4. It revokes `Phone`: 2
 /// of 4. Her master key revokes the laptop, keeping `Tablet` and `Phone`, which voids the laptop's
 /// revocation of `Phone`: `Tablet` and `Phone`, 2 of 4. With 2 more certified by her master key, 4
-/// of 4: her next device does not register, and the count stays at 4. Bob's stays at 1 of 4
-/// throughout.
+/// of 4: her next device registers, its certificate by `Tablet` is refused, and the count stays at
+/// 4. Bob's stays at 1 of 4 throughout.
 #[test]
 fn the_count_leaves_out_devices_waiting_for_linking_revoked_and_service_ones() {
     let web = Web::with(3_226_300_001, &[DEVICES, "4"]);
@@ -45,10 +45,14 @@ fn the_count_leaves_out_devices_waiting_for_linking_revoked_and_service_ones() {
     add_devices(db, alice, 2, DeviceKind::Client, true);
     assert_eq!(devices(&web.alice), of(4, 4), "two more");
     let next = Device::new("One too many");
-    let refused = alice
+    let registered = alice
         .session
         .call("post", REGISTER, Some(&next.registration()));
-    assert_refused(&refused, "the next device");
+    assert_eq!(registered.status, 201, "a registration at the limit");
+    let cert = issued_by(&next, alice.account, DeviceKind::Client, &tablet);
+    let base = fixture.team.flow.stand.server.base();
+    let refused = put_cert(base, alice.session.token(), next.id, &cert);
+    assert_over_limit(&refused, "the next device's certificate");
     assert_eq!(devices(&web.alice), of(4, 4), "at the limit");
     assert_eq!(devices(&web.bob), of(1, 4), "bob");
 }

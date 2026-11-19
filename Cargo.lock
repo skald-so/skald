@@ -3202,6 +3202,7 @@ dependencies = [
  "gethostname",
  "hkdf 0.13.0",
  "hpke",
+ "jiff",
  "keyring-core",
  "libc",
  "mls-rs",
@@ -3298,6 +3299,7 @@ dependencies = [
  "js-sys",
  "sha2 0.11.1",
  "wasm-bindgen-test",
+ "zeroize",
 ]
 
 [[package]]

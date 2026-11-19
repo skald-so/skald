@@ -14,6 +14,7 @@ mod link;
 mod receipt;
 mod revocation;
 mod roster;
+mod service_key;
 mod signed;
 mod trust;
 mod version;
@@ -43,13 +44,14 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
-pub use link::LinkMessage;
+pub use link::{LINK_LABEL, Link, LinkBody, LinkGrantBody, LinkMessage, LinkRequestBody};
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody, Revocations};
 pub use roster::{
     Ceilings, Channel, ChannelMember, HISTORY_MIN, Member, Mode, NEW_SPACE_HISTORY, Policy,
     ROSTER_LABEL, Role, Roster, RosterBody, ServiceAgent,
 };
+pub use service_key::ServiceKey;
 pub use signed::{Signed, SignedBody};
 pub use trust::{TrustLevel, TrustLevelError};
 pub use version::{

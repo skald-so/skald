@@ -6,8 +6,8 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
-- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), the [link code](membership.md#link-code) keys of a fixed ISK, and an [account record and a master backup](membership.md#account). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, and an [account record and a master backup](membership.md#account). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -40,6 +40,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Account record](#account-record)
 - [Master backup](#master-backup)
 - [Anchors object](#anchors-object)
+- [Link object](#link-object)
 - [Link code keys](#link-code-keys)
 
 ## Envelope under `mls`
@@ -721,6 +722,40 @@ adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44
 
 ```hex
 8258a1a40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025019ac5f7849388235
+86a6c5809a18f6dd03828250019a6f1e2b3c7d4e8f5061a2b3c4d5e65820a1a1
+a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a18250
+019a6f1e2b3c7d4e8f5061a2b3c4d5ea5820c3c3c3c3c3c3c3c3c3c3c3c3c3c3
+c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30450019a6f1e2b3c7d4e8f5061a2
+b3c4d5ea58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a
+```
+
+## Link object
+
+```cbor-diag
+[
+  <<{
+    1: h'42592ce391c8869ebdf88dff1cbfc25a',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+        h'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea',
+        h'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3'
+      ]
+    ],
+    4: h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea'
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+8258a1a4015042592ce391c8869ebdf88dff1cbfc25a025019ac5f7849388235
 86a6c5809a18f6dd03828250019a6f1e2b3c7d4e8f5061a2b3c4d5e65820a1a1
 a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a18250
 019a6f1e2b3c7d4e8f5061a2b3c4d5ea5820c3c3c3c3c3c3c3c3c3c3c3c3c3c3

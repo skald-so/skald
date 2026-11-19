@@ -11,9 +11,9 @@
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
 		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
-		path /devices/*/key-packages /health /key-packages /mailbox/ack /mailbox/events
-		path /mailbox/poll /mailbox/send /openapi.json /protocol /server /service-token /session
-		path /session/challenge
+		path /devices/*/cert /devices/*/key-packages /health /key-packages /mailbox/ack
+		path /mailbox/events /mailbox/poll /mailbox/send /openapi.json /protocol /server
+		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
 		path /spaces/*/channels/*/history/wraps /spaces/*/devices /spaces/*/members

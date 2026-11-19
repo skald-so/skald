@@ -1,5 +1,5 @@
 //! Where else the server checks a device's certificate: a revoked device has none, so it does not
-//! count towards the devices limit, signs no roster revision the server stores and is no service
+//! count towards the devices limit on certificates, signs no roster revision the server stores and is no service
 //! agent in one.
 
 use serde_json::Value;
@@ -7,36 +7,42 @@ use skald_proto::{DeviceKind, Role};
 
 use crate::api::Person;
 use crate::common::device_flow::{DeviceFlow, INTERVAL, json};
-use crate::common::devices::{DEVICES as REGISTER, Device};
+use crate::common::devices::Device;
 use crate::fixture::Fixture;
 use crate::limits::{DEVICES, OVER_DEVICES, add_devices};
 use crate::rosters::{member, next, service_agent};
+use crate::upload::{issued_by, put_cert};
 
-/// The status and problem type of `POST /devices` of a new device of `person`'s account.
-fn register(person: &Person, name: &str) -> (u16, Value) {
-    let device = Device::new(name);
-    let response = person
-        .session
-        .call("post", REGISTER, Some(&device.registration()));
+/// The status and problem type of `PUT /devices/<device>/cert` of `device`'s certificate on
+/// `person`'s account, issued by `person`'s laptop, on `flow`'s server.
+fn certify(flow: &DeviceFlow, person: &Person, device: &Device) -> (u16, Value) {
+    let cert = issued_by(device, person.account, DeviceKind::Client, &person.laptop);
+    let response = put_cert(
+        flow.stand.server.base(),
+        person.session.token(),
+        device.id,
+        &cert,
+    );
     let problem = json(&response).get("type").cloned().unwrap_or(Value::Null);
     (response.status, problem)
 }
 
-/// With the devices limit at 2, alice's account has its laptop and a tablet certified, so its next
-/// registration is refused. Once alice's master key revokes the tablet, the account registers a
-/// device in its place.
+/// With the devices limit at 2, alice's account has its laptop and a tablet certified, so the
+/// certificate of her desktop, registered without one, is refused. Once alice's master key revokes
+/// the tablet, the account stores it in the tablet's place.
 #[test]
 fn a_revoked_device_frees_its_place_under_the_devices_limit() {
     let flow = DeviceFlow::start_with(&[INTERVAL, "1", DEVICES, "2"]);
     let alice = Person::new(&flow, 3_131_320_501, "alice");
     let tablet = add_devices(&flow.stand.db, &alice, 1, DeviceKind::Client, true).remove(0);
     let over = (403, Value::from(OVER_DEVICES));
-    assert_eq!(register(&alice, "One too many"), over, "at the limit");
+    let desktop = &alice.uncertified;
+    assert_eq!(certify(&flow, &alice, desktop), over, "at the limit");
 
     alice.revoke(&alice.by_master(tablet.id, &[]));
     assert_eq!(
-        register(&alice, "In its place"),
-        (201, Value::Null),
+        certify(&flow, &alice, desktop).0,
+        201,
         "with the tablet revoked"
     );
 }

@@ -288,6 +288,23 @@ impl Cloud {
             .collect()
     }
 
+    /// Waits until device authorization has given a grant after the `before` it gave earlier, for
+    /// up to [`WAIT`], and gives it; meanwhile `running` fails if the run that asked for it ended,
+    /// and gives what that run printed.
+    #[track_caller]
+    pub fn next_grant(&self, before: usize, mut running: impl FnMut() -> String) -> Grant {
+        let deadline = Instant::now() + WAIT;
+        while self.grants().len() <= before {
+            let shown = running();
+            assert!(
+                Instant::now() < deadline,
+                "no device authorization: {shown}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        self.last_grant()
+    }
+
     /// The last grant device authorization gave; fails if it gave none.
     pub fn last_grant(&self) -> Grant {
         let grants = self.grants();
@@ -595,17 +612,10 @@ fn loaded(visit: Visit) {
 /// Waits until device authorization has given `run` its grant after the `before` it gave earlier
 /// and `run` shows its verification page's address and code; gives the grant.
 pub fn shown_grant(cloud: &Cloud, run: &mut Run, before: usize) -> Grant {
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
+    let grant = cloud.next_grant(before, || {
         run.assert_running();
-        assert!(
-            Instant::now() < deadline,
-            "no device authorization: {}",
-            run.shown()
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
+        run.shown()
+    });
     run.wait_to_show(&[&grant.verification_uri, &grant.user_code]);
     grant
 }

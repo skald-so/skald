@@ -147,7 +147,8 @@ pub struct Options {
     pub name: Option<String>,
     /// The machine's host name, which names the device unless the user gives a name.
     pub host_name: String,
-    /// Whether the run may show a recovery key: the person's, not an agent's, at a terminal.
+    /// Whether the run is the person's, not an agent's, at a terminal: only then may it show a
+    /// recovery key or link codes.
     pub shows: bool,
 }
 
@@ -222,6 +223,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         device,
         keys: &keys,
         first: options.first,
+        interactive: options.shows,
     }
     .run()?;
     // A device that holds its certificate keeps its KeyPackages on the server.
