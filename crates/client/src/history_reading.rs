@@ -291,7 +291,7 @@ impl Checks<'_> {
                 "its from is no address of the sending device's account in the space".to_owned(),
             );
         }
-        // The latest revision that admits the device and gives it a level.
+        // A revision that admits the device and gives it a level.
         let level = (admitting.iter())
             .find_map(|roster| trust_level(self.own.account, cert, roster.body()))
             .ok_or_else(|| {
