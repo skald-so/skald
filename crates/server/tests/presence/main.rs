@@ -73,5 +73,6 @@ mod kit;
 mod access;
 mod deletion;
 mod refusals;
+mod scopes;
 mod services;
 mod uploads;

@@ -16,7 +16,7 @@ use crate::wire::now;
 
 /// The stage with the bot in `general`'s `services`, and `general`'s group formed by alice's
 /// laptop with the bot, which joined from the Welcome; gives alice's laptop and the channel.
-fn with_bot(github: u64) -> (Stage, Peer, Channel) {
+pub fn with_bot(github: u64) -> (Stage, Peer, Channel) {
     let mut stage = Stage::new(github);
     let (general, bot_id) = (stage.f.general, stage.bot.id);
     stage.f.revise(|body| {
@@ -54,7 +54,7 @@ fn with_bot(github: u64) -> (Stage, Peer, Channel) {
 }
 
 /// The bot's requests with `token` and its proof.
-fn bot_caller(stage: &Stage, token: &str) -> Caller {
+pub fn bot_caller(stage: &Stage, token: &str) -> Caller {
     let flow = &stage.f.team.flow;
     Caller::on(&flow.stand.server, flow, token, &stage.bot)
 }
