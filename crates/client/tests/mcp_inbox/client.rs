@@ -24,6 +24,15 @@ const PROTOCOL: &str = "2025-06-18";
 /// How long the server is given to exit once its client is gone.
 const EXIT: Duration = Duration::from_secs(30);
 
+/// The fields the input schema `schema` of a tool requires.
+pub fn required(schema: &Value) -> Vec<&str> {
+    (schema["required"].as_array().map(Vec::as_slice))
+        .unwrap_or_default()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect()
+}
+
 /// What a tool call gave: its result's text, and whether it is an error, a JSON-RPC error's
 /// message and data in place of the text.
 #[derive(Debug)]

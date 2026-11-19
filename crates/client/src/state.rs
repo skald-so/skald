@@ -311,6 +311,47 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT;
     ALTER TABLE device ADD COLUMN failed_link_runs INTEGER NOT NULL DEFAULT 0
         CHECK (failed_link_runs >= 0);",
+    // `read` receipts (`docs/protocol/delivery.md`, "Receipts"): whether each envelope of the
+    // outbox goes with `report` true, false for a receipt; the `to` of each message the device
+    // sent, if any, and whether it took a `read` of it; and, for each kept message whose `to` is an
+    // agent of this device, by its entry's `seq`, what its receipt reports: its `msg_id`, space,
+    // channel, sending device, `from` and `to`, with the agent's name, `due` once the message was
+    // handed over to the agent, until the receipt goes into the outbox.
+    "ALTER TABLE outbox ADD COLUMN report INTEGER NOT NULL DEFAULT 1 CHECK (report IN (0, 1));
+    ALTER TABLE sent ADD COLUMN addressee TEXT;
+    ALTER TABLE sent ADD COLUMN read INTEGER NOT NULL DEFAULT 0 CHECK (read IN (0, 1));
+    CREATE TABLE read_receipt (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        msg_id TEXT NOT NULL,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        author TEXT NOT NULL,
+        addressee TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        due INTEGER NOT NULL DEFAULT 0 CHECK (due IN (0, 1))
+    ) STRICT;",
+    // Replies: each kept message's channel and what a reply to it needs, sealed under the state
+    // key; and each message the person's run showed or the device handed to an agent, by its
+    // entry's `seq`, with its `msg_id`, space and channel, what a reply needs, sealed, until when
+    // it can be replied to, in Unix seconds, whether the person's run showed it, and each agent it
+    // was handed to.
+    "ALTER TABLE kept ADD COLUMN channel TEXT;
+    ALTER TABLE kept ADD COLUMN target BLOB;
+    CREATE TABLE reply_target (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        msg_id TEXT NOT NULL,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        target BLOB NOT NULL,
+        expires INTEGER NOT NULL,
+        person INTEGER NOT NULL CHECK (person IN (0, 1))
+    ) STRICT;
+    CREATE TABLE reply_agent (
+        seq INTEGER NOT NULL,
+        agent TEXT NOT NULL,
+        PRIMARY KEY (seq, agent)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -444,6 +485,8 @@ pub struct Sent {
     pub channel: ChannelId,
     /// The agent it is from, none for the person or a message an older client sent.
     pub agent: Option<String>,
+    /// Its content's `to`, none for everyone or a message an older client sent.
+    pub addressee: Option<String>,
 }
 
 /// An envelope in the outbox.
@@ -455,6 +498,9 @@ pub struct Outgoing {
     pub space: SpaceId,
     /// Its bytes, as they are sent every time.
     pub envelope: Vec<u8>,
+    /// Whether it goes with `report` true: false for a receipt (`docs/protocol/delivery.md`,
+    /// "Receipts"), which is no message the device's user sent.
+    pub report: bool,
 }
 
 /// A channel message of the device's own under `mls`, as a step puts it in the outbox: its
@@ -464,8 +510,10 @@ pub struct Counted {
     pub outgoing: Outgoing,
     pub channel: ChannelId,
     pub counter: u64,
-    /// The agent it is from, none for the person.
+    /// The agent it is from, none for the person or a receipt.
     pub agent: Option<String>,
+    /// Its content's `to`, none for everyone.
+    pub addressee: Option<String>,
 }
 
 /// A mailbox entry the device wrote that no run has shown yet.
@@ -484,12 +532,67 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Kept {
     pub space: SpaceId,
+    pub channel: ChannelId,
     pub msg_id: MessageId,
     /// The message as `forms::Message` encodes it in JSON, sealed under the state key.
     pub line: Vec<u8>,
-    /// How long it waits for an agent after the device wrote its entry, in seconds.
+    /// What a reply to it needs, sealed under the state key ([`crate::reply`]).
+    pub target: Vec<u8>,
+    /// How long it waits for an agent, and can be replied to, after the device wrote its entry, in
+    /// seconds.
     pub wait: u64,
     pub agents: Vec<String>,
+    /// The `replied` it gives a message the device sent, if it is such a reply.
+    pub replied: Option<Replied>,
+    /// What its `read` receipt reports once it is handed over, if its `to` is one of `agents`.
+    pub read: Option<ToRead>,
+}
+
+/// A `replied` of the device's message `msg_id` in `space`, as JSON (`forms::Status`), for the
+/// person and for `agent`, the agent that sent the message, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replied {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub status: String,
+    pub agent: Option<String>,
+}
+
+/// A message the device can reply to: its `msg_id`, space and channel, and what a reply needs,
+/// sealed under the state key, by its entry's `seq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub seq: u64,
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub sealed: Vec<u8>,
+}
+
+/// What the `read` receipt of a kept message reports (`docs/protocol/delivery.md`, "Receipts").
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToRead {
+    pub channel: ChannelId,
+    /// The sending device.
+    pub sender: DeviceId,
+    /// The message's `from`, which the receipt goes `to`.
+    pub author: String,
+    /// The message's `to`, which the receipt is `from`, and the agent's name.
+    pub addressee: String,
+    pub agent: String,
+}
+
+/// A `read` receipt the device owes: of the message `msg_id`, by its kept entry's `seq`, in
+/// `space`, as [`ToRead`] says.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadDue {
+    pub seq: u64,
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub sender: DeviceId,
+    pub author: String,
+    pub addressee: String,
 }
 
 /// A Commit or Welcome of the device's own in the outbox.
@@ -544,6 +647,9 @@ pub struct MlsChanges {
     pub judged: Vec<(ChannelId, u64, bool)>,
     /// History entries of the channel messages it puts in the outbox, which wait for upload.
     pub entries: Vec<HistoryOutgoing>,
+    /// The `seq` of each `read` receipt the device owed that a receipt it puts in the outbox
+    /// reports.
+    pub issued: Vec<u64>,
 }
 
 impl MlsChanges {
@@ -560,6 +666,7 @@ impl MlsChanges {
             && self.entered.is_empty()
             && self.judged.is_empty()
             && self.entries.is_empty()
+            && self.issued.is_empty()
     }
 }
 
@@ -972,6 +1079,12 @@ impl State {
                         entry.channel.to_string(),
                         entry.entry
                     ],
+                )?;
+            }
+            for &seq in &changes.issued {
+                tx.execute(
+                    "DELETE FROM read_receipt WHERE seq = ?1",
+                    params![sql_seq(seq)?],
                 )?;
             }
             Ok(())
@@ -1408,23 +1521,24 @@ impl State {
         u64::try_from(last).map_err(|_| Error::Malformed(format!("the counter {last}")))
     }
 
-    /// The space and channel of the message `msg_id` the device sent, and the agent it is from,
-    /// none for the person, if the state recorded it.
+    /// The space and channel of the message `msg_id` the device sent, the agent it is from, none
+    /// for the person, and its `to`, if the state recorded it.
     pub fn sent(&self, msg_id: MessageId) -> Result<Option<Sent>, Error> {
-        let row: Option<(String, String, Option<String>)> = self
+        let row: Option<(String, String, Option<String>, Option<String>)> = self
             .db
             .query_row(
-                "SELECT space, channel, agent FROM sent WHERE msg_id = ?1",
+                "SELECT space, channel, agent, addressee FROM sent WHERE msg_id = ?1",
                 params![msg_id.to_string()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        row.map(|(space, channel, agent)| {
+        row.map(|(space, channel, agent, addressee)| {
             let malformed = || Error::Malformed(format!("the sent message {msg_id}"));
             Ok(Sent {
                 space: space.parse().map_err(|_| malformed())?,
                 channel: channel.parse().map_err(|_| malformed())?,
                 agent,
+                addressee,
             })
         })
         .transpose()
@@ -1468,13 +1582,15 @@ impl State {
         Ok(())
     }
 
-    /// The `msg_id` of each message the device keeps: those it sent, and those that wait to be
-    /// shown, but for any an older client kept.
+    /// The `msg_id` of each message the device keeps: those it sent, those that wait to be shown,
+    /// but for any an older client kept, and those that can be replied to now.
     pub fn kept_ids(&self) -> Result<Vec<MessageId>, Error> {
+        let now = sql_u64(unix_now())?;
         let mut query = self.db.prepare(
-            "SELECT msg_id FROM sent UNION SELECT msg_id FROM kept WHERE msg_id IS NOT NULL",
+            "SELECT msg_id FROM sent UNION SELECT msg_id FROM kept WHERE msg_id IS NOT NULL
+             UNION SELECT msg_id FROM reply_target WHERE expires > ?1",
         )?;
-        let ids = query.query_map([], |row| row.get::<_, String>(0))?;
+        let ids = query.query_map(params![now], |row| row.get::<_, String>(0))?;
         ids.map(|msg_id| id("message ID", &msg_id?)).collect()
     }
 
@@ -1784,13 +1900,16 @@ impl State {
         )
     }
 
-    /// Records that the person's run showed the kept message `seq`.
+    /// Records that the person's run showed the kept message `seq`, which it can then reply to.
     pub fn shown_to_person(&self, seq: u64) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
+        add_target(&tx, seq)?;
         tx.execute(
-            "UPDATE kept SET person = 0 WHERE seq = ?1",
-            params![sql_seq(seq)?],
+            "UPDATE reply_target SET person = 1 WHERE seq = ?1",
+            params![seq],
         )?;
+        tx.execute("UPDATE kept SET person = 0 WHERE seq = ?1", params![seq])?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
@@ -1820,16 +1939,78 @@ impl State {
         )
     }
 
-    /// Records that the kept message `seq` was handed over to the agent `agent`.
+    /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
+    /// reply to it, and that its `read` receipt is due if `agent` is its `to`, at once.
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
+        if add_target(&tx, seq)? {
+            tx.execute(
+                "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![seq, agent],
+            )?;
+        }
         tx.execute(
             "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
-            params![sql_seq(seq)?, agent],
+            params![seq, agent],
+        )?;
+        tx.execute(
+            "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
+            params![seq, agent],
         )?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The messages the person, or else the agent `agent` in the space `space`, can reply to by
+    /// `now`, in Unix seconds, in `seq` order, once those whose time ended are dropped.
+    pub fn targets(&self, agent: Option<(SpaceId, &str)>, now: u64) -> Result<Vec<Target>, Error> {
+        let now = sql_u64(now)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM reply_target WHERE expires <= ?1", params![now])?;
+        tx.execute(
+            "DELETE FROM reply_agent WHERE seq NOT IN (SELECT seq FROM reply_target)",
+            [],
+        )?;
+        tx.commit()?;
+        let columns = "SELECT seq, msg_id, space, channel, target FROM reply_target";
+        let mut query = match agent {
+            Some(_) => self.db.prepare(&format!(
+                "{columns} WHERE space = ?1
+                 AND seq IN (SELECT seq FROM reply_agent WHERE agent = ?2) ORDER BY seq"
+            ))?,
+            None => self
+                .db
+                .prepare(&format!("{columns} WHERE person = 1 ORDER BY seq"))?,
+        };
+        let row = |row: &rusqlite::Row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        };
+        let rows = match agent {
+            Some((space, agent)) => query
+                .query_map(params![space.to_string(), agent], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => query.query_map([], row)?.collect::<Result<Vec<_>, _>>()?,
+        };
+        rows.into_iter()
+            .map(|(seq, msg_id, space, channel, sealed)| {
+                let malformed = || Error::Malformed(format!("the message to reply to {msg_id}"));
+                Ok(Target {
+                    seq: u64::try_from(seq).map_err(|_| malformed())?,
+                    msg_id: msg_id.parse().map_err(|_| malformed())?,
+                    space: space.parse().map_err(|_| malformed())?,
+                    channel: channel.parse().map_err(|_| malformed())?,
+                    sealed,
+                })
+            })
+            .collect()
     }
 
     /// The `seq` and the value of each row `sql` selects with `params`, such as a kept message's
@@ -1893,39 +2074,103 @@ impl State {
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
-        tx.execute(
-            "INSERT INTO received_counter (channel, sender, scheme, counters, seq)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT DO UPDATE SET counters = excluded.counters, seq = excluded.seq",
-            params![
-                source.channel.to_string(),
-                source.device.to_string(),
-                source.scheme as i64,
-                counters.to_bytes(),
-                seq
-            ],
-        )?;
+        add_counters(&tx, seq, source, counters)?;
         add_kept(&tx, seq, kept)?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
     }
 
+    /// Takes the receipt of the entry `seq` out of the inbox, recording `counted`, the counters
+    /// the device accepted from its source with it, or, without `counter`, that it came from the
+    /// device `sender` as `msg_id`; and keeps each of `reads`, `read` statuses of messages the
+    /// device sent, by their `msg_id`, as JSON, for the person and the agent that sent the message,
+    /// unless the device took a `read` of that message before; all at once.
+    pub fn take_receipt(
+        &self,
+        seq: u64,
+        (counted, (sender, msg_id)): (Option<(&Source, &Counters)>, (DeviceId, MessageId)),
+        reads: &[(MessageId, String)],
+    ) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
+        let tx = self.db.unchecked_transaction()?;
+        match counted {
+            Some((source, counters)) => add_counters(&tx, seq, source, counters)?,
+            None => {
+                tx.execute(
+                    "INSERT INTO received (sender, msg_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                    params![sender.to_string(), msg_id.to_string()],
+                )?;
+            }
+        }
+        for (read, status) in reads {
+            let first = tx.execute(
+                "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0",
+                params![read.to_string()],
+            )?;
+            if first > 0 {
+                tx.execute(
+                    "INSERT INTO kept_status (msg_id, space, status, person, agent)
+                     SELECT msg_id, space, ?2, 1, agent FROM sent WHERE msg_id = ?1",
+                    params![read.to_string(), status],
+                )?;
+            }
+        }
+        tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `read` receipts the device owes, in `seq` order.
+    pub fn reads_due(&self) -> Result<Vec<ReadDue>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT seq, msg_id, space, channel, sender, author, addressee FROM read_receipt
+             WHERE due = 1 ORDER BY seq",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                [
+                    row.get::<_, String>(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ],
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, [msg_id, space, channel, sender], author, addressee) = row?;
+            Ok(ReadDue {
+                seq: u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?,
+                msg_id: id("message ID", &msg_id)?,
+                space: id("space ID", &space)?,
+                channel: id("channel ID", &channel)?,
+                sender: id("device ID", &sender)?,
+                author,
+                addressee,
+            })
+        })
+        .collect()
+    }
+
     /// The envelopes in the outbox, in the order they go out.
     pub fn outbox(&self) -> Result<Vec<Outgoing>, Error> {
-        let mut query = self
-            .db
-            .prepare("SELECT msg_id, recipient, space, envelope FROM outbox ORDER BY position")?;
+        let mut query = self.db.prepare(
+            "SELECT msg_id, recipient, space, envelope, report FROM outbox ORDER BY position",
+        )?;
         let rows = query.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
                 row.get(3)?,
+                row.get(4)?,
             ))
         })?;
         rows.map(|row| {
-            let (msg_id, recipient, space, envelope) = row?;
+            let (msg_id, recipient, space, envelope, report) = row?;
             Ok(Outgoing {
                 msg_id: id("message ID", &msg_id)?,
                 recipient: recipient
@@ -1933,6 +2178,7 @@ impl State {
                     .transpose()?,
                 space: id("space ID", &space)?,
                 envelope,
+                report,
             })
         })
         .collect()
@@ -2020,8 +2266,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id)
-         SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target)
+         SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
+             ?7, ?8
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -2029,22 +2276,99 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             kept.line,
             now,
             wait,
-            kept.msg_id.to_string()
+            kept.msg_id.to_string(),
+            kept.channel.to_string(),
+            kept.target
         ],
     )?;
+    if let Some(replied) = &kept.replied {
+        tx.execute(
+            "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5) ON CONFLICT DO NOTHING",
+            params![
+                seq,
+                replied.msg_id.to_string(),
+                replied.space.to_string(),
+                replied.status,
+                replied.agent
+            ],
+        )?;
+    }
     for agent in &kept.agents {
         tx.execute(
             "INSERT INTO handover (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
             params![seq, agent],
         )?;
     }
+    if let Some(read) = &kept.read {
+        tx.execute(
+            "INSERT INTO read_receipt
+                 (seq, msg_id, space, channel, sender, author, addressee, agent)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
+            params![
+                seq,
+                kept.msg_id.to_string(),
+                kept.space.to_string(),
+                read.channel.to_string(),
+                read.sender.to_string(),
+                read.author,
+                read.addressee,
+                read.agent
+            ],
+        )?;
+    }
     Ok(())
 }
 
-/// Drops, in `tx`, each kept message the person's run showed that no agent waits for.
+/// Adds, in `tx`, the kept message `seq` to those the device can reply to, unless it is, or an
+/// older client kept it without what a reply needs; gives whether it is one now.
+fn add_target(tx: &Transaction, seq: i64) -> Result<bool, Error> {
+    tx.execute(
+        "INSERT INTO reply_target (seq, msg_id, space, channel, target, expires, person)
+         SELECT seq, msg_id, space, channel, target, expires, 0 FROM kept
+         WHERE seq = ?1 AND msg_id IS NOT NULL AND channel IS NOT NULL AND target IS NOT NULL
+         ON CONFLICT DO NOTHING",
+        params![seq],
+    )?;
+    let found: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM reply_target WHERE seq = ?1)",
+        params![seq],
+        |row| row.get(0),
+    )?;
+    Ok(found)
+}
+
+/// Records `counters` as those the device accepted from `source` with the entry `seq`, in `tx`.
+fn add_counters(
+    tx: &Transaction,
+    seq: i64,
+    source: &Source,
+    counters: &Counters,
+) -> Result<(), Error> {
+    tx.execute(
+        "INSERT INTO received_counter (channel, sender, scheme, counters, seq)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT DO UPDATE SET counters = excluded.counters, seq = excluded.seq",
+        params![
+            source.channel.to_string(),
+            source.device.to_string(),
+            source.scheme as i64,
+            counters.to_bytes(),
+            seq
+        ],
+    )?;
+    Ok(())
+}
+
+/// Drops, in `tx`, each kept message the person's run showed that no agent waits for, and each
+/// `read` receipt of a message that no longer waits for its agent before it had it.
 fn drop_done(tx: &Transaction) -> Result<(), Error> {
     tx.execute(
         "DELETE FROM kept WHERE person = 0 AND seq NOT IN (SELECT seq FROM handover)",
+        [],
+    )?;
+    tx.execute(
+        "DELETE FROM read_receipt WHERE due = 0 AND seq NOT IN (SELECT seq FROM handover)",
         [],
     )?;
     Ok(())
@@ -2055,15 +2379,16 @@ fn sql_u64(value: u64) -> Result<i64, Error> {
     i64::try_from(value).map_err(|_| Error::Malformed(format!("the number {value}")))
 }
 
-/// Adds `message` to the outbox, after those in it, records its counter as its channel's last and
-/// its space and channel as those of its message ID, in `tx`; fails unless the counter is the one
-/// after the channel's last.
+/// Adds `message` to the outbox, after those in it, records its counter as its channel's last and,
+/// unless it is a receipt, its space, channel, agent and `to` as those of its message ID, in `tx`;
+/// fails unless the counter is the one after the channel's last.
 fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
     let Counted {
         outgoing,
         channel,
         counter,
         agent,
+        addressee,
     } = message;
     let channel = channel.to_string();
     let last =
@@ -2086,19 +2411,24 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
     }
     let (msg_id, space) = (outgoing.msg_id.to_string(), outgoing.space.to_string());
     tx.execute(
-        "INSERT INTO outbox (msg_id, recipient, space, envelope) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO outbox (msg_id, recipient, space, envelope, report)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
         params![
             msg_id,
             outgoing.recipient.map(|device| device.to_string()),
             space,
-            outgoing.envelope
+            outgoing.envelope,
+            outgoing.report
         ],
     )?;
-    tx.execute(
-        "INSERT INTO sent (msg_id, space, channel, agent) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT DO NOTHING",
-        params![msg_id, space, channel, agent],
-    )?;
+    // A receipt is no message of the device's user: nothing reports on it.
+    if outgoing.report {
+        tx.execute(
+            "INSERT INTO sent (msg_id, space, channel, agent, addressee) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT DO NOTHING",
+            params![msg_id, space, channel, agent, addressee],
+        )?;
+    }
     Ok(())
 }
 
@@ -2681,10 +3011,12 @@ pub(crate) mod tests {
                 recipient: None,
                 space,
                 envelope: envelope.to_vec(),
+                report: true,
             },
             channel,
             counter,
             agent: None,
+            addressee: None,
         };
         assert_eq!(state.channel_counter(channel).unwrap(), 0);
         let (first, elsewhere) = (message(channel, 1, b"1"), message(other, 1, b"o1"));
@@ -2729,10 +3061,12 @@ pub(crate) mod tests {
                     recipient: None,
                     space,
                     envelope: vec![1, 2, 3],
+                    report: true,
                 },
                 channel,
                 counter,
                 agent: None,
+                addressee: None,
             };
             let entry = HistoryOutgoing {
                 msg_id,
@@ -2802,6 +3136,7 @@ pub(crate) mod tests {
             recipient: Some(bob),
             space,
             envelope: vec![1],
+            report: true,
         };
 
         let state = State::open(&dir).unwrap();
@@ -2822,7 +3157,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn sent_messages_keep_their_space_channel_and_agent() {
+    fn sent_messages_keep_their_space_channel_agent_and_addressee() {
         let dir = TestDir::new("state-sent");
         let state = State::open(&dir).unwrap();
         let (channel, space, msg_id) = (
@@ -2830,20 +3165,40 @@ pub(crate) mod tests {
             SpaceId::generate(),
             MessageId::generate(),
         );
+        let to = "acme/bob/codex@skald.example";
         let message = Counted {
             outgoing: Outgoing {
                 msg_id,
                 recipient: None,
                 space,
                 envelope: vec![1],
+                report: true,
             },
             channel,
             counter: 1,
             agent: Some("claude".to_owned()),
+            addressee: Some(to.to_owned()),
+        };
+        // A receipt goes out as a message does, with `report` false, and is no sent message.
+        let receipt = Counted {
+            outgoing: Outgoing {
+                msg_id: MessageId::generate(),
+                envelope: vec![2],
+                report: false,
+                ..message.outgoing.clone()
+            },
+            counter: 2,
+            agent: None,
+            addressee: Some("acme/bob/user@skald.example".to_owned()),
+            ..message.clone()
         };
         assert_eq!(state.sent(msg_id).unwrap(), None);
 
-        put(&state, &[&message]).unwrap();
+        put(&state, &[&message, &receipt]).unwrap();
+        assert_eq!(
+            state.outbox().unwrap(),
+            [message.outgoing, receipt.outgoing.clone()]
+        );
         state.remove_outgoing(msg_id, None, None).unwrap();
 
         let state = State::open(&dir).unwrap();
@@ -2851,10 +3206,13 @@ pub(crate) mod tests {
             space,
             channel,
             agent: Some("claude".to_owned()),
+            addressee: Some(to.to_owned()),
         };
         assert_eq!(state.sent(msg_id).unwrap(), Some(sent));
+        assert_eq!(state.sent(receipt.outgoing.msg_id).unwrap(), None);
         assert_eq!(state.sent(MessageId::generate()).unwrap(), None);
         assert_eq!(state.kept_ids().unwrap(), [msg_id]);
+        assert_eq!(state.channel_counter(channel).unwrap(), 2);
     }
 
     #[test]
@@ -2897,10 +3255,14 @@ pub(crate) mod tests {
     pub(crate) fn kept(agents: &[&str]) -> Kept {
         Kept {
             space: space_of_kept(),
+            channel: ChannelId::generate(),
             msg_id: MessageId::generate(),
             line: b"line".to_vec(),
+            target: b"target".to_vec(),
             wait: 86_400,
             agents: agents.iter().map(|&agent| agent.to_owned()).collect(),
+            read: None,
+            replied: None,
         }
     }
 
@@ -2980,6 +3342,232 @@ pub(crate) mod tests {
         assert_eq!(kept, 0, "a message no one waits for is kept");
     }
 
+    /// A message the person's run showed can be replied to by the person; one handed over to an
+    /// agent, by that agent in its space only; each until its wait ends, after which it is dropped.
+    /// A kept reply's `replied` is kept with it, for the person and the message's agent.
+    #[test]
+    fn shown_and_handed_over_messages_can_be_replied_to_until_their_wait_ends() {
+        let dir = TestDir::new("state-targets");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
+            .unwrap();
+        let space = space_of_kept();
+        state.add_agent(space, "claude").unwrap();
+        state.add_agent(space, "codex").unwrap();
+        let entries: Vec<(u64, Vec<u8>)> = (1..=4).map(|seq: u8| (seq.into(), vec![seq])).collect();
+        state.write_entries(&entries).unwrap();
+        let sender = DeviceId::from_signing_key(&[4; 32]);
+        let (shown, handed) = (kept(&[]), kept(&["claude", "codex"]));
+        let mut short = kept(&["claude"]);
+        short.wait = 10;
+        let mut reply = kept(&[]);
+        let original = MessageId::generate();
+        reply.replied = Some(Replied {
+            msg_id: original,
+            space,
+            status: "replied".to_owned(),
+            agent: Some("codex".to_owned()),
+        });
+        for (seq, kept) in [(1, &shown), (2, &handed), (3, &short)] {
+            state.keep(seq, (sender, kept.msg_id), kept).unwrap();
+        }
+        let now = unix_now();
+        let seqs = |agent: Option<(SpaceId, &str)>, now: u64| -> Vec<(u64, MessageId)> {
+            let targets = state.targets(agent, now).unwrap();
+            targets
+                .iter()
+                .map(|target| (target.seq, target.msg_id))
+                .collect()
+        };
+        assert!(seqs(None, now).is_empty(), "a message not shown yet");
+
+        state.shown_to_person(1).unwrap();
+        state.handed_over(2, "claude").unwrap();
+        state.handed_over(3, "claude").unwrap();
+        let target = &state.targets(None, now).unwrap()[0];
+        assert_eq!(
+            (target.space, target.channel, target.sealed.as_slice()),
+            (space, shown.channel, b"target".as_slice())
+        );
+        assert_eq!(seqs(None, now), [(1, shown.msg_id)]);
+        let claude = Some((space, "claude"));
+        assert_eq!(seqs(claude, now), [(2, handed.msg_id), (3, short.msg_id)]);
+        assert!(seqs(Some((space, "codex")), now).is_empty());
+        assert!(seqs(Some((SpaceId::generate(), "claude")), now).is_empty());
+        assert!(state.kept_ids().unwrap().contains(&shown.msg_id));
+        // The short wait ends.
+        assert_eq!(seqs(claude, now + 11), [(2, handed.msg_id)]);
+        assert_eq!(seqs(claude, now), [(2, handed.msg_id)]);
+
+        state.keep(4, (sender, reply.msg_id), &reply).unwrap();
+        assert_eq!(statuses(state.statuses_for_person()), ["replied"]);
+        assert_eq!(
+            statuses(state.statuses_for_agent(space, "codex")),
+            ["replied"]
+        );
+        assert!(statuses(state.statuses_for_agent(space, "claude")).is_empty());
+    }
+
+    /// The JSON of each of `statuses`.
+    fn statuses(statuses: Result<Vec<(u64, String)>, Error>) -> Vec<String> {
+        statuses
+            .unwrap()
+            .into_iter()
+            .map(|(_, status)| status)
+            .collect()
+    }
+
+    /// The state in `dir` of the device `laptop`, with an inbox entry of each of `seqs` that holds
+    /// its `seq`.
+    fn with_entries(dir: &TestDir, seqs: &[u8]) -> State {
+        let state = State::open(dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let entries: Vec<(u64, Vec<u8>)> =
+            (seqs.iter()).map(|&seq| (seq.into(), vec![seq])).collect();
+        state.write_entries(&entries).unwrap();
+        state
+    }
+
+    /// A kept message to an agent owes its `read` once handed over to that agent, kept with the
+    /// mark, until a receipt that reports it goes into the outbox; one whose wait ends before owes
+    /// none.
+    #[test]
+    fn read_is_owed_once_the_to_agent_has_the_message_until_its_receipt_is_queued() {
+        let dir = TestDir::new("state-reads");
+        let state = with_entries(&dir, &[2, 3]);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let channel = ChannelId::generate();
+        let to_claude = |wait| {
+            let mut kept = kept(&["claude"]);
+            kept.wait = wait;
+            kept.read = Some(ToRead {
+                channel,
+                sender,
+                author: "acme/bob/codex@skald.example".to_owned(),
+                addressee: "acme/ada/claude@skald.example".to_owned(),
+                agent: "claude".to_owned(),
+            });
+            kept
+        };
+        let (long, short) = (to_claude(86_400), to_claude(10));
+        state.keep(2, (sender, long.msg_id), &long).unwrap();
+        state.keep(3, (sender, short.msg_id), &short).unwrap();
+        let read = ReadDue {
+            seq: 2,
+            msg_id: long.msg_id,
+            space: space_of_kept(),
+            channel,
+            sender,
+            author: "acme/bob/codex@skald.example".to_owned(),
+            addressee: "acme/ada/claude@skald.example".to_owned(),
+        };
+
+        assert!(state.reads_due().unwrap().is_empty());
+        state.shown_to_person(2).unwrap();
+        state.handed_over(2, "codex").unwrap();
+        assert!(state.reads_due().unwrap().is_empty(), "not its agent");
+        state.handed_over(2, "claude").unwrap();
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.reads_due().unwrap(), [read]);
+        // The short wait ends before claude has it.
+        state
+            .for_agent(space_of_kept(), "claude", unix_now() + 11)
+            .unwrap();
+        state.handed_over(3, "claude").unwrap();
+        assert_eq!(state.reads_due().unwrap().len(), 1);
+        state
+            .mls_change(|_| {
+                let issued = MlsChanges {
+                    issued: vec![2],
+                    ..MlsChanges::default()
+                };
+                Ok((None, issued, ()))
+            })
+            .unwrap();
+        assert!(state.reads_due().unwrap().is_empty());
+        let owed: i64 = state
+            .db
+            .query_row("SELECT count(*) FROM read_receipt", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(owed, 0, "a read is owed of a message its agent never had");
+    }
+
+    /// A receipt is taken out of the inbox with its counters, or as received without them, and
+    /// keeps a `read` of each message it lists for the person and the agent that sent it, once per
+    /// message.
+    #[test]
+    fn receipt_keeps_each_read_once() {
+        let dir = TestDir::new("state-receipt");
+        let state = with_entries(&dir, &[1, 2, 3]);
+        let (space, channel) = (SpaceId::generate(), ChannelId::generate());
+        let sent = |counter: u8| Counted {
+            outgoing: Outgoing {
+                msg_id: MessageId::generate(),
+                recipient: None,
+                space,
+                envelope: vec![counter],
+                report: true,
+            },
+            channel,
+            counter: counter.into(),
+            agent: Some("claude".to_owned()),
+            addressee: Some("acme/bob/codex@skald.example".to_owned()),
+        };
+        let (first, second) = (sent(1), sent(2));
+        put(&state, &[&first, &second]).unwrap();
+        let (first, second) = (first.outgoing.msg_id, second.outgoing.msg_id);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let source = Source {
+            channel,
+            device: sender,
+            scheme: Scheme::Mls,
+        };
+        let counters = Counters {
+            highest: 1,
+            missing: Vec::new(),
+        };
+        let read = |msg_id: MessageId| (msg_id, format!("read {msg_id}"));
+
+        state
+            .take_receipt(
+                1,
+                (Some((&source, &counters)), (sender, MessageId::generate())),
+                &[read(first)],
+            )
+            .unwrap();
+        state
+            .take_receipt(
+                2,
+                (None, (sender, MessageId::generate())),
+                &[read(first), read(second)],
+            )
+            .unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state
+                .inbox()
+                .unwrap()
+                .iter()
+                .map(|entry| entry.seq)
+                .collect::<Vec<_>>(),
+            [3]
+        );
+        assert_eq!(state.counters(&source, 3).unwrap(), Some(counters));
+        let statuses: Vec<String> = (state.statuses_for_person().unwrap().into_iter())
+            .map(|(_, status)| status)
+            .collect();
+        assert_eq!(statuses, [read(first).1, read(second).1]);
+        let for_claude: Vec<String> = (state.statuses_for_agent(space, "claude").unwrap())
+            .into_iter()
+            .map(|(_, status)| status)
+            .collect();
+        assert_eq!(for_claude, statuses);
+    }
+
     /// A kept status waits for the person's run, and for the run of the agent that sent its
     /// message in its space, until each takes it; then the state drops it. A refusal of an agent's
     /// message waits only for the agent, until it takes it or its own run reported it; one of the
@@ -3009,10 +3597,12 @@ pub(crate) mod tests {
                     recipient: None,
                     space,
                     envelope: vec![counter],
+                    report: true,
                 },
                 channel,
                 counter: counter.into(),
                 agent: agent.map(str::to_owned),
+                addressee: None,
             };
             put(&state, &[&message]).unwrap();
             message.outgoing.msg_id
@@ -3082,11 +3672,7 @@ pub(crate) mod tests {
     #[test]
     fn counters_are_kept_per_source_until_the_device_joins_the_channel_again() {
         let dir = TestDir::new("state-counters");
-        let state = State::open(&dir).unwrap();
-        state
-            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
-            .unwrap();
-        state.write_entries(&[(3, vec![3]), (4, vec![4])]).unwrap();
+        let state = with_entries(&dir, &[3, 4]);
         let (channel, other) = (ChannelId::generate(), ChannelId::generate());
         let source = |channel, scheme| Source {
             channel,

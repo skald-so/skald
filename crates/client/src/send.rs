@@ -21,6 +21,8 @@
 //! envelopes are stored in `counter` order ("Gap detection"). What is left waits in the outbox for
 //! the next run. It then uploads the history entries of the messages the server stored
 //! ([`crate::history`]).
+//!
+//! `skald reply` sends as it does ([`crate::reply`]).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -121,6 +123,13 @@ impl Wire for Queued {
     }
 }
 
+impl Queued {
+    /// Whether it goes with `report` true: it is no receipt.
+    pub fn reports(&self) -> bool {
+        self.outgoing.report
+    }
+}
+
 /// What sending the outbox gave: the server's answers, why the last attempt failed, if it did, and
 /// the connection, if it is still open.
 pub struct Delivered {
@@ -158,20 +167,33 @@ pub fn run(
     json: bool,
 ) -> Result<(), String> {
     recv::holding_warnings(dir, agent.is_some(), || {
-        let reported = match (json, agent) {
-            (true, agent) => Reported::Json(agent.map(Name::as_str)),
-            (false, Some(agent)) => Reported::Sent(agent.as_str()),
-            (false, None) => Reported::Full,
-        };
         sent(
             dir,
             storage,
             (speaks, timeout),
             (to, channel, text),
             agent,
-            reported,
+            reported(json, agent),
         )
     })
+}
+
+/// How a run as `agent`, if any, reports the messages it sent, as JSON if `json`.
+pub fn reported(json: bool, agent: Option<&Name>) -> Reported<'_> {
+    match (json, agent) {
+        (true, agent) => Reported::Json(agent.map(Name::as_str)),
+        (false, Some(agent)) => Reported::Sent(agent.as_str()),
+        (false, None) => Reported::Full,
+    }
+}
+
+/// What a run sends besides its sender and channel: the agent or person it is to, none for every
+/// agent in the channel, its text and, for a reply, the message it answers and its `hops`.
+pub struct Draft<'a> {
+    pub to: Option<Address>,
+    pub text: &'a str,
+    pub reply_to: Option<MessageId>,
+    pub hops: u64,
 }
 
 /// [`run`], reporting as `reported` says.
@@ -186,23 +208,66 @@ fn sent(
     let to = to.map(addressee).transpose()?;
     let channel = channel.map(channel_id).transpose()?;
     let scope = Scope::of_run(dir, agent.is_some())?;
-    let (
-        Synced {
-            mut follower,
-            space,
-            roster,
-            devices,
-        },
-        channel,
-    ) = match channel {
-        Some(channel) => spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
-            .map(|synced| (synced, channel)),
-        None => spaces::of_working_dir(dir, storage, speaks, timeout, scope),
-    }
-    .map_err(|err| with_waiting(dir, scope, err))?;
-    let server = server_name(&mut follower.connection)?
-        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))?;
-    let to = (to.map(|to| to.in_space(&roster.body().name, &server))).transpose()?;
+    let (mut synced, channel) = match channel {
+        Some(channel) => of_channel(dir, storage, (speaks, timeout), channel, scope)
+            .map(|synced| (synced, channel))?,
+        None => spaces::of_working_dir(dir, storage, speaks, timeout, scope)
+            .map_err(|err| with_waiting(dir, scope, err))?,
+    };
+    let server = server_of(&mut synced.follower)?;
+    let to = (to.map(|to| to.in_space(&synced.roster.body().name, &server))).transpose()?;
+    let draft = Draft {
+        to,
+        text,
+        reply_to: None,
+        hops: 0,
+    };
+    send_synced(
+        dir,
+        (synced, channel),
+        (scope, server),
+        &draft,
+        agent,
+        reported,
+    )
+}
+
+/// The space of the channel `channel` within `scope`, synced ([`spaces::of_channel`]), by the
+/// state in `dir`, its secrets in `storage`; fails as a run that sends nothing does.
+pub fn of_channel(
+    dir: &Path,
+    storage: secrets::Storage,
+    (speaks, timeout): (VersionRange, Duration),
+    channel: ChannelId,
+    scope: Scope,
+) -> Result<Synced, String> {
+    spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
+        .map_err(|err| with_waiting(dir, scope, err))
+}
+
+/// The name of `follower`'s server, which a message's sender names; fails without one.
+pub fn server_of(follower: &mut Follower) -> Result<ServerName, String> {
+    server_name(&mut follower.connection)?
+        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))
+}
+
+/// Sends `draft` to `channel` of the space `synced` holds, within `scope`, from the person or
+/// `agent` on `server`, by the state in `dir`, and reports as `reported` says.
+pub fn send_synced(
+    dir: &Path,
+    (synced, channel): (Synced, ChannelId),
+    (scope, server): (Scope, ServerName),
+    draft: &Draft,
+    agent: Option<&Name>,
+    reported: Reported,
+) -> Result<(), String> {
+    let Synced {
+        mut follower,
+        space,
+        roster,
+        devices,
+    } = synced;
+    let timeout = follower.timeout;
     if let Some(agent) = agent {
         // Messages that come from now on are also for this agent.
         (follower.state)
@@ -215,7 +280,7 @@ fn sent(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
-        |msg_id, counter| content((&from, to.as_ref()), msg_id, counter, text),
+        |msg_id, counter| content(&from, draft, msg_id, counter),
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
     let queued = queued(&follower.state, scope)?;
@@ -352,26 +417,25 @@ fn sender(
     })
 }
 
-/// The content of a message of `text` from `from` to `to`, or to no one in particular, of
-/// `msg_id`, with `counter`.
+/// The content of `draft` from `from`, of `msg_id`, with `counter`.
 fn content(
-    (from, to): (&Address, Option<&Address>),
+    from: &Address,
+    draft: &Draft,
     msg_id: MessageId,
     counter: std::num::NonZeroU64,
-    text: &str,
 ) -> Content {
     let a2a = serde_json::json!({
         "messageId": msg_id.to_string(),
         "role": "ROLE_USER",
-        "parts": [{ "text": text }],
+        "parts": [{ "text": draft.text }],
     })
     .to_string();
     Content {
         from: from.clone(),
-        to: to.cloned(),
+        to: draft.to.clone(),
         counter: Some(counter),
-        hops: 0,
-        reply_to: None,
+        hops: draft.hops,
+        reply_to: draft.reply_to,
         body: Some(Body::A2a(a2a)),
         delegation: None,
         grant: None,
@@ -474,7 +538,7 @@ pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
             let channel = envelope.envelope().header.channel;
             let frame = Frame::Send {
                 envelope,
-                report: true,
+                report: outgoing.report,
             }
             .to_cbor();
             Ok(Queued {
@@ -719,8 +783,9 @@ pub enum Reported<'a> {
 /// A message of the outbox: its ID, its channel and its envelopes.
 type Queue<'q> = Vec<(MessageId, ChannelId, Vec<&'q Queued>)>;
 
-/// Says what the server answered to each message of `queued`, as `reported` says, by the state
-/// `state` and the answers in `delivered`; fails unless every one is stored, saying which are not.
+/// Says what the server answered to each message of `queued`, but receipts, as `reported` says,
+/// by the state `state` and the answers in `delivered`; fails unless every one is stored, saying
+/// which are not.
 pub fn report(
     state: &State,
     queued: &[Queued],
@@ -729,7 +794,8 @@ pub fn report(
     reported: Reported,
 ) -> Result<(), String> {
     let mut messages: Queue = Vec::new();
-    for queued in queued {
+    // A receipt is no message of the device's user.
+    for queued in queued.iter().filter(|queued| queued.outgoing.report) {
         match messages
             .iter_mut()
             .find(|(id, ..)| *id == queued.outgoing.msg_id)
@@ -917,6 +983,7 @@ pub(crate) mod tests {
             channel,
             counter: 1,
             agent: None,
+            addressee: None,
         };
         crate::state::tests::put(state, &[&message]).unwrap();
     }
@@ -1052,6 +1119,7 @@ pub(crate) mod tests {
                 recipient: None,
                 space,
                 envelope: vec![u8::try_from(number).unwrap()],
+                report: true,
             };
             put(&state, ChannelId::generate(), outgoing);
         }
@@ -1071,14 +1139,15 @@ pub(crate) mod tests {
     }
 
     /// An agent's run sends only the envelopes of its space, in the order they went into the
-    /// outbox; a person's sends every one.
+    /// outbox; a person's sends every one. A receipt goes with `report` false, a message with
+    /// `report` true.
     #[test]
     fn queued_envelopes_are_those_of_the_scope_in_order() {
         let dir = TestDir::new("send-queued");
         let state = State::open(&dir).unwrap();
         let (own, other) = (SpaceId::generate(), SpaceId::generate());
         let mut messages = Vec::new();
-        for space in [own, other, own] {
+        for (space, report) in [(own, true), (other, true), (own, false)] {
             let channel = ChannelId::generate();
             let msg_id = MessageId::generate();
             let header = Header {
@@ -1100,15 +1169,21 @@ pub(crate) mod tests {
                     payload: vec![1, 2, 3],
                 }
                 .to_cbor(),
+                report,
             };
             put(&state, channel, outgoing);
-            messages.push((msg_id, channel));
+            messages.push((msg_id, channel, report));
         }
-        let ids = |scope| -> Vec<(MessageId, ChannelId)> {
+        let ids = |scope| -> Vec<(MessageId, ChannelId, bool)> {
             queued(&state, scope)
                 .unwrap()
                 .iter()
-                .map(|queued| (queued.outgoing.msg_id, queued.channel))
+                .map(|queued| {
+                    let Ok(Frame::Send { report, .. }) = Frame::from_cbor(&queued.frame) else {
+                        panic!("no send frame");
+                    };
+                    (queued.outgoing.msg_id, queued.channel, report)
+                })
                 .collect()
         };
 
