@@ -285,7 +285,6 @@ pub struct Followed {
 /// Accepts the revisions of `given`, all those the server gives of a space, that follow `last`,
 /// the space's last accepted revision, the hashes of the earlier ones it accepted in `hashes`, with
 /// `devices`, its accounts', and the master key `own` pinned; takes those [`earlier`] gives.
-#[cfg(test)]
 pub fn follow(
     last: &Roster,
     hashes: &BTreeMap<u64, [u8; 32]>,
@@ -389,8 +388,8 @@ fn follow_trusting(
 /// the anchors object of a valid `client` device of its account names, of `start.objects`, when the
 /// revisions from the anchor up to it pass through every other one so named, numbered above the
 /// anchor; otherwise the anchor, with the warning it gives. An object counts only with a signature
-/// that verifies with its device's certificate, and a revision only if its `prev` chain reaches
-/// the anchor; those at or below the anchor do not count.
+/// that verifies with its device's certificate; named revisions at or below the anchor do not
+/// count, and one above it whose `prev` chain does not reach the anchor is off that chain.
 pub fn roster_start(
     start: &Start,
     given: &[Roster],
@@ -419,7 +418,8 @@ pub fn roster_start(
         }
         (at.hash() == start.anchor).then_some(hashes)
     };
-    let mut named: Vec<(&Roster, BTreeSet<[u8; 32]>)> = Vec::new();
+    // Each named revision above the anchor, with the hashes of its chain to the anchor, if any.
+    let mut named: Vec<(&Roster, Option<BTreeSet<[u8; 32]>>)> = Vec::new();
     for object in &start.objects {
         let body = object.body();
         let valid = body.account == own.account
@@ -439,9 +439,8 @@ pub fn roster_start(
         for (_, hash) in body.anchors.iter().filter(|(of, _)| *of == space) {
             if let Some(roster) = by_hash.get(hash)
                 && roster.body().revision > from
-                && let Some(hashes) = chain(roster)
             {
-                named.push((roster, hashes));
+                named.push((roster, chain(roster)));
             }
         }
     }
@@ -451,9 +450,10 @@ pub fn roster_start(
     else {
         return none;
     };
-    if named
-        .iter()
-        .all(|(roster, _)| hashes.contains(&roster.hash()))
+    if let Some(hashes) = hashes
+        && named
+            .iter()
+            .all(|(roster, _)| hashes.contains(&roster.hash()))
     {
         return (hashes.clone(), None);
     }
@@ -1344,15 +1344,29 @@ mod tests {
     }
 
     #[test]
-    fn service_device_does_not_count_anchors_of_a_revoked_device_or_off_its_anchors_chain() {
+    fn service_device_counts_no_revoked_devices_anchors_and_warns_of_those_off_its_anchors_chain() {
         let mut run = Run::new();
         let acme = &run.acme;
         let off_second = acme.ada.signs(&acme.first, |_| {});
         let off_third = acme.ada.signs(&off_second, |_| {});
         run.given.extend([off_second, off_third.clone()]);
         let desktop = &run.desktop;
-        let off_chain = run.start(vec![anchors_of(&acme.ada, &acme.ada.key, &off_third)]);
-        assert_eq!(off_chain, (BTreeSet::new(), None), "off the anchor's chain");
+        // The warning of named revisions up to `latest` that are off one chain.
+        let off = |latest: u64| {
+            let warning = format!(
+                "the anchors objects of this account's devices name revisions of the space acme \
+                 that are not on one chain, up to revision {latest}: this service device starts \
+                 from its key secret's anchor, revision 2"
+            );
+            (BTreeSet::new(), Some(warning))
+        };
+        let alone = run.start(vec![anchors_of(&acme.ada, &acme.ada.key, &off_third)]);
+        assert_eq!(alone, off(3), "off the anchor's chain");
+        let beside = run.start(vec![
+            anchors_of(&acme.ada, &acme.ada.key, &off_third),
+            anchors_of(desktop, &desktop.key, &run.fourth),
+        ]);
+        assert_eq!(beside, off(4), "beside an on-chain one");
 
         let body = skald_proto::RevocationBody {
             account: acme.ada.account,
