@@ -4,6 +4,7 @@ mod account;
 mod anchors;
 mod cert;
 mod cpace;
+mod grant;
 mod history;
 mod hpke;
 mod link;
@@ -22,6 +23,7 @@ pub use account::{
 pub use anchors::{check_anchors, sign_anchors};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
 pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
+pub use grant::{GrantError, check_grant};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
 pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError};
