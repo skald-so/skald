@@ -21,9 +21,11 @@
 //! The CLI, as these tests use it, beside the commands of the tests of handing messages over:
 //! - a reference is in RFC 4648's base32 alphabet, in either case and without padding, of
 //!   SHA-256 of the `msg_id`'s 16 bytes;
-//! - an agent's message line is `[<from> · <device>] #<ref>: <text>`: the content's `from`, the
-//!   sending device's certificate `name` and the text, escaped as in the person's lines; one
-//!   following missing messages is `[<from> · <device>] #<ref> (after missing): <text>`;
+//! - an agent's message line is `[<from> · <device> · <level>] #<ref>: <text>`: the content's
+//!   `from`, as `owner/agent` for an agent, the sending device's certificate `name`, its trust
+//!   level and the text, escaped as in the person's lines; one following missing messages is
+//!   `[<from> · <device> · <level>] #<ref> (after missing): <text>`; one line, the same each time,
+//!   comes before the first line at a level other than `own`;
 //! - an agent's status line says the status and holds the message's `#<ref>`; a warning, such as
 //!   `skald: dropped #<ref> from <device>: <reason>`, names the sending device by its `name`; an
 //!   agent's output holds no UUID;

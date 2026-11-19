@@ -15,6 +15,7 @@ mod receipt;
 mod revocation;
 mod roster;
 mod signed;
+mod trust;
 mod version;
 
 pub use account::{ACCOUNT_LABEL, AccountBody, AccountRecord, MasterBackup};
@@ -50,6 +51,7 @@ pub use roster::{
     ROSTER_LABEL, Role, Roster, RosterBody, ServiceAgent,
 };
 pub use signed::{Signed, SignedBody};
+pub use trust::{TrustLevel, TrustLevelError};
 pub use version::{
     LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,
     VersionRange, describe_versions, parse_version, subprotocol,

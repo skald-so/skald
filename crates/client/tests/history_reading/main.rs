@@ -9,7 +9,8 @@
 //!   checked as "Device checks" says, revoked or not, and drops any other with a warning naming the
 //!   sending device and the check. It shows each message once, and says how many entries it holds
 //!   no key for.
-//! - As an agent, it reads only channels of its folder's space.
+//! - As an agent, it reads only channels of its folder's space, and labels each message with its
+//!   sender's trust level, with one warning line before the first `peer` or `service` line.
 //!
 //! As the tests of history entries (`history_entries/main.rs`): the CLI runs on Ada's machine,
 //! which creates the spaces; Bob's and Carol's devices are played by the tests with an MLS state of
@@ -47,6 +48,7 @@ mod dropped;
 mod expired;
 mod gone;
 mod joiners;
+mod levels;
 mod proxy;
 mod reading;
 mod search;
