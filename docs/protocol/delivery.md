@@ -85,34 +85,36 @@ timestamp = uint       ; seconds since the Unix epoch
 ## Connecting
 A WebSocket carries other frames only once its first frame, `auth`, proves the key of the connection's device; an HTTPS request, once its proof does.
 
-- Before opening it, the client gets a challenge for its device session: `POST /session/challenge`.
+- Before opening it, the client gets a challenge for its device session, or for its service token on a `service` device: `POST /session/challenge`. A service token has permissions, `send`, `receive` and `queues`, and the channels of its device's grant: `createServiceToken` in the [OpenAPI spec](../../api/openapi.json).
 - `auth` names the device and signs, with the label `skald auth`, `["skald auth", challenge, origin]`. `origin` is the origin [[RFC 6454](https://www.rfc-editor.org/rfc/rfc6454)] of the server URL the client connects to, such as `https://skald.example`, its ASCII serialization as a byte string.
 - The server takes the connection, as the device's, only if:
   - `auth` is the first frame and comes within a few seconds of the opening;
-  - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection or request has used it before; a challenge works once, used or refused;
-  - the device is a `client` device with a certificate on the server, of the challenge's session's account, and not revoked ([Revocation](membership.md#revocation));
+  - the challenge is one it issued less than a minute ago to a session or service token that has not ended, and no connection or request has used it before; a challenge works once, used or refused;
+  - the device has a certificate on the server and is not revoked ([Revocation](membership.md#revocation)), and is a `client` device of the challenge's session's account, or the `service` device of its service token;
   - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
 | Reason | The connection |
 |---|---|
 | `auth-required` | Sends another frame first, or none in time |
-| `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session |
-| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, or a revoked one |
+| `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session or service token |
+| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, nor the service token's `service` device with a certificate, or a revoked one |
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
-- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends, and with the reason `device-refused` when its device is revoked.
+- A connection closes, with code 1008 and the reason `session-ended`, when the session or service token of its challenge ends, a token at its expiry too, and with the reason `device-refused` when its device is revoked.
+- A connection of a service token reads and acks its device's mailbox only with the token's `receive` permission: without it, the server ignores its `sync` and `ack` and sends it no `message` or `status`. It gets the `space-notice` of the token's space only.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
-Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session:
+Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session or a service token:
 
 ```cddl
 request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 ```
 
 - `signature` signs, with the label `skald request`, `["skald request", challenge, origin]`, `origin` as in `auth`. A different label keeps a proof from serving as `auth` and the other way round.
-- The server checks it as `auth`, and also that the challenge is of the bearer token's session. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session.
-- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked; an SSE stream ends.
+- The server checks it as `auth`, and also that the challenge is of the bearer token's session or service token. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session or service token that has not ended.
+- A long-poll, an `ack` and an SSE stream of a service token without the `receive` permission are refused with `403`, reading and acking nothing.
+- A waiting long-poll ends with the refusal a new request would get when its session or service token ends or its device is revoked; an SSE stream ends.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
@@ -124,7 +126,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 | Problem | The envelope |
 |---|---|
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
-| `not-a-member` | Comes from a device that may not send in `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
+| `not-a-member` | Comes from a device that may not send in `channel`, such as on a service token without the `send` permission or that does not list `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
 | `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |

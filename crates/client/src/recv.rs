@@ -19,10 +19,11 @@
 //! and `expired` of the device's messages. As an agent, only those of its folder's space: the rest
 //! wait in the local state.
 //!
-//! A message that passes the checks is kept for the person and for the agents it is for
-//! (`docs/protocol/delivery.md`, "Device to agent"), among the agents this device had run as in
-//! the space when it wrote the entry: with `to`, the one it names; without `to`, each; a message to
-//! a person, none. The person's run shows each kept message once,
+//! A message that passes the checks is kept, with the trust level its sending device's certificate
+//! and the space's roster give (`docs/protocol/membership.md`, "Trust levels"), for the person and
+//! for the agents it is for (`docs/protocol/delivery.md`, "Device to agent"), among the agents
+//! this device had run as in the space when it wrote the entry: with `to`, the one it names;
+//! without `to`, each; a message to a person, none. The person's run shows each kept message once,
 //! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
@@ -41,11 +42,13 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
 
-use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, check_grant, open_message};
+use skald_crypto::{
+    HpkeError, HpkeMessage, MemberDevice, StateKey, check_grant, open_message, trust_level,
+};
 use skald_proto::{
     AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope,
     Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName, ServerStatus,
-    ServiceAgent, SpaceId, VersionRange,
+    ServiceAgent, SpaceId, TrustLevel, VersionRange,
 };
 
 use crate::agents::server_name;
@@ -518,6 +521,7 @@ fn kept(
         from: message.from.to_string(),
         device: sender.to_string(),
         device_name: message.device.clone(),
+        level: message.level,
         text: message.text.clone(),
         after_missing: gap.is_some(),
     };
@@ -654,7 +658,8 @@ fn shown_statuses(
 
 /// Writes each of `kept`, kept messages by `seq` with their sealed lines, in `form` with
 /// `references`, to the output, then calls `mark` with its `seq`; one that does not open is warned
-/// of and marked. A line an older client kept is written as it is. Gives how many it wrote.
+/// of and marked. A line an older client kept is written as it is. In the short form,
+/// [`forms::DATA_WARNING`] comes before the first line below `own`. Gives how many it wrote.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
@@ -666,10 +671,18 @@ fn shown_kept(
     }
     let key = groups::inbox_key(follower)?;
     let mut shown = 0;
+    let mut warned = false;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
-                let line = kept_line(&opened, form, references);
+                let (line, level) = kept_line(&opened, form, references);
+                let warns = form == Form::Short && !warned && level < TrustLevel::Own;
+                let line = if warns {
+                    warned = true;
+                    format!("{}\n{line}", forms::DATA_WARNING)
+                } else {
+                    line
+                };
                 output::write(Stream::Out, format!("{line}\n").as_bytes())
                     .map_err(|err| format!("cannot write a message to the output: {err}"))?;
                 shown += 1;
@@ -683,14 +696,17 @@ fn shown_kept(
     Ok(shown)
 }
 
-/// The line of a kept message, `opened` its record, in `form` with `references`; one an older
-/// client kept is its line as it is.
-fn kept_line(opened: &[u8], form: Form, references: &References) -> String {
+/// The line of a kept message, `opened` its record, in `form` with `references`, and its sending
+/// device's trust level; one an older client kept is its line as it is, at the level `peer`.
+fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, TrustLevel) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
-        (Some(record), Some(msg_id)) => record.shown(form, &references.of(msg_id)),
-        _ => String::from_utf8_lossy(opened).into_owned(),
+        (Some(record), Some(msg_id)) => (record.shown(form, &references.of(msg_id)), record.level),
+        _ => (
+            String::from_utf8_lossy(opened).into_owned(),
+            TrustLevel::Peer,
+        ),
     }
 }
 
@@ -921,6 +937,8 @@ struct Received {
     to: Option<Address>,
     /// The sending device's certificate `name`.
     device: String,
+    /// The sending device's trust level.
+    level: TrustLevel,
     text: String,
     counter: Option<NonZeroU64>,
 }
@@ -986,6 +1004,9 @@ fn check(
              valid certificate that it does not bar"
         )
     })?;
+    let level = trust_level(context.own.account, cert, body).ok_or_else(|| {
+        format!("its sending device has no trust level in revision {revision} of the space {name}")
+    })?;
     let content = content(cert)?;
     // Under `hpke`, only the revision binds the channel to the space.
     if matches!(context.group, Group::Held(_))
@@ -1024,6 +1045,7 @@ fn check(
         from: content.from,
         to: content.to,
         device: cert.body().name.clone(),
+        level,
         text,
         counter: content.counter,
     })
@@ -1288,7 +1310,8 @@ mod tests {
 
     /// A message from an admitted device of a member of the channel, from its account's person
     /// address in the space on this server, with a counter and an A2A message whose `messageId` is
-    /// `msg_id`, gives its text parts, each on a line, `from` and the device's name.
+    /// `msg_id`, gives its text parts, each on a line, `from`, the device's name and its level,
+    /// `peer` for a device of another account.
     #[test]
     fn message_that_passes_the_checks_gives_its_text() {
         let world = World::new();
@@ -1301,6 +1324,7 @@ mod tests {
                 from: content.from.clone(),
                 to: None,
                 device: "laptop".to_owned(),
+                level: TrustLevel::Peer,
                 text: "first\nsecond".to_owned(),
                 counter: NonZeroU64::new(1),
             })
