@@ -30,6 +30,7 @@ use tokio::time::Instant;
 use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
+use crate::refusal::Caller;
 use crate::service_tokens::{self, Token};
 use crate::sign_in::{bearer, digest, not_signed_in};
 use crate::{AppState, database_failed};
@@ -564,7 +565,7 @@ pub(crate) async fn check(
     )
     .map_err(|_| Closing::SignatureRefused)?;
     let (account, token) = match bearer {
-        Bearer::Session(account) => {
+        Caller::Session(account) => {
             // The session lists the device it proved, and its use to the minute, as
             // `sign_in::find` does.
             sqlx::query(
@@ -579,7 +580,7 @@ pub(crate) async fn check(
             .map_err(|err| Unproved::Failed("record a session's device", err))?;
             (account.parse().expect("a stored account ID"), None)
         }
-        Bearer::Token(token) => {
+        Caller::Token(token) => {
             registration.ends_at(token.expires);
             (token.account, Some(token))
         }
@@ -591,12 +592,6 @@ pub(crate) async fn check(
         _registration: registration,
         ended,
     })
-}
-
-/// What a challenge is of: a device session, by its account's ID, or a service token.
-enum Bearer {
-    Session(String),
-    Token(Token),
 }
 
 /// Whether a connection of `token`, if it has one, reads and acks its device's mailbox.
@@ -640,7 +635,7 @@ async fn challenge_session(
 
 /// Uses up `challenge`: its session's account or its service token, if it is one the server
 /// issued, unused, unexpired, to a session or token that has not ended.
-async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Bearer>, Unproved> {
+async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Caller>, Unproved> {
     let taken: Option<(Option<String>, Option<Vec<u8>>, bool)> = sqlx::query_as(
         "WITH c AS (
              DELETE FROM connection_challenges WHERE challenge_hash = $1
@@ -654,10 +649,10 @@ async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Bea
     .await
     .map_err(|err| Unproved::Failed("take a challenge", err))?;
     match taken {
-        Some((Some(account), _, true)) => Ok(Some(Bearer::Session(account))),
+        Some((Some(account), _, true)) => Ok(Some(Caller::Session(account))),
         Some((None, Some(token), true)) => service_tokens::live(&state.db, &token)
             .await
-            .map(|token| token.map(Bearer::Token))
+            .map(|token| token.map(Caller::Token))
             .map_err(|err| Unproved::Failed("read a service token", err)),
         _ => Ok(None),
     }
@@ -668,12 +663,12 @@ async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Bea
 async fn device_key(
     state: &AppState,
     device: DeviceId,
-    bearer: &Bearer,
+    bearer: &Caller,
 ) -> Result<Option<[u8; 32]>, Unproved> {
     let (account, kind) = match bearer {
-        Bearer::Session(account) => (account.clone(), "client"),
-        Bearer::Token(token) if token.device == device => (token.account.to_string(), "service"),
-        Bearer::Token(_) => return Ok(None),
+        Caller::Session(account) => (account.clone(), "client"),
+        Caller::Token(token) if token.device == device => (token.account.to_string(), "service"),
+        Caller::Token(_) => return Ok(None),
     };
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT signing FROM devices

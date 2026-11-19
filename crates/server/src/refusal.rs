@@ -257,8 +257,8 @@ pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, 
 /// The ID of the account of the request's session, as a handler's argument.
 pub(crate) struct SignedIn(pub String);
 
-/// Who a request comes from, for the requests a service token alone also makes: a session's
-/// account, or else the request's bearer token as a service token that has not ended.
+/// Who a request comes from, for the requests a service token alone also makes, or whom a
+/// connection's challenge is of: a session's account, or a service token that has not ended.
 pub(crate) enum Caller {
     /// The ID of the session's account.
     Session(String),

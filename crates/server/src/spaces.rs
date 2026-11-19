@@ -135,10 +135,7 @@ impl FromRequestParts<AppState> for Gotten {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
         let SignedIn(account) = SignedIn::from_request_parts(parts, state).await?;
-        let Path(space) = Path::<String>::from_request_parts(parts, state)
-            .await
-            .map_err(|_| Refusal::NoSpace)?;
-        let found = find(&state.db, &space, &account).await?;
+        let found = find(&state.db, &path_space(parts, state).await?, &account).await?;
         if !found.gets {
             return Err(Refusal::NoSpace);
         }
@@ -155,18 +152,34 @@ impl FromRequestParts<AppState> for Readable {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
         let caller = Caller::from_request_parts(parts, state).await?;
-        let Path(space) = Path::<String>::from_request_parts(parts, state)
-            .await
-            .map_err(|_| Refusal::NoSpace)?;
-        let found = match caller {
-            Caller::Session(account) => {
-                let found = find(&state.db, &space, &account).await?;
-                found.gets.then_some(found.id)
-            }
-            Caller::Token(token) => space.parse().ok().filter(|space| *space == token.space),
-        };
-        Ok(Readable(found.ok_or(Refusal::NoSpace)?))
+        let space = path_space(parts, state).await?;
+        Ok(Readable(readable(&state.db, &caller, &space).await?))
     }
+}
+
+/// The space of the request's path, as it stands.
+async fn path_space(parts: &mut Parts, state: &AppState) -> Result<String, Refusal> {
+    let Path(space) = Path::<String>::from_request_parts(parts, state)
+        .await
+        .map_err(|_| Refusal::NoSpace)?;
+    Ok(space)
+}
+
+/// The space `space`, if `caller` reads it: a session of an account that gets it, or a service
+/// token of it.
+pub(crate) async fn readable(
+    db: &PgPool,
+    caller: &Caller,
+    space: &str,
+) -> Result<SpaceId, Refusal> {
+    let found = match caller {
+        Caller::Session(account) => {
+            let found = find(db, space, account).await?;
+            found.gets.then_some(found.id)
+        }
+        Caller::Token(token) => space.parse().ok().filter(|space| *space == token.space),
+    };
+    found.ok_or(Refusal::NoSpace)
 }
 
 /// `POST /spaces`: creates a space the session's account owns, unless it owns as many as it may.

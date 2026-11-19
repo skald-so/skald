@@ -12,7 +12,7 @@ use crate::wire::{Answer, now, send_frame};
 
 /// `stage` with `general`'s group formed by alice's laptop with the bot, which joined from the
 /// Welcome, and the bot in the channel's `services`: alice's laptop and the bot's MLS device.
-fn formed(github: u64) -> (Stage, Peer, MlsDevice) {
+pub fn formed(github: u64) -> (Stage, Peer, MlsDevice) {
     let mut stage = Stage::new(github);
     let general = stage.f.general;
     let bot_id = stage.bot.id;

@@ -69,13 +69,10 @@ pub(crate) async fn send(
 
 /// `POST /mailbox/ack`: acks the device's mailbox up to the `seq` of the `ack` frame in the body.
 pub(crate) async fn ack(State(state): State<AppState>, headers: HeaderMap, body: Body) -> Response {
-    let (proved, body) = match proved_with(&state, &headers, body).await {
+    let (proved, body) = match receiving_with(&state, &headers, body).await {
         Ok(proved) => proved,
         Err(refused) => return *refused,
     };
-    if let Err(refused) = receiving(&proved) {
-        return refused;
-    }
     let Ok(Frame::Ack { seq }) = Frame::from_cbor(&body) else {
         return invalid("The body is not an ack frame.");
     };
@@ -97,13 +94,10 @@ pub(crate) async fn poll(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let (mut proved, body) = match proved_with(&state, &headers, body).await {
+    let (mut proved, body) = match receiving_with(&state, &headers, body).await {
         Ok(proved) => proved,
         Err(refused) => return *refused,
     };
-    if let Err(refused) = receiving(&proved) {
-        return refused;
-    }
     let Some(wait) = param(query.as_deref(), "wait").and_then(|wait| wait.parse::<u64>().ok())
     else {
         return invalid("The query has no wait in seconds.");
@@ -221,6 +215,18 @@ async fn proved_with(
             "The body is over 64 MiB.",
         ))
     })?;
+    Ok((proved, body))
+}
+
+/// The request of `headers` proved, as `proved_with` does, and allowed to read and ack its
+/// device's mailbox, with its body; the refusal otherwise.
+async fn receiving_with(
+    state: &AppState,
+    headers: &HeaderMap,
+    body: Body,
+) -> Result<(Proved, Bytes), Box<Response>> {
+    let (proved, body) = proved_with(state, headers, body).await?;
+    receiving(&proved).map_err(Box::new)?;
     Ok((proved, body))
 }
 

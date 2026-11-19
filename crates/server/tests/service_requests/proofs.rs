@@ -19,6 +19,10 @@ use crate::link::{messages, seqs};
 use crate::tokens::{RECEIVE, SEND, Stage, grant};
 use crate::wire::{Socket, assert_nowhere, now};
 
+/// The problem of a request whose bearer token is of no device session or service token that has
+/// not ended.
+const NOT_SIGNED_IN: &str = "not-signed-in";
+
 /// Checks that the bot's mailbox still holds its two entries.
 #[track_caller]
 fn assert_kept(stage: &Stage, what: &str) {
@@ -112,9 +116,9 @@ fn a_token_with_another_devices_proof_reads_acks_and_sends_nothing() {
     );
 }
 
-/// Once the token has ended, as `end` ends it: a new challenge is refused with `401`, and the
-/// challenges it got before serve no long-poll, ack, send, stream or WebSocket, each refused with
-/// `401` or closed.
+/// Once the token has ended, as `end` ends it: a new challenge is refused with `401` and
+/// `not-signed-in`, and the challenges it got before serve no long-poll, ack, send, stream or
+/// WebSocket, each refused with `401` and `not-signed-in` or closed.
 #[track_caller]
 fn assert_ended_token_gets_nothing(stage: &Stage, token: &str, end: impl FnOnce()) {
     let https = https(stage, token);
@@ -123,23 +127,23 @@ fn assert_ended_token_gets_nothing(stage: &Stage, token: &str, end: impl FnOnce(
     end();
 
     let response = challenge_response(stage, token);
-    assert_problem(&response, 401, None);
+    assert_problem(&response, 401, Some(NOT_SIGNED_IN));
     let response = https
         .poll_request(0, 0, Some(https.proof_on(&earlier[0])))
         .call();
-    assert_problem(&response, 401, None);
+    assert_problem(&response, 401, Some(NOT_SIGNED_IN));
     let response = https
         .ack_request(2, Some(https.proof_on(&earlier[1])))
         .call();
-    assert_problem(&response, 401, None);
+    assert_problem(&response, 401, Some(NOT_SIGNED_IN));
     let (_, envelope) = to_alice(stage, stage.f.general);
     let response = https
         .send_request(&envelope, false, Some(https.proof_on(&earlier[2])))
         .call();
-    assert_problem(&response, 401, None);
+    assert_problem(&response, 401, Some(NOT_SIGNED_IN));
     assert_nowhere(stage.db(), &envelope);
     let response = sse.refused(Some(0), Some(&sse.https().proof_on(&earlier[3])));
-    assert_problem(&response, 401, None);
+    assert_problem(&response, 401, Some(NOT_SIGNED_IN));
     let flow = &stage.f.team.flow;
     let mut socket = Socket::on_challenge(
         server(stage),

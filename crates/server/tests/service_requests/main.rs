@@ -41,7 +41,8 @@ mod common;
 // The stage of the tests of service tokens and the frames of the tests of storing sent envelopes;
 // the requests of the mailbox over HTTPS and SSE and the connections of the tests of delivering a
 // mailbox; the fixture of storing sent envelopes, the revocations of the tests of revocations and
-// the MLS devices of the tests of the Delivery Service; the spaces tests' accounts and revisions.
+// the MLS devices of the tests of the Delivery Service and the history uploads and reads of the
+// tests of channel history; the spaces tests' accounts and revisions.
 #[path = "../service_tokens/tokens.rs"]
 mod tokens;
 #[path = "../mailbox/wire.rs"]
@@ -56,6 +57,8 @@ mod sse;
 
 #[path = "../mailbox/fixture.rs"]
 mod fixture;
+#[path = "../channel_history/kit.rs"]
+mod history;
 #[path = "../revocations/kit.rs"]
 mod kit;
 #[path = "../delivery_service/scene.rs"]
@@ -74,3 +77,4 @@ mod ends;
 mod group;
 mod permissions;
 mod proofs;
+mod scopes;

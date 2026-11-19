@@ -23,7 +23,7 @@ use crate::AppState;
 use crate::devices::{base64, bytes};
 use crate::mailboxes::{Problem, Sender, latest as latest_revision, receiving};
 use crate::refusal::{Answer, Caller, Refusal, parse};
-use crate::spaces::find;
+use crate::spaces::readable;
 
 /// Checks how an `mls` envelope with `header` and a payload of `framing`, `None` if it is no
 /// `MLSMessage`, is addressed: a Welcome to `recipients`, a message of the channel's group to the
@@ -293,14 +293,7 @@ async fn channel_of(
     space: &str,
     channel: &str,
 ) -> Result<(ChannelId, Vec<ChannelMember>), Refusal> {
-    let space = match caller {
-        Caller::Session(account) => {
-            let found = find(&state.db, space, account).await?;
-            found.gets.then_some(found.id)
-        }
-        Caller::Token(token) => space.parse().ok().filter(|space| *space == token.space),
-    };
-    let space = space.ok_or(Refusal::NoSpace)?;
+    let space = readable(&state.db, caller, space).await?;
     let channel: ChannelId = channel.parse().map_err(|_| Refusal::NoChannel)?;
     if caller
         .token()
