@@ -33,6 +33,7 @@ mod json;
 mod mcp;
 mod prompt;
 mod runs;
+mod services;
 mod waiting;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
@@ -73,3 +74,7 @@ mod terminal_grants;
 // The agent CLI of the tests of the MCP server.
 #[path = "../mcp_inbox/client.rs"]
 mod mcp_client;
+
+// The commands of the tests of service agents.
+#[path = "../service_agents/kit.rs"]
+mod service_kit;

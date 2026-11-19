@@ -657,9 +657,17 @@ impl Command {
     }
 
     /// Whether a run of it says which devices wait for linking ([`link_prompt`]): one that
-    /// connects, or a tool call of the MCP server.
+    /// reaches the server from a linked device, or a tool call of the MCP server.
     fn prompts(&self) -> bool {
         self.connects()
+            || matches!(
+                self,
+                Command::CreateServiceAgent { .. }
+                    | Command::CreateServiceToken { .. }
+                    | Command::ServiceTokens { .. }
+                    | Command::RevokeServiceToken { .. }
+                    | Command::SignOut
+            )
             || matches!(self, Command::Mcp { call: Some(call), .. } if *call != mcp::Call::Register)
     }
 
