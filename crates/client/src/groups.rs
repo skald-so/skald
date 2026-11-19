@@ -802,9 +802,9 @@ fn welcomes_waiting(follower: &Follower) -> Result<Vec<ChannelId>, String> {
 
 /// Brings this device, admitted to `channel` of `space` but outside its group, into it, with
 /// `others`, the other admitted devices by `roster` and `devices`: creates the group if the server
-/// has none, unless it is a `service` device, which waits for a member's; otherwise joins by itself from the GroupInfo of the current epoch, if the server has
-/// one, unless it lists this device, which another device added and whose Welcome comes, or
-/// `rejoining`.
+/// has none, unless it is a `service` device, which waits for a member's; otherwise joins by itself
+/// from the GroupInfo of the current epoch, if the server has one, unless it lists this device,
+/// which another device added and whose Welcome comes, or `rejoining`.
 fn outside(
     follower: &mut Follower,
     link: &mut Link,

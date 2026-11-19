@@ -215,7 +215,7 @@ anchors-body = {
 - For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
 - It pins as its personal space the `personal` of the valid anchors objects that have one. When they name different spaces, it pins none and warns its user.
 
-A `service` device's run starts its space's roster from the latest revision that a valid anchors object names, by the checks above, when the revisions from its [key secret](#service-device)'s `anchor` up to it pass through every other revision such objects name. Otherwise it starts from `anchor` and warns.
+A `service` device's run starts its space's roster from the latest revision named by an anchors object of its account whose `device` is a `client` device with a valid certificate ([Device checks](#device-checks), against the pinned master key) and whose signature verifies with that certificate. It does so when the revisions from its [key secret](#service-device)'s `anchor` up to it pass through every other revision such objects name. Otherwise it starts from `anchor` and warns.
 - Named revisions at or below `anchor` do not count.
 - It accepts the revisions up to its start without checks 3 and 4 of [Device checks](#device-checks) on their `signer`; later ones with them ([Roster](#roster)).
 
@@ -471,7 +471,7 @@ A member device:
 
 ### Creating a channel
 1. An admin's device gets a channel ID from the server and signs a revision with the channel.
-2. The first admitted device to accept the revision creates the channel's group at epoch 0, adds every admitted device it has a KeyPackage for and commits: epoch 1.
+2. The first admitted device to accept the revision creates the channel's group at epoch 0, adds every admitted device it has a KeyPackage for and commits: epoch 1. A `service` device creates none, as its token gets no other device's KeyPackages: it waits for a member's group ([KeyPackages](#keypackages)).
 3. The server keeps the first Commit of epoch 0 it receives for the channel and refuses later ones with `epoch-mismatch` ([Send](delivery.md#send)). A device whose group is refused drops it and joins the kept one.
 4. Once the server stores its Commit, the creator uploads the GroupInfo of epoch 1, then sends the Welcome ([Commit ordering](#commit-ordering)).
 
@@ -649,5 +649,5 @@ A reader MUST drop an entry unless:
 - A device that joins a group holding revoked devices ([Group changes](#group-changes)) shares its join epoch with them. That epoch is not clean, and the joiner sends nothing in it.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
-- A `service` device's run is as current as its account's devices: it starts from the revisions they anchored. A stolen `client` device of the account with the server can make it start from a revision that a revoked admin device signed after its revocation.
+- A `service` device's run is as current as its account's devices: it starts from the revisions they anchored. A stolen `client` device of the account with the server can make it start from a revision that a revoked admin device signed after its revocation, but only while the stolen device is not revoked: a revoked device's anchors objects do not count. A revision that none of the account's devices accepted before its signer's revocation fails for the run as it does for them.
 - Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).
