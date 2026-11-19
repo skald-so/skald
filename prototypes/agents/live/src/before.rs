@@ -4,17 +4,21 @@
 //! binary's `before_run` starts the CLI; everything else is here.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
+use std::net::TcpListener;
 use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
-use agent_inbox::{CLAIM, INBOX};
+use agent_inbox::{CLAIM, CLAIMS, INBOX};
 use agent_source::Registration;
 use serde_json::{Value, json};
 
-use crate::channel::Files;
+use crate::channel::{Files, approved_key};
 use crate::wake::{self, Wake};
-use crate::{Agent, Call, Checks, Options, PLACEHOLDER, SERVER, StubLog, claude_flags, pretty};
+use crate::{Agent, Call, Checks, Options, SERVER, StubLog, claude_flags, pretty};
 
 /// A check before implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,6 +217,23 @@ pub fn signals_seen(stub: &StubLog) -> usize {
 /// What Claude Code shows when it drops a peer message, such as a repeat.
 pub const DROPPED: &str = "Dropped a peer message";
 
+/// Whether the `n`th signal reached the model: on `stub`, if the session ran on one, as many
+/// signals in a request; on the real model, the screen did not show that it [`DROPPED`] one.
+pub fn signalled(stub: Option<&StubLog>, dropped: bool, n: usize) -> bool {
+    match stub {
+        Some(stub) => signals_seen(stub) >= n,
+        None => !dropped,
+    }
+}
+
+/// How many times the stub `claim` in `claims` was called.
+pub fn claim_calls(claims: &Path) -> usize {
+    fs::read_to_string(claims.join(CLAIMS))
+        .unwrap_or_default()
+        .lines()
+        .count()
+}
+
 /// Whether `tools` hold calls of both `inbox` and `claim`.
 pub fn called_both(tools: &[&str]) -> bool {
     [INBOX, CLAIM]
@@ -372,12 +393,36 @@ impl Folder {
         })
     }
 
+    /// The file the executor is told to write.
     pub fn written(&self) -> PathBuf {
         self.folder.join("written.txt")
     }
 
+    /// The file the executor's command makes.
     pub fn ran(&self) -> PathBuf {
         self.folder.join("ran.txt")
+    }
+
+    /// What the read-only executor did, from the folder, the `fetched` requests to the local
+    /// server, and the session's `stub` and output `log`.
+    pub fn read_only_run(&self, fetched: usize, stub: Option<&StubLog>, log: &str) -> ReadOnlyRun {
+        ReadOnlyRun {
+            wrote: self.written().exists(),
+            ran: self.ran().exists(),
+            fetched,
+            secret: reached(stub, log, &self.secret),
+            linked: reached(stub, log, &self.linked),
+            tools: tool_calls(log),
+        }
+    }
+
+    /// What the full executor did, from the folder and the session's output `log`.
+    pub fn full_run(&self, log: &str) -> FullRun {
+        FullRun {
+            wrote: fs::read_to_string(self.written()).is_ok_and(|text| text.trim() == "written"),
+            ran: self.ran().exists(),
+            tools: tool_calls(log),
+        }
     }
 
     /// The prompt of an executor in `mode`: write a file and run a command in the folder; in
@@ -443,6 +488,40 @@ impl Folder {
             ]);
         }
         Call::script(calls)
+    }
+}
+
+/// Whether `token` reached the model of a session: in a request to its `stub`, or in its output
+/// `log`, which holds the tool results and replies.
+pub fn reached(stub: Option<&StubLog>, log: &str, token: &str) -> bool {
+    stub.is_some_and(|stub| stub.saw(token)) || log.contains(token)
+}
+
+/// A local HTTP server that counts the requests it gets.
+pub struct LocalServer {
+    pub url: String,
+    requests: Arc<AtomicUsize>,
+}
+
+impl LocalServer {
+    pub fn start() -> io::Result<Self> {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let url = format!("http://{}/", listener.local_addr()?);
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&requests);
+        thread::spawn(move || {
+            for mut stream in listener.incoming().map_while(Result::ok) {
+                counted.fetch_add(1, Ordering::SeqCst);
+                let _ = stream.read(&mut [0; 4096]);
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            }
+        });
+        Ok(Self { url, requests })
+    }
+
+    /// The requests the server got so far.
+    pub fn requests(&self) -> usize {
+        self.requests.load(Ordering::SeqCst)
     }
 }
 
@@ -529,7 +608,7 @@ pub fn plant(config: &Path, folder: &Path, marks: &Path) -> io::Result<Planted> 
     let hook = |name: &str| json!([{ "hooks": [{ "type": "command", "command": command(name) }] }]);
 
     // The sign-in on the stub: onboarding done and the placeholder key approved.
-    let key = &PLACEHOLDER[PLACEHOLDER.len() - 20..];
+    let key = approved_key();
     fs::write(
         config.join(".claude.json"),
         pretty(&json!({
@@ -932,6 +1011,8 @@ impl BeforeCheck {
 mod tests {
     use agent_source::Source;
 
+    use crate::PLACEHOLDER;
+    use crate::channel::{HookEvent, PtySession};
     use crate::tests::read_json;
 
     use super::*;
@@ -1086,6 +1167,28 @@ mod tests {
         };
         assert_eq!(signals_seen(&stub), 2);
         assert_eq!(signals_seen(&StubLog::default()), 0);
+        assert!(signalled(Some(&stub), true, 2));
+        assert!(!signalled(Some(&stub), false, 3));
+        assert!(signalled(None, false, 2));
+        assert!(!signalled(None, true, 1));
+
+        let session = PtySession {
+            hooks: vec![
+                HookEvent::ToolStarted("mcp__skald__inbox".to_owned()),
+                HookEvent::Stopped("Done.".to_owned()),
+                HookEvent::ToolStarted("Bash".to_owned()),
+            ],
+            ..PtySession::default()
+        };
+        assert_eq!(tools_started(&session), ["mcp__skald__inbox", "Bash"]);
+    }
+
+    #[test]
+    fn counts_the_claim_calls() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(claim_calls(tmp.path()), 0);
+        fs::write(tmp.path().join(CLAIMS), "{}\n{}\n").unwrap();
+        assert_eq!(claim_calls(tmp.path()), 2);
     }
 
     #[test]
@@ -1147,6 +1250,83 @@ mod tests {
     }
 
     #[test]
+    fn tells_what_an_executor_did() {
+        let tmp = tempfile::tempdir().unwrap();
+        let folder = Folder::make(tmp.path()).unwrap();
+        assert_eq!(folder.written(), folder.folder.join("written.txt"));
+        assert_eq!(folder.ran(), folder.folder.join("ran.txt"));
+        assert_eq!(
+            folder.read_only_run(0, None, ""),
+            ReadOnlyRun::default(),
+            "nothing done"
+        );
+        assert_eq!(folder.full_run(""), FullRun::default());
+
+        let stub = StubLog {
+            requests: vec![folder.secret.clone()],
+            credentials: Vec::new(),
+        };
+        let log = format!("{TOOL}\n{}", folder.linked);
+        fs::write(folder.written(), "written\n").unwrap();
+        fs::write(folder.ran(), "").unwrap();
+        let tools = vec!["Write".to_owned(), "Bash".to_owned()];
+        assert_eq!(
+            folder.read_only_run(2, Some(&stub), &log),
+            ReadOnlyRun {
+                wrote: true,
+                ran: true,
+                fetched: 2,
+                secret: true,
+                linked: true,
+                tools: tools.clone(),
+            }
+        );
+        assert_eq!(
+            folder.full_run(&log),
+            FullRun {
+                wrote: true,
+                ran: true,
+                tools,
+            }
+        );
+        fs::write(folder.written(), "other").unwrap();
+        assert!(
+            !folder.full_run("").wrote,
+            "only the text it was told to write"
+        );
+    }
+
+    #[test]
+    fn tells_whether_a_token_reached_the_model() {
+        let stub = StubLog {
+            requests: vec!["a tok-1 b".to_owned()],
+            credentials: Vec::new(),
+        };
+        assert!(reached(Some(&stub), "", "tok-1"));
+        assert!(reached(None, "x tok-1", "tok-1"));
+        assert!(!reached(Some(&stub), "x", "tok-2"));
+        assert!(!reached(None, "", "tok-1"));
+    }
+
+    #[test]
+    fn the_local_server_counts_its_requests() {
+        let server = LocalServer::start().unwrap();
+        assert_eq!(server.requests(), 0);
+        let address = server
+            .url
+            .trim_start_matches("http://")
+            .trim_end_matches('/');
+        for n in 1..=2 {
+            let mut stream = std::net::TcpStream::connect(address).unwrap();
+            stream.write_all(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+            let mut reply = String::new();
+            stream.read_to_string(&mut reply).unwrap();
+            assert!(reply.ends_with("\r\n\r\nok"), "{reply}");
+            assert_eq!(server.requests(), n);
+        }
+    }
+
+    #[test]
     fn the_folder_links_to_a_file_outside_it() {
         let tmp = tempfile::tempdir().unwrap();
         let folder = Folder::make(tmp.path()).unwrap();
@@ -1195,6 +1375,10 @@ mod tests {
         let planted = plant(&config, &folder, &tmp.path().join("marks")).unwrap();
 
         let state = read_json(config.join(".claude.json"));
+        assert_eq!(
+            state["customApiKeyResponses"]["approved"],
+            json!(["ve-check-placeholder"])
+        );
         let server = &state["mcpServers"]["planted"];
         let settings = read_json(config.join("settings.json"));
         assert_eq!(settings["enabledPlugins"][PLUGIN], true);

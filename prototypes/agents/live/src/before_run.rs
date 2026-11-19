@@ -3,18 +3,12 @@
 //! runs no CLI is in the library's `before` module.
 
 use std::fs;
-use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread;
 
-use agent_inbox::CLAIMS;
 use agent_live::before::{
-    self, Before, BeforeCheck, Folder, FullRun, Loaded, Mode, PARENT_VAR, Reached, ReadOnlyRun,
-    SIGNAL,
+    self, Before, BeforeCheck, Folder, Loaded, LocalServer, Mode, PARENT_VAR, Reached, SIGNAL,
 };
 use agent_live::channel::{Files, extra_environment, stub_environment};
 use agent_live::hook::HOOK_BIN;
@@ -114,16 +108,10 @@ fn socket(check: Before, options: &Options) -> Result<bool> {
         };
         let dropped = live.showed(before::DROPPED);
         let session = live.end()?;
-        let signalled = |n: usize| match &session.stub {
-            Some(stub) => before::signals_seen(stub) >= n,
-            None => !dropped,
-        };
+        let signalled = |n| before::signalled(session.stub.as_ref(), dropped, n);
         let tools = before::tools_started(&session);
         let (idle_tools, busy_tools) = before::idle_and_busy(&tools);
-        let claimed = fs::read_to_string(claims.join(CLAIMS))
-            .unwrap_or_default()
-            .lines()
-            .count();
+        let claimed = before::claim_calls(&claims);
         let details = format!("claim calls: {claimed}; {}", session.summary());
         let case = |added: &Option<agent_live::channel::Sent>| {
             added.as_ref().map_or((false, false), |sent| {
@@ -178,33 +166,6 @@ fn send(source: &Source, text: &str, from: &str) -> Result<()> {
     Ok(())
 }
 
-/// A local HTTP server that counts the requests it gets.
-struct LocalServer {
-    url: String,
-    requests: Arc<AtomicUsize>,
-}
-
-impl LocalServer {
-    fn start() -> Result<Self> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let url = format!("http://{}/", listener.local_addr()?);
-        let requests = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&requests);
-        thread::spawn(move || {
-            for mut stream in listener.incoming().map_while(std::result::Result::ok) {
-                counted.fetch_add(1, Ordering::SeqCst);
-                let _ = stream.read(&mut [0; 4096]);
-                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-            }
-        });
-        Ok(Self { url, requests })
-    }
-
-    fn requests(&self) -> usize {
-        self.requests.load(Ordering::SeqCst)
-    }
-}
-
 /// Runs the executor session `name` in `folder` with `args`, on `stub` if given, in a clean
 /// environment, with auto-memory off if `clean`; what it did and its stream-json output.
 fn execute(
@@ -244,12 +205,6 @@ fn execute(
     Ok((session, log))
 }
 
-/// Whether `token` reached the model of a session: in a request to its stub, or in its output,
-/// which holds the tool results and replies.
-fn reached(session: &Session, log: &str, token: &str) -> bool {
-    session.stub.as_ref().is_some_and(|stub| stub.saw(token)) || log.contains(token)
-}
-
 /// The read-only executor: told to write a file, run a command, fetch from a local server, and
 /// read a file outside its folder, directly and through a symlink in it.
 fn read_only(options: &Options) -> Result<bool> {
@@ -267,14 +222,7 @@ fn read_only(options: &Options) -> Result<bool> {
         stub.as_ref(),
         true,
     )?;
-    let run = ReadOnlyRun {
-        wrote: folder.written().exists(),
-        ran: folder.ran().exists(),
-        fetched: server.requests(),
-        secret: reached(&session, &log, &folder.secret),
-        linked: reached(&session, &log, &folder.linked),
-        tools: before::tool_calls(&log),
-    };
+    let run = folder.read_only_run(server.requests(), session.stub.as_ref(), &log);
     let mut check = BeforeCheck::new(Before::ReadOnly);
     println!(
         "{}",
@@ -292,11 +240,7 @@ fn full(options: &Options) -> Result<bool> {
     let prompt = folder.prompt(Mode::Full, "");
     let args = before::executor_args(Mode::Full, &prompt, true, options.model);
     let (session, log) = execute(&work, "full", &folder.folder, args, stub.as_ref(), true)?;
-    let run = FullRun {
-        wrote: fs::read_to_string(folder.written()).is_ok_and(|text| text.trim() == "written"),
-        ran: folder.ran().exists(),
-        tools: before::tool_calls(&log),
-    };
+    let run = folder.full_run(&log);
     let mut check = BeforeCheck::new(Before::Full);
     println!("{}", check.full(&run, &before::executor_details(&session)));
     let verdict = check.verdict(options);
