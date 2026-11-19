@@ -451,6 +451,7 @@ impl Setup<'_> {
             &mut recovery_link::NewDevice {
                 connection: self.connection,
                 state: self.state,
+                secrets: self.secrets,
                 token: self.token,
                 account: self.account,
                 device: &self.device,

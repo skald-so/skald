@@ -5,10 +5,11 @@
 //! opens in PSK mode with the key, issues its own certificate with it and shows the account's
 //! devices. Then, in this order, it revokes with the master key the devices its person names
 //! stolen, has the server store its certificate, starts from the anchors objects of the devices no
-//! master-key revocation marks as stolen, and revokes with its own key those its person names lost
-//! or wiped. The master private key never reaches the disk. Each revocation is written to the local
-//! state before it is sent and sent again by later runs; a run that stops before it is done leaves
-//! the rest to a later run with the recovery key, which signs no revocation twice.
+//! master-key revocation marks as stolen, takes the history keys wrapped to the recovery key
+//! ([`crate::recovery_wraps`]), and revokes with its own key those its person names lost or wiped.
+//! The master private key and the recovery key never reach the disk. Each revocation is written to
+//! the local state before it is sent and sent again by later runs; a run that stops before it is
+//! done leaves the rest to a later run with the recovery key, which signs no revocation twice.
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, Write};
@@ -17,8 +18,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
-    RecoveryKey, SigningKey, check_account, check_anchors, check_device, counts, marked_stolen,
-    open_master_backup, sign_revocation, verify,
+    HpkeKey, RecoveryKey, SigningKey, check_account, check_anchors, check_device, counts,
+    marked_stolen, open_master_backup, sign_revocation, verify,
 };
 use skald_proto::{
     AccountId, AccountRecord, Anchors, Cbor as _, Cert, CertBody, DeviceId, DeviceKind,
@@ -32,7 +33,9 @@ use crate::devices::{self, text};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::link_code;
 use crate::output::{self, Stream};
+use crate::recovery_wraps;
 use crate::revocations::{self, certified_by};
+use crate::secrets::Secrets;
 use crate::sign_in;
 use crate::spaces::now;
 use crate::state::{self, Link, State};
@@ -60,11 +63,12 @@ impl Named {
     }
 }
 
-/// The new device, waiting for linking: its connection, local state and session, its account,
-/// itself and its keys.
+/// The new device, waiting for linking: its connection, local state, secrets and session, its
+/// account, itself and its keys.
 pub struct NewDevice<'a> {
     pub connection: &'a mut Connection,
     pub state: &'a State,
+    pub secrets: &'a Secrets,
     pub token: &'a str,
     pub account: AccountId,
     pub device: &'a state::Device,
@@ -119,6 +123,8 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
              account's recovery key, or someone changed the backup",
         )
     })?;
+    // The wraps to the recovery key open with its HPKE key pair, kept until the anchors are taken.
+    let recovery = HpkeKey::from_recovery_key(&key.to_bytes());
     drop(key);
     let cert = new.own_cert(&signer)?;
     new.state.set_link(&Link::Recovering {
@@ -174,6 +180,21 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
         master,
     };
     new.anchor(&own, &devices)?;
+    recovery_wraps::Taking {
+        connection: new.connection,
+        token: new.token,
+        state: new.state,
+        secrets: new.secrets,
+        keys: new.keys,
+    }
+    .take(&own, &recovery)
+    .map_err(|err| {
+        sign_in::Error::Recovery(format!(
+            "this device has not taken the history keys wrapped to the recovery key: {err}; {AGAIN} \
+             takes them"
+        ))
+    })?;
+    drop(recovery);
 
     // 3. The lost or wiped devices, revoked with this device's key.
     let by_device = plan.by_device(new.keys.signing(), &devices, new.account, new.device.id)?;
@@ -852,6 +873,7 @@ mod tests {
                 ids: keys.iter().map(device).collect(),
                 certs,
                 revocations: vec![by_a],
+                records: Vec::new(),
             };
             Account {
                 id,

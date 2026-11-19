@@ -601,6 +601,14 @@ export interface HistoryWraps {
   wraps: string[];
 }
 
+export interface SpaceDevices {
+  devices: Device[];
+  /** The stored revocations of the listed devices' accounts, each as the server got it, once. */
+  revocations: Revocation[];
+  /** The account record of each of those accounts that has one, as its first device sent it, once; an account whose master key came before account records has none. */
+  records: AccountRecord[];
+}
+
 /**
  * The member's role in the revision.
  */

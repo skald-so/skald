@@ -5,8 +5,9 @@
 //! warns its user and keeps working with it. Another valid revision with a number it accepted means
 //! the server forked the roster: the device keeps its own and warns. It warns when a revision it
 //! accepts changes a member's `master`, and when a member's device is revoked, valid again or new
-//! since it last checked it ("Device checks"). A revision's signer is checked with the revocations
-//! of its account.
+//! since it last checked it ("Device checks"), and when a member account's record changes its
+//! `recovery` ([`crate::records`]). A revision's signer is checked with the revocations of its
+//! account.
 //!
 //! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
 //! personal space included, which counts as accepted before the server takes it, or the latest
@@ -21,10 +22,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{RosterError, accept_next, check_device, check_valid_device};
-use skald_proto::{AccountId, Cbor as _, Cert, DeviceId, Member, Revocation, Roster, SpaceId};
+use skald_proto::{
+    AccountId, AccountRecord, Cbor as _, Cert, DeviceId, Member, Revocation, Roster, SpaceId,
+};
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
+use crate::records;
 use crate::revocations;
 use crate::state::{self, State};
 
@@ -46,12 +50,14 @@ pub struct Own {
 }
 
 /// The devices of a list, such as of a space's accounts, as the server gives them: their IDs, the
-/// certificates that decode, and the revocations that decode with those the device holds.
-#[derive(Clone)]
+/// certificates that decode, the revocations that decode with those the device holds, and, for a
+/// space, the account records of its accounts that decode, unchecked.
+#[derive(Clone, Default)]
 pub struct SpaceDevices {
     pub ids: Vec<DeviceId>,
     pub certs: Vec<Cert>,
     pub revocations: Vec<Revocation>,
+    pub records: Vec<AccountRecord>,
 }
 
 /// The master key a device checks the certificates of `account` against in `roster`: the one `own`
@@ -110,7 +116,12 @@ pub fn sync(
     let (current, followed) = settle(state, (id, name), held, &given, &devices, own)?;
     revocations::keep(state, &devices, |account| master_of(&current, own, account))?;
     let changed = device_changes(state, &current, &devices, own)?;
-    for warning in warnings.iter().chain(&followed).chain(&changed) {
+    let records = records::settle(state, (&current, &devices), own)?;
+    for warning in (warnings.iter())
+        .chain(&followed)
+        .chain(&changed)
+        .chain(&records)
+    {
         eprintln!("skald: warning: {warning}");
     }
     Ok((current, devices, given))
@@ -578,6 +589,7 @@ mod tests {
                 ids: certs.iter().map(|cert| cert.body().device).collect(),
                 certs,
                 revocations,
+                records: Vec::new(),
             }
         }
 

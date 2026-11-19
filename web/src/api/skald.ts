@@ -47,6 +47,7 @@ import type {
   SignInMethods,
   SignInProviders,
   Space,
+  SpaceDevices,
   SpaceRequest,
   SpaceUsage,
   Spaces,
@@ -2972,7 +2973,7 @@ export const getHistoryWraps = async (
 };
 
 export type getSpaceDevicesResponse200 = {
-  data: Devices;
+  data: SpaceDevices;
   status: 200;
 };
 

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
+use skald_proto::{AccountId, ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
 
 use crate::gaps::{Counters, Source};
 
@@ -360,6 +360,18 @@ const MIGRATIONS: &[&str] = &[
         master BLOB NOT NULL CHECK (length(master) = 32),
         cert BLOB NOT NULL
     ) STRICT",
+    // The history through the recovery key: the account record the device took of each member
+    // account of its spaces ([`crate::records`]), in CBOR; and, on a device linked with the
+    // recovery key, each epoch of a channel whose key a wrap to it gave the device.
+    "CREATE TABLE account_record (
+        account TEXT PRIMARY KEY,
+        record BLOB NOT NULL
+    ) STRICT;
+    CREATE TABLE recovered_epoch (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 1),
+        PRIMARY KEY (channel, epoch)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -661,6 +673,8 @@ pub struct MlsChanges {
     /// The `seq` of each `read` receipt the device owed that a receipt it puts in the outbox
     /// reports.
     pub issued: Vec<u64>,
+    /// Each epoch of a channel whose key a wrap to the recovery key gave the device.
+    pub recovered: Vec<(ChannelId, u64)>,
 }
 
 impl MlsChanges {
@@ -678,6 +692,7 @@ impl MlsChanges {
             && self.judged.is_empty()
             && self.entries.is_empty()
             && self.issued.is_empty()
+            && self.recovered.is_empty()
     }
 }
 
@@ -1128,6 +1143,13 @@ impl State {
                     params![sql_seq(seq)?],
                 )?;
             }
+            for (channel, epoch) in &changes.recovered {
+                tx.execute(
+                    "INSERT INTO recovered_epoch (channel, epoch) VALUES (?1, ?2)
+                     ON CONFLICT DO NOTHING",
+                    params![channel.to_string(), sql_u64(*epoch)?],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -1176,6 +1198,38 @@ impl State {
         (rows.into_iter())
             .map(|(epoch, clean)| Ok((read_epoch(channel, epoch)?, clean)))
             .collect()
+    }
+
+    /// The epochs of `channel` whose key a wrap to the recovery key gave the device
+    /// ([`MlsChanges::recovered`]).
+    pub fn recovered_epochs(&self, channel: ChannelId) -> Result<BTreeSet<u64>, Error> {
+        let sql = "SELECT epoch FROM recovered_epoch WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| row.get::<_, i64>(0))?;
+        (rows.into_iter())
+            .map(|epoch| read_epoch(channel, epoch))
+            .collect()
+    }
+
+    /// The account record the device took of `account` ([`crate::records`]), in CBOR.
+    pub fn account_record(&self, account: AccountId) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT record FROM account_record WHERE account = ?1",
+                params![account.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Keeps `record`, in CBOR, as the account record the device took of `account`.
+    pub fn set_account_record(&self, account: AccountId, record: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO account_record (account, record) VALUES (?1, ?2)
+             ON CONFLICT (account) DO UPDATE SET record = excluded.record",
+            params![account.to_string(), record],
+        )?;
+        Ok(())
     }
 
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
