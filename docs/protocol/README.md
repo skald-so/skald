@@ -204,6 +204,8 @@ A recipient MUST reject content from a `service` device unless:
 2. `signer` is an [admin's device](membership.md#roster) of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
 
+Before it rejects content from a `service` device that no `service-agent` entry in the latest revision it accepted lists, a recipient fetches the space's latest revisions and accepts them ([Roster](membership.md#roster)), so it takes a new service agent's first messages.
+
 ### Delegation
 Content field 7 is reserved for a later version. Its format:
 
