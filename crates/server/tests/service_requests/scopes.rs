@@ -5,7 +5,7 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
-use skald_proto::ChannelMember;
+use skald_proto::{ChannelId, ChannelMember};
 
 use crate::bot::{alone, https, link, ops, socket, to_bot, token};
 use crate::common::devices::assert_taken;
@@ -14,11 +14,19 @@ use crate::history::{Answer, ENTRIES, WRAPS, attempt, entry, given, stores, wrap
 use crate::kit::{assert_closes_within, assert_open};
 use crate::link::messages;
 use crate::rosters::first;
-use crate::tokens::{RECEIVE, SEND, Stage, grant};
+use crate::tokens::{Created, RECEIVE, SEND, Stage, grant};
 use crate::wire::{assert_nowhere, now};
 
 /// How soon a token's connections end at its expiry.
 const END: Duration = Duration::from_secs(3);
+
+/// A token of the bot with the send and receive permissions, from alice's session, on a grant for
+/// `channels` until `expires`.
+fn token_for(stage: &Stage, channels: &[ChannelId], expires: u64) -> Created {
+    let alice = &stage.f.team.alice;
+    let signed = grant(stage.bot.id, channels, &alice.laptop, expires);
+    stage.create_as(alice, stage.bot.id, &signed, &[SEND, RECEIVE])
+}
 
 /// The bot's long-poll with its token gets the `space-notice` of a new revision of `acme`, and none
 /// of a space of alice's account, the bot's, that the token is not of.
@@ -54,9 +62,7 @@ fn a_tokens_long_poll_gets_the_notices_of_its_space_only() {
 fn a_tokens_device_uploads_history_only_in_the_tokens_channels() {
     let (mut stage, _laptop, _bot) = formed(3_545_700_011);
     let ops = ops(&mut stage);
-    let alice = &stage.f.team.alice;
-    let for_ops = grant(stage.bot.id, &[ops], &alice.laptop, now() + 86_400);
-    let for_ops = stage.create_as(alice, stage.bot.id, &for_ops, &[SEND, RECEIVE]);
+    let for_ops = token_for(&stage, &[ops], now() + 86_400);
     let for_general = token(&stage, &[SEND, RECEIVE]);
     let (space, general) = (stage.space(), stage.f.general);
     let item = entry(general, 1);
@@ -123,11 +129,9 @@ fn a_token_reads_its_channels_history_as_its_devices_account() {
 #[test]
 fn a_tokens_expiry_ends_its_own_connections_alone() {
     let stage = Stage::new(3_545_700_031);
-    let alice = &stage.f.team.alice;
     let lasting = token(&stage, &[SEND, RECEIVE]);
     let expires = now() + 8;
-    let soon = grant(stage.bot.id, &[stage.f.general], &alice.laptop, expires);
-    let soon = stage.create_as(alice, stage.bot.id, &soon, &[SEND, RECEIVE]);
+    let soon = token_for(&stage, &[stage.f.general], expires);
     let mut kept = link(&stage, &lasting.token);
     kept.sync(0);
     assert_eq!(kept.catch_up(), Vec::new(), "the lasting token's catch-up");
