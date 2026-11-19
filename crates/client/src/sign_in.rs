@@ -238,7 +238,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
     // A device that holds its certificate keeps its KeyPackages on the server.
     let certified = state.device()?.map(|device| device.link);
     if matches!(certified, Some(state::Link::Certified { .. }))
-        && let Err(err) = key_packages::keep(connection, &token, &state, &keys, &secrets)
+        && let Err(err) = key_packages::keep(connection, &token, (&state, &secrets), &keys, false)
     {
         key_packages::warn(&err);
     }

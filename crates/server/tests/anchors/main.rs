@@ -2,7 +2,8 @@
 //! session of an account an anchors object of that account whose signature verifies with the
 //! certificate of its `device`, a `client` device of the account with a valid certificate that is
 //! not revoked. It keeps the last one per device, also once the device is revoked; the same bytes
-//! again count as stored. It gives them, as the bytes it got, only to the account's sessions.
+//! again count as stored. It gives them, as the bytes it got, only to the account's sessions and,
+//! with their device's proof, its service tokens (the tests of service requests).
 //! Against a `skald-server` as in the tests of revocations, whose fixture and kit these tests share;
 //! every HTTP response is checked against the OpenAPI spec in `api/openapi.json`.
 //!

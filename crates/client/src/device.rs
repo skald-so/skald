@@ -192,6 +192,23 @@ impl Keys {
         }
     }
 
+    /// The keys of a `service` device, the private keys `signing` and `hpke` of its key secret.
+    pub fn of_service(signing: &[u8; 32], hpke: &[u8; 32]) -> Self {
+        Keys {
+            signing: SigningKey::from_bytes(signing),
+            hpke: HpkeKey::from_bytes(hpke),
+        }
+    }
+
+    /// Puts the keys, and the key `state_key` that seals the device's MLS state, into `stored`.
+    pub fn store_with(&self, stored: &mut secrets::Map, state_key: &StateKey) {
+        self.store(stored);
+        stored.insert(
+            STATE_KEY.to_owned(),
+            URL_SAFE_NO_PAD.encode(*state_key.to_bytes()),
+        );
+    }
+
     /// Puts the keys into `stored`.
     pub fn store(&self, stored: &mut secrets::Map) {
         stored.insert(

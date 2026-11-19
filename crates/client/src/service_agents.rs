@@ -3,8 +3,9 @@
 //! tokens (`docs/protocol/membership.md`, "Service device"; `docs/protocol/README.md`, "Service
 //! grant"). A creation generates the service device's keys in memory, registers the device on the
 //! admin's account with a certificate this device issues, signs the space's next roster revision
-//! with the agent's entry as [`crate::spaces`] says, signs the device's grant and creates its first
-//! token. It writes the key secret and the token to stdout once, and keeps nothing of them.
+//! with the agent's entry as [`crate::spaces`] says, and for a member agent with its device in the
+//! `services` of the grant's channels, signs the device's grant and creates its first token. It
+//! writes the key secret and the token to stdout once, and keeps nothing of them.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -204,6 +205,19 @@ struct Records {
     tokens: Vec<Record>,
 }
 
+/// Fails, saying why, if `permissions`, those of a token of a `member` agent, lack the receive
+/// permission: such an agent reads its Commits and Welcomes from its mailbox.
+fn receives_if_member(member: bool, permissions: &[Permission]) -> Result<(), String> {
+    if member && !permissions.contains(&Permission::Receive) {
+        return Err(
+            "a member agent reads its Commits and Welcomes from its mailbox, so its token needs \
+             the receive permission: add --permission receive; nothing changed"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 /// What a command reads of `SpaceUsage` in the API spec: the limit on the space's service agents,
 /// absent while none applies.
 #[derive(Deserialize)]
@@ -218,12 +232,19 @@ struct Limited {
 }
 
 /// `skald create-service-agent`: creates the service agent `address` in `synced`, a space whose
-/// admin's device this is, with `granted`; writes its key secret and token to stdout, or its key
-/// secret alone when the space lists the agent and its token fails. Refused before anything is
-/// registered or signed: on a device that is no admin's, for an address the space's last accepted
-/// revision has, for channels or an expiry that `granted` gets wrong, and when that revision has as
-/// many service agents as the server allows.
-pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<(), String> {
+/// admin's device this is, with `granted`, as a member of the grant's channels if `member`: the
+/// revision then lists its device in their `services`. Writes its key secret and token to stdout,
+/// or its key secret alone when the space lists the agent and its token fails. Refused before
+/// anything is registered or signed: on a device that is no admin's, for an address the space's
+/// last accepted revision has, for channels or an expiry that `granted` gets wrong, for a member
+/// without the receive permission, and when that revision has as many service agents as the
+/// server allows.
+pub fn create(
+    synced: Synced,
+    address_given: &str,
+    granted: &Granted,
+    member: bool,
+) -> Result<(), String> {
     let Synced {
         mut follower,
         space,
@@ -240,6 +261,7 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
         ));
     }
     let checked = granted.checked(&latest, now())?;
+    receives_if_member(member, &checked.permissions)?;
     if let Some(limit) = agents_limit(&mut follower, space.id)?
         && latest.body().service_agents.len() as u64 >= limit
     {
@@ -253,6 +275,11 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
     let device = keys.id();
     register(&mut follower, &keys, &cert_name(&owner, &agent))?;
     let cert = certify(&mut follower, &admin, &keys, &cert_name(&owner, &agent))?;
+    // This device made it, so its next device checks do not warn of it as new.
+    follower
+        .state
+        .device_statuses(&[(device, false)])
+        .map_err(text)?;
     let entry = ServiceAgent {
         device,
         owner: owner.clone(),
@@ -266,7 +293,14 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
         )
     };
     let next = follower
-        .next_by(&latest, |body| body.service_agents.push(entry))
+        .next_by(&latest, |body| {
+            body.service_agents.push(entry);
+            for channel in (body.channels.iter_mut())
+                .filter(|channel| member && checked.channels.contains(&channel.id))
+            {
+                channel.services.push(device);
+            }
+        })
         .map_err(unlisted)?;
     let mut certs = devices.certs;
     certs.push(cert);
@@ -323,7 +357,8 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
 
 /// `skald create-service-token`: a new token of the service agent `address` in `synced`, a space
 /// whose admin's device this is, with a new grant as `granted` says; revokes the agent's earlier
-/// tokens unless `keep_earlier`. Writes the token to stdout.
+/// tokens unless `keep_earlier`. Writes the token to stdout. Refused for an agent the space's last
+/// accepted revision lists in a channel's `services` without the receive permission.
 pub fn renew(
     synced: Synced,
     address_given: &str,
@@ -347,6 +382,8 @@ pub fn renew(
         )
     })?;
     let checked = granted.checked(&latest, now())?;
+    let member = (latest.body().channels.iter()).any(|channel| channel.services.contains(&device));
+    receives_if_member(member, &checked.permissions)?;
     let admin = follower.keys()?;
     let mut token = new_token(&mut follower, (space.id, &admin), device, &checked)?;
     let value =

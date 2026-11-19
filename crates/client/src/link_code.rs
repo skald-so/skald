@@ -503,7 +503,9 @@ pub fn finish(
         let keys = device::known_keys(&stored, device.as_ref())
             .map_err(text)?
             .ok_or_else(|| device::Error::MissingKeys.to_string())?;
-        if let Err(err) = key_packages::keep(&mut connection, &token, &state, &keys, &secrets) {
+        if let Err(err) =
+            key_packages::keep(&mut connection, &token, (&state, &secrets), &keys, false)
+        {
             key_packages::warn(&err);
         }
         Ok(())
