@@ -1,15 +1,17 @@
 //! Connections authenticated as a device: `docs/protocol/delivery.md`, "Connecting". A device
 //! session gets a challenge; a WebSocket is taken, as its device's, once its first frame signs that
 //! challenge with the key of a certified `client` device of the session's account that is not
-//! revoked, and an HTTPS request ([`requests`](crate::requests)) once its proof does. A taken
-//! connection carries the device's sends, its uploads of channels' history and its mailbox, and
-//! closes when its session ends or its device is revoked.
+//! revoked, and an HTTPS request ([`requests`](crate::requests)) once its proof does. A service
+//! token gets a challenge too, which only its certified `service` device signs. A taken connection
+//! carries the device's sends, its uploads of channels' history and its mailbox, as far as its
+//! token's permissions and channels let it, and closes when its session or token ends or its device
+//! is revoked.
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade, close_code};
@@ -22,11 +24,14 @@ use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame, Push, SpaceId};
 use tokio::sync::oneshot;
+use tokio::task::AbortHandle;
 use tokio::time::Instant;
 
 use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
+use crate::refusal::Caller;
+use crate::service_tokens::{self, Token};
 use crate::sign_in::{bearer, digest, not_signed_in};
 use crate::{AppState, database_failed};
 use crate::{error_reports, history};
@@ -105,7 +110,7 @@ pub(crate) struct Connections {
 /// A taken connection.
 struct Held {
     id: u64,
-    /// The SHA-256 of its session's token.
+    /// The SHA-256 of its session's token, or of its service token.
     session: Vec<u8>,
     /// Closes it, for the reason it sends.
     end: oneshot::Sender<Closing>,
@@ -116,6 +121,8 @@ pub(crate) struct Registration {
     connections: Arc<Connections>,
     device: DeviceId,
     id: u64,
+    /// Closes it at its service token's expiry.
+    expiry: Option<AbortHandle>,
 }
 
 impl Connections {
@@ -138,6 +145,7 @@ impl Connections {
             connections: Arc::clone(self),
             device,
             id,
+            expiry: None,
         };
         (registration, ended)
     }
@@ -167,6 +175,20 @@ impl Connections {
         by_device.retain(|_, held| !held.is_empty());
     }
 
+    /// Closes the connection `id` of `device`, as at its session's end.
+    fn end_one(&self, device: DeviceId, id: u64) {
+        let mut by_device = self.by_device.lock().expect("the connections");
+        if let Some(held) = by_device.get_mut(&device) {
+            for ended in held.extract_if(.., |held| held.id == id) {
+                // The connection may be closing already.
+                let _ = ended.end.send(Closing::SessionEnded);
+            }
+            if held.is_empty() {
+                by_device.remove(&device);
+            }
+        }
+    }
+
     /// The devices with connections.
     pub(crate) fn devices(&self) -> Vec<DeviceId> {
         let by_device = self.by_device.lock().expect("the connections");
@@ -187,8 +209,26 @@ impl Connections {
     }
 }
 
+impl Registration {
+    /// Closes the connection at `at`, in seconds since the Unix epoch, as at its session's end.
+    fn ends_at(&mut self, at: u64) {
+        let left = (UNIX_EPOCH + Duration::from_secs(at))
+            .duration_since(SystemTime::now())
+            .unwrap_or_default();
+        let (connections, device, id) = (Arc::clone(&self.connections), self.device, self.id);
+        let ending = tokio::spawn(async move {
+            tokio::time::sleep(left).await;
+            connections.end_one(device, id);
+        });
+        self.expiry = Some(ending.abort_handle());
+    }
+}
+
 impl Drop for Registration {
     fn drop(&mut self) {
+        if let Some(expiry) = &self.expiry {
+            expiry.abort();
+        }
         let mut by_device = self.connections.by_device.lock().expect("the connections");
         if let Some(held) = by_device.get_mut(&self.device) {
             held.retain(|held| held.id != self.id);
@@ -205,8 +245,8 @@ struct Challenge {
     challenge: String,
 }
 
-/// `POST /session/challenge`: a new challenge for the device session of the request's bearer
-/// token.
+/// `POST /session/challenge`: a new challenge for the device session or the service token that is
+/// the request's bearer token.
 pub(crate) async fn challenge(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let Some(Some(token)) = bearer(&headers) else {
         return not_signed_in();
@@ -215,9 +255,14 @@ pub(crate) async fn challenge(State(state): State<AppState>, headers: HeaderMap)
     getrandom::fill(&mut challenge).expect("the operating system's random generator failed");
     let issued = sqlx::query(
         "WITH expired AS (DELETE FROM connection_challenges WHERE expires_at <= now())
-         INSERT INTO connection_challenges (challenge_hash, session_hash, expires_at)
-         SELECT $1, token_hash, now() + make_interval(secs => $3) FROM sessions
-         WHERE kind = 'device' AND token_hash = $2",
+         INSERT INTO connection_challenges
+             (challenge_hash, session_hash, service_token_hash, expires_at)
+         SELECT $1, token_hash, NULL, now() + make_interval(secs => $3) FROM sessions
+         WHERE kind = 'device' AND token_hash = $2
+         UNION ALL
+         SELECT $1, NULL, t.token_hash, now() + make_interval(secs => $3)
+         FROM service_tokens t JOIN devices d ON d.id = t.device_id
+         WHERE t.token_hash = $2 AND t.expires_at > now() AND NOT d.revoked",
     )
     .bind(Sha256::digest(challenge).to_vec())
     .bind(digest(token))
@@ -250,6 +295,8 @@ pub(crate) async fn open(
 pub(crate) struct Proved {
     pub(crate) device: DeviceId,
     pub(crate) account: AccountId,
+    /// The service token of its challenge, for a `service` device.
+    pub(crate) token: Option<Token>,
     /// Lets the connection go when dropped.
     pub(crate) _registration: Registration,
     /// Fires when the session ends or the device is revoked.
@@ -273,6 +320,7 @@ async fn serve(state: AppState, mut socket: WebSocket, version: NonZeroU64) {
                 device: proved.device,
                 account: proved.account,
                 version,
+                token: proved.token,
             };
             hold(&state, socket, proved.ended, &sender).await;
         }
@@ -291,7 +339,7 @@ enum Stop {
 
 /// Serves `socket`, `sender`'s connection, until the client closes it, `ended` fires, or a frame
 /// does not decode: answers its frames in the order they arrive, delivers its device's mailbox and
-/// sends the notices of its account's spaces.
+/// sends the notices of its account's spaces; of its token's space only, for a service token.
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
@@ -313,7 +361,9 @@ async fn hold(
                 return close(socket, closing.unwrap_or(Closing::SessionEnded)).await;
             }
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
-            spaces = notices.next() => notify(&mut socket, spaces).await,
+            spaces = notices.next() => {
+                notify(&mut socket, service_tokens::seen(sender.token.as_ref(), spaces)).await
+            }
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
                     serve_frame(state, &mut socket, sender, &mut reader, &bytes).await
@@ -333,7 +383,8 @@ async fn hold(
 }
 
 /// Serves the frame `bytes` from `sender`: answers a `send` or a `history`, acks a `sync` or an
-/// `ack`, and ignores a frame of another type.
+/// `ack`, and ignores a frame of another type. A service token without the receive permission
+/// gets nothing of the mailbox: its `sync` and `ack` are ignored too.
 async fn serve_frame(
     state: &AppState,
     socket: &mut WebSocket,
@@ -363,6 +414,9 @@ async fn serve_frame(
                 .await
                 .map_err(|err| Stop::Close(failed("keep a history upload", err)))?;
             return send_frame(socket, &answer).await;
+        }
+        Ok(Frame::Sync { .. } | Frame::Ack { .. }) if !receives(sender.token.as_ref()) => {
+            return Ok(());
         }
         Ok(Frame::Sync { cursor }) => return sync(state, socket, reader, cursor).await,
         Ok(Frame::Ack { seq }) => return ack(state, sender.device, seq.get()).await,
@@ -477,9 +531,9 @@ pub(crate) struct Proof<'p> {
     pub(crate) label: &'static str,
 }
 
-/// Checks `proof`, of a challenge of the session whose token's SHA-256 is `session` if given, and
-/// holds a connection as its device's. The challenge is used up, whether the proof is taken or
-/// refused.
+/// Checks `proof`, of a challenge of the session or service token whose token's SHA-256 is
+/// `session` if given, and holds a connection as its device's, until its token's expiry for a
+/// service token. The challenge is used up, whether the proof is taken or refused.
 pub(crate) async fn check(
     state: &AppState,
     proof: &Proof<'_>,
@@ -488,14 +542,14 @@ pub(crate) async fn check(
     let of = challenge_session(state, proof.challenge)
         .await?
         .ok_or(Closing::ChallengeRefused)?;
-    // Held before the challenge is used, so that once the use finds the session, its end closes
-    // the connection; an end before the use deletes the challenge.
-    let (registration, ended) = state.connections.hold(proof.device, of.clone());
-    let account = take_challenge(state, proof.challenge)
+    // Held before the challenge is used, so that once the use finds the session or token, its end
+    // closes the connection; an end before the use deletes the challenge.
+    let (mut registration, ended) = state.connections.hold(proof.device, of.clone());
+    let bearer = take_challenge(state, proof.challenge)
         .await?
         .filter(|_| session.is_none_or(|session| session == of))
         .ok_or(Closing::ChallengeRefused)?;
-    let signing = client_key(state, proof.device, &account)
+    let signing = device_key(state, proof.device, &bearer)
         .await?
         .ok_or(Closing::DeviceRefused)?;
     let origin = state
@@ -510,23 +564,39 @@ pub(crate) async fn check(
         proof.signature,
     )
     .map_err(|_| Closing::SignatureRefused)?;
-    // The session lists the device it proved, and its use to the minute, as `sign_in::find` does.
-    sqlx::query(
-        "UPDATE sessions SET device_id = $1::uuid, last_used_at = now()
-         WHERE token_hash = $2 AND (device_id IS DISTINCT FROM $1::uuid
-             OR last_used_at <= now() - interval '1 minute')",
-    )
-    .bind(proof.device.to_string())
-    .bind(&of)
-    .execute(&state.db)
-    .await
-    .map_err(|err| Unproved::Failed("record a session's device", err))?;
+    let (account, token) = match bearer {
+        Caller::Session(account) => {
+            // The session lists the device it proved, and its use to the minute, as
+            // `sign_in::find` does.
+            sqlx::query(
+                "UPDATE sessions SET device_id = $1::uuid, last_used_at = now()
+                 WHERE token_hash = $2 AND (device_id IS DISTINCT FROM $1::uuid
+                     OR last_used_at <= now() - interval '1 minute')",
+            )
+            .bind(proof.device.to_string())
+            .bind(&of)
+            .execute(&state.db)
+            .await
+            .map_err(|err| Unproved::Failed("record a session's device", err))?;
+            (account.parse().expect("a stored account ID"), None)
+        }
+        Caller::Token(token) => {
+            registration.ends_at(token.expires);
+            (token.account, Some(token))
+        }
+    };
     Ok(Proved {
         device: proof.device,
-        account: account.parse().expect("a stored account ID"),
+        account,
+        token,
         _registration: registration,
         ended,
     })
+}
+
+/// Whether a connection of `token`, if it has one, reads and acks its device's mailbox.
+pub(crate) fn receives(token: Option<&Token>) -> bool {
+    token.is_none_or(Token::receives)
 }
 
 /// The bytes of `socket`'s first frame, a binary message, within [`PROOF_WAIT`]; `None` if the
@@ -546,50 +616,68 @@ async fn first_frame(socket: &mut WebSocket) -> Result<Option<Vec<u8>>, Closing>
     }
 }
 
-/// The SHA-256 of the token of `challenge`'s session, if the server holds the challenge.
+/// The SHA-256 of the token of `challenge`'s session or service token, if the server holds the
+/// challenge.
 async fn challenge_session(
     state: &AppState,
     challenge: &[u8],
 ) -> Result<Option<Vec<u8>>, Unproved> {
-    sqlx::query_as("SELECT session_hash FROM connection_challenges WHERE challenge_hash = $1")
-        .bind(Sha256::digest(challenge).to_vec())
-        .fetch_optional(&state.db)
-        .await
-        .map(|found| found.map(|(session,)| session))
-        .map_err(|err| Unproved::Failed("read a challenge", err))
+    sqlx::query_as(
+        "SELECT coalesce(session_hash, service_token_hash) FROM connection_challenges
+         WHERE challenge_hash = $1",
+    )
+    .bind(Sha256::digest(challenge).to_vec())
+    .fetch_optional(&state.db)
+    .await
+    .map(|found| found.map(|(session,)| session))
+    .map_err(|err| Unproved::Failed("read a challenge", err))
 }
 
-/// Uses up `challenge`: its session's account, if it is one the server issued, unused, unexpired,
-/// to a session that has not ended.
-async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<String>, Unproved> {
-    let taken: Option<(String, bool)> = sqlx::query_as(
-        "DELETE FROM connection_challenges c USING sessions s
-         WHERE c.challenge_hash = $1 AND s.token_hash = c.session_hash
-         RETURNING s.account_id::text, c.expires_at > now()",
+/// Uses up `challenge`: its session's account or its service token, if it is one the server
+/// issued, unused, unexpired, to a session or token that has not ended.
+async fn take_challenge(state: &AppState, challenge: &[u8]) -> Result<Option<Caller>, Unproved> {
+    let taken: Option<(Option<String>, Option<Vec<u8>>, bool)> = sqlx::query_as(
+        "WITH c AS (
+             DELETE FROM connection_challenges WHERE challenge_hash = $1
+             RETURNING session_hash, service_token_hash, expires_at > now() AS unexpired
+         )
+         SELECT s.account_id::text, c.service_token_hash, c.unexpired
+         FROM c LEFT JOIN sessions s ON s.token_hash = c.session_hash",
     )
     .bind(Sha256::digest(challenge).to_vec())
     .fetch_optional(&state.db)
     .await
     .map_err(|err| Unproved::Failed("take a challenge", err))?;
-    Ok(taken
-        .filter(|(_, unexpired)| *unexpired)
-        .map(|(account, _)| account))
+    match taken {
+        Some((Some(account), _, true)) => Ok(Some(Caller::Session(account))),
+        Some((None, Some(token), true)) => service_tokens::live(&state.db, &token)
+            .await
+            .map(|token| token.map(Caller::Token))
+            .map_err(|err| Unproved::Failed("read a service token", err)),
+        _ => Ok(None),
+    }
 }
 
-/// The signing key of `device` if it is a `client` device of `account` with a certificate on the
-/// server, not revoked.
-async fn client_key(
+/// The signing key of `device` if it has a certificate on the server and is not revoked, and is a
+/// `client` device of a session's account, or a service token's `service` device.
+async fn device_key(
     state: &AppState,
     device: DeviceId,
-    account: &str,
+    bearer: &Caller,
 ) -> Result<Option<[u8; 32]>, Unproved> {
+    let (account, kind) = match bearer {
+        Caller::Session(account) => (account.clone(), "client"),
+        Caller::Token(token) if token.device == device => (token.account.to_string(), "service"),
+        Caller::Token(_) => return Ok(None),
+    };
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT signing FROM devices
-         WHERE id = $1::uuid AND account_id = $2::uuid AND kind = 'client' AND cert IS NOT NULL
+         WHERE id = $1::uuid AND account_id = $2::uuid AND kind = $3 AND cert IS NOT NULL
            AND NOT revoked",
     )
     .bind(device.to_string())
     .bind(account)
+    .bind(kind)
     .fetch_optional(&state.db)
     .await
     .map_err(|err| Unproved::Failed("read a device", err))?;

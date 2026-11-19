@@ -1,8 +1,8 @@
 //! Server instances waking each other: `docs/dev/architecture.md`, "Network". An instance that adds
-//! mailbox entries, stores a roster revision, ends a session or revokes a device tells the others
-//! through PostgreSQL `NOTIFY`, in the transaction that does it. Each instance listens, and wakes
-//! the device's connections, sends the `space-notice`, or closes that session's or that device's
-//! connections.
+//! mailbox entries, stores a roster revision, ends a session or a service token, or revokes a
+//! device tells the others through PostgreSQL `NOTIFY`, in the transaction that does it. Each
+//! instance listens, and wakes the device's connections, sends the `space-notice`, or closes that
+//! session's, token's or device's connections.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -102,7 +102,7 @@ pub(crate) enum Event {
     Entries(DeviceId),
     /// The space's revision with this number is stored.
     Revision(SpaceId, i64),
-    /// The session whose token's SHA-256 this is has ended.
+    /// The session or service token whose token's SHA-256 this is has ended.
     SessionEnded(Vec<u8>),
     /// The device is revoked.
     Revoked(DeviceId),
@@ -270,11 +270,13 @@ async fn catch_up(
 ) -> Result<(), sqlx::Error> {
     local.wakers.wake_all();
     let sessions = local.connections.sessions();
-    let live: Vec<(Vec<u8>,)> =
-        sqlx::query_as("SELECT token_hash FROM sessions WHERE token_hash = ANY($1)")
-            .bind(&sessions)
-            .fetch_all(&local.db)
-            .await?;
+    let live: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT token_hash FROM sessions WHERE token_hash = ANY($1)
+         UNION ALL SELECT token_hash FROM service_tokens WHERE token_hash = ANY($1)",
+    )
+    .bind(&sessions)
+    .fetch_all(&local.db)
+    .await?;
     for session in sessions {
         if !live.iter().any(|(live,)| *live == session) {
             local.connections.end_session(&session);

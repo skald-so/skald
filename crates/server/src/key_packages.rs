@@ -15,7 +15,7 @@ use sqlx::PgPool;
 
 use crate::AppState;
 use crate::devices::{base64, bytes};
-use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
 
 /// The most unused KeyPackages, the last-resort one aside, a device may hold: five times the 20 it
 /// keeps.
@@ -71,14 +71,26 @@ async fn own_device(
     device: &str,
     account: &str,
 ) -> Result<(String, Option<Vec<u8>>), Refusal> {
+    device_of(db, device, account, "client").await
+}
+
+/// The device `device`, a path parameter, of `account`: its ID, and its certificate if it is a
+/// device of `kind` with one that is not revoked.
+async fn device_of(
+    db: &PgPool,
+    device: &str,
+    account: &str,
+    kind: &str,
+) -> Result<(String, Option<Vec<u8>>), Refusal> {
     let id: DeviceId = device.parse().map_err(|_| Refusal::NoDevice)?;
     let id = id.to_string();
     let found: Option<(Option<Vec<u8>>,)> = sqlx::query_as(
-        "SELECT CASE WHEN kind = 'client' AND NOT revoked THEN cert END FROM devices
+        "SELECT CASE WHEN kind = $3 AND NOT revoked THEN cert END FROM devices
          WHERE id = $1::uuid AND account_id = $2::uuid",
     )
     .bind(&id)
     .bind(account)
+    .bind(kind)
     .fetch_optional(db)
     .await
     .map_err(|err| Refusal::Database("read a device", err))?;
@@ -160,20 +172,29 @@ fn checked(
 }
 
 /// `POST /devices/<device>/key-packages`: takes KeyPackages of a `client` device of the session's
-/// account with a certificate, not revoked, and its last-resort one, which replaces the one it
-/// had; one that fails the checks refuses them all. Gives the device's count.
+/// account, or of a service token's `service` device, with a certificate, not revoked, and its
+/// last-resort one, which replaces the one it had; one that fails the checks refuses them all.
+/// Gives the device's count.
 pub(crate) async fn upload(
     State(state): State<AppState>,
-    SignedIn(account): SignedIn,
+    caller: Caller,
     Path(device): Path<String>,
     body: Bytes,
 ) -> Answer {
     let db = &state.db;
-    let (device, cert) = own_device(db, &device, &account).await?;
+    let (device, cert) = match &caller {
+        Caller::Session(account) => own_device(db, &device, account).await?,
+        Caller::Token(token) => {
+            if device.parse::<DeviceId>().ok() != Some(token.device) {
+                return Err(Refusal::NoDevice);
+            }
+            device_of(db, &device, &caller.account(), "service").await?
+        }
+    };
     let upload: Upload = parse(&body)?;
     let cert = cert.ok_or_else(|| {
         Refusal::NotAllowed(
-            "only a `client` device with a certificate, not revoked, has KeyPackages".to_owned(),
+            "only a device with a certificate, not revoked, has KeyPackages".to_owned(),
         )
     })?;
     let cert = Cert::from_cbor(&cert).map_err(|err| {
