@@ -54,6 +54,7 @@ mod mcp;
 mod output;
 mod plain_path;
 mod proxy;
+mod receipts;
 mod recovery;
 mod recv;
 mod revocations;

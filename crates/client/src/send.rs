@@ -121,6 +121,13 @@ impl Wire for Queued {
     }
 }
 
+impl Queued {
+    /// Whether it goes with `report` true: it is no receipt.
+    pub fn reports(&self) -> bool {
+        self.outgoing.report
+    }
+}
+
 /// What sending the outbox gave: the server's answers, why the last attempt failed, if it did, and
 /// the connection, if it is still open.
 pub struct Delivered {
@@ -474,7 +481,7 @@ pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
             let channel = envelope.envelope().header.channel;
             let frame = Frame::Send {
                 envelope,
-                report: true,
+                report: outgoing.report,
             }
             .to_cbor();
             Ok(Queued {
@@ -719,8 +726,9 @@ pub enum Reported<'a> {
 /// A message of the outbox: its ID, its channel and its envelopes.
 type Queue<'q> = Vec<(MessageId, ChannelId, Vec<&'q Queued>)>;
 
-/// Says what the server answered to each message of `queued`, as `reported` says, by the state
-/// `state` and the answers in `delivered`; fails unless every one is stored, saying which are not.
+/// Says what the server answered to each message of `queued`, but receipts, as `reported` says,
+/// by the state `state` and the answers in `delivered`; fails unless every one is stored, saying
+/// which are not.
 pub fn report(
     state: &State,
     queued: &[Queued],
@@ -729,7 +737,8 @@ pub fn report(
     reported: Reported,
 ) -> Result<(), String> {
     let mut messages: Queue = Vec::new();
-    for queued in queued {
+    // A receipt is no message of the device's user.
+    for queued in queued.iter().filter(|queued| queued.outgoing.report) {
         match messages
             .iter_mut()
             .find(|(id, ..)| *id == queued.outgoing.msg_id)
@@ -917,6 +926,7 @@ pub(crate) mod tests {
             channel,
             counter: 1,
             agent: None,
+            addressee: None,
         };
         crate::state::tests::put(state, &[&message]).unwrap();
     }
@@ -1052,6 +1062,7 @@ pub(crate) mod tests {
                 recipient: None,
                 space,
                 envelope: vec![u8::try_from(number).unwrap()],
+                report: true,
             };
             put(&state, ChannelId::generate(), outgoing);
         }
@@ -1071,14 +1082,15 @@ pub(crate) mod tests {
     }
 
     /// An agent's run sends only the envelopes of its space, in the order they went into the
-    /// outbox; a person's sends every one.
+    /// outbox; a person's sends every one. A receipt goes with `report` false, a message with
+    /// `report` true.
     #[test]
     fn queued_envelopes_are_those_of_the_scope_in_order() {
         let dir = TestDir::new("send-queued");
         let state = State::open(&dir).unwrap();
         let (own, other) = (SpaceId::generate(), SpaceId::generate());
         let mut messages = Vec::new();
-        for space in [own, other, own] {
+        for (space, report) in [(own, true), (other, true), (own, false)] {
             let channel = ChannelId::generate();
             let msg_id = MessageId::generate();
             let header = Header {
@@ -1100,15 +1112,21 @@ pub(crate) mod tests {
                     payload: vec![1, 2, 3],
                 }
                 .to_cbor(),
+                report,
             };
             put(&state, channel, outgoing);
-            messages.push((msg_id, channel));
+            messages.push((msg_id, channel, report));
         }
-        let ids = |scope| -> Vec<(MessageId, ChannelId)> {
+        let ids = |scope| -> Vec<(MessageId, ChannelId, bool)> {
             queued(&state, scope)
                 .unwrap()
                 .iter()
-                .map(|queued| (queued.outgoing.msg_id, queued.channel))
+                .map(|queued| {
+                    let Ok(Frame::Send { report, .. }) = Frame::from_cbor(&queued.frame) else {
+                        panic!("no send frame");
+                    };
+                    (queued.outgoing.msg_id, queued.channel, report)
+                })
                 .collect()
         };
 
