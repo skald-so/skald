@@ -20,6 +20,7 @@ mod anchors;
 mod attachments;
 mod connections;
 mod delivery;
+mod device_certs;
 mod device_flow;
 mod devices;
 mod error_reports;
@@ -303,6 +304,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(devices::list)
                 .post(devices::register)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/devices/{device}/cert",
+            put(device_certs::store).layer(checked(Statement::Header)),
         )
         .route(
             "/devices/{device}/key-packages",

@@ -27,6 +27,7 @@ mod cloud;
 #[path = "../common/mod.rs"]
 #[allow(dead_code)]
 mod common;
+mod grants;
 #[path = "../device_keys/keys.rs"]
 #[allow(dead_code)]
 mod keys;
@@ -44,10 +45,8 @@ mod relay;
 mod shown;
 mod terminal;
 
-use std::time::{Duration, Instant};
-
 use browser::{APPROVE, Browser, Page};
-use cloud::{Cloud, WAIT, unb64};
+use cloud::{Cloud, unb64};
 use machine::{FIRST_DEVICE, Machine, SERVER, SIGN_IN, YES};
 use serde_json::Value;
 use skald_github_stand_in::User;
@@ -56,6 +55,17 @@ use terminal::{Shown, Terminal};
 
 /// The agent the tests run commands as.
 pub const AGENT: &str = "claude-api";
+
+/// What a machine that waits for linking says, at a terminal, before it shows its link code.
+pub const LINK_CODE: &str = "type this code there";
+
+/// Lets `run`, of a machine that waits for linking, go on until it shows its link code, then ends
+/// it, its person linking nothing now; gives what it printed.
+#[track_caller]
+pub fn until_link_code(mut run: Terminal) -> Shown {
+    run.wait_to_show(LINK_CODE);
+    run.kill()
+}
 
 /// A server whose codes live for 2 minutes and poll every second, and a browser for the person.
 pub fn setup() -> (Cloud, Browser) {
@@ -77,18 +87,7 @@ pub fn as_agent<'a>(args: &[&'a str]) -> Vec<&'a str> {
 /// Approves, as `user` at `page`, the code that device authorization gives `run` after the
 /// `before` it gave earlier, once `run` shows it.
 pub fn approve(cloud: &Cloud, page: &Page, user: &User, run: &mut Terminal, before: usize) {
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
-        assert!(!run.exited(), "skald exited: {}", run.shown());
-        assert!(
-            Instant::now() < deadline,
-            "no device authorization: {}",
-            run.shown()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
-    run.wait_to_show(&grant.user_code);
+    let grant = grants::shown_grant(cloud, run, before);
     cloud.decide(page, user, &grant, APPROVE);
 }
 
