@@ -1,7 +1,7 @@
 //! A device linked with a link code gets into the account's channels: the linked device adds it
 //! once it has KeyPackages, at the end of `skald link` or at a later run, or it joins by itself.
 //! The device that certified it adds it also where another device signs the space's revisions, and
-//! waits for its KeyPackages up to the timeout.
+//! waits for its KeyPackages up to the timeout. Neither it nor the new device warns of a Commit.
 //! Each of the account's channels then has it as one leaf, and it shows the history from before
 //! its link once a member device has run since.
 
@@ -94,6 +94,36 @@ fn the_linked_device_gets_into_the_accounts_channels_and_reads_their_history() {
     assert_channels_have(&talk, &[laptop.device]);
     let shown = shown_history(&laptop.machine, at.1);
     assert_history(&shown, at.1, &said, &[]);
+}
+
+/// Fails if a warning of `shown`, a run's output, names a Commit: one the server did not answer or
+/// refused.
+#[track_caller]
+fn assert_no_commit_warning(shown: &str) {
+    let named: Vec<String> = (shown.lines().map(str::to_lowercase))
+        .filter(|line| line.contains("warning") && line.contains("commit"))
+        .collect();
+    assert!(named.is_empty(), "{named:?}: {shown}");
+}
+
+/// Ada's machines reach the server at its public address. Her new machine is linked with its code
+/// on her first one: by the end of `skald link`, which warns of no Commit, her first device's Commit
+/// that adds the new one is stored, as both of the space's channels have it. Then her first
+/// machine's `skald recv` and her new machine's warn of no Commit either.
+#[test]
+fn linking_with_a_code_leaves_no_commit_unanswered_or_refused() {
+    let (talk, mut new) = with_new_device(
+        &[4_175_201_041, 4_175_201_042],
+        &["ada-links-without-refusals", "bob-beside-the-link"],
+    );
+    let linked = link(talk.cloud(), &talk.ada, &mut new);
+    assert_no_commit_warning(&linked.text);
+    assert_channels_have(&talk, &[new.device]);
+
+    let laptop = new.into_person(talk.cloud(), &talk.ada);
+    for machine in [&talk.ada.machine, &laptop.machine] {
+        assert_no_commit_warning(&received(machine).shown());
+    }
 }
 
 /// Bob is an admin of the talk's space and his device signs its latest revision, so Ada's first
