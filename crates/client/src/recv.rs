@@ -137,13 +137,19 @@ pub fn holding_warnings<R>(dir: &Path, agent: bool, run: impl FnOnce() -> R) -> 
         return run();
     }
     let (ran, held) = output::holding_warnings(run);
+    keep(dir, &held);
+    ran
+}
+
+/// Keeps `held`, warnings an agent's run held back, in the state in `dir` for the person's run,
+/// or, if it cannot, shows them.
+pub fn keep(dir: &Path, held: &[String]) {
     if !held.is_empty() {
         keep_held(
-            State::open(dir).and_then(|state| state.keep_warnings(&held)),
-            &held,
+            State::open(dir).and_then(|state| state.keep_warnings(held)),
+            held,
         );
     }
-    ran
 }
 
 /// Shows `held`, warnings an agent's run held back, unless `kept`, keeping them for the person's

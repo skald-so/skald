@@ -10,7 +10,9 @@
 //!   user, that takes the browser to the page, and opens that file in the browser; the file is gone
 //!   once the command ends.
 //! - The page shows the command's output, what only its person may see, such as a link code, and
-//!   its person's next question, whose answer it sends back.
+//!   its person's next question, whose answer it sends back. An agent's run shows its warnings
+//!   there only, and keeps them for the person's run, as other runs of an agent do
+//!   ([`crate::recv::holding_warnings`]).
 
 use std::env;
 use std::ffi::OsString;
@@ -56,6 +58,9 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 pub const NO_BROWSER: &str = "there is no browser to open the local page in: BROWSER names no \
                               program, or this system has no default browser. Run the command at \
                               a terminal instead, without --browser; nothing is sent";
+/// What a command says once the program that opens the browser failed.
+pub const NOT_OPENED: &str = "the browser did not open the local page. Run the command at a \
+                              terminal instead, without --browser";
 
 /// The program that opens a file in the browser.
 pub struct Opener {
@@ -91,12 +96,12 @@ impl Opener {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| NO_BROWSER.to_owned())?;
+            .map_err(|_| NOT_OPENED.to_owned())?;
         let ends = Instant::now() + OPENER_WAIT;
         while Instant::now() < ends {
             match child.try_wait() {
                 Ok(Some(status)) if self.exits_failing && !status.success() => {
-                    return Err(NO_BROWSER.to_owned());
+                    return Err(NOT_OPENED.to_owned());
                 }
                 Ok(Some(_)) => return Ok(()),
                 Ok(None) => thread::sleep(ACCEPT_POLL),
@@ -228,6 +233,8 @@ impl View {
 struct Shared {
     view: Mutex<View>,
     changed: Condvar,
+    /// The warnings an agent's run held back from its output.
+    held: Mutex<Vec<String>>,
 }
 
 impl Shared {
@@ -286,13 +293,30 @@ impl Page {
         }
     }
 
-    /// What takes the command's output: its own output, and the page.
-    pub fn tee(&self) -> impl FnMut(Stream, &[u8]) -> io::Result<()> + 'static {
+    /// What takes the command's output: the page, and its own output, but for a warning of an
+    /// `agent`'s run, which it holds back ([`Page::held`]).
+    pub fn tee(&self, agent: bool) -> impl FnMut(Stream, &[u8]) -> io::Result<()> + 'static {
         let shared = Arc::clone(&self.shared);
         move |stream, bytes| {
             shared.log(bytes);
+            if agent && stream == Stream::Err && bytes.starts_with(output::WARNING.as_bytes()) {
+                let warning = String::from_utf8_lossy(bytes);
+                let mut held = shared.held.lock().unwrap_or_else(PoisonError::into_inner);
+                held.push(warning.trim_end_matches(['\r', '\n']).to_owned());
+                return Ok(());
+            }
             output::direct(stream, bytes)
         }
+    }
+
+    /// The warnings [`Page::tee`] held back so far, each without its line's end.
+    pub fn held(&self) -> Vec<String> {
+        let mut held = self
+            .shared
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *held)
     }
 
     /// Opens the page in the browser, if it is not open.

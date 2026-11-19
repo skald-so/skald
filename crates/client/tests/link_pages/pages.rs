@@ -17,7 +17,7 @@ use skald_proto::DeviceId;
 use crate::at_terminal::{as_agent, keys_in};
 use crate::browser::{APPROVE, Browser, CODE_FIELD, Page};
 use crate::cloud::{Cloud, WAIT, ids};
-use crate::linking::{HELLO, LINK, OWN_DEVICE, codes_in, forms, says, waiting};
+use crate::linking::{HELLO, LINK, OWN_DEVICE, codes_in, forms, says, typed, waiting};
 use crate::machine::{Finished, Machine, RUN_LIMIT, Run, SERVER, SIGN_IN};
 use crate::world::{Person, World};
 
@@ -39,6 +39,10 @@ pub const WRITTEN_DOWN_BUTTON: &str = r"^(?!\s*(yes|no)\b)\s*\S";
 
 /// What a command says on one line without a browser to open.
 pub const NO_BROWSER: [&str; 2] = ["browser", "terminal"];
+/// What a command says once the browser did not open, on one line.
+pub const NOT_OPENED: [&str; 3] = ["browser", "not open", "terminal"];
+/// What it does not say then: the program exists, and the command may have sent requests.
+pub const NOT_SAID_ONCE_RUN: [&str; 2] = ["names no program", "nothing is sent"];
 
 /// A stand-in for the program that opens the browser: it writes down the arguments of each of its
 /// runs and opens nothing.
@@ -113,6 +117,20 @@ impl Opener {
 /// A program no machine has, for a `BROWSER` that names nothing to run.
 pub fn missing_program(machine: &Machine) -> PathBuf {
     machine.root().join("no-such-browser")
+}
+
+/// A program that opens no browser and exits failing, as one does without a desktop session.
+pub fn failing_program(machine: &Machine) -> PathBuf {
+    if cfg!(windows) {
+        let program = machine.root().join("failing-open-page.cmd");
+        fs::write(&program, "@exit /b 3\r\n").expect("write the stand-in");
+        program
+    } else {
+        (["/usr/bin/false", "/bin/false"].into_iter())
+            .map(PathBuf::from)
+            .find(|program| program.is_file())
+            .expect("a program false")
+    }
 }
 
 /// `skald` with `args` on `machine`, its input empty and its outputs pipes, as an agent runs it,
@@ -484,6 +502,20 @@ impl<'b> NewOnPage<'b> {
             codes_in(text).last().is_some_and(|code| *code != old)
         });
         codes_in(&text).pop().expect("a code")
+    }
+
+    /// Has an agent's `skald link --browser` on `first`'s machine take its code: the person enters
+    /// it on that page and confirms the new device there. Gives that page and what the command
+    /// printed once it exits with success.
+    #[track_caller]
+    pub fn link_from(&mut self, world: &'b World, first: &Person) -> (Paged<'b>, Finished) {
+        let typed_code = typed(&self.code());
+        self.open_run(&world.cloud, first);
+        let at_first = Opener::on(&first.machine);
+        let (run, paged) = link_on_page(world, first, &at_first, OWN_DEVICE);
+        let finished = confirm_on_page(run, &paged, &typed_code, self.host);
+        assert!(finished.success, "skald link: {finished:?}");
+        (paged, finished)
     }
 
     /// Waits for its run to exit; gives what it printed.

@@ -997,10 +997,11 @@ fn link(operation: Operation, starts: bool, browser: bool) -> ExitCode {
         return link_steps(&operation, &dir, starts, Person::Terminal);
     };
     let page = page::Page::new(&dir, opener);
-    let code = output::into(page.tee(), || {
+    let code = output::into(page.tee(operation.agent.is_some()), || {
         link_steps(&operation, &dir, starts, Person::Page(&page))
     });
     page.finish(None);
+    recv::keep(&dir, &page.held());
     code
 }
 
@@ -1181,8 +1182,9 @@ fn perform(operation: Operation) -> Result<(), String> {
                 let Some(page) = &page else {
                     return signed_in();
                 };
-                let result = output::into(page.tee(), signed_in);
+                let result = output::into(page.tee(agent.is_some()), signed_in);
                 page.finish(result.as_ref().err().map(String::as_str));
+                recv::keep(&dir, &page.held());
                 result
             })
         }

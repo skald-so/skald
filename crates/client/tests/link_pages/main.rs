@@ -29,7 +29,11 @@
 //! - Each command exits as it does at a terminal; its output holds no code, no confirmation and no
 //!   recovery key. The line of a waiting recovery key also holds `--browser`.
 //! - With `BROWSER` naming no program, the command says on one line that it has no browser to open
-//!   and to run it at a terminal, and exits failing.
+//!   and to run it at a terminal, and exits failing, sending nothing. With `BROWSER` naming a
+//!   program that exits failing, it says on one line that the browser did not open and to run it at
+//!   a terminal, and exits failing.
+//! - As an agent, the command's output holds none of its warnings: the page shows them, and the
+//!   person's next `skald recv` does.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -40,6 +44,7 @@ mod linking_through;
 mod no_browser;
 mod pages;
 mod requests;
+mod warnings;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the anchors objects
 // of the tests of anchors, the helpers of the tests of linking with a link code, and the terminal
