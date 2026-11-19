@@ -2,15 +2,37 @@
 //! that connects sends them again, with the same bytes, and a later run with the recovery key on
 //! the same device finishes what a killed run left, with the certificate it stored.
 
+use skald_proto::DeviceId;
+
 use crate::linked::devices_of;
 use crate::machine::Machine;
 use crate::relay::Lose;
 use crate::revocations::STORE_REVOCATION;
+use crate::terminal::Shown;
 use crate::world::World;
 use crate::{
-    ADA_HOST, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, cert_of, new_device,
+    ADA_HOST, Ada, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, cert_of, new_device,
     played, recovered, revocations_of, revoked_once_by, sign_up,
 };
+
+/// The relay withholds the server's answer to the next request whose line starts with `request`,
+/// while Ada links `machine` with her recovery key naming `named`, and the run is killed once
+/// it is withheld; gives what it showed.
+#[track_caller]
+fn killed_at(
+    world: &World,
+    ada: &Ada,
+    machine: &Machine,
+    (named, request): (&[(&str, DeviceId)], &str),
+) -> Shown {
+    let cloud = &world.cloud;
+    cloud.relay.lose_answer(request, Lose::Withhold);
+    let losing = || cloud.relay.lost() > 0;
+    let key = (ada.user(), Some(ada.key.as_str()));
+    let killed = played(world, key, machine, named, losing).kill();
+    assert_eq!(cloud.relay.lost(), 1, "no answer lost: {killed:?}");
+    killed
+}
 
 /// The relay withholds the server's answer to the master-key revocation of Ada's stolen first
 /// device, and the run is killed. A later run with the recovery key on the same machine, then
@@ -24,12 +46,8 @@ fn a_killed_run_is_finished_by_a_later_one_without_a_second_master_key_revocatio
     let first = ada.person.device;
     let machine = Machine::new().with_host_name(NEW_HOST);
     let named = [(STOLEN, first)];
-    cloud.relay.lose_answer(STORE_REVOCATION, Lose::Withhold);
 
-    let losing = || cloud.relay.lost() > 0;
-    let key = (ada.user(), Some(ada.key.as_str()));
-    let killed = played(&world, key, &machine, &named, losing).kill();
-    assert_eq!(cloud.relay.lost(), 1, "no answer lost: {killed:?}");
+    killed_at(&world, &ada, &machine, (&named, STORE_REVOCATION));
     recovered(&world, &ada, &machine, &named);
     devices_of(&machine);
 
@@ -83,12 +101,8 @@ fn a_run_killed_after_its_certificate_is_stored_is_finished_with_that_certificat
     let first = ada.person.device;
     let machine = Machine::new().with_host_name(NEW_HOST);
     let named = [(LOST, first)];
-    cloud.relay.lose_answer(GIVE_ANCHORS, Lose::Withhold);
 
-    let losing = || cloud.relay.lost() > 0;
-    let key = (ada.user(), Some(ada.key.as_str()));
-    let killed = played(&world, key, &machine, &named, losing).kill();
-    assert_eq!(cloud.relay.lost(), 1, "no answer lost: {killed:?}");
+    let killed = killed_at(&world, &ada, &machine, (&named, GIVE_ANCHORS));
     let new = new_device(cloud, &ada.person, &[first]);
     let stored = cert_of(cloud, &ada.person, new).expect("the certificate stored");
     assert!(
