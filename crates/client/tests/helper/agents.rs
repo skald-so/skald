@@ -62,7 +62,13 @@ fn through_the_helper_an_agent_sends_and_receives_only_in_the_space_of_its_folde
     let agent_address = format!("{CLIENT_A}/{}/{CLAUDE}@{HOST}", talk.ada.handle);
     let from = talk.front.sent().len();
 
-    let own = agent(&[SEND, &talk.channel.to_string(), AGENT_ASKS]);
+    let own = agent(&[
+        SEND,
+        "--all",
+        "--channel",
+        &talk.channel.to_string(),
+        AGENT_ASKS,
+    ]);
 
     assert!(own.success, "{own:?}");
     let read = [(
@@ -75,7 +81,13 @@ fn through_the_helper_an_agent_sends_and_receives_only_in_the_space_of_its_folde
     assert_read(&talk.played[0], talk.channel, sender, &read);
 
     let from = talk.front.sent().len();
-    let refused = agent(&[SEND, &elsewhere.to_string(), AGENT_LEAKS]);
+    let refused = agent(&[
+        SEND,
+        "--all",
+        "--channel",
+        &elsewhere.to_string(),
+        AGENT_LEAKS,
+    ]);
 
     assert!(!refused.success, "{refused:?}");
     assert!(
@@ -149,7 +161,7 @@ fn refused_send_through_the_helper_shows_what_one_shot_mode_shows() {
     let helped = Helped::new(&talk.ada.machine);
     let channel = talk.channel.to_string();
     talk.front.answer(Answers::Refuse(REFUSAL.to_owned()));
-    let one_shot = helped.run(&[ONE_SHOT, SEND, &channel, FIRST]);
+    let one_shot = helped.run(&[ONE_SHOT, SEND, "--all", "--channel", &channel, FIRST]);
     assert!(!one_shot.success, "{one_shot:?}");
     assert!(one_shot.shown().contains(REFUSAL), "{one_shot:?}");
     helped.assert_none();
@@ -181,7 +193,10 @@ fn send_through_the_helper_with_the_server_down_shows_what_one_shot_mode_shows()
     let channel = talk.channel.to_string();
     let timeout = timeout_of(DOWN_TIMEOUT);
     talk.front.down(true);
-    let one_shot = helped.run_with(&timeout, &[ONE_SHOT, SEND, &channel, FIRST]);
+    let one_shot = helped.run_with(
+        &timeout,
+        &[ONE_SHOT, SEND, "--all", "--channel", &channel, FIRST],
+    );
     assert!(!one_shot.success, "{one_shot:?}");
     talk.front.down(false);
     let drained = helped.run(&[ONE_SHOT, RECV]);

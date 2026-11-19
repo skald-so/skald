@@ -120,7 +120,14 @@ fn one_shot_flag_or_setting_starts_no_helper() {
     let channel = talk.channel.to_string();
     let since = talk.cloud().relay.mark();
 
-    let flagged = helped.run(&[ONE_SHOT, crate::fixtures::SEND, &channel, FIRST]);
+    let flagged = helped.run(&[
+        ONE_SHOT,
+        crate::fixtures::SEND,
+        "--all",
+        "--channel",
+        &channel,
+        FIRST,
+    ]);
 
     assert!(flagged.success, "{flagged:?}");
     helped.assert_none();
@@ -173,7 +180,17 @@ fn one_shot_runs_and_folder_bindings_go_through_a_running_helper_without_waiting
         finished
     };
 
-    quick(&[], &[ONE_SHOT, crate::fixtures::SEND, &channel, SECOND]);
+    quick(
+        &[],
+        &[
+            ONE_SHOT,
+            crate::fixtures::SEND,
+            "--all",
+            "--channel",
+            &channel,
+            SECOND,
+        ],
+    );
     quick(&[(ONE_SHOT_SETTING, "1")], &[RECV]);
     quick(&[], &[ADD_RULE, path(&rule), ACME]);
     let listed = helped.run(&[RULES]);

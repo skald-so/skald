@@ -1,15 +1,17 @@
-//! `skald send`: the device sends a text to a channel of a space it follows; as an agent, only in
-//! the space of its folder. It first accepts the space's latest revisions and goes through the
-//! mailbox as `skald recv` does, showing none of it: it sends its Commits and Welcomes that wait,
+//! `skald send`: the device sends a text to a channel of a space it follows, by default the default
+//! channel of the working directory's space; as an agent, only in the space of its folder. It
+//! first accepts the space's latest revisions and goes through the mailbox as `skald recv` does,
+//! showing none of it: it sends its Commits and Welcomes that wait,
 //! writes each entry, goes through the Welcomes, Commits and application messages, brings the
 //! channel's group in line ([`crate::groups`]) and uploads the links of the key chains the server
 //! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
 //! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
-//! "Admitted devices"). The content is from the person address or the agent's, with `hops` 0, the
-//! device's next `counter` in the channel and an A2A message with the text
-//! (`docs/protocol/README.md`, "Content").
+//! "Admitted devices"). The content is from the person address or the agent's, to the agent
+//! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
+//! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
+//! "Content").
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
@@ -28,8 +30,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame, MessageId,
-    Name, Push, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
+    Address, AddressError, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame,
+    MessageId, Name, PERSON, Push, RawEnvelope, Roster, Segment, SendKey, ServerName, SpaceId,
+    Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -138,14 +141,19 @@ impl Delivered {
     }
 }
 
-/// Sends `text` to the channel whose ID is `channel`, by the state in `dir`, its secrets in
-/// `storage`, as `agent` if given, whose run holds its warnings for the person
-/// ([`recv::holding_warnings`]); retries for `timeout`. Reports as JSON if `json`.
+/// What a `skald send` names: its `--to`, its `--channel` and its text.
+pub type Named<'a> = (Option<&'a str>, Option<&'a str>, &'a str);
+
+/// Sends `text` for the agent `to` names ([`addressee`]), or for every agent without it, to the
+/// channel whose ID is `channel`, by default the default channel of the working directory's space,
+/// by the state in `dir`, its secrets in `storage`, as `agent` if given, whose run holds its
+/// warnings for the person ([`recv::holding_warnings`]); retries for `timeout`. Reports as JSON if
+/// `json`.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (channel, text): (&str, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     json: bool,
 ) -> Result<(), String> {
@@ -159,7 +167,7 @@ pub fn run(
             dir,
             storage,
             (speaks, timeout),
-            (channel, text),
+            (to, channel, text),
             agent,
             reported,
         )
@@ -171,19 +179,30 @@ fn sent(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (channel, text): (&str, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     reported: Reported,
 ) -> Result<(), String> {
-    let channel = channel_id(channel)?;
+    let to = to.map(addressee).transpose()?;
+    let channel = channel.map(channel_id).transpose()?;
     let scope = Scope::of_run(dir, agent.is_some())?;
-    let Synced {
-        mut follower,
-        space,
-        roster,
-        devices,
-    } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
-        .map_err(|err| with_waiting(dir, scope, err))?;
+    let (
+        Synced {
+            mut follower,
+            space,
+            roster,
+            devices,
+        },
+        channel,
+    ) = match channel {
+        Some(channel) => spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
+            .map(|synced| (synced, channel)),
+        None => spaces::of_working_dir(dir, storage, speaks, timeout, scope),
+    }
+    .map_err(|err| with_waiting(dir, scope, err))?;
+    let server = server_name(&mut follower.connection)?
+        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))?;
+    let to = (to.map(|to| to.in_space(&roster.body().name, &server))).transpose()?;
     if let Some(agent) = agent {
         // Messages that come from now on are also for this agent.
         (follower.state)
@@ -191,12 +210,12 @@ fn sent(
             .map_err(|err| err.to_string())?;
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    let from = sender(&mut follower, &roster, agent)?;
+    let from = sender(&follower, &roster, server, agent)?;
     groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
-        |msg_id, counter| content(&from, msg_id, counter, text),
+        |msg_id, counter| content((&from, to.as_ref()), msg_id, counter, text),
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
     let queued = queued(&follower.state, scope)?;
@@ -311,10 +330,11 @@ pub fn admitted<'d>(
 }
 
 /// The address the message is from: the person's, or `agent`'s, of the device's account in
-/// `roster`'s space, on the server of the machine's session.
+/// `roster`'s space, on `server`, the server of the machine's session.
 fn sender(
-    follower: &mut Follower,
+    follower: &Follower,
     roster: &Roster,
+    server: ServerName,
     agent: Option<&Name>,
 ) -> Result<Address, String> {
     let body = roster.body();
@@ -325,8 +345,6 @@ fn sender(
             body.name.as_str()
         )
     })?;
-    let server = server_name(&mut follower.connection)?
-        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))?;
     let (space, owner) = (body.name.clone(), member.handle.clone());
     Ok(match agent {
         Some(agent) => Address::new(space, owner, agent.clone(), server),
@@ -334,9 +352,10 @@ fn sender(
     })
 }
 
-/// The content of a message of `text` from `from`, of `msg_id`, with `counter`.
+/// The content of a message of `text` from `from` to `to`, or to no one in particular, of
+/// `msg_id`, with `counter`.
 fn content(
-    from: &Address,
+    (from, to): (&Address, Option<&Address>),
     msg_id: MessageId,
     counter: std::num::NonZeroU64,
     text: &str,
@@ -349,7 +368,7 @@ fn content(
     .to_string();
     Content {
         from: from.clone(),
-        to: None,
+        to: to.cloned(),
         counter: Some(counter),
         hops: 0,
         reply_to: None,
@@ -358,6 +377,82 @@ fn content(
         grant: None,
         attachments: None,
         unknown: Unknown::default(),
+    }
+}
+
+/// What `--to` names, lowercased.
+#[derive(Debug, PartialEq)]
+enum Addressee {
+    Full(Address),
+    /// `owner/agent`, in the channel's space on the machine's server.
+    Short(Name, Name),
+}
+
+/// The agent `given` to `--to` names, lowercased (`docs/protocol/README.md`, "Agent address"):
+/// its full address or `owner/agent`. Fails for an invalid address, and for a person's: only a
+/// reply goes to a person.
+fn addressee(given: &str) -> Result<Addressee, String> {
+    let lowered = given.to_lowercase();
+    let invalid = |err: &dyn std::fmt::Display| {
+        format!("--to \"{}\": {err}; nothing is sent", printable(given))
+    };
+    let addressee = if lowered.contains('@') {
+        Addressee::Full(lowered.parse().map_err(|err| invalid(&err))?)
+    } else {
+        let Some((owner, agent)) = lowered.split_once('/').filter(|(_, it)| !it.contains('/'))
+        else {
+            return Err(invalid(
+                &"invalid agent address: use space/owner/agent@server, or owner/agent in the \
+                  channel's space",
+            ));
+        };
+        let segment = |segment, name: &str| {
+            name.parse::<Name>()
+                .map_err(|err| invalid(&AddressError::Segment(segment, err)))
+        };
+        Addressee::Short(
+            segment(Segment::Owner, owner)?,
+            segment(Segment::Agent, agent)?,
+        )
+    };
+    let agent = match &addressee {
+        Addressee::Full(address) => address.agent(),
+        Addressee::Short(_, agent) => agent,
+    };
+    if agent.as_str() == PERSON {
+        return Err(format!(
+            "--to \"{}\" is a person's address: --to takes an agent's, as only a reply goes to a \
+             person; nothing is sent",
+            printable(given)
+        ));
+    }
+    Ok(addressee)
+}
+
+impl Addressee {
+    /// The full address in the space `space` on the server `server`; fails for an address of
+    /// another space or server.
+    fn in_space(self, space: &Name, server: &ServerName) -> Result<Address, String> {
+        let address = match self {
+            Addressee::Full(address) => address,
+            Addressee::Short(owner, agent) => {
+                Address::new(space.clone(), owner, agent, server.clone())
+            }
+        };
+        if address.space() != space {
+            // The agent's output names nothing of another space.
+            return Err(format!(
+                "--to names an agent of another space than the channel's, {space}: a message is \
+                 only for the agents of its channel's space; nothing is sent"
+            ));
+        }
+        if address.server() != server {
+            return Err(format!(
+                "--to names an agent on another server than this device's, {server}; nothing is \
+                 sent"
+            ));
+        }
+        Ok(address)
     }
 }
 
@@ -776,6 +871,44 @@ pub(crate) mod tests {
     use crate::spaces::tests::{first, member};
     use crate::state::Counted;
     use crate::test_dir::TestDir;
+
+    /// `--to` takes a full address or `owner/agent`, lowercased, and completes the short form with
+    /// the channel's space and server; it refuses a person's address, an invalid one, and one of
+    /// another space or server.
+    #[test]
+    fn to_names_an_agent_of_the_channel_s_space_and_server() {
+        let space: Name = "acme".parse().unwrap();
+        let server: ServerName = "skald.example".parse().unwrap();
+        let full: Address = "acme/bob/claude@skald.example".parse().unwrap();
+        let in_acme = |given: &str| addressee(given)?.in_space(&space, &server);
+
+        for given in [
+            "acme/bob/claude@skald.example",
+            "Bob/Claude",
+            "ACME/BOB/CLAUDE@SKALD.EXAMPLE",
+        ] {
+            assert_eq!(in_acme(given).as_ref(), Ok(&full), "{given}");
+        }
+        for person in ["bob/user", "bob/USER", "acme/bob/user@skald.example"] {
+            let err = addressee(person).expect_err(person);
+            assert!(err.contains("person's address"), "{person}: {err}");
+        }
+        for invalid in [
+            "claude",
+            "bob/",
+            "/claude",
+            "a/b/c",
+            "bob/claude_1",
+            "acme/bob/claude@",
+        ] {
+            let err = addressee(invalid).expect_err(invalid);
+            assert!(err.contains("invalid agent address"), "{invalid}: {err}");
+        }
+        let err = in_acme("other/bob/claude@skald.example").unwrap_err();
+        assert!(err.contains("another space"), "{err}");
+        let err = in_acme("acme/bob/claude@elsewhere.example").unwrap_err();
+        assert!(err.contains("another server"), "{err}");
+    }
 
     /// Puts `outgoing`, the first message in `channel`, in the outbox of `state`.
     fn put(state: &State, channel: ChannelId, outgoing: Outgoing) {

@@ -18,7 +18,7 @@ use skald_proto::{
     AccountId, Cbor as _, ChannelId, DeviceId, GRANT_LABEL, Grant, Role, Roster, ServiceAgent,
     SpaceId,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 
 use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, account, answer, parse};
@@ -222,8 +222,8 @@ pub(crate) async fn create(
                     .to_owned(),
             ));
         }
-        service_device(db, &roster, device, account).await?;
-        check_grant(db, &roster, &grant, device).await?;
+        service_device(&mut tx, &roster, device, account).await?;
+        check_grant(&mut tx, &roster, &grant, device).await?;
 
         let token = random_token();
         let permissions: Vec<&str> = permissions.iter().map(|p| p.as_str()).collect();
@@ -266,7 +266,7 @@ pub(crate) async fn create(
 /// Refuses `device` unless it is a `service` device of `account` with a certificate, not revoked,
 /// that `roster` lists in a service agent entry.
 async fn service_device(
-    db: &PgPool,
+    conn: &mut PgConnection,
     roster: &Roster,
     device: DeviceId,
     account: AccountId,
@@ -288,7 +288,7 @@ async fn service_device(
     )
     .bind(device.to_string())
     .bind(account.to_string())
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|err| Refusal::Database("read a device", err))?;
     found.map(|_| ()).ok_or_else(refused)
@@ -298,7 +298,7 @@ async fn service_device(
 /// certificate its signature verifies with, it lists only channels of `roster`, and it has not
 /// expired.
 async fn check_grant(
-    db: &PgPool,
+    conn: &mut PgConnection,
     roster: &Roster,
     grant: &Grant,
     device: DeviceId,
@@ -327,7 +327,7 @@ async fn check_grant(
            AND NOT revoked",
     )
     .bind(body.signer.to_string())
-    .fetch_optional(db)
+    .fetch_optional(&mut *conn)
     .await
     .map_err(|err| Refusal::Database("read a device", err))?;
     let admin = signer.and_then(|(account, signing)| {

@@ -38,7 +38,11 @@ pub fn send_of(talk: &Talk, text: &str) -> [String; 2] {
 /// `seconds`.
 pub fn start_send(talk: &Talk, seconds: u64, text: &str) -> Run {
     let [channel, text] = send_of(talk, text);
-    start(talk, seconds, &[SEND, &channel, &text])
+    start(
+        talk,
+        seconds,
+        &[SEND, "--all", "--channel", &channel, &text],
+    )
 }
 
 /// From now on, the front holds back the `auth` of Ada's device. Starts `args` with a timeout of
@@ -58,7 +62,7 @@ pub fn holding(talk: &Talk, seconds: u64, args: &[&str]) -> (Run, Duration) {
 /// As [`holding`], a `skald send` of `text` to the talk's channel with a timeout of [`LONG`].
 pub fn send_holding(talk: &Talk, text: &str) -> Run {
     let [channel, text] = send_of(talk, text);
-    holding(talk, LONG, &[SEND, &channel, &text]).0
+    holding(talk, LONG, &[SEND, "--all", "--channel", &channel, &text]).0
 }
 
 /// Fails unless `waiting` keeps running for [`WATCHED`] without reaching the server as its

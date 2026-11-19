@@ -68,7 +68,7 @@ fn another_account_gets_nothing_through_the_helper() {
 
     let other = container::run_as_another_account(
         &talk.ada.machine.state_dir(),
-        &[SEND, &channel, INTRUDER],
+        &[SEND, "--all", "--channel", &channel, INTRUDER],
     );
 
     assert!(!other.success, "another account sent: {other:?}");
