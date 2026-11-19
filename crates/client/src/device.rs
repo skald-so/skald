@@ -18,6 +18,7 @@ use zeroize::Zeroizing;
 use crate::connection::{self, Connection, Method};
 use crate::link_code;
 use crate::recovery;
+use crate::recovery_link;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -319,9 +320,20 @@ struct MasterKeyRequest {
 
 /// `MasterKey` in the API spec.
 #[derive(Deserialize)]
-struct MasterKey {
-    master: Option<String>,
-    record: Option<String>,
+pub struct MasterKey {
+    pub master: Option<String>,
+    pub record: Option<String>,
+    pub backup: Option<String>,
+}
+
+/// `GET /account/master`, as the session `token`.
+///
+/// # Errors
+/// If the server does not give the answer.
+pub fn master_key(connection: &mut Connection, token: &str) -> Result<MasterKey, sign_in::Error> {
+    let body = connection.get_as("/account/master", token)?;
+    serde_json::from_slice(&body)
+        .map_err(|_| sign_in::Error::Unexpected("a master key answer without its key".to_owned()))
 }
 
 /// Whether this is the account's first device, as the user said beforehand, or ask the user.
@@ -348,6 +360,9 @@ pub struct Setup<'a> {
     pub first: First,
     /// Whether its person runs it at a terminal: then, waiting for linking, it shows link codes.
     pub interactive: bool,
+    /// With the recovery key, the devices its person names: then, waiting for linking, it links
+    /// with the account's recovery key instead.
+    pub recovery: Option<&'a recovery_link::Named>,
 }
 
 /// What setting up the device gives.
@@ -365,9 +380,17 @@ impl Setup<'_> {
                 self.say_if_no_recovery_key();
                 Ok(())
             }
+            Link::Waiting | Link::Recovering { .. } if self.recovery.is_some() => self.recover(),
             Link::Waiting => {
-                self.say_if_no_recovery_key();
-                self.wait()
+                let offered = self.say_if_no_recovery_key();
+                self.wait(offered)
+            }
+            Link::Recovering { .. } => {
+                println!(
+                    "This device is linking with the account's recovery key: to finish, run skald \
+                     sign-in --first-device no --with-recovery-key at a terminal."
+                );
+                self.wait(false)
             }
             Link::Granted { master, cert, link } => {
                 link_code::store(self.connection, self.state, self.token, master, cert, link)?;
@@ -383,11 +406,18 @@ impl Setup<'_> {
         }
     }
 
-    /// Waits for linking: at a terminal, by link codes it shows ([`link_code::show`]).
-    fn wait(self) -> Done {
+    /// Waits for linking: at a terminal, by link codes it shows ([`link_code::show`]), first saying,
+    /// if `offered`, that the account's recovery key links it too.
+    fn wait(self, offered: bool) -> Done {
         if !self.interactive {
             waits();
             return Ok(());
+        }
+        if offered {
+            println!(
+                "To link this device with the account's recovery key instead, run skald sign-in \
+                 --first-device no --with-recovery-key at a terminal."
+            );
         }
         link_code::show(&mut link_code::NewDevice {
             connection: self.connection,
@@ -420,15 +450,31 @@ impl Setup<'_> {
     }
 
     /// `GET /account/master`, then [`no_recovery_key`] on its record; an answer it does not get
-    /// says nothing.
-    fn say_if_no_recovery_key(&mut self) {
-        let answer = self.connection.get_as("/account/master", self.token);
-        if let Ok(body) = answer
-            && let Ok(master) = serde_json::from_slice::<MasterKey>(&body)
-            && master.master.is_some()
-        {
-            no_recovery_key(master.record.as_deref());
+    /// says nothing. Gives whether the account has a recovery key, an account record.
+    fn say_if_no_recovery_key(&mut self) -> bool {
+        match master_key(self.connection, self.token) {
+            Ok(master) if master.master.is_some() => {
+                no_recovery_key(master.record.as_deref());
+                master.record.is_some()
+            }
+            _ => false,
         }
+    }
+
+    /// Links the device with the account's recovery key ([`recovery_link::link`]).
+    fn recover(self) -> Done {
+        let named = self.recovery.cloned().unwrap_or_default();
+        recovery_link::link(
+            &mut recovery_link::NewDevice {
+                connection: self.connection,
+                state: self.state,
+                token: self.token,
+                account: self.account,
+                device: &self.device,
+                keys: self.keys,
+            },
+            &named,
+        )
     }
 
     /// Asks whether this is the account's first device, then the server whether the account has a
@@ -450,10 +496,7 @@ impl Setup<'_> {
                 first
             }
         };
-        let body = self.connection.get_as("/account/master", self.token)?;
-        let master: MasterKey = serde_json::from_slice(&body).map_err(|_| {
-            sign_in::Error::Unexpected("a master key answer without its key".to_owned())
-        })?;
+        let master = master_key(self.connection, self.token)?;
         match (first, master.master) {
             (true, None) => {
                 let created = self.create_master()?;
@@ -478,8 +521,11 @@ impl Setup<'_> {
             (false, None) => Err(Error::NoMasterKey.into()),
             (false, Some(_)) => {
                 self.state.set_link(&Link::Waiting)?;
+                if self.recovery.is_some() {
+                    return self.recover();
+                }
                 no_recovery_key(master.record.as_deref());
-                self.wait()
+                self.wait(master.record.is_some())
             }
         }
     }
@@ -537,7 +583,7 @@ impl Setup<'_> {
                     "Another device gave the account's master key first: this device dropped its \
                      own."
                 );
-                self.wait()
+                self.wait(false)
             }
             Err(err) => Err(err.into()),
         }

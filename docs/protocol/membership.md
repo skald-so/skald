@@ -99,6 +99,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - a `client` device of the same account: any kind.
 - A `service` device is certified on the account of the admin who creates it, by the `client` device it is created on.
 - `name` and `issued` are for display; nothing depends on them. A client shows a device only by its certificate's `name`, `kind` and `issued`, never by a name the server gives.
+- The one exception: while a device of the account waits for linking, each command of a linked `client` device that reaches the server, and each tool call of its MCP server, says once that the server reports, unverified, a device of that `name` and kind waiting, and that `skald link` links it (`getWaitingDevices` in the OpenAPI spec, `link-notice` in [delivery.md](delivery.md#frames)). The name is escaped as other text from the server. Only a prompt: the certificate still goes only through the code its user types ([Link code](#link-code)).
 - **SSH signature** (`ssh`, optional): an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, all byte strings. It is made with one of the user's SSH keys on GitHub. A client that checks it fetches the user's keys from GitHub, not from the Skald server; a signature that does not verify is a key change.
 - An MLS credential names the device: [MLS profile](#mls-profile).
 

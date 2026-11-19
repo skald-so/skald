@@ -67,6 +67,8 @@ mod scene;
 
 #[path = "../spaces/api.rs"]
 mod api;
+#[path = "../link_relay/kit.rs"]
+mod link_kit;
 #[path = "../spaces/rosters.rs"]
 mod rosters;
 

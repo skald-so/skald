@@ -125,3 +125,40 @@ fn a_master_key_revocation_stays_counting_whatever_else_names_its_device() {
         &[LAPTOP, BROWSER, SERVICE],
     );
 }
+
+/// The devices of the account, by seed in [`CERTIFIED`]'s order, that a master-key revocation of
+/// `revs` marks as stolen.
+fn stolen(revs: &[Rev]) -> Vec<u8> {
+    let revocations: Vec<_> = revs.iter().map(Rev::revocation).collect();
+    (CERTIFIED.iter().copied())
+        .filter(|&seed| {
+            skald_crypto::marked_stolen(&public(MASTER), &certs(), &revocations, device(seed))
+        })
+        .collect()
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_master_key_revocation_marks_as_stolen_its_device_and_those_under_it_but_kept_ones() {
+    assert_eq!(stolen(&[Rev::by_master(DESKTOP)]), DESKTOP_AND_UNDER);
+    assert_eq!(
+        stolen(&[Rev::by_master(DESKTOP).keep(&[PHONE])]),
+        [DESKTOP, TABLET]
+    );
+    assert_eq!(
+        stolen(&[Rev::by_master(PHONE), Rev::by_master(RECOVERED)]),
+        [PHONE, PHONE_BROWSER, RECOVERED]
+    );
+    // A device's revocation, one another key signs or a broken one marks none.
+    let other_key = Rev {
+        key: OTHER_MASTER,
+        ..Rev::by_master(DESKTOP)
+    };
+    let broken = Rev {
+        broken: true,
+        ..Rev::by_master(DESKTOP)
+    };
+    for revs in [[Rev::by(LAPTOP, DESKTOP)], [other_key], [broken]] {
+        assert_eq!(stolen(&revs), Vec::<u8>::new(), "{revs:#?}");
+    }
+}

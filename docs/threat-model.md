@@ -92,6 +92,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - Remove the account's other sign-in methods after its own recent sign-in, as can each provider linked to the account, and keep the account. Removing a method ends the web sessions it signed in; device sessions approved through it stay until ended in the web UI's Access section.
 - GitHub: sign up as a listed GitHub login on a server whose sign-up is closed ([self-host.md, "Sign-up"](self-host.md#sign-up)).
 - Persuade the user to enter a link code its own device shows, which links that device with the `name` and kind it chose ([membership.md](protocol/membership.md#security-considerations)).
+- Register a device with a `name` of its choice, which every linked device's commands then report as waiting for linking, marked as the server's unverified report ([Device certificate](protocol/membership.md#device-certificate)).
 - Guess a link code online with a session of the account, which takes the account's hellos and answers them, as the server can ([The server or its operator](#the-server-or-its-operator)).
 - GitHub: list an SSH key of its choice as the user's, so a device key signed with it passes the SSH signature check, or a genuine one fails it as a key change ([Device certificate](protocol/membership.md#device-certificate)).
 - GitHub: read the CI secrets it stores: [A leaked CI secret](#a-leaked-ci-secret).
@@ -257,6 +258,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
 - Run as an agent, the CLI shows no recovery key or link code and takes none, nor a new device's confirmation: a recovery key waits for the person's `skald sign-in` in a terminal ([Account](protocol/membership.md#account)).
+- The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
 - `skald link` takes a link code and its confirmation only from a terminal, so an agent cannot pipe them in. An agent that opens a terminal of its own, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine

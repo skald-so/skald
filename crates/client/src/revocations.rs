@@ -135,7 +135,11 @@ fn device_id(given: &str) -> Result<DeviceId, String> {
 /// The devices of `certs` that `issuer` certified, with a certificate that passes checks 1 and 2
 /// against the pinned `master` key, each once with its certificate's `name`, in the order of
 /// `certs`.
-fn certified_by(master: &[u8; 32], certs: &[Cert], issuer: DeviceId) -> Vec<(DeviceId, String)> {
+pub fn certified_by(
+    master: &[u8; 32],
+    certs: &[Cert],
+    issuer: DeviceId,
+) -> Vec<(DeviceId, String)> {
     let mut certified: Vec<(DeviceId, String)> = Vec::new();
     for cert in certs {
         let device = cert.body().device;
@@ -190,10 +194,22 @@ pub fn ask_keep(
     output: &mut impl Write,
     certified: &[DeviceId],
 ) -> io::Result<Option<Vec<DeviceId>>> {
+    ask_ids(input, output, "Which of them stay valid?", certified)
+}
+
+/// Asks `question` on `output`, reading the answer from `input`: IDs of `shown`, separated by
+/// spaces or commas, each kept once, or nothing for none; asks again after an answer that names
+/// anything else. None if `input` ends first.
+pub fn ask_ids(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    question: &str,
+    shown: &[DeviceId],
+) -> io::Result<Option<Vec<DeviceId>>> {
     loop {
         write!(
             output,
-            "Which of them stay valid? Their IDs, separated by spaces, or nothing for none: "
+            "{question} Their IDs, separated by spaces, or nothing for none: "
         )?;
         output.flush()?;
         let mut line = String::new();
@@ -206,7 +222,7 @@ pub fn ask_keep(
             .filter(|word| !word.is_empty())
             .map(device_id)
             .collect();
-        match named.and_then(|named| kept_of(&named, certified)) {
+        match named.and_then(|named| kept_of(&named, shown)) {
             Ok(kept) => return Ok(Some(kept)),
             Err(_) => writeln!(
                 output,
@@ -228,6 +244,23 @@ fn store(
     state: &State,
     revocation: &[u8],
 ) -> Result<(), String> {
+    store_or(
+        connection,
+        token,
+        state,
+        revocation,
+        "the next skald command that connects",
+    )
+}
+
+/// [`store`], saying that `later` sends a revocation the server has not taken.
+pub fn store_or(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    revocation: &[u8],
+    later: &str,
+) -> Result<(), String> {
     let request =
         serde_json::json!({ "revocation": URL_SAFE_NO_PAD.encode(revocation) }).to_string();
     connection
@@ -238,10 +271,7 @@ fn store(
             request.as_bytes(),
         )
         .map_err(|err| {
-            format!(
-                "{err}; the revocation waits for the server to take it: the next skald command \
-                 that connects sends it again"
-            )
+            format!("{err}; the revocation waits for the server to take it: {later} sends it again")
         })?;
     state.revocation_taken(revocation).map_err(text)
 }

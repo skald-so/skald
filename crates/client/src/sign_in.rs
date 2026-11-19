@@ -14,6 +14,7 @@ use crate::connection::{self, Connection, printable};
 use crate::device::{self, First, Keys, Setup};
 use crate::key_packages;
 use crate::recovery;
+use crate::recovery_link;
 use crate::secrets::{self, Secrets};
 use crate::state::{self, State};
 
@@ -66,6 +67,8 @@ pub enum Error {
     Expired,
     /// An answer the device flow does not define.
     Unexpected(String),
+    /// Linking with the recovery key stopped, for this reason.
+    Recovery(String),
     /// The person who approved the code signed in to another account than the one the device
     /// belongs to, the account with `username`; `unended` is why the server did not end that
     /// session, if it did not.
@@ -95,6 +98,7 @@ impl std::fmt::Display for Error {
                 "the code expired before it was approved; run skald sign-in again for a new one",
             ),
             Error::Unexpected(answer) => write!(f, "unexpected answer from the server: {answer}"),
+            Error::Recovery(why) => f.write_str(why),
             Error::OtherAccount { username, unended } => {
                 write!(
                     f,
@@ -150,6 +154,9 @@ pub struct Options {
     /// Whether the run is the person's, not an agent's, at a terminal: only then may it show a
     /// recovery key or link codes.
     pub shows: bool,
+    /// With the recovery key, the devices its person names: then, waiting for linking, the device
+    /// links with the account's recovery key.
+    pub recovery: Option<recovery_link::Named>,
 }
 
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
@@ -224,6 +231,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options) -> Result
         keys: &keys,
         first: options.first,
         interactive: options.shows,
+        recovery: options.recovery.as_ref(),
     }
     .run()?;
     // A device that holds its certificate keeps its KeyPackages on the server.

@@ -395,7 +395,7 @@ fn enters() -> Receiver<()> {
 
 /// `PUT /devices/{device}/cert`: has the server store `cert`, in CBOR, the certificate of the
 /// device of `keys`; the same certificate again is taken too.
-fn upload(
+pub fn upload(
     connection: &mut Connection,
     token: &str,
     device: DeviceId,

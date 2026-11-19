@@ -350,6 +350,11 @@ impl Run {
             .expect("type on skald's input");
     }
 
+    /// Whether it has exited.
+    pub fn exited(&mut self) -> bool {
+        self.child.try_wait().expect("wait for skald").is_some()
+    }
+
     /// Fails if it has exited.
     pub fn assert_running(&mut self) {
         if let Some(status) = self.child.try_wait().expect("wait for skald") {

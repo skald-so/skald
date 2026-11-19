@@ -162,16 +162,15 @@ impl Terminal {
 
     /// The person presses Enter; a run that no longer reads its terminal does not see it.
     pub fn enter(&self) {
-        let mut input = self.input.lock().expect("the terminal's input");
-        let _ = input.write_all(b"\r").and_then(|()| input.flush());
+        self.type_line("");
     }
 
     /// The person types `text` and presses Enter; a run that no longer reads its terminal does not
     /// see it.
     pub fn type_line(&self, text: &str) {
         let mut input = self.input.lock().expect("the terminal's input");
-        let _ = (input.write_all(text.as_bytes()))
-            .and_then(|()| input.write_all(b"\r"))
+        let _ = input
+            .write_all(format!("{text}\r").as_bytes())
             .and_then(|()| input.flush());
     }
 

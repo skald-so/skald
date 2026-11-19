@@ -1,7 +1,8 @@
 //! A device's mailbox over server-sent events: `docs/protocol/delivery.md`, "Frames" and
 //! "Mailbox". A stream proves its device as each HTTPS request of the mailbox does
 //! ([`requests`](crate::requests)), acks the cursor in `Last-Event-ID`, sends the entries after it,
-//! then an empty `batch`, then each new entry and `space-notice`; one frame per event. It ends when
+//! then an empty `batch`, then each new entry, `space-notice` and `link-notice`; one frame per
+//! event. It ends when
 //! its session ends or its device is revoked, and sends a keep-alive comment while idle.
 
 use std::collections::VecDeque;
@@ -24,7 +25,7 @@ use crate::delivery::Reader;
 use crate::notices::Listening;
 use crate::protocol::Stated;
 use crate::requests::{ack_listening, invalid, listening, prove, receiving};
-use crate::{AppState, database_failed, error_reports, service_tokens};
+use crate::{AppState, database_failed, error_reports};
 
 /// The keep-alive interval of a stream without the server setting.
 pub const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -136,10 +137,9 @@ impl Pushing {
                 biased;
                 _ = &mut self.proved.ended => return None,
                 () = self.reader.woken() => self.reading = Some(i64::MAX),
-                spaces = self.notices.next() => {
-                    let spaces = service_tokens::seen(self.proved.token.as_ref(), spaces);
-                    let notices = spaces.into_iter().map(|space| Push::SpaceNotice { space });
-                    self.queued.extend(notices.map(Frame::Push));
+                noticed = self.notices.next() => {
+                    let notices = noticed.pushes(self.proved.token.as_ref());
+                    self.queued.extend(notices.into_iter().map(Frame::Push));
                 }
             }
         }
