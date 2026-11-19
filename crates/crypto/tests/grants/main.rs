@@ -9,15 +9,15 @@
 //! from the crates under test.
 //!
 //! The interface, as these tests use it:
-//! - `skald_crypto::check_grant(grant, (service, channel), roster, certs, (account, master), now)`:
-//!   `Ok(())` when `grant`, in content from the device `service` in `channel`, passes the checks
-//!   against `roster`, the latest revision the client accepted, the certificates the server returns
-//!   `certs`, the client's own `account` and its pinned `master` key, at `now`, seconds since the
-//!   Unix epoch;
+//! - `skald_crypto::check_grant(grant, (service, channel), roster, certs, revocations, (account,
+//!   master), now)`: `Ok(())` when `grant`, in content from the device `service` in `channel`,
+//!   passes the checks against `roster`, the latest revision the client accepted, the certificates
+//!   and revocations the server returns `certs` and `revocations`, the client's own `account` and
+//!   its pinned `master` key, at `now`, seconds since the Unix epoch;
 //! - otherwise a `skald_crypto::GrantError`: `Service` when it names another device, `Channel` when
 //!   it does not list the channel, `Signer(device)` when its signer is no admin's device in
-//!   `roster`, `Signature` when its signature does not verify with the signer's certificate,
-//!   `Expired` when `expires` has passed.
+//!   `roster` or is revoked, `Signature` when its signature does not verify with the signer's
+//!   certificate, `Expired` when `expires` has passed.
 
 // The fixtures of the tests of rosters serve more than these tests use.
 #![allow(dead_code)]
@@ -25,6 +25,7 @@
 #[path = "../rosters/cbor.rs"]
 mod cbor;
 mod checks;
+mod edges;
 #[path = "../rosters/fixtures.rs"]
 mod fixtures;
 mod grant;

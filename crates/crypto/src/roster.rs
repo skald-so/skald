@@ -6,11 +6,12 @@ use std::fmt;
 use std::hash::Hash;
 
 use skald_proto::{
-    AccountId, Cbor, Cert, ChannelId, DecodeError, DeviceId, DeviceKind, Name, ROSTER_LABEL, Role,
-    Roster, RosterBody,
+    AccountId, Cbor, Cert, ChannelId, DecodeError, DeviceId, DeviceKind, Name, ROSTER_LABEL,
+    Revocation, Role, Roster, RosterBody,
 };
 
 use crate::cert::check_device;
+use crate::revocation::check_valid_device;
 use crate::sign::{SigningKey, verify};
 
 /// The revision of `body`, signed by `key`, the signing key of the device in `body.signer`.
@@ -118,16 +119,11 @@ pub fn accept_next(
     master: &[u8; 32],
 ) -> Result<(), RosterError> {
     let (prev_body, body) = (previous.body(), next.body());
-    let pinned = |revision: &RosterBody, member: AccountId| {
-        if member == account {
-            Some(*master)
-        } else {
-            revision.member(member).map(|entry| entry.master)
-        }
-    };
+    let pinned =
+        |revision: &RosterBody, member: AccountId| master_of(revision, (account, master), member);
 
-    // Check 1.
-    let signer = admins_device(prev_body, certs, body.signer, |member| {
+    // Check 1: the client checks the signer's revocations itself.
+    let signer = admins_device(prev_body, (certs, &[]), body.signer, |member| {
         pinned(prev_body, member)
     })
     .ok_or(RosterError::Signer(body.signer))?;
@@ -163,12 +159,27 @@ pub fn accept_next(
     check_content(body, certs, |member| pinned(body, member))
 }
 
+/// The master key a client of `account`, its `master` key pinned, checks the devices of `member`
+/// against in `body`: the pinned one for `account`, the one `body` gives any other member.
+pub(crate) fn master_of(
+    body: &RosterBody,
+    (account, master): (AccountId, &[u8; 32]),
+    member: AccountId,
+) -> Option<[u8; 32]> {
+    if member == account {
+        Some(*master)
+    } else {
+        body.member(member).map(|entry| entry.master)
+    }
+}
+
 /// The signing key of `device` if it is an admin's device in `body`: a `client` or `browser`
-/// device with a valid certificate of an account that is an admin in it, which that member's
-/// `excluded` does not list; the master key of a member's account given by `master`.
+/// device with a valid certificate among `certs`, with `revocations`, of an account that is an
+/// admin in it, which that member's `excluded` does not list; the master key of a member's account
+/// given by `master`.
 pub(crate) fn admins_device(
     body: &RosterBody,
-    certs: &[Cert],
+    (certs, revocations): (&[Cert], &[Revocation]),
     device: DeviceId,
     master: impl Fn(AccountId) -> Option<[u8; 32]>,
 ) -> Option<[u8; 32]> {
@@ -176,7 +187,8 @@ pub(crate) fn admins_device(
         .iter()
         .filter(|member| member.role == Role::Admin)
         .find_map(|admin| {
-            let cert = check_device(&master(admin.account)?, certs, device).ok()?;
+            let master = master(admin.account)?;
+            let cert = check_valid_device(&master, certs, revocations, device).ok()?;
             let cert = cert.body();
             let excluded = admin
                 .excluded

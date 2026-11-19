@@ -1065,6 +1065,7 @@ fn check_service(
         (sender, header.channel),
         context.roster,
         &context.devices.certs,
+        &context.devices.revocations,
         own,
         state::unix_now(),
     )

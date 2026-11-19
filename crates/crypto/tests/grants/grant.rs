@@ -1,7 +1,7 @@
 //! Grants built from their spec fields, and how the client under test judges them.
 
 use skald_crypto::{GrantError, check_grant};
-use skald_proto::{Cbor, ChannelId, DeviceId, Grant};
+use skald_proto::{Cbor, ChannelId, DeviceId, Grant, Revocation};
 
 use crate::cbor::{Value, bytes};
 use crate::fixtures::{
@@ -87,12 +87,24 @@ pub fn judged_in(
     latest: &Rev,
     now: u64,
 ) -> Result<(), GrantError> {
+    judged_revoking(grant, (service, channel), latest, &[], now)
+}
+
+/// [`judged_in`], with `revocations` the revocations the server returns.
+pub fn judged_revoking(
+    grant: &Grant,
+    (service, channel): (DeviceId, ChannelId),
+    latest: &Rev,
+    revocations: &[Revocation],
+    now: u64,
+) -> Result<(), GrantError> {
     let certs = certs();
     check_grant(
         grant,
         (service, channel),
         &latest.roster(),
         &certs,
+        revocations,
         (ALICE, &public(ALICE_MASTER)),
         now,
     )

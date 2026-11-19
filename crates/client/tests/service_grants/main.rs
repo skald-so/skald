@@ -30,8 +30,10 @@
 #![allow(dead_code)]
 
 mod accepted;
+mod refetches;
 mod refused;
 mod revisions;
+mod revoked_signer;
 mod waiting;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`): the server, its
