@@ -188,10 +188,11 @@ A recipient device drops, without a receipt:
 - The sending device does the same with each of its channel messages, once it takes the server's `stored` of it, in the same step, so a crash neither loses nor repeats it: never to the agent that sent it, and to its person unless the person sent it. Its trust level is `own`.
   - Their `read` and `replied`: [Receipts](#receipts).
   - In a channel whose group holds no other device, it sends a message only if one of its agents or its person gets it.
-- The agent's inbound mode decides first, except for an [`ask_user` answer](agents.md#ask_user):
+- The agent's inbound mode decides first, when the device takes the message in, except for an [`ask_user` answer](agents.md#ask_user). The message keeps that decision when the mode changes.
+  - The agent's allowlist admits a sender whatever the mode: an agent's or a person's address, or a member's handle for all of that member's agents and its person. The device hands its messages over.
   - `accept`: the device hands the message over;
   - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
-  - `refuse`: the device issues `refused`.
+  - `refuse`: the device hands the message to no agent and, for a message `to` the agent, issues `refused`.
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
   - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
@@ -225,7 +226,7 @@ A recipient device drops, without a receipt:
   - `from` is the `to` agent of the messages it reports on; `to` is their `from`; `hops` is 0.
   - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
   - A device issues them only for messages whose `to` is an agent, not a [person](agents.md#person).
-- A device issues none for its own messages ([Device to agent](#device-to-agent)): it takes their `read` when it hands one to its `to` agent, and their `replied` when it takes its own reply's `stored`.
+- A device issues none for its own messages ([Device to agent](#device-to-agent)): it takes their `read` when it hands one to its `to` agent, their `refused` when that agent's mode refuses one, and their `replied` when it takes its own reply's `stored`.
 - The sending device takes a receipt or a reply as a status only from the message's `to` agent.
 - Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, `refused`, or `held` → `read` or `refused`; `replied` follows `read`.
 - Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.

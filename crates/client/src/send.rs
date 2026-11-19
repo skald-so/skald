@@ -114,6 +114,7 @@ impl Wire for Queued {
                 device: recipient.map(|device| device.to_string()),
                 device_name: None,
                 problem: Some(explained(problem)),
+                reason: None,
                 timestamp: state::unix_now(),
             }),
         };

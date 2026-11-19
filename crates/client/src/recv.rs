@@ -23,8 +23,9 @@
 //! and the space's roster give (`docs/protocol/membership.md`, "Trust levels"), for the person and
 //! for the agents it is for (`docs/protocol/delivery.md`, "Device to agent"), among the agents
 //! this device had run as in the space when it wrote the entry: with `to`, the one it names;
-//! without `to`, each; a message to a person, none. The person's run shows each kept message once,
-//! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
+//! without `to`, each; a message to a person, none; but those whose inbound mode refuses it, which
+//! the person's line marks. The person's run shows each kept message once, whichever run checked
+//! it. An agent's run shows the messages kept for it and marks each handed
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
 //! The device's own channel messages are kept so too, once the server stored them
@@ -32,9 +33,10 @@
 //!
 //! A receipt that passes the checks counts in gap detection and is shown to no one: of each
 //! message it lists that this device sent in the receipt's channel, `to` the receipt's `from`, a
-//! `read` is kept as a status, once; any other is dropped without a word
-//! (`docs/protocol/delivery.md`, "Receipts"). Once an agent's run marks a message to it handed
-//! over, the device sends its `read` ([`crate::receipts`]).
+//! `read`, or a `refused` with its reason, is kept as a status, once; any other is dropped without
+//! a word (`docs/protocol/delivery.md`, "Receipts"). Once an agent's run marks a message to it
+//! handed over, the device sends its `read`; once it keeps a message its `to` agent's inbound mode
+//! refuses, its `refused` ([`crate::receipts`], [`crate::inbound`]).
 //!
 //! Each status of the device's messages is kept for the person and, for a message an agent sent,
 //! for that agent; a kept reply gives its message `replied` ([`crate::reply`]). The person's run
@@ -67,6 +69,7 @@ use crate::forms::{self, Form, References};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
 use crate::history;
+use crate::inbound;
 use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
@@ -545,6 +548,7 @@ pub fn show(
                     device: Some(status.device.to_string()),
                     device_name: space.and_then(|space| device_name(checks, space, status.device)),
                     problem: None,
+                    reason: None,
                     timestamp: status.timestamp,
                 };
                 let json = serde_json::to_string(&kept).expect("a status encodes");
@@ -560,10 +564,11 @@ pub fn show(
     Ok(())
 }
 
-/// The `read` statuses, as JSON by `msg_id`, that `receipt`, from `from` in the envelope with
-/// `header` from the device `sender`, gives of messages this device sent: a `read` of a message
-/// it sent in the receipt's channel whose `to` is `from`. It ignores any other, as every device
-/// but its messages' sender ignores a receipt (`docs/protocol/delivery.md`, "Receipts").
+/// The `read` or `refused` statuses, as JSON by `msg_id`, that `receipt`, from `from` in the
+/// envelope with `header` from the device `sender`, gives of messages this device sent: of a
+/// message it sent in the receipt's channel whose `to` is `from`, `refused` with the receipt's
+/// reason. It ignores any other, as every device but its messages' sender ignores a receipt
+/// (`docs/protocol/delivery.md`, "Receipts").
 fn reads(
     follower: &Follower,
     checks: &Checks,
@@ -571,9 +576,11 @@ fn reads(
     from: &Address,
     receipt: &Receipt,
 ) -> Result<Vec<(MessageId, String)>, String> {
-    if receipt.status != ReceiptStatus::Read {
-        return Ok(Vec::new());
-    }
+    let reason = match receipt.status {
+        ReceiptStatus::Read => None,
+        ReceiptStatus::Refused => Some(receipt.reason.as_deref().unwrap_or_default()),
+        ReceiptStatus::Held => return Ok(Vec::new()),
+    };
     let from = from.to_string();
     let mut reads = Vec::new();
     for &msg_id in receipt.messages.iter() {
@@ -585,15 +592,19 @@ fn reads(
         }
         let name = device_name(checks, sent.space, sender);
         let at = (sent.space, header.channel);
-        let json = forms::Status::from_device(forms::READ, msg_id, at, (sender, name));
+        let json = match reason {
+            Some(reason) => forms::Status::refused_by_device(msg_id, at, (sender, name), reason),
+            None => forms::Status::from_device(forms::READ, msg_id, at, (sender, name)),
+        };
         reads.push((msg_id, json));
     }
     Ok(reads)
 }
 
 /// How the message of the entry `seq` with `header` from the device `sender`, which passed the
-/// checks, is kept: its line, sealed, and the agents it is for; `gap`, the counters it makes
-/// missing, if any.
+/// checks, is kept: its line, sealed, and the agents it is for whose inbound mode takes it, with
+/// those that refuse it marked in its line; `gap`, the counters it makes missing, if any. A message
+/// whose `to` agent refuses it owes its `refused` at once ([`inbound`]).
 fn kept(
     follower: &Follower,
     checks: &mut Checks,
@@ -601,6 +612,21 @@ fn kept(
     message: &Received,
     gap: Option<(u64, u64)>,
 ) -> Result<Kept, String> {
+    let mut agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
+    let refusing = inbound::refusing(&follower.state, header.space, &agents, &message.from)?;
+    // With `to`, the agents are none or the one it names.
+    let read = match (&message.to, agents.first()) {
+        (Some(to), Some(agent)) => Some(ToRead {
+            channel: header.channel,
+            sender,
+            author: message.from.to_string(),
+            addressee: to.to_string(),
+            agent: agent.clone(),
+            reason: refusing.contains(agent).then(|| inbound::REASON.to_owned()),
+        }),
+        _ => None,
+    };
+    agents.retain(|agent| !refusing.contains(agent));
     let record = forms::Message {
         msg_id: header.msg_id.to_string(),
         space: header.space.to_string(),
@@ -612,26 +638,15 @@ fn kept(
         text: message.text.clone(),
         after_missing: gap.is_some(),
         reply_to: message.reply_to.map(|reply_to| reply_to.to_string()),
+        refused: refusing,
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
-    let agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
     let at = (header.space, header.channel);
     let reply = (at, sender, &message.from, message.device.as_str());
     let replied = reply::replied(&follower.state, reply, message.reply_to)?;
     let key = match &checks.inbox_key {
         Some(key) => key,
         None => checks.inbox_key.insert(groups::inbox_key(follower)?),
-    };
-    // With `to`, the agents are none or the one it names.
-    let read = match (&message.to, agents.first()) {
-        (Some(to), Some(agent)) => Some(ToRead {
-            channel: header.channel,
-            sender,
-            author: message.from.to_string(),
-            addressee: to.to_string(),
-            agent: agent.clone(),
-        }),
-        _ => None,
     };
     Ok(Kept {
         space: header.space,
@@ -650,9 +665,10 @@ fn kept(
 /// `space`, from `agent` if given, by `seq`, once the server stores it, sealed with `key`, as a
 /// recipient device keeps it (`docs/protocol/delivery.md`, "Device to agent"): at the level `own`,
 /// for its person unless the person sent it and for the agents of this device it is for but its
-/// sender, with the `replied` it gives a message the device sent and its own `read`. Gives it, and
-/// whether anything on the device gets it: the person, or an agent the device has run as in the
-/// space.
+/// sender and those whose inbound mode refuses it, marked in its line, with the `replied` it gives
+/// a message the device sent and its own `read`, or `refused` if its `to` agent refuses it. Gives
+/// it, and whether anything on the device gets it: the person, or an agent the device has run as in
+/// the space that takes it.
 pub fn own_message(
     follower: &Follower,
     key: &StateKey,
@@ -663,6 +679,37 @@ pub fn own_message(
         .map(|device| device.name)
         .unwrap_or_default();
     let from = &content.from;
+    // Only an agent's address of this account in the space on this server, as `from` is, names an
+    // agent of this device.
+    let to = content.to.as_ref().map(|to| {
+        let ours = !to.is_person()
+            && to.space() == from.space()
+            && to.owner() == from.owner()
+            && to.server() == from.server();
+        ours.then(|| to.agent().to_string())
+    });
+    // Every agent it has run as in the space that it is for: none ran as one after `seq`, past the
+    // cursor.
+    let mut agents = (follower.state.agents(space, seq)).map_err(text)?;
+    agents.retain(|it| {
+        Some(it.as_str()) != agent && (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it))
+    });
+    let refusing = inbound::refusing(&follower.state, space, &agents, from)?;
+    let gets = agent.is_some() || agents.iter().any(|it| !refusing.contains(it));
+    let device = (follower.this, Some(name.clone()));
+    let (read, refused) = match &to {
+        Some(Some(to)) if refusing.contains(to) => {
+            let reason = inbound::REASON;
+            let refused =
+                forms::Status::refused_by_device(msg_id, (space, channel), device, reason);
+            (None, Some(refused))
+        }
+        Some(Some(_)) => {
+            let read = forms::Status::from_device(forms::READ, msg_id, (space, channel), device);
+            (Some(read), None)
+        }
+        _ => (None, None),
+    };
     let record = forms::Message {
         msg_id: msg_id.to_string(),
         space: space.to_string(),
@@ -674,33 +721,11 @@ pub fn own_message(
         text: a2a_text(content, msg_id)?,
         after_missing: false,
         reply_to: content.reply_to.map(|reply_to| reply_to.to_string()),
+        refused: refusing.clone(),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
     let reply = ((space, channel), follower.this, from, name.as_str());
     let replied = reply::replied(&follower.state, reply, content.reply_to)?;
-    // Only an agent's address of this account in the space on this server, as `from` is, names an
-    // agent of this device.
-    let to = content.to.as_ref().map(|to| {
-        let ours = !to.is_person()
-            && to.space() == from.space()
-            && to.owner() == from.owner()
-            && to.server() == from.server();
-        ours.then(|| to.agent().to_string())
-    });
-    let read = match &to {
-        Some(Some(_)) => Some(forms::Status::from_device(
-            forms::READ,
-            msg_id,
-            (space, channel),
-            (follower.this, Some(name)),
-        )),
-        _ => None,
-    };
-    // Every agent it has run as in the space: none ran as one after `seq`, past the cursor.
-    let agents = (follower.state.agents(space, seq)).map_err(text)?;
-    let gets = agent.is_some()
-        || (agents.iter())
-            .any(|it| (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it.as_str())));
     let own = state::OwnMessage {
         seq,
         kept: Kept {
@@ -718,6 +743,8 @@ pub fn own_message(
         sender: agent.map(str::to_owned),
         to,
         read,
+        refusing,
+        refused,
     };
     Ok((own, gets))
 }

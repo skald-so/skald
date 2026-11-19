@@ -79,6 +79,9 @@ skald recv                                  # receive the device's messages
 skald reply <message> <text>                # reply to a message, by its #<ref> or ID, in its channel, to its sender
 skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
+skald set-inbound-mode <agent> <mode>       # accept, or refuse messages from senders off the agent's allowlist
+skald allow-sender <agent> <sender>         # put an address or a member's handle on the agent's allowlist
+skald inbound-modes                         # each agent's mode and allowlist in the working directory's space
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 ```
 
@@ -86,6 +89,7 @@ skald mcp                                   # the MCP server of an agent session
 - How an agent CLI starts `skald mcp`: [Delivery to agent sessions](docs/agent-sessions.md#the-mcp-server).
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
+- An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
 
 Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
 

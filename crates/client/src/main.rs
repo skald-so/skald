@@ -45,6 +45,7 @@ mod groups;
 mod helper;
 mod history;
 mod history_reading;
+mod inbound;
 mod intake;
 mod key_chain;
 mod key_packages;
@@ -600,6 +601,31 @@ enum Command {
     },
     /// Lists the rules: each one's folder and space.
     Rules,
+    /// Sets the inbound mode of an agent of this device in the space of the working directory:
+    /// accept hands it every message; refuse hands it only those of the senders on its allowlist,
+    /// and tells the sender of each other message to it that it was refused. A message keeps the
+    /// mode it came under.
+    SetInboundMode {
+        /// The agent's name, as --agent takes it.
+        #[arg(value_name = "AGENT")]
+        name: String,
+        #[arg(value_name = "MODE")]
+        mode: inbound::Mode,
+    },
+    /// Puts a sender on the allowlist of an agent of this device in the space of the working
+    /// directory: the agent takes its messages whatever its mode.
+    AllowSender {
+        /// The agent's name, as --agent takes it.
+        #[arg(value_name = "AGENT")]
+        name: String,
+        /// An address as --to takes it, space/owner/agent@server or owner/agent, a person's too, or
+        /// a member's handle, for all of that member's agents and the person.
+        #[arg(value_name = "SENDER", allow_hyphen_values = true)]
+        sender: String,
+    },
+    /// Lists each agent of this device in the space of the working directory with its inbound mode
+    /// and the senders on its allowlist.
+    InboundModes,
     /// Removes a folder's rule.
     RemoveRule {
         /// The folder, such as ~/work/acme.
@@ -698,6 +724,9 @@ impl Command {
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
             Command::ApproveBinding { .. } => Some("approve-binding"),
+            Command::SetInboundMode { .. } => Some("set-inbound-mode"),
+            Command::AllowSender { .. } => Some("allow-sender"),
+            Command::InboundModes => Some("inbound-modes"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -775,6 +804,7 @@ impl Command {
         match self {
             Command::Status { .. }
             | Command::Rules
+            | Command::InboundModes
             | Command::Folder { .. }
             | Command::Update { .. }
             | Command::Helper { .. } => None,
@@ -1346,6 +1376,13 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::RemoveRule { folder } => {
             state::dir(state_dir).and_then(|dir| folders::remove_rule(&dir, &folder))
         }
+        Command::SetInboundMode { name, mode } => {
+            state::dir(state_dir).and_then(|dir| inbound::set_mode(&dir, &name, mode))
+        }
+        Command::AllowSender { name, sender } => {
+            state::dir(state_dir).and_then(|dir| inbound::allow(&dir, &name, &sender))
+        }
+        Command::InboundModes => state::dir(state_dir).and_then(|dir| inbound::list(&dir)),
         Command::ApproveBinding { folder } => {
             state::dir(state_dir).and_then(|dir| folders::approve(&dir, &folder))
         }
