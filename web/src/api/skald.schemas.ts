@@ -429,6 +429,7 @@ export type DeviceRegistrationKind =
 
 export const DeviceRegistrationKind = {
   client: "client",
+  service: "service",
 } as const;
 
 export interface DeviceRegistration {

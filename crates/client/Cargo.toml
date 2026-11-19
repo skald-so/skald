@@ -18,7 +18,10 @@ base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 gethostname = "1"
+# Parses an RFC 3339 expiry; no time zone database.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
@@ -29,6 +32,8 @@ sha2 = { version = "0.11", default-features = false }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
+# The MCP server's runtime, which rmcp needs.
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "sync"] }
 toml = { version = "1.2", default-features = false, features = ["parse", "serde", "std"] }
 # rustls for WSS. The client hands tungstenite its own TLS stream, so tungstenite never loads the
 # native roots this feature brings.

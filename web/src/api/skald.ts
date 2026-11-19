@@ -1624,7 +1624,7 @@ export const getRegisterDeviceUrl = () => {
 };
 
 /**
- * A new device registers its ID and public keys with its account (docs/protocol/membership.md, "Linking a device"). Only `client` devices register here.
+ * A new device registers its ID and public keys with its account (docs/protocol/membership.md, "Linking a device"). A `client` device registers itself, and a device session then lists it as the session's device; a `client` device of the account registers a `service` device it creates, which leaves the session's device as it was ("Device certificate"). `browser` devices do not register here.
  * @summary Register a device
  */
 export const registerDevice = async (
@@ -1736,8 +1736,8 @@ export const getStoreDeviceCertificateUrl = (device: string) => {
 };
 
 /**
- * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, "Link code"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.
- * @summary Store a linked device's certificate
+ * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account: of a linked device (docs/protocol/membership.md, "Link code"), whose link code run then ends, or of a `service` device ("Device certificate"). The account's first device gives its certificate with the master key, `PUT /account/master`.
+ * @summary Store a device's certificate
  */
 export const storeDeviceCertificate = async (
   device: string,

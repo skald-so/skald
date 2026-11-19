@@ -1,11 +1,12 @@
-//! Certificates a linked device issued: a session of the account stores the certificate of a device
-//! of the account registered without one (`docs/protocol/membership.md`, "Link code", step 4 of the
-//! new device).
+//! Certificates a `client` device of the account issued: a session of the account stores the
+//! certificate of a device of the account registered without one, a linked device
+//! (`docs/protocol/membership.md`, "Link code", step 4 of the new device) or a `service` device
+//! ("Device certificate").
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
-use skald_proto::{Cbor as _, Cert, DeviceId};
+use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind};
 
 use crate::AppState;
 use crate::devices::{base64, bytes, taken};
@@ -31,8 +32,9 @@ struct Stored {
 /// `PUT /devices/{device}/cert`: stores the certificate of `device`, registered on the session's
 /// account without one, once it passes checks 1 and 2 against the account's master key and the
 /// certificates the account holds and matches the registration; the same certificate again is
-/// taken as stored. With the devices limit, one that would give the account more devices with a
-/// certificate, `service` and revoked devices aside, is refused.
+/// taken as stored. With the devices limit, the certificate of a device other than a `service` one
+/// that would give the account more devices with a certificate, `service` and revoked devices
+/// aside, is refused.
 pub(crate) async fn store(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -65,10 +67,15 @@ pub(crate) async fn store(
     if let Some(held) = held {
         return again(device, &sent, &held);
     }
-    // A linked device issues only `client` devices for now: those are the ones that register.
+    let service = kind == "service";
+    let same_kind = match body.kind {
+        DeviceKind::Client => kind == "client",
+        DeviceKind::Service => service,
+        // A browser links otherwise.
+        DeviceKind::Browser => false,
+    };
     let matches = body.account.to_string() == account
-        && kind == "client"
-        && body.kind == skald_proto::DeviceKind::Client
+        && same_kind
         && signing == body.signing
         && hpke == body.hpke
         && name == body.name.as_bytes();
@@ -104,7 +111,7 @@ pub(crate) async fn store(
     if let Some(held) = held {
         return again(device, &sent, &held);
     }
-    if let Some(limit) = state.devices_limit {
+    if let Some(limit) = state.devices_limit.filter(|_| !service) {
         let (certified,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM devices
              WHERE account_id = $1::uuid AND cert IS NOT NULL AND kind <> 'service' AND NOT revoked",

@@ -139,9 +139,8 @@ fn invalid_registrations_are_refused() {
             Some(json!(device.id.to_string().to_uppercase())),
         ),
         with(&registration, "device", None),
-        // Other kinds come with later stories.
+        // Only `client` and `service` devices register here.
         with(&registration, "kind", Some(json!("browser"))),
-        with(&registration, "kind", Some(json!("service"))),
         with(&registration, "kind", Some(json!("toaster"))),
         with(&registration, "kind", None),
         // `name` is 1 to 64 bytes.

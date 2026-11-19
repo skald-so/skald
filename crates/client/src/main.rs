@@ -50,6 +50,7 @@ mod key_packages;
 mod link_code;
 mod lock;
 mod mailbox;
+mod mcp;
 mod output;
 mod plain_path;
 mod proxy;
@@ -58,6 +59,7 @@ mod recv;
 mod revocations;
 mod secrets;
 mod send;
+mod service_agents;
 mod set_username;
 mod sign_in;
 mod sign_out;
@@ -290,6 +292,57 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Creates a service agent of a space this device follows, on a device of an admin of it: a
+    /// device of the admin's account that runs without a person, such as in CI, at the address
+    /// OWNER/AGENT. Its keys are made here; it is registered and certified, and the space's next
+    /// roster revision, which the device signs as skald create-channel does, lists it. Writes its
+    /// key secret and first token to standard output as SKALD_SERVICE_KEY=... and
+    /// SKALD_SERVICE_TOKEN=..., once: nothing keeps them.
+    CreateServiceAgent {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot. The owner is no
+        /// member's handle.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+    },
+    /// Creates a token of a service agent of a space this device follows, on a device of an admin
+    /// of it, with a new grant; revokes the agent's earlier tokens. Writes the token to standard
+    /// output as SKALD_SERVICE_TOKEN=..., once: nothing keeps it.
+    CreateServiceToken {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+        /// Keeps the agent's earlier tokens working.
+        #[arg(long)]
+        keep_earlier: bool,
+    },
+    /// Lists the live tokens of the service agents of a space this device follows, on a device of
+    /// an admin of it: each one's ID, address, permissions, channel IDs, creation and expiry times
+    /// and last use.
+    ServiceTokens {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
+    /// Revokes a token of a service agent of a space this device follows, on a device of an admin
+    /// of it.
+    RevokeServiceToken {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The token's ID, as skald service-tokens shows it.
+        #[arg(value_name = "TOKEN")]
+        id: String,
+    },
     /// Removes a member from a space this device follows and from every channel of it, on a device
     /// of an admin of it, by the space's next roster revision, which the device signs as skald
     /// create-channel does. Member devices then remove the member's devices from the channels.
@@ -511,6 +564,26 @@ enum Command {
         )]
         github_api_url: String,
     },
+    /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
+    /// its config; the session's folder is the working directory. Once the client initializes, the
+    /// session registers as its agent in the folder's space: the messages this device takes in from
+    /// then on are kept for it. Without --agent, the agent's name joins with '-' the name the client
+    /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
+    /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
+    /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
+    /// skald recv, each once. Each tool call goes through the helper or runs one-shot, as a command
+    /// does, and through a newer helper too; once the skald installed where it was is newer, as
+    /// when skald was updated while it runs, that skald runs each call.
+    Mcp {
+        /// Runs the call an older skald mcp relays to this one.
+        #[arg(long, hide = true)]
+        #[serde(default)]
+        relayed: bool,
+        /// A tool call the server hands over as a command does its operation.
+        #[arg(skip)]
+        #[serde(default)]
+        call: Option<mcp::Call>,
+    },
     /// Runs the helper of this machine's local state, which the first command that connects as the
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
@@ -530,6 +603,10 @@ impl Command {
         match self {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
+            Command::CreateServiceAgent { .. } => Some("create-service-agent"),
+            Command::CreateServiceToken { .. } => Some("create-service-token"),
+            Command::ServiceTokens { .. } => Some("service-tokens"),
+            Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
             Command::ExcludeDevice { .. } => Some("exclude-device"),
             Command::AddToChannel { .. } => Some("add-to-channel"),
@@ -683,6 +760,17 @@ fn main() -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
+    if let Command::Mcp {
+        relayed,
+        call: None,
+    } = operation.command
+    {
+        return exit(if relayed {
+            mcp::relayed(one_shot)
+        } else {
+            mcp::serve(operation, one_shot)
+        });
+    }
     if let Command::Helper { idle } = operation.command {
         let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
         return exit(
@@ -804,9 +892,13 @@ fn perform(operation: Operation) -> Result<(), String> {
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
         }
+        // An MCP server says it once, to its agent CLI's log, not in a tool's result.
         if !matches!(
             command,
-            Command::SignIn { .. } | Command::Helper { .. } | Command::LinkStep { .. }
+            Command::SignIn { .. }
+                | Command::Helper { .. }
+                | Command::LinkStep { .. }
+                | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
         }
@@ -884,6 +976,27 @@ fn perform(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(channels::create),
+        Command::CreateServiceAgent {
+            space,
+            address,
+            granted,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::create(synced, &address, &granted)),
+        Command::CreateServiceToken {
+            space,
+            address,
+            granted,
+            keep_earlier,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::renew(synced, &address, &granted, keep_earlier)),
+        Command::ServiceTokens { space } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(service_agents::list)
+        }
+        Command::RevokeServiceToken { space, id } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(|synced| service_agents::revoke(synced, &id))
+        }
         Command::RemoveMember { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),
             &space,
@@ -976,6 +1089,9 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .and_then(|dir| agents::address(&dir, key_storage, &agent, speaks, timeout))
             }),
         Command::Update { github_api_url } => update::run(&github_api_url, timeout),
+        Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
+            mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
+        }),
         Command::Helper { .. } => Err("the helper runs only as itself".to_owned()),
     }
 }

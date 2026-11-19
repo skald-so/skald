@@ -24,7 +24,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
     AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Member, Name,
-    NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
+    NonEmpty, Role, Roster, RosterBody, ServiceAgent, SpaceId, Unknown, VersionRange,
 };
 
 use crate::anchors;
@@ -733,6 +733,7 @@ impl Follower {
                         let next = self
                             .next_by(&latest, |next| {
                                 next.members = body.members;
+                                next.service_agents = body.service_agents;
                                 next.channels = body.channels;
                                 next.policy = body.policy;
                             })
@@ -801,15 +802,28 @@ impl Follower {
         latest: &Roster,
         next: &Roster,
     ) -> Result<Roster, String> {
+        self.submitted(space, latest, next)
+            .map_err(|unsent| unsent.why)
+    }
+
+    /// As [`Follower::submit`]; when the server took no revision, says whether one waits.
+    pub fn submitted(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        next: &Roster,
+    ) -> Result<Roster, Unsent> {
         let next = next.to_cbor();
+        let dropped = |why: String| Unsent { waits: false, why };
         if !self
             .state
             .set_pending(space.id, &latest.to_cbor(), None, &next)
-            .map_err(text)?
+            .map_err(text)
+            .map_err(dropped)?
         {
-            return Err(CHANGED_MEANWHILE.to_owned());
+            return Err(dropped(CHANGED_MEANWHILE.to_owned()));
         }
-        self.store(space, next).map_err(|unsent| unsent.why)
+        self.store(space, next)
     }
 
     /// The revision after `latest`, with `first` added before its channels and `channels` after
@@ -862,8 +876,8 @@ impl Follower {
 
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
-/// devices it bars, the members it adds to and removes from channels, and the policy's `history`
-/// it sets.
+/// devices it bars, the members it adds to and removes from channels, the policy's `history` it
+/// sets, and the service agents it adds.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -873,6 +887,7 @@ struct Change {
     joined: Vec<(ChannelId, ChannelMember)>,
     left: Vec<(ChannelId, AccountId)>,
     history: Option<u64>,
+    agents: Vec<ServiceAgent>,
 }
 
 impl Change {
@@ -919,6 +934,15 @@ impl Change {
             .left
             .retain(|(_, account)| !change.removed.contains(account));
         change.history = Some(next.policy.history).filter(|&set| set != base.policy.history);
+        change.agents = (next.service_agents.iter())
+            .filter(|agent| {
+                !base
+                    .service_agents
+                    .iter()
+                    .any(|old| old.device == agent.device)
+            })
+            .cloned()
+            .collect();
         change
     }
 
@@ -926,7 +950,8 @@ impl Change {
     /// channel; it bars a device and adds a member to a channel only of a member of `body`; it
     /// removes no member from the default channel, the first one, which keeps every member; and
     /// it puts its default channel first, with every member, only if `needs_default`; it sets the
-    /// policy's `history`.
+    /// policy's `history`; it adds a service agent only while `body` has neither its device nor its
+    /// address, and its owner is no member's handle.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
@@ -966,7 +991,24 @@ impl Change {
             channels.insert(0, default_channel(id, body));
         }
         body.channels = channels;
+        for agent in &self.agents {
+            if !address_taken(body, &agent.owner, &agent.agent)
+                && !body
+                    .service_agents
+                    .iter()
+                    .any(|old| old.device == agent.device)
+            {
+                body.service_agents.push(agent.clone());
+            }
+        }
     }
+}
+
+/// Whether `body`, a revision's body, has the address `owner/agent`: a service agent's, or one of
+/// a member's agents, `owner` its handle.
+pub fn address_taken(body: &RosterBody, owner: &Name, agent: &Name) -> bool {
+    body.members.iter().any(|member| member.handle == *owner)
+        || (body.service_agents.iter()).any(|it| it.owner == *owner && it.agent == *agent)
 }
 
 /// Removes the members of `accounts` from `body`, a revision's body, and from each of its channels;
@@ -1796,6 +1838,16 @@ pub(crate) mod tests {
         }
     }
 
+    /// The service agent `owner/agent` on the device of the signing key of `byte` repeated.
+    pub(crate) fn agent(owner: &str, agent: &str, byte: u8) -> ServiceAgent {
+        ServiceAgent {
+            device: DeviceId::from_signing_key(&[byte; 32]),
+            owner: owner.parse().unwrap(),
+            agent: agent.parse().unwrap(),
+            unknown: Unknown::default(),
+        }
+    }
+
     /// Bars `device` of `account` in `body`.
     fn bar(body: &mut RosterBody, account: AccountId, device: DeviceId) {
         let mut members = body.members.clone().into_vec();
@@ -1809,20 +1861,24 @@ pub(crate) mod tests {
     }
 
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
-    /// channel, adds Dave to it, adds a channel and sets the history period changes the same in a
-    /// later revision that added Eve, who stays in every channel she is in.
+    /// channel, adds Dave to it, adds a channel, sets the history period and adds a service agent
+    /// changes the same in a later revision that added Eve, who stays in every channel she is in,
+    /// and another service agent; a service agent all of them list stays once.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
         let [default, team, new] = [(); 3].map(|()| ChannelId::generate());
         let barred = DeviceId::from_signing_key(&[9; 32]);
-        let base = acme(
+        // A service agent every revision lists.
+        let watch = agent("ops", "watch-bot", 5);
+        let mut base = acme(
             &[ada, bob, carol, dave],
             &[
                 (default, &[ada, bob, carol, dave]),
                 (team, &[ada, bob, carol]),
             ],
         );
+        base.service_agents.push(watch.clone());
         let mut next = acme(
             &[ada, bob, dave],
             &[
@@ -1834,6 +1890,8 @@ pub(crate) mod tests {
         next.channels[1].members[1].history = false;
         next.policy.history = 2 * HISTORY_MIN;
         bar(&mut next, bob, barred);
+        let (deploy, release) = (agent("ci", "deploy-bot", 7), agent("ci", "release-bot", 8));
+        next.service_agents = vec![watch.clone(), deploy.clone()];
 
         let change = Change::between(&base, &next);
 
@@ -1851,6 +1909,7 @@ pub(crate) mod tests {
                 joined: vec![(team, dave_in)],
                 left: vec![(team, bob)],
                 history: Some(2 * HISTORY_MIN),
+                agents: vec![deploy.clone()],
             }
         );
         let mut latest = acme(
@@ -1860,6 +1919,7 @@ pub(crate) mod tests {
                 (team, &[ada, bob, carol, eve]),
             ],
         );
+        latest.service_agents = vec![watch.clone(), release.clone()];
         let (space, signer) = (latest.space, latest.signer);
         change.onto(&mut latest, false);
         let mut expected = acme(
@@ -1873,13 +1933,15 @@ pub(crate) mod tests {
         expected.channels[1].members.push(dave_in);
         expected.policy.history = 2 * HISTORY_MIN;
         bar(&mut expected, bob, barred);
+        expected.service_agents = vec![watch, release, deploy];
         (expected.space, expected.signer) = (space, signer);
         assert_eq!(latest, expected);
     }
 
     /// Of a change, what no longer applies to a later revision is left out: a removed or barred
     /// member that is gone, a member added to a channel who left the space or is in it already, a
-    /// member removed from the default channel, and a default channel the revision does not need.
+    /// member removed from the default channel, a default channel the revision does not need, and a
+    /// service agent whose device or address the revision has or whose owner is a member's handle.
     /// One that needs it gets it first, with every member.
     #[test]
     fn change_leaves_out_what_no_longer_applies() {
@@ -1897,8 +1959,14 @@ pub(crate) mod tests {
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
             history: None,
+            agents: vec![
+                agent("ci", "deploy-bot", 7),
+                agent("ops", "other-bot", 8),
+                agent("ada", "deploy-bot", 9),
+            ],
         };
-        let latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
+        let mut latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
+        latest.service_agents = vec![agent("ci", "deploy-bot", 6), agent("ops", "bot", 8)];
 
         let mut kept = latest.clone();
         change.onto(&mut kept, false);
