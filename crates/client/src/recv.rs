@@ -230,6 +230,14 @@ fn received(
     if let Ok(checks) = &checks {
         receipts::send(&mut follower, &checks.synced, scope);
     }
+    if follower.stateless()
+        && received.is_ok()
+        && aligned.is_ok()
+        && shown.is_ok()
+        && handed.is_ok()
+    {
+        ack_shown(&mut follower)?;
+    }
     if waits && let Ok(mut checks) = checks {
         // A failure leaves it to the first message.
         let _ = checks.ask_server(&mut follower);
@@ -245,6 +253,13 @@ fn received(
         Some(_) => handed > 0,
         None => output::written() > written,
     })
+}
+
+/// Acks what a stateless run wrote, once it has shown it ([`crate::mailbox`]).
+fn ack_shown(follower: &mut Follower) -> Result<(), String> {
+    let keys = follower.keys()?;
+    let mut mailbox = follower.connect(&keys)?;
+    mailbox.ack(follower, &keys)
 }
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
@@ -1082,13 +1097,27 @@ fn verdict(
         }
     };
     let sender = opened.sender();
-    let held = groups::members(follower, &checks.keys, header.channel)?;
+    let held = match groups::members(follower, &checks.keys, header.channel)? {
+        // A `service` device outside the channel's group takes its members from the latest
+        // GroupInfo, as a recipient outside the group does ("Envelope").
+        None if follower.service.is_some() => group_info_members(follower, header),
+        held => held,
+    };
     judge(
         follower,
         checks,
         (seq, header, sender, Group::Held(held.as_deref())),
         signed(opened),
     )
+}
+
+/// The member devices of the latest GroupInfo the server gives of the channel of `header`, once its
+/// signature verifies with a member leaf's key; none without one that does.
+fn group_info_members(follower: &mut Follower, header: &Header) -> Option<Vec<MemberDevice>> {
+    let (space, channel) = (header.space, header.channel);
+    let (_, group_info) = groups::group_on_server(follower, space, channel).ok()?;
+    let view = groups::observe(channel, &group_info?).ok()?;
+    Some(view.members().to_vec())
 }
 
 /// What gives the content of `opened` with the sending device's certificate: it, once its
@@ -1170,8 +1199,10 @@ fn judge(
         Err(why) => return Ok(Verdict::Drop(Some(sender), why)),
         Ok(message) => message,
     };
-    let Some(counter) = message.counter else {
-        // Content without `counter`: once per sending device and `msg_id`.
+    // Content without `counter`, or in a stateless run, which keeps no counters: once per sending
+    // device and `msg_id`.
+    let counter = message.counter.filter(|_| !follower.stateless());
+    let Some(counter) = counter else {
         let repeat = (follower.state)
             .received(sender, header.msg_id)
             .map_err(text)?;

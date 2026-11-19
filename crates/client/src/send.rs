@@ -14,7 +14,8 @@
 //! an A2A message with the text (`docs/protocol/README.md`, "Content"). With it go its copies under
 //! `hpke` to service agents outside the channel's group ([`crate::copies`]), each with the counter
 //! the device keeps for that agent in the channel; the run warns when it sends an agent its first
-//! copy of the channel's messages. A `service` device sends none: its token gets no grants.
+//! copy of the channel's messages. A `service` device sends none: its token gets no grants. A
+//! stateless service agent's run sends as [`crate::stateless`] says.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
@@ -60,6 +61,7 @@ use crate::secrets;
 use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, Outgoing, State};
+use crate::stateless;
 use crate::wraps;
 
 /// The first pause between attempts, and the longest.
@@ -280,6 +282,11 @@ pub fn send_synced(
             .add_agent(space.id, agent.as_str())
             .map_err(|err| err.to_string())?;
     }
+    // It goes through no mailbox: what it would write there, it would ack unshown.
+    if follower.stateless() {
+        let to = (channel, server);
+        return stateless::send(&mut follower, (&roster, &devices), to, draft, reported);
+    }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     // A service agent's message carries its token's grant; only a member's has copies.
     let (from, grant, readers) = match follower.service {
@@ -375,6 +382,10 @@ fn through_mailbox(
 /// outbox of the state in `dir` within `scope` still wait, if any: only a run that sends a message
 /// or receives sends them.
 fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
+    // A stateless service agent's run has no outbox of earlier runs.
+    if service::stateless() {
+        return err;
+    }
     let outbox = dir
         .is_dir()
         .then(|| State::open(dir).and_then(|state| state.outbox()).ok())
@@ -460,7 +471,7 @@ fn sender(
 }
 
 /// The content of `draft` from `from`, of `msg_id`, with `counter`.
-fn content(
+pub fn content(
     from: &Address,
     draft: &Draft,
     msg_id: MessageId,

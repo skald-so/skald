@@ -806,6 +806,14 @@ impl State {
         Ok(State { db })
     }
 
+    /// A new state in memory only, with the latest schema: no file, temporary ones included.
+    pub fn in_memory() -> Result<Self, Error> {
+        let mut db = Connection::open_in_memory()?;
+        db.pragma_update(None, "temp_store", "memory")?;
+        migrate(&mut db)?;
+        Ok(State { db })
+    }
+
     /// The session, if the machine has one.
     pub fn session(&self) -> Result<Option<Session>, Error> {
         let session = self
@@ -2793,16 +2801,33 @@ pub(crate) mod tests {
         })
     }
 
+    /// The value of the pragma `name` in `state`, its column `column`.
+    fn pragma<T: rusqlite::types::FromSql>(state: &State, name: &str, column: usize) -> T {
+        (state.db)
+            .query_row(&format!("PRAGMA {name}"), [], |row| row.get(column))
+            .unwrap()
+    }
+
     #[test]
     fn new_state_has_the_latest_schema_and_no_session() {
         let dir = TestDir::new("state-new");
         let state = State::open(&dir).expect("open");
-        let version: u32 = state
-            .db
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
+        let version: u32 = pragma(&state, "user_version", 0);
         assert_eq!(version as usize, MIGRATIONS.len());
         assert_eq!(state.session().unwrap(), None);
+    }
+
+    #[test]
+    fn state_in_memory_has_the_latest_schema_and_keeps_temporaries_in_memory() {
+        let state = State::in_memory().expect("open");
+        let version: u32 = pragma(&state, "user_version", 0);
+        assert_eq!(version as usize, MIGRATIONS.len());
+        let file: String = pragma(&state, "database_list", 2);
+        assert_eq!(file, "", "an in-memory database has no file");
+        let temp_store: u32 = pragma(&state, "temp_store", 0);
+        assert_eq!(temp_store, 2, "temporary tables and indices stay in memory");
+        state.start_session("http://one.test").unwrap();
+        assert!(state.session().unwrap().is_some());
     }
 
     #[test]

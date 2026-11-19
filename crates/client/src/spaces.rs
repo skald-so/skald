@@ -463,11 +463,12 @@ impl Follower {
     }
 
     /// The follower of `agent`, a service agent's run, whose state is in `dir`, which it creates
-    /// if it is missing ([`crate::service`]): its keys and state key come from the key secret, its
-    /// token is its session, and it follows the key secret's space from the key secret's anchor.
-    /// Fails if the device's certificate is not valid against the pinned master key, if the state
-    /// is of another device, and, for a state the device has not run with yet, if the device has
-    /// been in a group ([`service::refuse_without_state`]), recording nothing.
+    /// if it is missing, or in memory only for a stateless run ([`crate::service`]): its keys and
+    /// state key come from the key secret, its token is its session, and it follows the key
+    /// secret's space from the key secret's anchor. Fails if the device's certificate is not valid
+    /// against the pinned master key, if the state is of another device, and, for a state the
+    /// device has not run with yet, if the device has been in a group
+    /// ([`service::refuse_without_state`]), recording nothing.
     fn service(
         dir: &Path,
         agent: &service::Agent,
@@ -475,12 +476,16 @@ impl Follower {
         timeout: Duration,
     ) -> Result<Self, String> {
         let key = &agent.key;
-        let unusable = |err: &dyn std::fmt::Display| {
-            format!("cannot use the state directory {}: {err}", dir.display())
+        let state = if agent.stateless {
+            State::in_memory().map_err(text)?
+        } else {
+            let unusable = |err: &dyn std::fmt::Display| {
+                format!("cannot use the state directory {}: {err}", dir.display())
+            };
+            state::create_dir(dir).map_err(|err| unusable(&err))?;
+            let dir = dir.canonicalize().map_err(|err| unusable(&err))?;
+            State::open(&dir).map_err(text)?
         };
-        state::create_dir(dir).map_err(|err| unusable(&err))?;
-        let dir = dir.canonicalize().map_err(|err| unusable(&err))?;
-        let state = State::open(&dir).map_err(text)?;
         let keys = agent.keys();
         let this = keys.id();
         let held = state.device().map_err(text)?;
@@ -548,7 +553,7 @@ impl Follower {
             .device()
             .map_err(text)?
             .ok_or_else(|| "the local state holds no device".to_owned())?;
-        let (stored, secrets) = agent.secrets(&dir, &keys);
+        let (stored, secrets) = agent.secrets(&keys);
         Ok(Follower {
             state,
             connection,
@@ -568,14 +573,21 @@ impl Follower {
             service: Some(service::Member {
                 space: key.space,
                 anchor: key.anchor,
+                stateless: agent.stateless,
             }),
         })
     }
 
+    /// Whether the run is a stateless service agent's ([`crate::service`]).
+    pub fn stateless(&self) -> bool {
+        self.service.is_some_and(|member| member.stateless)
+    }
+
     /// A connection to the server as the device, proving its `keys` ([`Mailbox::open`]), once the
-    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once.
+    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once. A
+    /// stateless run keeps none: it would lose their private keys.
     pub fn connect(&mut self, keys: &device::Keys) -> Result<Mailbox, String> {
-        if !self.kept {
+        if !self.kept && !self.stateless() {
             let kept = key_packages::keep(
                 &mut self.connection,
                 &self.token,
