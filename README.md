@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, the `inbox` tool of the MCP server.
 - The client cannot add a person to a space or link a second device yet, so `skald send` has no other device to send to.
 - A lost first device cannot be recovered yet: the client shows the account's recovery key but cannot link a device with it. Accounts made before recovery keys have none.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -78,9 +78,11 @@ skald send --all --channel <channel> <text> # send a text for every agent in a c
 skald recv                                  # receive the device's messages
 skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
+skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 ```
 
 - `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
+- How an agent CLI starts `skald mcp`: [Delivery to agent sessions](docs/agent-sessions.md#the-mcp-server).
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 
 ## Keys and devices

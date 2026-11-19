@@ -49,6 +49,7 @@ mod key_chain;
 mod key_packages;
 mod lock;
 mod mailbox;
+mod mcp;
 mod output;
 mod plain_path;
 mod proxy;
@@ -501,6 +502,26 @@ enum Command {
         )]
         github_api_url: String,
     },
+    /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
+    /// its config; the session's folder is the working directory. Once the client initializes, the
+    /// session registers as its agent in the folder's space: the messages this device takes in from
+    /// then on are kept for it. Without --agent, the agent's name joins with '-' the name the client
+    /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
+    /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
+    /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
+    /// skald recv, each once. Each tool call goes through the helper or runs one-shot, as a command
+    /// does, and through a newer helper too; once the skald installed where it was is newer, as
+    /// when skald was updated while it runs, that skald runs each call.
+    Mcp {
+        /// Runs the call an older skald mcp relays to this one.
+        #[arg(long, hide = true)]
+        #[serde(default)]
+        relayed: bool,
+        /// A tool call the server hands over as a command does its operation.
+        #[arg(skip)]
+        #[serde(default)]
+        call: Option<mcp::Call>,
+    },
     /// Runs the helper of this machine's local state, which the first command that connects as the
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
@@ -658,6 +679,17 @@ fn main() -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
+    if let Command::Mcp {
+        relayed,
+        call: None,
+    } = operation.command
+    {
+        return exit(if relayed {
+            mcp::relayed(one_shot)
+        } else {
+            mcp::serve(operation, one_shot)
+        });
+    }
     if let Command::Helper { idle } = operation.command {
         let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
         return exit(
@@ -742,8 +774,11 @@ fn perform(operation: Operation) -> Result<(), String> {
         command,
         ..
     } = operation;
-    if !matches!(command, Command::SignIn { .. } | Command::Helper { .. })
-        && let Ok(dir) = state::dir(state_dir.clone())
+    // An MCP server says it once, to its agent CLI's log, not in a tool's result.
+    if !matches!(
+        command,
+        Command::SignIn { .. } | Command::Helper { .. } | Command::Mcp { .. }
+    ) && let Ok(dir) = state::dir(state_dir.clone())
     {
         recovery::say_if_waiting(&dir);
     }
@@ -908,6 +943,9 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .and_then(|dir| agents::address(&dir, key_storage, &agent, speaks, timeout))
             }),
         Command::Update { github_api_url } => update::run(&github_api_url, timeout),
+        Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
+            mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
+        }),
         Command::Helper { .. } => Err("the helper runs only as itself".to_owned()),
     }
 }
