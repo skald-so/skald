@@ -54,6 +54,7 @@ import type {
   SignInMethods,
   SignInProviders,
   Space,
+  SpaceDevices,
   SpaceRequest,
   SpaceUsage,
   Spaces,
@@ -3077,8 +3078,8 @@ export const getGetHistoryWrapsResponseMock500 = (
 });
 
 export const getGetSpaceDevicesResponseMock = (
-  overrideResponse: Partial<Extract<Devices, object>> = {},
-): Devices => ({
+  overrideResponse: Partial<Extract<SpaceDevices, object>> = {},
+): SpaceDevices => ({
   devices: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
@@ -3095,12 +3096,16 @@ export const getGetSpaceDevicesResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  records: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
   ...overrideResponse,
 });
 
 export const getGetSpaceDevicesResponseMock200 = (
-  overrideResponse: Partial<Extract<Devices, object>> = {},
-): Devices => ({
+  overrideResponse: Partial<Extract<SpaceDevices, object>> = {},
+): SpaceDevices => ({
   devices: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
@@ -3114,6 +3119,10 @@ export const getGetSpaceDevicesResponseMock200 = (
     ]),
   })),
   revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  records: Array.from(
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
@@ -10243,10 +10252,10 @@ export const getGetHistoryWrapsMockHandler500 = (
 
 export const getGetSpaceDevicesMockHandler = (
   overrideResponse?:
-    | Devices
+    | SpaceDevices
     | ((
         info: Parameters<HttpResponseResolver<{ space: string }>>[0],
-      ) => Promise<Devices> | Devices),
+      ) => Promise<SpaceDevices> | SpaceDevices),
   options?: RequestHandlerOptions,
 ) => {
   return http.get<{ space: string }>(
@@ -10267,10 +10276,10 @@ export const getGetSpaceDevicesMockHandler = (
 
 export const getGetSpaceDevicesMockHandler200 = (
   overrideResponse?:
-    | Devices
+    | SpaceDevices
     | ((
         info: Parameters<HttpResponseResolver<{ space: string }>>[0],
-      ) => Promise<Devices> | Devices),
+      ) => Promise<SpaceDevices> | SpaceDevices),
   options?: RequestHandlerOptions,
 ) => {
   return http.get<{ space: string }>(

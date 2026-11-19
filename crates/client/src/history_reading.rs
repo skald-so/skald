@@ -435,7 +435,7 @@ mod tests {
                 devices: SpaceDevices {
                     ids: certs.iter().map(|cert| cert.body().device).collect(),
                     certs,
-                    revocations: Vec::new(),
+                    ..SpaceDevices::default()
                 },
                 channel,
                 server: "skald.example".parse().unwrap(),

@@ -5621,7 +5621,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none, and those accounts' revocations.",
+            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none, those accounts' revocations and their account records.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5630,7 +5630,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Devices"
+                  "$ref": "#/components/schemas/SpaceDevices"
                 }
               }
             }
@@ -8121,6 +8121,33 @@
           },
           "name": {
             "$ref": "#/components/schemas/SpaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpaceDevices": {
+        "type": "object",
+        "required": ["devices", "revocations", "records"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          },
+          "revocations": {
+            "description": "The stored revocations of the listed devices' accounts, each as the server got it, once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revocation"
+            }
+          },
+          "records": {
+            "description": "The account record of each of those accounts that has one, as its first device sent it, once; an account whose master key came before account records has none.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountRecord"
+            }
           }
         },
         "additionalProperties": false

@@ -1783,6 +1783,7 @@ pub(crate) mod tests {
                 ids: certs.iter().map(|cert| cert.body().device).collect(),
                 certs: certs.to_vec(),
                 revocations,
+                records: Vec::new(),
             };
             members_listing(roster, &devices, &self.own(), this)
         }
