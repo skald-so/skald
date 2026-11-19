@@ -28,15 +28,9 @@ fn send_and_reply_commands_between_agents_of_one_device_give_read_and_replied() 
     let solo = Solo::new(4_657_009_001, "ada-agents-use-commands");
     let (api_dir, web_dir) = (solo.dir(API), solo.dir(WEB));
     received_as_agent(solo.machine(), &web_dir, WEB);
-    let mark = solo.mark();
 
-    let sent = (solo.machine())
-        .start_in(&api_dir, &[AGENT, API, SEND, TO, &solo.short(WEB), ASKED])
-        .finish();
+    let asked = solo.api_sends_web(ASKED);
 
-    assert!(sent.success, "{sent:?}");
-    let asked = one_message_sent(&solo.talk.front, solo.default_channel(), mark);
-    assert_says_sent(&sent.stdout, asked);
     let got = received_as_agent(solo.machine(), &web_dir, WEB).stdout;
     assert_got(&got, ASKED, asked, (&solo.short(API), ADA_HOST, OWN));
     let reference = format!("#{}", agent_line_of(&got, ASKED).reference);

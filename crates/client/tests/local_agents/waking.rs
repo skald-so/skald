@@ -5,9 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::kit::{RECV, received_as_agent};
-use crate::lines::assert_says_sent;
-use crate::solo::{API, OWN, SEND, Solo, TO, WEB, assert_got};
-use crate::talk::{ADA_HOST, one_message_sent};
+use crate::solo::{API, OWN, Solo, WEB, assert_got};
+use crate::talk::ADA_HOST;
 use crate::world::AGENT;
 
 /// What api sends web while web's wait runs; it is nowhere else.
@@ -33,7 +32,7 @@ const TICK: Duration = Duration::from_millis(50);
 #[test]
 fn one_shot_wait_of_an_agent_wakes_for_a_message_of_another_agent_of_its_device() {
     let solo = Solo::new(4_657_012_001, "ada-web-waits-for-api");
-    let (api_dir, web_dir) = (solo.dir(API), solo.dir(WEB));
+    let web_dir = solo.dir(WEB);
     received_as_agent(solo.machine(), &web_dir, WEB);
     let cloud = solo.talk.cloud();
     let since = cloud.relay.mark();
@@ -48,15 +47,9 @@ fn one_shot_wait_of_an_agent_wakes_for_a_message_of_another_agent_of_its_device(
         );
         thread::sleep(TICK);
     }
-    let mark = solo.mark();
 
-    let sent = (solo.machine())
-        .start_in(&api_dir, &[AGENT, API, SEND, TO, &solo.short(WEB), ASKED])
-        .finish();
+    let asked = solo.api_sends_web(ASKED);
 
-    assert!(sent.success, "{sent:?}");
-    let asked = one_message_sent(&solo.talk.front, solo.default_channel(), mark);
-    assert_says_sent(&sent.stdout, asked);
     let deadline = Instant::now() + WOKEN_WITHIN;
     while !waiting.exited() {
         assert!(

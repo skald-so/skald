@@ -124,6 +124,20 @@ impl Solo {
         read.shown()
     }
 
+    /// Runs api's `skald send --to ada/web <text>` in its folder; fails unless it succeeds, the
+    /// front saw one message in `clienta`'s default channel meanwhile, and it says `sent #<ref>`
+    /// of it. Gives its `msg_id`.
+    #[track_caller]
+    pub fn api_sends_web(&self, text: &str) -> MessageId {
+        let mark = self.mark();
+        let args = [AGENT, API, SEND, TO, &self.short(WEB), text];
+        let sent = self.machine().start_in(&self.dir(API), &args).finish();
+        assert!(sent.success, "{sent:?}");
+        let msg_id = one_message_sent(&self.talk.front, self.default_channel(), mark);
+        assert_says_sent(&sent.stdout, msg_id);
+        msg_id
+    }
+
     /// Runs `skald <args>` as the person on Ada's machine in `~/work/clientA`.
     pub fn person_runs(&self, args: &[&str]) -> Finished {
         self.machine().start_in(&self.folder, args).finish()
