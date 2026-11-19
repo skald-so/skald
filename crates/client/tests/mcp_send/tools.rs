@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::client::INBOX;
+use crate::client::{INBOX, required};
 use crate::clients::Clients;
 use crate::{CHANNEL_FIELD, SEND_TOOL, TEXT_FIELD, TO_FIELD, TOOLS_BOUND, session_in};
 
@@ -26,11 +26,7 @@ fn tools_list_has_send_whose_required_to_says_an_addressee_is_not_private() {
     assert!(named(INBOX).is_some(), "no {INBOX}: {listed}");
     let send = named(SEND_TOOL).unwrap_or_else(|| panic!("no {SEND_TOOL}: {listed}"));
     let schema = &send["inputSchema"];
-    let required: Vec<&str> = (schema["required"].as_array().map(Vec::as_slice))
-        .unwrap_or_default()
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let required = required(schema);
     for field in [TO_FIELD, TEXT_FIELD] {
         assert!(required.contains(&field), "{field} not required: {send}");
     }
