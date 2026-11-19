@@ -5,12 +5,14 @@
 //! a request itself, never letting it reach the server, as an older server would.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use socket2::SockRef;
 
 /// One read off a connection: when, which connection, which way, and the bytes.
 struct Chunk {
@@ -449,6 +451,8 @@ fn pipe(
         loop {
             let count = match from.read(&mut buffer) {
                 Ok(0) => break,
+                // A front before the relay resets a connection it is done with.
+                Err(err) if err.kind() == io::ErrorKind::ConnectionReset => break,
                 Err(err) => {
                     eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
                     break;
@@ -495,8 +499,72 @@ fn pipe(
                 break;
             }
         }
+        // The machine left a connection the server has answered in full: it ends with a reset.
+        if to_server && idle(&reads.lock().expect("the relay's reads"), connection) {
+            reset(&to);
+            return;
+        }
         let _ = to.shutdown(Shutdown::Write);
     });
+}
+
+/// Whether the server has answered every request the machine sent on `connection` whole, without
+/// upgrading the connection: nothing the machine sent waits for the server there.
+fn idle(reads: &[Chunk], connection: usize) -> bool {
+    let bytes = |to_server: bool| -> Vec<u8> {
+        reads
+            .iter()
+            .filter(|read| read.connection == connection && read.to_server == to_server)
+            .flat_map(|read| read.bytes.iter().copied())
+            .collect()
+    };
+    answered_in_full(&bytes(true), &bytes(false))
+}
+
+/// Whether `answered`, what a server sent on a connection, answers every request of `sent`, what
+/// the machine sent on it, whole, without upgrading the connection.
+pub fn answered_in_full(sent: &[u8], answered: &[u8]) -> bool {
+    answers(answered) == Some(request_starts(&String::from_utf8_lossy(sent)).len())
+}
+
+/// How many answers `bytes`, what a server sent on a connection, holds, if it ends where an answer
+/// ends; `None` if not, or if an answer upgrades the connection. An informational answer, such as
+/// `100 Continue`, counts for none.
+fn answers(mut bytes: &[u8]) -> Option<usize> {
+    let mut count = 0;
+    while !bytes.is_empty() {
+        let end = bytes.windows(4).position(|four| four == b"\r\n\r\n")?;
+        let head = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+        let rest = &bytes[end + 4..];
+        let status: u16 = head.split(' ').nth(1)?.parse().ok()?;
+        let header = |name: &str| {
+            head.split("\r\n").skip(1).find_map(|line| {
+                let (field, value) = line.split_once(':')?;
+                (field.trim() == name).then(|| value.trim().to_owned())
+            })
+        };
+        let length = if status == 101 {
+            return None;
+        } else if status < 200 || status == 204 || status == 304 {
+            0
+        } else if header("transfer-encoding").is_some_and(|value| value.contains("chunked")) {
+            dechunked(rest)?.1
+        } else {
+            header("content-length")?.parse().ok()?
+        };
+        bytes = rest.get(length..)?;
+        count += usize::from(status >= 200);
+    }
+    Some(count)
+}
+
+/// Ends `stream`'s connection with a reset once every copy of it is dropped: unlike a close, it
+/// leaves neither end in TIME_WAIT, which holds the closing end's port for 30 s on macOS and for
+/// minutes on Windows, where a whole run of the tests used up the ports. Ends reading too, so
+/// that a thread that reads the stream lets go of its copy.
+pub fn reset(stream: &TcpStream) {
+    let _ = SockRef::from(stream).set_linger(Some(Duration::ZERO));
+    let _ = stream.shutdown(Shutdown::Read);
 }
 
 /// The answer `answer` with its body rewritten by `rewrite` if its status is 200, and whatever came

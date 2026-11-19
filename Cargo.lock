@@ -3220,6 +3220,7 @@ dependencies = [
  "skald-oidc-stand-in",
  "skald-proto",
  "skald-server",
+ "socket2",
  "sqlx",
  "tar",
  "tokio",

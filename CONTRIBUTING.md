@@ -63,6 +63,8 @@ Web UI: [web/README.md](web/README.md).
 ## Tests
 `./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script. To run only the parts your changes touch: [infrastructure.md](docs/dev/infrastructure.md#pr-checks), "Path filters".
 
+A test target by hand, e.g. `cargo test -p skald-client --test recv_wait`, takes its PostgreSQL from `SKALD_TEST_DATABASE_URL` (`postgres://postgres:skald@127.0.0.1:5432`), set with `max_connections = 500` and `fsync = off` as [script/lib/postgres.sh](script/lib/postgres.sh) sets it: its tests need more than the default 100 connections.
+
 `./script/mutants origin/dev` mutates the Rust code changed on your branch and runs the tests of each mutated crate; it lists every mutant no test catches (rule 2 in [rules.md](rules.md)).
 
 ## Sending a PR
