@@ -407,10 +407,14 @@ const MIGRATIONS: &[&str] = &[
 pub const OWN_FIRST: u64 = 1 << 62;
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
-/// application state.
+/// application state; an empty path, which it never opens, for a stateless service agent's run,
+/// which may have no such directory, as on Windows without `LOCALAPPDATA`.
 pub fn dir(given: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(dir) = given {
         return Ok(dir);
+    }
+    if crate::service::stateless() {
+        return Ok(PathBuf::new());
     }
     let var = |name| std::env::var_os(name).filter(|value| !value.is_empty());
     #[cfg(windows)]
