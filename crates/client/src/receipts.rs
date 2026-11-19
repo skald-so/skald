@@ -11,6 +11,8 @@
 //!   the channel's group once the channel takes this device's application messages: until then
 //!   it waits for a later run ([`groups::encrypt_receipt`]).
 //! - A receipt goes with `report` false, and no run reports it as a message the device's user sent.
+//!   It goes out with every envelope queued before it, in the outbox's order, so a channel's
+//!   envelopes are stored in `counter` order ("Gap detection").
 
 use std::collections::BTreeMap;
 
@@ -27,7 +29,8 @@ use crate::state::ReadDue;
 
 /// Puts in the outbox a receipt of each `read` the device owes within `scope`, in a space of
 /// `rosters`, the spaces the run synced, once the channel takes it, then sends the receipts that
-/// wait in the outbox, for as long as the request timeout. What is left waits for a later run.
+/// wait in the outbox with every envelope queued before them, for as long as the request timeout.
+/// What is left waits for a later run.
 pub fn send(follower: &mut Follower, rosters: &Rosters, scope: Scope) {
     if let Err(err) = issue(follower, rosters, scope) {
         eprintln!("skald: warning: {err}");
@@ -39,14 +42,11 @@ pub fn send(follower: &mut Follower, rosters: &Rosters, scope: Scope) {
             return;
         }
     };
-    let receipts: Vec<send::Queued> = (queued.into_iter())
-        .filter(|queued| !queued.reports())
-        .collect();
-    if receipts.is_empty() {
+    let Some(last) = queued.iter().rposition(|queued| !queued.reports()) else {
         return;
-    }
+    };
     let timeout = follower.timeout;
-    send::deliver(follower, &receipts, timeout, None);
+    send::deliver(follower, &queued[..=last], timeout, None);
 }
 
 /// The `read` receipts of one receipt: in a space and channel, of the messages of a sending

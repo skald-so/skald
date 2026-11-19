@@ -39,6 +39,7 @@
 #![allow(dead_code)]
 
 mod addressees;
+mod batches;
 mod commits;
 mod crashes;
 mod forged;
