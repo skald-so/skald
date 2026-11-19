@@ -50,8 +50,10 @@
 #![allow(dead_code)]
 
 mod exchange;
+mod links;
 mod refusals;
 mod runs;
+mod start;
 mod state;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`): the server, its

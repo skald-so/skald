@@ -1342,4 +1342,66 @@ mod tests {
             )
         );
     }
+
+    #[test]
+    fn service_device_does_not_count_anchors_of_a_revoked_device_or_off_its_anchors_chain() {
+        let mut run = Run::new();
+        let acme = &run.acme;
+        let off_second = acme.ada.signs(&acme.first, |_| {});
+        let off_third = acme.ada.signs(&off_second, |_| {});
+        run.given.extend([off_second, off_third.clone()]);
+        let desktop = &run.desktop;
+        let off_chain = run.start(vec![anchors_of(&acme.ada, &acme.ada.key, &off_third)]);
+        assert_eq!(off_chain, (BTreeSet::new(), None), "off the anchor's chain");
+
+        let body = skald_proto::RevocationBody {
+            account: acme.ada.account,
+            device: desktop.device(),
+            keep: None,
+            signer: Some(acme.ada.device()),
+            timestamp: 1_800_000_000,
+            also: None,
+            unknown: skald_proto::Unknown::default(),
+        };
+        let revocation = skald_crypto::sign_revocation(&body, &acme.ada.key).expect("a revocation");
+        let mut devices = run.devices.clone();
+        devices.revocations.push(revocation);
+        let start = Start {
+            anchor: acme.second.hash(),
+            objects: vec![anchors_of(desktop, &desktop.key, &run.fourth)],
+        };
+        assert_eq!(
+            roster_start(&start, &run.given, &devices, &acme.ada.own()),
+            (BTreeSet::new(), None),
+            "of a revoked device"
+        );
+        assert_eq!(
+            roster_start(&start, &run.given, &run.devices, &acme.ada.own()).0,
+            hashes(&[&run.third, &run.fourth]),
+            "of the device before its revocation"
+        );
+    }
+
+    #[test]
+    fn service_device_accepts_a_trusted_revision_only_if_an_admin_signed_it() {
+        let acme = Acme::new();
+        let by_carol = acme.carol.signs(&acme.second, |_| {});
+        let given = [&acme.first, &acme.second, &by_carol].map(Clone::clone);
+        let start = Start {
+            anchor: acme.second.hash(),
+            objects: vec![anchors_of(&acme.ada, &acme.ada.key, &by_carol)],
+        };
+        let own = acme.ada.own();
+        let (trusted, _) = roster_start(&start, &given, &acme.devices(), &own);
+        assert_eq!(trusted, hashes(&[&by_carol]));
+        let followed = follow_trusting(
+            &acme.second,
+            &BTreeMap::new(),
+            (&given, &trusted),
+            &acme.devices(),
+            &own,
+        );
+        assert_eq!(followed.accepted, vec![]);
+        assert_eq!(followed.warnings.len(), 1, "{:?}", followed.warnings);
+    }
 }
