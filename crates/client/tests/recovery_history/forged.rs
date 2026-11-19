@@ -62,7 +62,7 @@ fn with_forged(answer: &str, recipient: WrapRecipient, forged: &[Vec<u8>]) -> St
 #[test]
 fn wraps_to_the_recovery_key_a_reader_must_drop_leave_their_entries_counted_not_shown() {
     let (mut talk, key, said) = talked(
-        &[4_177_707_001, 4_177_707_002],
+        &[4_177_708_001, 4_177_708_002],
         &["ada-wraps-forged", "bob-closes-the-books"],
     );
     let recovery = recovery_hpke(&key);
