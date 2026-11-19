@@ -408,9 +408,15 @@ function forwardUpgrade(target, request, socket, head, upgraded) {
 }
 
 const ops = {
-  /** Opens a page in a new browser context: a browser with no cookies and no storage. */
-  async newPage({ session }) {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  /**
+   * Opens a page in a new browser context: a browser with no cookies and no storage, its window
+   * `width` CSS pixels wide if given, as a phone's.
+   */
+  async newPage({ session, width }) {
+    const context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      ...(width === undefined ? {} : { viewport: { width, height: 800 } }),
+    });
     opened(session).contexts.push(context);
     const id = nextPage++;
     pages.set(id, { session, context, page: await context.newPage() });

@@ -31,7 +31,9 @@
 //!   either order. Refused, with nothing registered, signed or stored and nothing on stdout, saying
 //!   why: by an account that is no admin of the space, saying `admin`; by an agent, as the person's
 //!   command, as the tests of agent isolation say; for an address the space's latest revision has,
-//!   as a service agent's or as a member's handle; for an expiry in the past, saying `expir`.
+//!   as a service agent's or as a member's handle; for an expiry in the past, saying `expir`; in a
+//!   space with as many service agents as the server's `service_agents_limit` allows, saying `as
+//!   many service agents as it may`.
 //! - `skald create-service-token <space> <owner>/<agent> --channel <channel>...`: a new token of
 //!   the service agent with a new grant, the options as above; it revokes the agent's earlier
 //!   tokens unless `--keep-earlier` is given. On success, stdout is exactly the line

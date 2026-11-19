@@ -18,7 +18,7 @@ export interface UsageScreenProps {
   space?: string;
   /** The account's owned spaces and devices; none while they load. */
   account?: AccountUsage;
-  /** The chosen space's messages and limits; none while they load. */
+  /** The chosen space's messages, service agents and limits; none while they load. */
   usage?: SpaceUsage;
   /** What failed, shown above the cards. */
   failed?: string;
@@ -26,9 +26,9 @@ export interface UsageScreenProps {
 
 /**
  * The Usage section of 11-usage.png: the account's owned spaces and devices and the chosen space's
- * messages this month, each of its limit with a bar, or with "No limit"; the spaces the account
- * owns by name; and the limits on a message's size, on how long an undelivered one is kept and on
- * how long the channels' history is kept.
+ * messages this month and service agents, each of its limit with a bar, or with "No limit"; the
+ * spaces the account owns by name; and the limits on a message's size, on how long an undelivered
+ * one is kept and on how long the channels' history is kept.
  */
 export function UsageScreen({
   space,
@@ -72,10 +72,13 @@ export function UsageScreen({
               </>
             )}
             {usage && (
-              <UsageCard
-                label="Messages this month"
-                {...usage.monthly_messages}
-              />
+              <>
+                <UsageCard
+                  label="Messages this month"
+                  {...usage.monthly_messages}
+                />
+                <UsageCard label="Service agents" {...usage.service_agents} />
+              </>
             )}
           </section>
           {account && <OwnedSpaces owned={account.owned_spaces} />}

@@ -98,7 +98,10 @@ export function App() {
                 path="/members"
                 element={<Members onSignedOut={reload} />}
               />
-              <Route path="/access" element={<Access onSignedOut={reload} />} />
+              <Route
+                path="/access"
+                element={<Access spaces={view.spaces} onSignedOut={reload} />}
+              />
               <Route path="/usage" element={<Usage onSignedOut={reload} />} />
               <Route
                 path={accountPath}

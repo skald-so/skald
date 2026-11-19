@@ -5,6 +5,7 @@ import {
   getGetSignInProvidersResponseMock,
   getGetSpaceUsageResponseMock,
   getListAccountDevicesResponseMock,
+  getListServiceTokensResponseMock,
   getListSessionsResponseMock,
   getListSignInMethodsResponseMock,
   getListSpaceMembersResponseMock,
@@ -90,6 +91,40 @@ const { sessions } = getListSessionsResponseMock({
       last_used_at: before(day),
       expires_at: before(-28 * day),
       current: false,
+    },
+  ],
+});
+
+/**
+ * The tokens of team-a's service agents: one used an hour ago, one never used, of two channels and
+ * expiring soon.
+ */
+const { tokens } = getListServiceTokensResponseMock({
+  tokens: [
+    {
+      id: "01968a2e-0000-7000-8000-0000000004a1",
+      device: "a06e13fb-72c9-8e01-a4b5-6c7d8e9f0a03",
+      owner: "ci",
+      agent: "deploy-bot",
+      permissions: ["send", "receive"],
+      channels: ["01968a2e-0000-7000-8000-0000000005a1"],
+      created_at: before(9 * day),
+      last_used_at: before(60),
+      expires_at: before(-81 * day),
+    },
+    {
+      id: "01968a2e-0000-7000-8000-0000000004a2",
+      device: "0b7e5a31-6c2d-8f40-9e1a-2b3c4d5e6f06",
+      owner: "ci",
+      agent: "release-bot",
+      permissions: ["send", "queues"],
+      channels: [
+        "01968a2e-0000-7000-8000-0000000005a1",
+        "01968a2e-0000-7000-8000-0000000005a2",
+      ],
+      created_at: before(2 * day),
+      last_used_at: null,
+      expires_at: before(-5 * day),
     },
   ],
 });
@@ -197,6 +232,7 @@ const spaceUsage = getGetSpaceUsageResponseMock({
   message_size: { limit: 64 * 1024 },
   mailbox_retention: { limit: 7 * 86_400 },
   history_retention: { limit: 90 * 86_400 },
+  service_agents: { count: 2, limit: 10 },
 });
 
 /**
@@ -273,18 +309,24 @@ export function KitUsage() {
 }
 
 /**
- * The Access section of 10-access.png in the cabinet; `asking` opens the question of "Sign out
- * everywhere else".
+ * The Access section of 10-access.png in the cabinet, with the tokens of team-a's service agents;
+ * `asking` opens the question of "Sign out everywhere else".
  */
 export function KitAccess({ asking = false }: { asking?: boolean }) {
   return (
     <MemoryRouter initialEntries={["/access"]}>
-      <Cabinet session={session} spaces={[personal]} onSignedOut={() => {}}>
+      <Cabinet
+        session={session}
+        spaces={[personal, team]}
+        onSignedOut={() => {}}
+      >
         <AccessScreen
           sessions={sessions}
+          tokens={tokens.map((token) => ({ space: team, token }))}
           now={now}
           onRevoke={() => {}}
           onEndOthers={async () => {}}
+          onRevokeToken={async () => {}}
           defaultAsking={asking}
         />
       </Cabinet>
