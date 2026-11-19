@@ -372,6 +372,7 @@ impl Sessions {
                     });
                     self.again(ran, space)?;
                 }
+                intake.send_receipts();
             }
             Err(err) => {
                 for waiting in handed {

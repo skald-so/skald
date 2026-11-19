@@ -6,7 +6,8 @@
 //   "last_used_at", "current"?}]}`, a web session with `browser`, `os` and `expires_at`, a device
 //   session with `device_name`;
 // - `DELETE /account/sessions/{session}` ends one, `POST /account/sessions/end-others` every other
-//   one, and `DELETE /session` this web session; each answers `204`.
+//   one, and `DELETE /session` this web session; each answers `204`;
+// - `GET /spaces/{space}/service-tokens`: `{"tokens": []}`, so Access has no row of a token.
 //
 // The web app, as these tests use it: the cabinet's side menu has the link "Access", whose table
 // has a row per session. The page's own session's row says "this session" and has no "Revoke"
@@ -138,6 +139,9 @@ const server = setupServer(
     signedOut = true;
     return new HttpResponse(null, { status: 204 });
   }),
+  http.get("*/spaces/:space/service-tokens", () =>
+    signedOut ? refused() : HttpResponse.json({ tokens: [] }),
+  ),
   ...getSkaldAPIMock(),
 );
 /** Records `request` in `sent`. */

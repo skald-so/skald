@@ -3727,6 +3727,13 @@ export const getGetSpaceUsageResponseMock = (
       undefined,
     ]),
   },
+  service_agents: {
+    count: faker.number.int({ min: 0 }),
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
   ...overrideResponse,
 });
 
@@ -3753,6 +3760,13 @@ export const getGetSpaceUsageResponseMock200 = (
     ]),
   },
   history_retention: {
+    limit: faker.helpers.arrayElement([
+      faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+  },
+  service_agents: {
+    count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
       undefined,

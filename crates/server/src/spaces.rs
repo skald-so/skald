@@ -517,7 +517,27 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
+    within_agents_limit(&state, &roster, previous.as_ref())?;
     insert(&state, found.id, &roster, previous.as_ref(), &sent).await
+}
+
+/// Refuses `roster` if it lists more service agent entries than the server's limit and than
+/// `previous`, the revision it follows, if any: a space over a lowered limit still removes agents
+/// and changes the rest (`docs/dev/architecture.md`, "Cloud limits").
+fn within_agents_limit(
+    state: &AppState,
+    roster: &Roster,
+    previous: Option<&Roster>,
+) -> Result<(), Refusal> {
+    let Some(limit) = state.service_agents_limit else {
+        return Ok(());
+    };
+    let agents = roster.body().service_agents.len();
+    let before = previous.map_or(0, |previous| previous.body().service_agents.len());
+    if agents > before && agents > limit as usize {
+        return Err(Refusal::ServiceAgentsLimit(limit));
+    }
+    Ok(())
 }
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after

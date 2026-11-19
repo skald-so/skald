@@ -1,10 +1,10 @@
 //! Creations the CLI refuses, saying why, before it registers, signs or stores anything: by an
-//! account that is no admin, by an agent, for an address the space has, and for an expiry in the
-//! past.
+//! account that is no admin, by an agent, for an address the space has, for an expiry in the past,
+//! and in a space with as many service agents as the server allows.
 
 use skald_proto::Role;
 
-use crate::fixtures::fronted;
+use crate::fixtures::{fronted, fronted_with};
 use crate::kit::{
     Acme, BOT, CHANNEL, CREATE_SERVICE_AGENT, CREATE_SERVICE_TOKEN, EXPIRES, REVOKE_SERVICE_TOKEN,
     Snapshot, assert_refused_saying, create_agent, rosters, secrets_of, writes_since,
@@ -43,6 +43,17 @@ fn assert_refused_creation(
         before,
         "{refused:?}"
     );
+}
+
+/// `acme`, which `ada`'s machine creates, with `ci/deploy-bot` that it creates next.
+fn with_bot(world: &World, ada: &Person) -> Acme {
+    let cloud = &world.cloud;
+    let acme = Acme::create(cloud, ada);
+    secrets_of(&create_agent(&ada.machine, ACME, BOT, &[acme.default], &[]));
+    Acme {
+        revisions: rosters(cloud, &ada.token, acme.id),
+        ..acme
+    }
 }
 
 /// Bob created `acme` and made Ada an admin; Ada then made Bob a member. Bob's creation of
@@ -111,14 +122,8 @@ fn agent_cannot_create_a_service_agent_or_its_tokens() {
 #[test]
 fn address_the_space_has_is_refused() {
     let (world, _front) = fronted();
-    let cloud = &world.cloud;
     let ada = world.sign_up(3_135_311_201, "ada-taken-standin", "ada-workstation");
-    let acme = Acme::create(cloud, &ada);
-    secrets_of(&create_agent(&ada.machine, ACME, BOT, &[acme.default], &[]));
-    let acme = Acme {
-        revisions: rosters(cloud, &ada.token, acme.id),
-        ..acme
-    };
+    let acme = with_bot(&world, &ada);
     let handles = format!("{}/deploy-bot", ada.handle);
 
     for address in [BOT, handles.as_str()] {
@@ -140,4 +145,22 @@ fn expiry_in_the_past_is_refused() {
         let past = [EXPIRES, "2020-01-01T00:00:00Z"];
         create_agent(&ada.machine, ACME, BOT, &[acme.default], &past)
     });
+}
+
+/// On a server that allows a space one service agent, Ada creates `ci/deploy-bot`; creating
+/// `ci/release-bot` then is refused, saying the space has as many service agents as it may.
+#[test]
+fn creation_in_a_space_at_the_service_agents_limit_is_refused() {
+    let (world, _front) = fronted_with(|settings| settings.service_agents_limit = Some(1));
+    let ada = world.sign_up(3_135_311_401, "ada-limit-standin", "ada-workstation");
+    let acme = with_bot(&world, &ada);
+
+    assert_refused_creation(
+        &world,
+        &ada,
+        &ada,
+        &acme,
+        "as many service agents as it may",
+        || create_agent(&ada.machine, ACME, "ci/release-bot", &[acme.default], &[]),
+    );
 }

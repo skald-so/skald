@@ -28,6 +28,12 @@
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
 //!
+//! A receipt that passes the checks counts in gap detection and is shown to no one: of each
+//! message it lists that this device sent in the receipt's channel, `to` the receipt's `from`, a
+//! `read` is kept as a status, once; any other is dropped without a word
+//! (`docs/protocol/delivery.md`, "Receipts"). Once an agent's run marks a message to it handed
+//! over, the device sends its `read` ([`crate::receipts`]).
+//!
 //! Each status of the device's messages is kept for the person and, for a message an agent sent,
 //! for that agent. The person's run shows each kept status once, and each warning an agent's run
 //! held back for it; an agent's run shows those of its messages it has yet to take. A run shows
@@ -47,8 +53,8 @@ use skald_crypto::{
 };
 use skald_proto::{
     AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope,
-    Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName, ServerStatus,
-    ServiceAgent, SpaceId, TrustLevel, VersionRange,
+    Frame, Header, MessageId, Name, Push, Receipt, ReceiptStatus, Roster, RosterBody, ServerName,
+    ServerStatus, ServiceAgent, SpaceId, TrustLevel, VersionRange,
 };
 
 use crate::agents::server_name;
@@ -63,10 +69,11 @@ use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::output::{self, Stream};
+use crate::receipts;
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
-use crate::state::{self, Kept, State};
+use crate::state::{self, Kept, State, ToRead};
 use crate::wraps;
 
 thread_local! {
@@ -211,6 +218,9 @@ fn received(
         Some((space, agent)) => hand_over(&follower, (space, agent), form),
         None => show_to_person(&follower, form),
     };
+    if let Ok(checks) = &checks {
+        receipts::send(&mut follower, &checks.synced, scope);
+    }
     if waits && let Ok(mut checks) = checks {
         // A failure leaves it to the first message.
         let _ = checks.ask_server(&mut follower);
@@ -457,13 +467,24 @@ pub fn show(
                         let gap = counted.as_ref().and_then(|(_, accepted)| accepted.gap);
                         if let Some(gap) = gap {
                             eprintln!("skald: warning: {}", missing(header.channel, sender, gap));
-                            if agent {
+                            // A receipt has no line an agent's warning could name.
+                            if agent && message.receipt.is_none() {
                                 let reference = reference(follower, header.msg_id)?;
                                 eprintln!(
                                     "skald: {}",
                                     missing_before(&message.device, gap, &reference)
                                 );
                             }
+                        }
+                        if let Some(receipt) = &message.receipt {
+                            let reads =
+                                reads(follower, checks, (header, sender), &message.from, receipt)?;
+                            let counted = (counted.as_ref())
+                                .map(|(source, accepted)| (source, &accepted.counters));
+                            (follower.state)
+                                .take_receipt(seq, (counted, (sender, header.msg_id)), &reads)
+                                .map_err(text)?;
+                            continue;
                         }
                         let kept = kept(follower, checks, (seq, header, sender), &message, gap)?;
                         match counted {
@@ -530,6 +551,45 @@ pub fn show(
     Ok(())
 }
 
+/// The `read` statuses, as JSON by `msg_id`, that `receipt`, from `from` in the envelope with
+/// `header` from the device `sender`, gives of messages this device sent: a `read` of a message
+/// it sent in the receipt's channel whose `to` is `from`. It ignores any other, as every device
+/// but its messages' sender ignores a receipt (`docs/protocol/delivery.md`, "Receipts").
+fn reads(
+    follower: &Follower,
+    checks: &Checks,
+    (header, sender): (&Header, DeviceId),
+    from: &Address,
+    receipt: &Receipt,
+) -> Result<Vec<(MessageId, String)>, String> {
+    if receipt.status != ReceiptStatus::Read {
+        return Ok(Vec::new());
+    }
+    let from = from.to_string();
+    let mut reads = Vec::new();
+    for &msg_id in receipt.messages.iter() {
+        let Some(sent) = follower.state.sent(msg_id).map_err(text)? else {
+            continue;
+        };
+        if sent.channel != header.channel || sent.addressee.as_deref() != Some(from.as_str()) {
+            continue;
+        }
+        let status = forms::Status {
+            msg_id: msg_id.to_string(),
+            space: Some(sent.space.to_string()),
+            channel: Some(header.channel.to_string()),
+            status: forms::READ.to_owned(),
+            device: Some(sender.to_string()),
+            device_name: device_name(checks, sent.space, sender),
+            problem: None,
+            timestamp: state::unix_now(),
+        };
+        let json = serde_json::to_string(&status).expect("a status encodes");
+        reads.push((msg_id, json));
+    }
+    Ok(reads)
+}
+
 /// How the message of the entry `seq` with `header` from the device `sender`, which passed the
 /// checks, is kept: its line, sealed, and the agents it is for; `gap`, the counters it makes
 /// missing, if any.
@@ -552,16 +612,29 @@ fn kept(
         after_missing: gap.is_some(),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
+    let agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
     let key = match &checks.inbox_key {
         Some(key) => key,
         None => checks.inbox_key.insert(groups::inbox_key(follower)?),
+    };
+    // With `to`, the agents are none or the one it names.
+    let read = match (&message.to, agents.first()) {
+        (Some(to), Some(agent)) => Some(ToRead {
+            channel: header.channel,
+            sender,
+            author: message.from.to_string(),
+            addressee: to.to_string(),
+            agent: agent.clone(),
+        }),
+        _ => None,
     };
     Ok(Kept {
         space: header.space,
         msg_id: header.msg_id,
         line: key.seal(follower.this, &kept_item(seq), &record),
         wait: agent_wait(header.ttl),
-        agents: agents_of(follower, checks, (seq, header), message.to.as_ref())?,
+        agents,
+        read,
     })
 }
 
@@ -1057,6 +1130,8 @@ struct Received {
     level: TrustLevel,
     text: String,
     counter: Option<NonZeroU64>,
+    /// Its receipt, if it is one: it holds no text.
+    receipt: Option<Receipt>,
 }
 
 /// The valid certificate of `device` of an account of the space in `context`'s revision that its
@@ -1156,7 +1231,11 @@ fn check(
             return Err("its content has no counter".to_owned());
         }
     }
-    let text = a2a_text(&content, header.msg_id)?;
+    // A receipt holds no A2A message: check 4 is the A2A message's.
+    let (text, receipt) = match content.body {
+        Some(Body::Receipt(receipt)) => (String::new(), Some(receipt)),
+        _ => (a2a_text(&content, header.msg_id)?, None),
+    };
     Ok(Received {
         from: content.from,
         to: content.to,
@@ -1164,6 +1243,7 @@ fn check(
         level,
         text,
         counter: content.counter,
+        receipt,
     })
 }
 
@@ -1443,6 +1523,7 @@ mod tests {
                 level: TrustLevel::Peer,
                 text: "first\nsecond".to_owned(),
                 counter: NonZeroU64::new(1),
+                receipt: None,
             })
         );
     }
@@ -1663,8 +1744,8 @@ mod tests {
         );
     }
 
-    /// Content without `counter`, without an A2A message, or whose A2A message is no JSON or has
-    /// another `messageId` than `msg_id`, fails.
+    /// Content without `counter`, without an A2A message or a receipt, or whose A2A message is no
+    /// JSON or has another `messageId` than `msg_id`, fails. A receipt passes without text.
     #[test]
     fn content_without_counter_or_a_matching_a2a_message_fails() {
         let world = World::new();
@@ -1698,10 +1779,24 @@ mod tests {
             msg_id: MessageId::generate(),
             ..header.clone()
         };
+        let Some(Body::Receipt(read)) = receipt.body.clone() else {
+            unreachable!("a receipt");
+        };
+        assert_eq!(
+            world.checked(&header, &receipt),
+            Ok(Received {
+                from: receipt.from.clone(),
+                to: receipt.to.clone(),
+                device: "laptop".to_owned(),
+                level: TrustLevel::Peer,
+                text: String::new(),
+                counter: NonZeroU64::new(1),
+                receipt: Some(read),
+            })
+        );
         for (content, why) in [
             (uncounted, "its content has no counter"),
             (later, "it holds no A2A message"),
-            (receipt, "it holds no A2A message"),
             (
                 world.content("not json".to_owned()),
                 "its A2A message is no JSON",
