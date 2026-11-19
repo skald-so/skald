@@ -11,7 +11,9 @@
 //! "Admitted devices"). The content is from the person address or the agent's, to the agent
 //! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
 //! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
-//! "Content").
+//! "Content"). With it go its copies under `hpke` to service agents outside the channel's group
+//! ([`crate::copies`]), each with the counter the device keeps for that agent in the channel; the
+//! run warns when it sends an agent its first copy of the channel's messages.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
@@ -41,6 +43,7 @@ use tungstenite::stream::MaybeTlsStream;
 
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{self, WebSocket, printable};
+use crate::copies;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::forms::{self, References};
@@ -210,14 +213,24 @@ fn sent(
             .map_err(|err| err.to_string())?;
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    let from = sender(&follower, &roster, server, agent)?;
-    groups::encrypt(
+    let from = sender(&follower, &roster, server.clone(), agent)?;
+    let readers = copies::readers(
+        &mut follower,
+        (&roster, &devices),
+        (channel, to.as_ref()),
+        &server,
+    );
+    let (_, first) = groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
+        &readers,
         |msg_id, counter| content((&from, to.as_ref()), msg_id, counter, text),
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
+    for reader in first {
+        eprintln!("skald: warning: {}", copies::first_copy(reader, channel));
+    }
     let queued = queued(&follower.state, scope)?;
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
     match Link::new(&follower) {

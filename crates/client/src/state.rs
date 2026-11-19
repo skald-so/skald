@@ -299,6 +299,15 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE device ADD COLUMN record BLOB;
     ALTER TABLE device ADD COLUMN backup BLOB;
     ALTER TABLE device ADD COLUMN recovery TEXT;",
+    // Copies of the device's channel messages under `hpke` to `service` devices outside the
+    // channel's group: the last `counter` the device gave content to each such device in each
+    // channel. The outbox holds a copy with its recipient device.
+    "CREATE TABLE copy_counter (
+        channel TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        last INTEGER NOT NULL CHECK (last >= 1),
+        PRIMARY KEY (channel, recipient)
+    ) STRICT",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -427,8 +436,9 @@ pub struct Outgoing {
     pub envelope: Vec<u8>,
 }
 
-/// A channel message of the device's own under `mls`, as a step puts it in the outbox: its
-/// envelope, its channel and its content's `counter` there.
+/// A channel message of the device's own, as a step puts it in the outbox: its envelope, its
+/// channel and its content's `counter` there; under `mls`, or under `hpke` a copy to its envelope's
+/// recipient device, with the counter the device keeps for that device in the channel.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Counted {
     pub outgoing: Outgoing,
@@ -492,7 +502,7 @@ pub struct MlsChanges {
     /// The `seq` of the mailbox entries it took in.
     pub taken: Vec<u64>,
     /// Channel messages it puts in the outbox, in order, after those in it; each one's counter
-    /// becomes its channel's last.
+    /// becomes its channel's last, or, for a copy, the last to its recipient in its channel.
     pub messages: Vec<Counted>,
     /// The `seq` of each mailbox entry whose `mls` application message it decrypted, and what that
     /// gave, sealed.
@@ -1299,13 +1309,26 @@ impl State {
 
     /// The last `counter` the device gave content in `channel` under `mls`; 0 before the first.
     pub fn channel_counter(&self, channel: ChannelId) -> Result<u64, Error> {
+        self.last_counter(
+            "SELECT last FROM channel_counter WHERE channel = ?1",
+            params![channel.to_string()],
+        )
+    }
+
+    /// The last `counter` the device gave content to the device `recipient` in `channel` under
+    /// `hpke`, in a copy of a channel message; 0 before the first.
+    pub fn copy_counter(&self, channel: ChannelId, recipient: DeviceId) -> Result<u64, Error> {
+        self.last_counter(
+            "SELECT last FROM copy_counter WHERE channel = ?1 AND recipient = ?2",
+            params![channel.to_string(), recipient.to_string()],
+        )
+    }
+
+    /// The counter `query` reads with `params`; 0 if it reads none.
+    fn last_counter(&self, query: &str, params: impl rusqlite::Params) -> Result<u64, Error> {
         let last: Option<i64> = self
             .db
-            .query_row(
-                "SELECT last FROM channel_counter WHERE channel = ?1",
-                params![channel.to_string()],
-                |row| row.get(0),
-            )
+            .query_row(query, params, |row| row.get(0))
             .optional()?;
         let last = last.unwrap_or(0);
         u64::try_from(last).map_err(|_| Error::Malformed(format!("the counter {last}")))
@@ -1833,8 +1856,8 @@ impl State {
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
     /// server answered it. If it refused the envelope, `refused` its refusal as a status, as JSON,
-    /// the message's history entry goes too, and the refusal is kept for the agent that sent the
-    /// message, if any, all at once.
+    /// the message's history entry goes too unless the envelope is a copy to `recipient`, and the
+    /// refusal is kept for the agent that sent the message, if any, all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
@@ -1850,10 +1873,13 @@ impl State {
             ],
         )?;
         if let Some(refused) = refused {
-            tx.execute(
-                "DELETE FROM history_outbox WHERE msg_id = ?1",
-                params![msg_id.to_string()],
-            )?;
+            // A refused copy to a `service` device leaves the channel's message as it is.
+            if recipient.is_none() {
+                tx.execute(
+                    "DELETE FROM history_outbox WHERE msg_id = ?1",
+                    params![msg_id.to_string()],
+                )?;
+            }
             tx.execute(
                 "INSERT INTO kept_status (msg_id, space, status, person, agent)
                  SELECT msg_id, space, ?2, 0, agent FROM sent
@@ -1948,9 +1974,9 @@ fn sql_u64(value: u64) -> Result<i64, Error> {
     i64::try_from(value).map_err(|_| Error::Malformed(format!("the number {value}")))
 }
 
-/// Adds `message` to the outbox, after those in it, records its counter as its channel's last and
-/// its space and channel as those of its message ID, in `tx`; fails unless the counter is the one
-/// after the channel's last.
+/// Adds `message` to the outbox, after those in it, records its counter as its channel's last, or
+/// for a copy as the last to its recipient there, and its space and channel as those of its message
+/// ID, in `tx`; fails unless the counter is the one after that last.
 fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
     let Counted {
         outgoing,
@@ -1959,33 +1985,39 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
         agent,
     } = message;
     let channel = channel.to_string();
+    let recipient = outgoing.recipient.map(|device| device.to_string());
     let last =
         i64::try_from(*counter).map_err(|_| Error::Malformed(format!("the counter {counter}")))?;
-    let changed = if last == 1 {
-        tx.execute(
+    let changed = match (&recipient, last) {
+        (None, 1) => tx.execute(
             "INSERT INTO channel_counter (channel, last) VALUES (?1, 1) ON CONFLICT DO NOTHING",
             params![channel],
-        )?
-    } else {
-        tx.execute(
+        )?,
+        (None, _) => tx.execute(
             "UPDATE channel_counter SET last = ?2 WHERE channel = ?1 AND last = ?2 - 1",
             params![channel, last],
-        )?
+        )?,
+        (Some(recipient), 1) => tx.execute(
+            "INSERT INTO copy_counter (channel, recipient, last) VALUES (?1, ?2, 1)
+             ON CONFLICT DO NOTHING",
+            params![channel, recipient],
+        )?,
+        (Some(recipient), _) => tx.execute(
+            "UPDATE copy_counter SET last = ?3
+             WHERE channel = ?1 AND recipient = ?2 AND last = ?3 - 1",
+            params![channel, recipient, last],
+        )?,
     };
     if changed == 0 {
         return Err(Error::Malformed(format!(
-            "the counter {counter} is not the next in the channel {channel}"
+            "the counter {counter} is not the next in the channel {channel}{}",
+            recipient.map_or_else(String::new, |device| format!(" to the device {device}"))
         )));
     }
     let (msg_id, space) = (outgoing.msg_id.to_string(), outgoing.space.to_string());
     tx.execute(
         "INSERT INTO outbox (msg_id, recipient, space, envelope) VALUES (?1, ?2, ?3, ?4)",
-        params![
-            msg_id,
-            outgoing.recipient.map(|device| device.to_string()),
-            space,
-            outgoing.envelope
-        ],
+        params![msg_id, recipient, space, outgoing.envelope],
     )?;
     tx.execute(
         "INSERT INTO sent (msg_id, space, channel, agent) VALUES (?1, ?2, ?3, ?4)
@@ -2653,6 +2685,64 @@ pub(crate) mod tests {
         );
         state.remove_history_entry(first.msg_id).unwrap();
         assert_eq!(state.history_outbox().unwrap(), [second]);
+    }
+
+    /// A copy to a `service` device takes the next counter the device keeps for it in the channel,
+    /// apart from the channel's; a refused copy leaves the message's history entry.
+    #[test]
+    fn copies_count_per_recipient_and_a_refused_one_keeps_the_history_entry() {
+        let (bot, other) = (
+            DeviceId::from_signing_key(&[1; 32]),
+            DeviceId::from_signing_key(&[2; 32]),
+        );
+        let dir = TestDir::new("state-copies");
+        let state = State::open(&dir).unwrap();
+        let (channel, space) = (ChannelId::generate(), SpaceId::generate());
+        let msg_id = MessageId::generate();
+        let message = |msg_id, recipient, counter| Counted {
+            outgoing: Outgoing {
+                msg_id,
+                recipient,
+                space,
+                envelope: vec![1],
+            },
+            channel,
+            counter,
+            agent: None,
+        };
+        let entry = HistoryOutgoing {
+            msg_id,
+            space,
+            channel,
+            entry: vec![4],
+        };
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    messages: vec![message(msg_id, None, 1), message(msg_id, Some(bot), 1)],
+                    entries: vec![entry.clone()],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+        let next = MessageId::generate();
+        for wrong in [1, 3] {
+            let failed = put(&state, &[&message(next, Some(bot), wrong)]);
+            assert!(failed.is_err(), "{wrong}: {failed:?}");
+        }
+        let (to_bot, to_other) = (message(next, Some(bot), 2), message(next, Some(other), 1));
+        put(&state, &[&to_bot, &to_other]).unwrap();
+
+        assert_eq!(state.channel_counter(channel).unwrap(), 1);
+        assert_eq!(state.copy_counter(channel, bot).unwrap(), 2);
+        assert_eq!(state.copy_counter(channel, other).unwrap(), 1);
+        assert_eq!(state.copy_counter(ChannelId::generate(), bot).unwrap(), 0);
+        state
+            .remove_outgoing(msg_id, Some(bot), Some("refused"))
+            .unwrap();
+        state.remove_outgoing(msg_id, None, None).unwrap();
+        assert_eq!(state.history_outbox().unwrap(), [entry]);
     }
 
     /// An `hpke` envelope an older client left in the outbox keeps its place and its recipient

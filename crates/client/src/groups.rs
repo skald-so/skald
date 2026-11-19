@@ -53,7 +53,7 @@ use serde::Deserialize;
 use skald_crypto::{
     ChannelView, DeviceCheckError, Joining, MemberDevice, MlsContent, MlsDevice, MlsError,
     MlsFraming, Processed, SealedState, StateKey, check_device, check_key_package,
-    check_valid_device,
+    check_valid_device, seal_message,
 };
 use skald_proto::{
     Cbor as _, Cert, Channel, ChannelId, Content, DeviceId, Envelope, Frame, Header, MessageId,
@@ -62,6 +62,7 @@ use skald_proto::{
 
 use crate::clock;
 use crate::connection::Method;
+use crate::copies::Reader;
 use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
@@ -1568,16 +1569,19 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 /// Encrypts the content `content` gives for a new message ID and the device's next counter in
 /// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
 /// devices, in the channel's group, and puts the `mls` envelope in the outbox, as from `agent` if
-/// given, with the state it leaves and the message's history entry ([`crate::history`]); gives its
-/// message ID. Sends
+/// given, with the state it leaves and the message's history entry ([`crate::history`]); after it,
+/// a copy under `hpke` to each of `readers`, of the content `content` gives for the counter the
+/// device keeps for that reader in the channel ([`crate::copies`]). Gives the message ID and the
+/// readers that get their first copy of the channel's messages. Sends
 /// nothing, and says why, while a member device of the group is not admitted, while a Commit of
 /// this device in the channel waits for the server, or when no other device is in the group.
-pub fn encrypt(
+pub fn encrypt<'r>(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
     (channel, agent): (ChannelId, Option<&str>),
-    content: impl FnOnce(MessageId, NonZeroU64) -> Content,
-) -> Result<MessageId, String> {
+    readers: &'r [Reader],
+    content: impl Fn(MessageId, NonZeroU64) -> Content,
+) -> Result<(MessageId, Vec<&'r Reader>), String> {
     let keys = follower.keys()?;
     let admitted = admitted(follower, roster, devices, channel);
     let waiting = (follower.state.mls_outbox().map_err(text)?)
@@ -1621,7 +1625,7 @@ pub fn encrypt(
             .and_then(NonZeroU64::new)
             .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
         let msg_id = MessageId::generate();
-        let content = content(msg_id, counter);
+        let said = content(msg_id, counter);
         let epoch = device.epoch(channel).map_err(|err| failed(channel, err))?;
         let judgments = follower.state.judgments(channel).map_err(text)?;
         let entry = history::entry(
@@ -1629,10 +1633,10 @@ pub fn encrypt(
             (space, channel, epoch),
             &judgments,
             msg_id,
-            &content,
+            &said,
         );
         let payload = device
-            .encrypt(channel, &content.to_cbor())
+            .encrypt(channel, &said.to_cbor())
             .map_err(|err| failed(channel, err))?;
         let message = Counted {
             outgoing: Outgoing {
@@ -1645,12 +1649,82 @@ pub fn encrypt(
             counter: counter.get(),
             agent: agent.map(str::to_owned),
         };
+        let mut messages = vec![message];
+        let mut first = Vec::new();
+        for reader in readers {
+            let copy = copy(
+                (follower, &keys),
+                (space, channel, version),
+                reader,
+                msg_id,
+                &content,
+            )?;
+            if copy.counter == 1 {
+                first.push(reader);
+            }
+            messages.push(Counted {
+                agent: agent.map(str::to_owned),
+                ..copy
+            });
+        }
         let changes = MlsChanges {
-            messages: vec![message],
+            messages,
             entries: entry.into_iter().collect(),
             ..MlsChanges::default()
         };
-        Ok((Some(device.seal()), changes, msg_id))
+        Ok((Some(device.seal()), changes, (msg_id, first)))
+    })
+}
+
+/// The copy under `hpke` to `reader` of the message `msg_id` in `channel` of `space`, sent with
+/// the protocol `version` by the device of `keys`, of the content `content` gives for the next
+/// counter the device keeps for `reader` in the channel; from no agent.
+fn copy(
+    (follower, keys): (&Follower, &Keys),
+    (space, channel, version): (SpaceId, ChannelId, NonZeroU64),
+    reader: &Reader,
+    msg_id: MessageId,
+    content: impl Fn(MessageId, NonZeroU64) -> Content,
+) -> Result<Counted, String> {
+    let last = (follower.state)
+        .copy_counter(channel, reader.device)
+        .map_err(text)?;
+    let counter = last
+        .checked_add(1)
+        .and_then(NonZeroU64::new)
+        .ok_or_else(|| format!("the counter to the device {} has no next", reader.device))?;
+    let header = Header {
+        v: version,
+        space,
+        channel,
+        msg_id,
+        scheme: Scheme::Hpke,
+        recipients: Some(NonEmpty::new(reader.device)),
+        ttl: None,
+        unknown: Unknown::default(),
+    };
+    let payload = seal_message(
+        &header,
+        &content(msg_id, counter),
+        keys.signing(),
+        &reader.hpke,
+    )
+    .map_err(|err| {
+        format!(
+            "the copy to the service agent {} does not seal: {err}",
+            reader.agent
+        )
+    })?;
+    Ok(Counted {
+        outgoing: Outgoing {
+            msg_id,
+            recipient: Some(reader.device),
+            space,
+            envelope: Envelope { header, payload }.to_cbor(),
+        },
+        channel,
+        counter: counter.get(),
+        agent: None,
     })
 }
 

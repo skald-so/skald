@@ -38,6 +38,7 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Server,
+  ServiceGrants,
   ServiceTokenId,
   ServiceTokens,
   Session,
@@ -3284,6 +3285,73 @@ export const storeRosterRevision = async (
     status: res.status,
     headers: res.headers,
   } as storeRosterRevisionResponse;
+};
+
+export type listServiceGrantsResponse200 = {
+  data: ServiceGrants;
+  status: 200;
+};
+
+export type listServiceGrantsResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listServiceGrantsResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listServiceGrantsResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listServiceGrantsResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listServiceGrantsResponseSuccess = listServiceGrantsResponse200 & {
+  headers: Headers;
+};
+export type listServiceGrantsResponseError = (
+  | listServiceGrantsResponse400
+  | listServiceGrantsResponse401
+  | listServiceGrantsResponse404
+  | listServiceGrantsResponse500
+) & {
+  headers: Headers;
+};
+
+export type listServiceGrantsResponse =
+  listServiceGrantsResponseSuccess | listServiceGrantsResponseError;
+
+export const getListServiceGrantsUrl = (space: string) => {
+  return `/spaces/${space}/service-grants`;
+};
+
+/**
+ * The grant of each of the space's service tokens that has not ended and has the `receive` permission, as the token was created with it. A member device sends each `service` device whose grant it takes a copy of its channel messages (docs/protocol/delivery.md, "Send"). Which grants a member gets is the server's word: the device checks each one itself.
+ * @summary The space's grants that receive
+ */
+export const listServiceGrants = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listServiceGrantsResponse> => {
+  const res = await fetch(getListServiceGrantsUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listServiceGrantsResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listServiceGrantsResponse;
 };
 
 export type listServiceTokensResponse200 = {

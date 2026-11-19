@@ -33,6 +33,7 @@ mod anchors;
 mod channels;
 mod clock;
 mod connection;
+mod copies;
 mod device;
 mod devices;
 mod events;

@@ -1,7 +1,8 @@
 //! Storing sent envelopes: `docs/protocol/delivery.md`, "Send" and "Mailbox". The server answers a
 //! device's `send` with `stored` once the envelope and its mailbox entries are committed, or with
 //! `send-refused` and its problem, storing nothing of the envelope. An `hpke` envelope goes to its
-//! one recipient; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
+//! one recipient, a `service` device only while a token of it that has not ended receives in the
+//! envelope's channel; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
 //! at most one envelope per idempotency key and answers a retry as it answered the first send. It
 //! counts each space's messages per month; with the server's cloud limits
 //! (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit, and a
@@ -11,8 +12,8 @@ use std::num::NonZeroU64;
 
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    AccountId, Cbor as _, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey, SpaceId,
-    Stored,
+    AccountId, Cbor as _, ChannelId, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey,
+    SpaceId, Stored,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -213,8 +214,12 @@ async fn route(
     let Some(recipient) = send_key(header).recipient else {
         return Ok(Err(Problem::UnknownRecipient));
     };
-    match certified_account(db, recipient).await? {
-        Some(account) if in_channel(account, recipient) => Ok(Ok(Route::Device(recipient))),
+    // A `service` device receives in a channel only with a token: `store` checks it.
+    match certified(db, recipient).await? {
+        Some((_, true)) => Ok(Ok(Route::Service(recipient))),
+        Some((account, false)) if in_channel(account, recipient) => {
+            Ok(Ok(Route::Device(recipient)))
+        }
         _ => Ok(Err(Problem::UnknownRecipient)),
     }
 }
@@ -223,6 +228,9 @@ async fn route(
 enum Route {
     /// To its one recipient device, under `hpke`.
     Device(DeviceId),
+    /// To its one recipient, a `service` device, under `hpke`, while a token of it that has not
+    /// ended and has the receive permission lists the envelope's channel.
+    Service(DeviceId),
     /// Where the channel's group routes it, under `mls`: an `MLSMessage` of this framing.
     Group(MlsFraming),
 }
@@ -249,19 +257,42 @@ pub(crate) async fn latest(
     Ok(found.map(|(roster,)| Roster::from_cbor(&roster).expect("a stored revision decodes")))
 }
 
-/// The account of `device` if it has a certificate on the server and is not revoked.
-async fn certified_account(
+/// The account of `device`, and whether it is a `service` device, if it has a certificate on the
+/// server and is not revoked.
+async fn certified(
     db: &PgPool,
     device: DeviceId,
-) -> Result<Option<AccountId>, sqlx::Error> {
-    let found: Option<(String,)> = sqlx::query_as(
-        "SELECT account_id::text FROM devices
+) -> Result<Option<(AccountId, bool)>, sqlx::Error> {
+    let found: Option<(String, bool)> = sqlx::query_as(
+        "SELECT account_id::text, kind = 'service' FROM devices
          WHERE id = $1::uuid AND cert IS NOT NULL AND NOT revoked",
     )
     .bind(device.to_string())
     .fetch_optional(db)
     .await?;
-    Ok(found.map(|(account,)| account.parse().expect("a stored account ID")))
+    Ok(found.map(|(account, service)| (account.parse().expect("a stored account ID"), service)))
+}
+
+/// Whether `device` has a token that has not ended and has the receive permission, of `space` and
+/// listing `channel`. Locked on `conn` until it commits: a revocation of the token, or a revision
+/// that ends it, waits for the envelope stored meanwhile.
+async fn receives_in(
+    conn: &mut PgConnection,
+    device: DeviceId,
+    (space, channel): (SpaceId, ChannelId),
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM service_tokens
+         WHERE device_id = $1::uuid AND space_id = $2::uuid AND $3::uuid = ANY(channels)
+             AND 'receive' = ANY(permissions) AND expires_at > now()
+         LIMIT 1 FOR SHARE",
+    )
+    .bind(device.to_string())
+    .bind(space.to_string())
+    .bind(channel.to_string())
+    .fetch_optional(conn)
+    .await?;
+    Ok(found.is_some())
 }
 
 /// The answer the send of `sender` with `key` got, if it was answered.
@@ -335,8 +366,8 @@ enum Kept {
     Answer(Option<Frame>),
     /// Nothing: its message is past its space's number for the month.
     OverQuota,
-    /// Nothing, for this problem: its `hpke` recipient is revoked, or the channel's group refuses
-    /// it.
+    /// Nothing, for this problem: its `hpke` recipient is revoked or, a `service` device, has no
+    /// token that receives in the channel, or the channel's group refuses it.
     Refused(Problem),
 }
 
@@ -358,7 +389,12 @@ async fn store(
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
     let routed = match route {
-        Route::Device(device) => {
+        Route::Service(device)
+            if !receives_in(&mut tx, *device, (header.space, header.channel)).await? =>
+        {
+            Err(Problem::UnknownRecipient)
+        }
+        Route::Device(device) | Route::Service(device) => {
             let open = receiving(&mut tx, &[*device]).await?;
             if open.is_empty() {
                 Err(Problem::UnknownRecipient)

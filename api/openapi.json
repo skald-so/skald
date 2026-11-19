@@ -4021,7 +4021,7 @@
       "post": {
         "operationId": "sendEnvelope",
         "summary": "Send an envelope",
-        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`.",
+        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`. An `hpke` envelope to a `service` device is stored only while a token of that device that has not ended and has the `receive` permission lists the channel: otherwise `send-refused` with `unknown-recipient`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -6047,6 +6047,106 @@
         }
       }
     },
+    "/spaces/{space}/service-grants": {
+      "get": {
+        "operationId": "listServiceGrants",
+        "summary": "The space's grants that receive",
+        "description": "The grant of each of the space's service tokens that has not ended and has the `receive` permission, as the token was created with it. A member device sends each `service` device whose grant it takes a copy of its channel messages (docs/protocol/delivery.md, \"Send\"). Which grants a member gets is the server's word: the device checks each one itself.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The grants.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceGrants"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/service-tokens": {
       "get": {
         "operationId": "listServiceTokens",
@@ -7744,6 +7844,21 @@
         "description": "A grant's CBOR (docs/protocol/README.md, \"Service grant\") in base64url without padding.",
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "ServiceGrants": {
+        "type": "object",
+        "required": [
+          "grants"
+        ],
+        "properties": {
+          "grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceGrant"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "ServicePermission": {
         "description": "What a token lets its device do: `send` and `receive` messages, and `queues`, work on every queue of its channels (docs/protocol/queues.md, \"Claim checks\").",
