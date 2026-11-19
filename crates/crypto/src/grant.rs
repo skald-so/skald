@@ -91,7 +91,8 @@ mod tests {
     use super::*;
 
     /// Each reason names the check that failed.
-    #[test]
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     fn each_error_says_why_the_grant_fails() {
         let signer: DeviceId = "a90f5ea9-75e5-899a-90ec-3a09f33aebdf".parse().unwrap();
         let reasons = [
