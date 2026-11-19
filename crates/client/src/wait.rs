@@ -14,7 +14,9 @@
 //!   is newer.
 //! - Between runs it watches the connection kept: a WebSocket or an event stream; with none, a
 //!   long-poll that waits, in the background ([`Watch`]). Off WebSocket, it tries WebSocket again
-//!   after an interval ([`RETRY`]), and then the other transports in order.
+//!   after an interval ([`RETRY`]), and then the other transports in order. In one-shot mode it
+//!   also watches the local state for a message another run of the device keeps for it, which no
+//!   connection brings.
 
 use std::collections::BTreeSet;
 use std::io::Read;
@@ -35,6 +37,7 @@ use crate::intake::{self, Said};
 use crate::lock::Lock;
 use crate::mailbox::{self, Came, Transport, Watched};
 use crate::recv::{self, Got};
+use crate::state::State;
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -82,6 +85,9 @@ pub fn here(
                 Route::Helped(code) => return Ok(Some(code)),
             },
         };
+        // Before the run, so that one kept while it runs counts as come.
+        let state = State::open(dir).map_err(|err| err.to_string())?;
+        let own = last_own_kept(&state, operation)?;
         let shown = crate::received(operation);
         drop(lock);
         if shown? {
@@ -96,11 +102,19 @@ pub fn here(
                 mailbox::close_kept();
                 break;
             }
-            if watch.came() != Came::Nothing {
+            if watch.came() != Came::Nothing || last_own_kept(&state, operation)? > own {
                 break;
             }
         }
     }
+}
+
+/// The last of the device's own messages that `state` keeps for the run of `operation`
+/// ([`State::last_own_kept`]): another run on the device keeps them, and the server does not give
+/// them to this one.
+fn last_own_kept(state: &State, operation: &Operation) -> Result<u64, String> {
+    let last = state.last_own_kept(operation.agent.as_deref());
+    last.map_err(|err| err.to_string())
 }
 
 /// How a run that waits watches for what comes between its runs of `skald recv`.

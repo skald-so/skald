@@ -7,8 +7,9 @@
 //! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
-//! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
-//! "Admitted devices"). The content is from the person address or the agent's, to the agent
+//! there waits for the server (`docs/protocol/membership.md`, "Admitted devices"), or no other
+//! device is in the group and nothing on this device gets the message. The content is from the
+//! person address or the agent's, to the agent
 //! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
 //! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
 //! "Content").
@@ -18,9 +19,10 @@
 //! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
 //! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). Over
 //! HTTPS it sends them one at a time, each after the previous one is answered, so a channel's
-//! envelopes are stored in `counter` order ("Gap detection"). What is left waits in the outbox for
-//! the next run. It then uploads the history entries of the messages the server stored
-//! ([`crate::history`]).
+//! envelopes are stored in `counter` order ("Gap detection"). With the `stored` of a message, the
+//! device keeps it for its person and its agents, as a recipient device does
+//! ([`recv::own_message`]). What is left waits in the outbox for the next run. It then uploads the
+//! history entries of the messages the server stored ([`crate::history`]).
 //!
 //! `skald reply` sends as it does ([`crate::reply`]).
 

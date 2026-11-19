@@ -1,8 +1,9 @@
 //! `skald mcp`: the MCP server on stdio, with rmcp, that an agent CLI starts from its config
 //! (`docs/dev/architecture.md`, "Components"). Its session's folder is its working directory.
 //!
-//! - Before it answers `initialize`, the session registers as its agent in its folder's space, so
-//!   the messages the device takes in from then on are kept for it, before its first tool call too.
+//! - Before it answers `initialize`, or `server/discover` for a client that opens the session
+//!   without it, the session registers as its agent in its folder's space, so the messages the
+//!   device takes in from then on are kept for it, before its first tool call too.
 //!   Its agent is the one `--agent` names or, without it, [`default_name`] of the client's name.
 //! - The `inbox` tool returns the lines the agent's `skald recv` shows. The run writes them in one
 //!   write, which returns once the tool's result is written to the client, and only then marks
@@ -25,8 +26,9 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
-    ContentBlock, Implementation, InitializeRequestParams, InitializeResult, JsonRpcMessage,
-    ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities, ServerConfig, Tool,
+    ContentBlock, DiscoverResult, Implementation, InitializeRequestParams, InitializeResult,
+    JsonRpcMessage, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
+    ServerConfig, Tool,
 };
 use rmcp::service::{NotificationContext, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::{IntoTransport, Transport};
@@ -373,6 +375,14 @@ impl Settings {
     }
 }
 
+/// The name of the client of the request of `context`: from the request's `_meta`, or from the
+/// session's `initialize`; empty with neither.
+fn client_of(context: &RequestContext<RoleServer>) -> String {
+    (context.client_info())
+        .map(|info| info.name)
+        .unwrap_or_default()
+}
+
 /// The answer to each tool call whose result waits to be written: whether it was.
 type Pending = Arc<Mutex<HashMap<RequestId, mpsc::Sender<bool>>>>;
 
@@ -395,6 +405,24 @@ impl Server {
             *agent = device_of(&self.dir).map(|(id, name)| default_name(client, &name, id));
         }
         agent.clone()
+    }
+
+    /// Registers the session's agent, by the client named `client`, before the server answers;
+    /// says why on its standard error if that fails, and the first tool call registers it then.
+    async fn register(&self, client: &str) {
+        let Some(agent) = self.agent(client) else {
+            return;
+        };
+        let settings = self.settings.clone();
+        let said = Said::default();
+        let registered = tokio::task::spawn_blocking(move || {
+            let registered = said.ran(settings.run(Call::Register, &agent, || said.sink()));
+            (registered, said.text())
+        })
+        .await;
+        if let Ok((false, why)) = registered {
+            let _ = io::stderr().write_all(why.as_bytes());
+        }
     }
 
     /// Runs the call `inbox` as `agent` for the request `id`: gives its result once its run wrote
@@ -455,20 +483,19 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
-        if let Some(agent) = self.agent(&request.client_info.name) {
-            let settings = self.settings.clone();
-            let said = Said::default();
-            let registered = tokio::task::spawn_blocking(move || {
-                let registered = said.ran(settings.run(Call::Register, &agent, || said.sink()));
-                (registered, said.text())
-            })
-            .await;
-            // The first tool call registers it otherwise.
-            if let Ok((false, why)) = registered {
-                let _ = io::stderr().write_all(why.as_bytes());
-            }
-        }
+        self.register(&request.client_info.name).await;
         self.negotiate_initialize(&request)
+    }
+
+    /// As `initialize`, for a client that opens the session without it, as of the protocol
+    /// version 2026-07-28.
+    async fn discover(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<DiscoverResult, ErrorData> {
+        self.register(&client_of(&context)).await;
+        let versions = self.supported_protocol_versions().into_owned();
+        Ok(DiscoverResult::from_server_info(versions, self.get_info()))
     }
 
     async fn list_tools(
@@ -529,10 +556,7 @@ impl ServerHandler for Server {
                 return Ok(CallToolResult::error(vec![ContentBlock::text(why)]).into());
             }
         };
-        let client = (context.peer.peer_info())
-            .map(|info| info.client_info.name.clone())
-            .unwrap_or_default();
-        let Some(agent) = self.agent(&client) else {
+        let Some(agent) = self.agent(&client_of(&context)) else {
             return Ok(CallToolResult::error(vec![ContentBlock::text(NO_DEVICE)]).into());
         };
         Ok(match called {

@@ -21,6 +21,10 @@ pub const INBOX: &str = "inbox";
 /// The MCP revision the client asks for.
 const PROTOCOL: &str = "2025-06-18";
 
+/// The MCP revision whose client opens the session with `server/discover`, not `initialize`, and
+/// sends its version, name and capabilities in each request's `_meta`.
+const STATELESS: &str = "2026-07-28";
+
 /// How long the server is given to exit once its client is gone.
 const EXIT: Duration = Duration::from_secs(30);
 
@@ -62,6 +66,8 @@ pub struct Session {
     errors: Arc<Mutex<Vec<u8>>>,
     /// The ID of the next request.
     next: u64,
+    /// What each request's `_meta` holds, as of [`STATELESS`].
+    meta: Option<Value>,
 }
 
 impl Session {
@@ -69,6 +75,38 @@ impl Session {
     /// fails unless the server answers `initialize` with a result.
     #[track_caller]
     pub fn start(command: &mut Command, client: &str) -> Self {
+        let mut session = Self::spawn(command);
+        let params = json!({
+            "protocolVersion": PROTOCOL,
+            "capabilities": {},
+            "clientInfo": { "name": client, "version": "1.0.0" },
+        });
+        if let Err(error) = session.request("initialize", params) {
+            panic!("initialize failed: {error}: {}", session.errors());
+        }
+        session.write(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+        session
+    }
+
+    /// Starts `command`, a run of `skald mcp`, and opens the session as a client of [`STATELESS`]
+    /// named `client` does, as Claude Code does: `server/discover`, and no `initialize`; fails
+    /// unless the server answers it with a result.
+    #[track_caller]
+    pub fn discovered(command: &mut Command, client: &str) -> Self {
+        let mut session = Self::spawn(command);
+        session.meta = Some(json!({
+            "io.modelcontextprotocol/protocolVersion": STATELESS,
+            "io.modelcontextprotocol/clientInfo": { "name": client, "version": "1.0.0" },
+            "io.modelcontextprotocol/clientCapabilities": {},
+        }));
+        if let Err(error) = session.request("server/discover", json!({})) {
+            panic!("server/discover failed: {error}: {}", session.errors());
+        }
+        session
+    }
+
+    /// Starts `command`, a run of `skald mcp`, with its input and outputs piped.
+    fn spawn(command: &mut Command) -> Self {
         let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -85,24 +123,15 @@ impl Session {
             let _ = { stderr }.read_to_end(&mut all);
             into.lock().expect("the server's errors").extend(all);
         });
-        let mut session = Session {
+        Session {
             input: child.stdin.take(),
             child,
             output,
             taken: 0,
             errors,
             next: 1,
-        };
-        let params = json!({
-            "protocolVersion": PROTOCOL,
-            "capabilities": {},
-            "clientInfo": { "name": client, "version": "1.0.0" },
-        });
-        if let Err(error) = session.request("initialize", params) {
-            panic!("initialize failed: {error}: {}", session.errors());
+            meta: None,
         }
-        session.write(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-        session
     }
 
     /// The server's process ID.
@@ -187,9 +216,12 @@ impl Session {
     /// Sends the request `method` with `params`; gives its result, or its error. Answers the
     /// server's requests meanwhile.
     #[track_caller]
-    fn request(&mut self, method: &str, params: Value) -> Result<Value, Value> {
+    fn request(&mut self, method: &str, mut params: Value) -> Result<Value, Value> {
         let id = self.next;
         self.next += 1;
+        if let Some(meta) = &self.meta {
+            params["_meta"] = meta.clone();
+        }
         self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
         loop {
             let message = self.next_message();

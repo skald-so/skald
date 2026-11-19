@@ -92,7 +92,7 @@ use fixtures::{
 };
 use front::{Acks, Answers, Front, Sent};
 use kit::assert_members;
-use lines::{agent_notes, assert_agent_got, lines_referring_to};
+use lines::{agent_line, agent_notes, assert_agent_got, lines_referring_to};
 use machine::{Finished, Machine, Run};
 use peer::Peer;
 use played::{Played, Took};
@@ -865,11 +865,15 @@ const BOB_IN_A: &str = "clienta's invoice is approved";
 const BOB_IN_B: &str = "the other client's contract is signed";
 const FORGED_IN_A: &str = "forged in clienta's channel";
 const FORGED_IN_B: &str = "forged in the other client's channel";
+/// What Ada sends to each space's channel as herself.
+const ADA_IN_A: &str = "ada asks in a";
+const ADA_IN_B: &str = "ada asks in b";
 
 /// The agent has run once in `~/work/clientA` before Ada sends, so clienta's messages are handed
-/// over to it. As that agent, `skald recv` shows only clienta's message from Bob, as its one line,
-/// and the warning of a message dropped there, one line naming Bob's device, each under `mls`; no
-/// status, as Ada sent her messages as herself; its output names nothing of clientb. The person's
+/// over to it. As that agent, `skald recv` shows only clienta's messages, Bob's and Ada's own, each
+/// as its one line, and the warning of a message dropped there, one line naming Bob's device, each
+/// under `mls`; no status, as Ada sent her messages as herself; its output names nothing of
+/// clientb. The person's
 /// next run shows clientb's message, the `delivered` of Ada's message in each space, each once,
 /// the warnings of both dropped messages, clienta's message from Bob once, as it shows each
 /// message whether or not an agent got it, and no dropped text.
@@ -893,7 +897,7 @@ fn agent_receives_only_in_the_space_of_its_folder() {
     assert!(first.success, "{first:?}");
     let mut ada_ids = Vec::new();
     let mut ada_sent = Vec::new();
-    for (channel, text) in channels.iter().zip(["ada asks in a", "ada asks in b"]) {
+    for (channel, text) in channels.iter().zip([ADA_IN_A, ADA_IN_B]) {
         let from = front.sent().len();
         let finished = send(&ada.machine, channel.id, text);
         assert!(finished.success, "{finished:?}");
@@ -942,6 +946,8 @@ fn agent_receives_only_in_the_space_of_its_folder() {
     let shown = agent.shown();
     let from_a = person_address(CLIENT_A, bob);
     assert_agent_got(&shown, BOB_IN_A, (bob_ids[0], &from_a, bob.host));
+    let ada_in_a = person_address(CLIENT_A, ada);
+    assert_agent_got(&shown, ADA_IN_A, (ada_ids[0], &ada_in_a, ada.host));
     let notes = agent_notes(&shown);
     assert!(
         matches!(notes.as_slice(), [warning] if warning.contains(bob.host)),
@@ -949,9 +955,13 @@ fn agent_receives_only_in_the_space_of_its_folder() {
         bob.host
     );
     for id in &ada_ids {
-        let lines = lines_referring_to(&shown, *id);
+        let lines: Vec<String> = (lines_referring_to(&shown, *id).into_iter())
+            .filter(|line| agent_line(line).is_none())
+            .collect();
         assert!(lines.is_empty(), "a status of Ada's message: {lines:?}");
     }
+    let of_b = lines_referring_to(&shown, ada_ids[1]);
+    assert!(of_b.is_empty(), "Ada's message in clientb: {of_b:?}");
     for named in [
         CLIENT_B.to_owned(),
         channels[1].space.to_string(),
