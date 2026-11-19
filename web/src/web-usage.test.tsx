@@ -5,8 +5,8 @@
 // - `GET /account/usage`: `{"owned_spaces": {"count", "limit"?, "spaces": [{"space", "name"}]},
 //   "devices": {"count", "limit"?}}`;
 // - `GET /spaces/{space}/usage`: `{"monthly_messages": {"count", "limit"?}, "message_size":
-//   {"limit"?}, "mailbox_retention": {"limit"?}, "history_retention": {"limit"?}}`, the size in
-//   bytes and the retentions in seconds.
+//   {"limit"?}, "mailbox_retention": {"limit"?}, "history_retention": {"limit"?},
+//   "service_agents": {"count", "limit"?}}`, the size in bytes and the retentions in seconds.
 // A `limit` is absent while no limit applies.
 //
 // The web app, as these tests use it: the side menu's link "Usage" opens the section, the page's
@@ -49,6 +49,7 @@ interface SpaceUsage {
   message_size: { limit?: number };
   mailbox_retention: { limit?: number };
   history_retention: { limit?: number };
+  service_agents: Counted;
 }
 
 const ownId = "01968a2e-0000-7000-8000-000000000601";
@@ -82,6 +83,7 @@ function spaceUsage(messages: number, limit?: number): SpaceUsage {
     message_size: limited(cloud ? kb64 : undefined),
     mailbox_retention: limited(cloud ? days7 : undefined),
     history_retention: limited(cloud ? days90 : undefined),
+    service_agents: counted(2, cloud ? 10 : undefined),
   };
 }
 

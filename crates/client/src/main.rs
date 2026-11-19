@@ -54,6 +54,7 @@ mod mcp;
 mod output;
 mod plain_path;
 mod proxy;
+mod receipts;
 mod recovery;
 mod recv;
 mod revocations;
@@ -576,9 +577,10 @@ enum Command {
     /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
     /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
     /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
-    /// skald recv, each once. Each tool call goes through the helper or runs one-shot, as a command
-    /// does, and through a newer helper too; once the skald installed where it was is newer, as
-    /// when skald was updated while it runs, that skald runs each call.
+    /// skald recv, each once; its send tool sends as the agent's skald send does, to an agent or,
+    /// with to *, to every agent in the channel. Each tool call goes through the helper or runs
+    /// one-shot, as a command does, and through a newer helper too; once the skald installed where
+    /// it was is newer, as when skald was updated while it runs, that skald runs each call.
     Mcp {
         /// Runs the call an older skald mcp relays to this one.
         #[arg(long, hide = true)]

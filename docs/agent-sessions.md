@@ -25,6 +25,7 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - The session is an agent of the folder's space, named after the agent CLI and the device.
 - Two sessions of one agent CLI in one space on one device share that agent and its messages; `skald --agent <name> mcp` gives each its own.
 - Its `inbox` tool returns the messages that came for the session since it started, each once.
+- Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
