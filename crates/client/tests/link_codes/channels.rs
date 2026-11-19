@@ -127,10 +127,10 @@ fn the_certifying_device_adds_the_new_one_by_the_end_of_skald_link() {
     }
 }
 
-/// Ada's new machine's upload of its KeyPackages is held back until her first machine's `skald link`
-/// has looked for them and found none; then it goes on. By the end of `skald link`, which says
-/// nothing of missing KeyPackages, her first device has added the new one to both of the space's
-/// channels.
+/// Ada's new machine's upload of its KeyPackages is held back until her first machine's `skald
+/// link` has looked for them twice and found none; then it goes on. By the end of `skald link`,
+/// which says nothing of missing KeyPackages, her first device has added the new one to both of the
+/// space's channels.
 #[test]
 fn the_certifying_device_waits_for_keypackages_that_come_late() {
     let (talk, mut new) = with_new_device(
@@ -146,9 +146,10 @@ fn the_certifying_device_waits_for_keypackages_that_come_late() {
         &[],
         |upload| cloud.relay.hold(upload, 2),
         |upload| {
-            // The new device asks once, before its upload; its first device then asks.
+            // The new device asks once, before its upload; its first device then asks twice, so
+            // only a device that waits gets them.
             let deadline = Instant::now() + WAIT;
-            while cloud.count_sent(since, &count) < 2 {
+            while cloud.count_sent(since, &count) < 3 {
                 assert!(Instant::now() < deadline, "no look for KeyPackages");
                 thread::sleep(Duration::from_millis(50));
             }
