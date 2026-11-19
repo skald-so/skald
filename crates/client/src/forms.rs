@@ -237,10 +237,10 @@ pub struct Status {
     /// The message's space and channel, if the device recorded them.
     pub space: Option<String>,
     pub channel: Option<String>,
-    /// `delivered`, `expired` or `refused`.
+    /// `delivered`, `expired`, `refused` or `read`.
     pub status: String,
     /// The recipient device's ID, none for a refusal of an envelope to a channel, and its
-    /// certificate's `name` if the device knows it.
+    /// certificate's `name` if the device knows it: for `read`, the device of the `to` agent.
     pub device: Option<String>,
     pub device_name: Option<String>,
     /// Why the server refused it.
@@ -254,12 +254,15 @@ pub const EXPIRED: &str = "expired";
 /// The status of a message the server refused.
 pub const REFUSED: &str = "refused";
 
+/// The status of a message its `to` agent has (`docs/protocol/delivery.md`, "Receipts").
+pub const READ: &str = "read";
+
 /// The status of a message its `to` agent answered (`docs/protocol/delivery.md`, "Receipts").
 pub const REPLIED: &str = "replied";
 
 impl Status {
     /// How `form` shows it, `reference` its message's reference: an agent's short form shows only
-    /// `expired` and `refused`, so no `replied`.
+    /// `expired` and `refused`, so a `read` or `replied` costs an agent no token.
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {
         let device = self.device.as_deref().unwrap_or("of the channel");
         let problem = self.problem.as_deref().map(printable).unwrap_or_default();
@@ -269,6 +272,7 @@ impl Status {
                     EXPIRED => format!("expired before the device {device} got it"),
                     REFUSED => format!("refused for the device {device}: {problem}"),
                     REPLIED => format!("replied from the device {device}"),
+                    READ => format!("read by its agent on the device {device}"),
                     _ => format!("delivered to the device {device}"),
                 };
                 match &self.channel {

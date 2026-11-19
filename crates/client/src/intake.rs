@@ -12,7 +12,8 @@
 //! - Each waiting session is then handed only its own: the person's what the person's `skald recv`
 //!   shows; an agent's the messages and statuses kept for it, and, with no person's session
 //!   waiting, the short warnings of its space, whose full lines are kept for the person. A message
-//!   is marked handed over once the session has written it.
+//!   is marked handed over once the session has written it; then the `read` receipts of what the
+//!   sessions were handed go out ([`receipts`]).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +26,7 @@ use crate::forms::Form;
 use crate::groups::{self, Link};
 use crate::mailbox::{Transport, Watched};
 use crate::output::{self, Stream};
+use crate::receipts;
 use crate::recv::{self, Checks};
 use crate::spaces::{Follower, Scope};
 use crate::{key_chain, wraps};
@@ -175,6 +177,11 @@ impl Intake {
             wraps::upload_missing(follower, link, Scope::All);
         }
         Ok(())
+    }
+
+    /// Sends the receipts of what the sessions were handed ([`receipts::send`]).
+    pub fn send_receipts(&mut self) {
+        receipts::send(&mut self.follower, &self.checks.synced, Scope::All);
     }
 
     /// Hands the session of `agent` in `space`, or the person's if `None`, what is its own: `said`,
