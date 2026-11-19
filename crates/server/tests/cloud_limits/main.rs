@@ -15,9 +15,10 @@
 //!   its envelopes, a retry does not count, and neither does a refused one. A message past its
 //!   space's number for the month is refused with `quota-exceeded`.
 //! - `--devices-limit <N>`, `SKALD_DEVICES_LIMIT`: the devices with a certificate an account may
-//!   have. `POST /devices` for an account that has that many is refused with `403` and the problem
-//!   `https://skald.so/problems/devices-limit`, and registers nothing. Devices without a
-//!   certificate and `service` devices do not count.
+//!   have. `PUT /devices/{device}/cert`, a certificate that would give the account more, is refused
+//!   with `403` and the problem `https://skald.so/problems/devices-limit`, and stores nothing; a
+//!   registration, `POST /devices`, does not count. Devices without a certificate and `service`
+//!   devices do not count.
 //!
 //! What the tests set up and read in the server's database, besides what the tests of storing sent
 //! envelopes read:
@@ -43,6 +44,10 @@ mod rosters;
 #[allow(dead_code)]
 #[path = "../mailbox/wire.rs"]
 mod wire;
+// Storing the certificate of a device a linked device issued.
+#[allow(dead_code)]
+#[path = "../linked_certificates/upload.rs"]
+mod upload;
 
 mod limits;
 

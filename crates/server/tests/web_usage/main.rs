@@ -45,8 +45,12 @@ mod fixture;
 mod kit;
 #[path = "../cloud_limits/limits.rs"]
 mod limits;
+// Storing the certificate of a device a linked device issued.
 #[path = "../spaces/rosters.rs"]
 mod rosters;
+#[allow(dead_code)]
+#[path = "../linked_certificates/upload.rs"]
+mod upload;
 #[path = "../mailbox/wire.rs"]
 mod wire;
 
