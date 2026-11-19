@@ -567,7 +567,7 @@ pub fn show(
 /// The `read` or `refused` statuses, as JSON by `msg_id`, that `receipt`, from `from` in the
 /// envelope with `header` from the device `sender`, gives of messages this device sent: of a
 /// message it sent in the receipt's channel whose `to` is `from`, `refused` with the receipt's
-/// reason. It ignores any other, as every device but its messages' sender ignores a receipt
+/// reason, if any. It ignores any other, as every device but its messages' sender ignores a receipt
 /// (`docs/protocol/delivery.md`, "Receipts").
 fn reads(
     follower: &Follower,
@@ -576,9 +576,9 @@ fn reads(
     from: &Address,
     receipt: &Receipt,
 ) -> Result<Vec<(MessageId, String)>, String> {
-    let reason = match receipt.status {
-        ReceiptStatus::Read => None,
-        ReceiptStatus::Refused => Some(receipt.reason.as_deref().unwrap_or_default()),
+    let refused = match receipt.status {
+        ReceiptStatus::Read => false,
+        ReceiptStatus::Refused => true,
         ReceiptStatus::Held => return Ok(Vec::new()),
     };
     let from = from.to_string();
@@ -592,9 +592,11 @@ fn reads(
         }
         let name = device_name(checks, sent.space, sender);
         let at = (sent.space, header.channel);
-        let json = match reason {
-            Some(reason) => forms::Status::refused_by_device(msg_id, at, (sender, name), reason),
-            None => forms::Status::from_device(forms::READ, msg_id, at, (sender, name)),
+        let json = if refused {
+            let reason = receipt.reason.as_deref();
+            forms::Status::refused_by_device(msg_id, at, (sender, name), reason)
+        } else {
+            forms::Status::from_device(forms::READ, msg_id, at, (sender, name))
         };
         reads.push((msg_id, json));
     }
@@ -699,7 +701,7 @@ pub fn own_message(
     let device = (follower.this, Some(name.clone()));
     let (read, refused) = match &to {
         Some(Some(to)) if refusing.contains(to) => {
-            let reason = inbound::REASON;
+            let reason = Some(inbound::REASON);
             let refused =
                 forms::Status::refused_by_device(msg_id, (space, channel), device, reason);
             (None, Some(refused))

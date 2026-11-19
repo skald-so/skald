@@ -15,6 +15,7 @@ use skald_proto::{Address, Name};
 use crate::connection::printable;
 use crate::devices::text;
 use crate::folders;
+use crate::send::{self, Addressee};
 use crate::state::State;
 
 /// The reason of a `refused` the mode gives, for the message's sender.
@@ -106,27 +107,18 @@ fn allowed(given: &str, space: &str) -> Result<String, String> {
             printable(given)
         )
     };
-    if lowered.contains('@') {
-        let address: Address = lowered.parse().map_err(|err| invalid(&err))?;
-        if address.space().as_str() != space {
-            return Err(invalid(&format!(
-                "it is an address of another space than {space}"
-            )));
-        }
-        return Ok(address.to_string());
+    if !lowered.contains(['@', '/']) {
+        let handle = lowered.parse::<Name>().map_err(|err| invalid(&err))?;
+        return Ok(handle.to_string());
     }
-    let names: Vec<&str> = lowered.split('/').collect();
-    let parsed = match names.as_slice() {
-        [handle] => handle.parse::<Name>().map(|handle| handle.to_string()),
-        [owner, agent] => (owner.parse::<Name>())
-            .and_then(|owner| Ok(format!("{owner}/{}", agent.parse::<Name>()?))),
-        _ => {
-            return Err(invalid(
-                &"use space/owner/agent@server, owner/agent or a member's handle",
-            ));
-        }
-    };
-    parsed.map_err(|err| invalid(&err))
+    let form = "use space/owner/agent@server, owner/agent or a member's handle";
+    match send::parsed(&lowered, &invalid, form)? {
+        Addressee::Full(address) if address.space().as_str() != space => Err(invalid(&format!(
+            "it is an address of another space than {space}"
+        ))),
+        Addressee::Full(address) => Ok(address.to_string()),
+        Addressee::Short(owner, agent) => Ok(format!("{owner}/{agent}")),
+    }
 }
 
 /// Whether `entry`, a sender on an allowlist as the state keeps it, admits a message from `from`:

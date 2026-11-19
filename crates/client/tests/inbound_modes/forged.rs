@@ -1,5 +1,5 @@
 //! The sending device takes `refused` only from the message's `to` agent, for its message in that
-//! channel; it ignores any other.
+//! channel; it ignores any other. A `refused` with no reason shows none.
 
 use skald_proto::{Body, ChannelId, MessageId, NonEmpty, Receipt, ReceiptStatus, Unknown};
 
@@ -7,7 +7,8 @@ use crate::{
     agents::{Agents, CLAUDE},
     fixtures::{CHANNEL, SEND, TO},
     inbound::{REFUSED, refused_lines, shows_refused_once},
-    kit::received,
+    kit::{RECV, received},
+    lines::{JSON_FLAG, json_objects},
     talk::{Line, one_message_sent},
     world::{ACME, AGENT, HOST},
 };
@@ -42,10 +43,21 @@ fn claude_sends(agents: &Agents, channel: ChannelId, text: &str) -> MessageId {
 /// with [`REASON`] from his agent `agent` to claude of `msg_id`.
 #[track_caller]
 fn bob_refuses(agents: &mut Agents, (agent, counter): (&str, u64), msg_id: MessageId) {
+    bob_refuses_for(agents, (agent, counter), msg_id, Some(REASON));
+}
+
+/// [`bob_refuses`] with `reason`, or none.
+#[track_caller]
+fn bob_refuses_for(
+    agents: &mut Agents,
+    (agent, counter): (&str, u64),
+    msg_id: MessageId,
+    reason: Option<&str>,
+) {
     let receipt = Receipt {
         status: ReceiptStatus::Refused,
         messages: NonEmpty::new(msg_id),
-        reason: Some(REASON.to_owned()),
+        reason: reason.map(str::to_owned),
         unknown: Unknown::default(),
     };
     let bob = &agents.talk.played[0].person.handle;
@@ -88,4 +100,44 @@ fn refused_counts_only_from_the_to_agent_for_a_message_sent_in_the_receipt_s_cha
         "{REFUSED} without its reason: {lines:?}"
     );
     assert!(refused_lines(&shown, in_default).is_empty(), "{shown}");
+}
+
+/// claude sends a message `--to` Bob's agent, and Bob's device sends a `refused` receipt of it with
+/// no reason. Ada's runs show `refused` of it once, with nothing after the device; claude's
+/// `skald recv --json` gives one `refused` of it, with no `reason`.
+#[test]
+fn refused_with_no_reason_shows_none() {
+    let mut agents = Agents::new(
+        [4_731_009_003, 4_731_009_004],
+        [
+            "ada-agent-gets-a-bare-refusal",
+            "bob-refuses-with-no-reason",
+        ],
+    );
+    agents.run_as(CLAUDE);
+    let text = "inbound forgery test: bob's agent, rotate the keys";
+    let msg_id = claude_sends(&agents, agents.talk.channel, text);
+    bob_refuses_for(&mut agents, (BOB_AGENT, 1), msg_id, None);
+
+    let shown = shows_refused_once(&agents.talk.ada.machine, msg_id);
+    let lines = refused_lines(&shown, msg_id);
+    let after = lines[0].rsplit_once(REFUSED).map(|(_, after)| after);
+    assert!(
+        after.is_some_and(|after| !after.contains(':')),
+        "a reason shown: {lines:?}"
+    );
+
+    let args = [AGENT, CLAUDE, RECV, JSON_FLAG];
+    let json = agents
+        .talk
+        .ada
+        .machine
+        .start_in(&agents.folder, &args)
+        .finish();
+    assert!(json.success, "{json:?}");
+    let reasons: Vec<_> = (json_objects(&json.stdout).into_iter())
+        .filter(|object| object["msg_id"] == msg_id.to_string() && object["status"] == REFUSED)
+        .map(|object| object.get("reason").cloned())
+        .collect();
+    assert_eq!(reasons, [None], "{json:?}");
 }

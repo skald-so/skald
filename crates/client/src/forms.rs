@@ -288,14 +288,14 @@ impl Status {
     }
 
     /// The `refused` that the device `device`, named `device_name` if known, gives now to the
-    /// message `msg_id` in `channel` of `space` for `reason`, its `to` agent's, as JSON.
+    /// message `msg_id` in `channel` of `space` for `reason`, its `to` agent's, if any, as JSON.
     pub fn refused_by_device(
         msg_id: MessageId,
         at: (SpaceId, ChannelId),
         device: (DeviceId, Option<String>),
-        reason: &str,
+        reason: Option<&str>,
     ) -> String {
-        Self::given(REFUSED, msg_id, at, device, Some(reason.to_owned()))
+        Self::given(REFUSED, msg_id, at, device, reason.map(str::to_owned))
     }
 
     /// [`Status::from_device`], with the `to` agent's device's `reason`, if any.
@@ -325,17 +325,20 @@ impl Status {
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {
         let device = self.device.as_deref().unwrap_or("of the channel");
         let problem = self.problem.as_deref().map(printable).unwrap_or_default();
-        let reason = self.reason.as_deref().map(printable);
+        // A `refused` with no problem is the `to` agent's, by its device's receipt.
+        let by_agent = self.problem.is_none();
+        let reason =
+            (self.reason.as_deref()).map_or_else(String::new, |it| format!(": {}", printable(it)));
         Some(match (form, self.status.as_str()) {
             (Form::Full, status) => {
-                let what = match (status, reason) {
-                    (REFUSED, Some(reason)) => {
-                        format!("refused by its agent on the device {device}: {reason}")
+                let what = match status {
+                    REFUSED if by_agent => {
+                        format!("refused by its agent on the device {device}{reason}")
                     }
-                    (EXPIRED, _) => format!("expired before the device {device} got it"),
-                    (REFUSED, _) => format!("refused for the device {device}: {problem}"),
-                    (REPLIED, _) => format!("replied from the device {device}"),
-                    (READ, _) => format!("read by its agent on the device {device}"),
+                    EXPIRED => format!("expired before the device {device} got it"),
+                    REFUSED => format!("refused for the device {device}: {problem}"),
+                    REPLIED => format!("replied from the device {device}"),
+                    READ => format!("read by its agent on the device {device}"),
                     _ => format!("delivered to the device {device}"),
                 };
                 match &self.channel {
@@ -355,10 +358,10 @@ impl Status {
                 );
                 format!("skald: #{reference} expired before {name} got it")
             }
-            (Form::Short, REFUSED) => match reason {
-                Some(reason) => format!("skald: #{reference} refused by its agent: {reason}"),
-                None => format!("skald: #{reference} refused: {problem}"),
-            },
+            (Form::Short, REFUSED) if by_agent => {
+                format!("skald: #{reference} refused by its agent{reason}")
+            }
+            (Form::Short, REFUSED) => format!("skald: #{reference} refused: {problem}"),
             (Form::Short, _) => return None,
             (Form::Json, _) => {
                 let mut fields = json!({
@@ -620,21 +623,33 @@ mod tests {
             refused.shown(Form::Short, "6bx7").unwrap(),
             "skald: #6bx7 refused: not-a-member\\u{7}"
         );
-        let mut by_agent = status(REFUSED);
-        by_agent.reason = Some("off its allowlist\u{7}".to_owned());
-        assert_eq!(
-            by_agent.shown(Form::Full, "6bx7").unwrap(),
-            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
-             01a1dcab-ee8a-7872-9adc-6efd0851e3ee: refused by its agent on the device \
-             a90f5ea9-75e5-899a-90ec-3a09f33aebdf: off its allowlist\\u{7}"
-        );
-        assert_eq!(
-            by_agent.shown(Form::Short, "6bx7").unwrap(),
-            "skald: #6bx7 refused by its agent: off its allowlist\\u{7}"
-        );
         let json = |status: &Status| -> Value {
             serde_json::from_str(&status.shown(Form::Json, "6bx7").unwrap()).unwrap()
         };
+        // The `to` agent's `refused`, with its reason and with none.
+        let mut by_agent = status(REFUSED);
+        for (reason, tail) in [
+            (Some("off its allowlist\u{7}"), ": off its allowlist\\u{7}"),
+            (None, ""),
+        ] {
+            by_agent.reason = reason.map(str::to_owned);
+            assert_eq!(
+                by_agent.shown(Form::Full, "6bx7").unwrap(),
+                "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
+                 01a1dcab-ee8a-7872-9adc-6efd0851e3ee: refused by its agent on the device \
+                 a90f5ea9-75e5-899a-90ec-3a09f33aebdf"
+                    .to_owned()
+                    + tail
+            );
+            assert_eq!(
+                by_agent.shown(Form::Short, "6bx7").unwrap(),
+                format!("skald: #6bx7 refused by its agent{tail}")
+            );
+            assert_eq!(
+                json(&by_agent).get("reason"),
+                reason.map(|it| json!(it)).as_ref()
+            );
+        }
         assert_eq!(
             json(&delivered),
             json!({
@@ -651,7 +666,6 @@ mod tests {
             })
         );
         assert_eq!(json(&refused)["problem"], "not-a-member\u{7}");
-        assert_eq!(json(&by_agent)["reason"], "off its allowlist\u{7}");
         assert_eq!(json(&replied)["status"], REPLIED);
 
         expired.channel = None;
