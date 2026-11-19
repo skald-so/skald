@@ -524,6 +524,7 @@ pub fn vectors() -> Vec<Vector> {
                 problem: "epoch-mismatch".to_owned(),
             },
         ),
+        vector("Frame `link-notice`", Frame::Push(Push::LinkNotice)),
         vector(
             "HTTPS proof",
             RequestProof {

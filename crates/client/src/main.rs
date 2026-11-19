@@ -48,6 +48,7 @@ mod intake;
 mod key_chain;
 mod key_packages;
 mod link_code;
+mod link_prompt;
 mod lock;
 mod mailbox;
 mod mcp;
@@ -677,6 +678,21 @@ impl Command {
             )
     }
 
+    /// Whether a run of it says which devices wait for linking ([`link_prompt`]): one that
+    /// reaches the server from a linked device, or a tool call of the MCP server.
+    fn prompts(&self) -> bool {
+        self.connects()
+            || matches!(
+                self,
+                Command::CreateServiceAgent { .. }
+                    | Command::CreateServiceToken { .. }
+                    | Command::ServiceTokens { .. }
+                    | Command::RevokeServiceToken { .. }
+                    | Command::SignOut
+            )
+            || matches!(self, Command::Mcp { call: Some(call), .. } if *call != mcp::Call::Register)
+    }
+
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
     fn traces(&self) -> bool {
         matches!(
@@ -779,6 +795,7 @@ fn main() -> ExitCode {
         key_storage: cli.key_storage,
         agent: cli.agent,
         command: cli.command,
+        said: link_prompt::Said::default(),
     };
     if let Err(err) = operation.agent() {
         return exit(Err(err));
@@ -844,6 +861,7 @@ fn link(operation: Operation, starts: bool) -> ExitCode {
             command: Command::LinkStep { step },
             state_dir: operation.state_dir.clone(),
             agent: None,
+            said: link_prompt::Said::default(),
             ..operation
         };
         if held.is_none() {
@@ -876,6 +894,10 @@ struct Operation {
     key_storage: secrets::Storage,
     agent: Option<String>,
     command: Command,
+    /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
+    /// runs `skald recv` again and again, and says each once.
+    #[serde(skip)]
+    said: link_prompt::Said,
 }
 
 impl Operation {
@@ -908,12 +930,20 @@ fn perform(operation: Operation) -> Result<(), String> {
         state_dir,
         key_storage,
         command,
+        said,
         ..
     } = operation;
     if let Ok(dir) = state::dir(state_dir.clone()) {
         // A grant the device took waits for the server to store its certificate.
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
+        }
+        if command.prompts() {
+            let json = matches!(
+                command,
+                Command::Recv { json: true, .. } | Command::Send { json: true, .. }
+            );
+            link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
         // An MCP server says it once, to its agent CLI's log, not in a tool's result.
         if !matches!(
@@ -1134,19 +1164,30 @@ fn perform(operation: Operation) -> Result<(), String> {
 }
 
 /// One run of `skald recv` for `operation`, a `skald recv --wait`, which leaves its connection to
-/// watch ([`wait`]): whether it showed what the wait waits for.
+/// watch ([`wait`]), and the devices waiting for linking it did not say yet ([`link_prompt`]):
+/// whether it showed what the wait waits for.
 fn received(operation: &Operation) -> Result<bool, String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
-    recv::run(
+    let shown = recv::run(
         &dir,
         operation.key_storage,
         settings,
         agent.as_ref(),
         (true, operation.json()),
-    )
+    )?;
+    // After the run, so that a `link-notice` it read is in what the server gives.
+    let prompted = link_prompt::show(
+        &dir,
+        operation.key_storage,
+        settings,
+        operation.json(),
+        &operation.said,
+    );
+    // The person's wait shows it as a warning; an agent's waits for a message.
+    Ok(shown || (prompted && agent.is_none()))
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an

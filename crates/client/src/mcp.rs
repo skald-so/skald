@@ -343,6 +343,7 @@ impl Settings {
                 relayed: false,
                 call: Some(call),
             },
+            said: crate::link_prompt::Said::default(),
         }
     }
 

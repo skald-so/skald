@@ -40,14 +40,15 @@ impl Entry {
         }
     }
 
-    /// The entry `push` carries: none for a `space-notice` or a type this version does not know.
+    /// The entry `push` carries: none for a `space-notice`, a `link-notice` or a type this version
+    /// does not know.
     pub fn of(push: Push) -> Option<Self> {
         match push {
             Push::Message { seq, envelope } => {
                 Some(Self::Message(seq.get(), envelope.bytes().to_vec()))
             }
             Push::Status { seq, status } => Some(Self::Status(seq.get(), status)),
-            Push::SpaceNotice { .. } | Push::Unknown(_) => None,
+            Push::SpaceNotice { .. } | Push::LinkNotice | Push::Unknown(_) => None,
         }
     }
 }

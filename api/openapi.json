@@ -710,7 +710,7 @@
       "get": {
         "operationId": "getWaitingDevices",
         "summary": "The account's devices waiting for linking",
-        "description": "The devices of the session's account with an open run (docs/protocol/membership.md, \"Link code\"), by the kind and `name` they registered with: what a linked device tells its user to link. Only a prompt: a device takes the new device's keys only from the run.",
+        "description": "The devices of the session's account with an open run (docs/protocol/membership.md, \"Link code\"), by the kind and `name` they registered with: what a linked device tells its user to link, on each command that reaches the server and on a `link-notice` (docs/protocol/delivery.md, \"Frames\"). Only a prompt: a device takes the new device's keys only from the run.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3761,7 +3761,7 @@
       "get": {
         "operationId": "streamMailbox",
         "summary": "Stream the mailbox",
-        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session or service token ends or its device is revoked. A service token needs the `receive` permission, and gets notices of its space only. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
+        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry, `space-notice` and `link-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session or service token ends or its device is revoked. A service token needs the `receive` permission, and gets notices of its space only and no `link-notice`. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3878,7 +3878,7 @@
       "post": {
         "operationId": "pollMailbox",
         "summary": "Long-poll the mailbox",
-        "description": "Acks the device's mailbox up to the `sync` frame's cursor and answers a `batch` of the entries after it, in `seq` order, and a `space-notice` for each space with a roster revision stored since the device's previous long-poll answer (docs/protocol/delivery.md, \"Mailbox\"). It answers at once when it has some or `wait` is 0; otherwise with the first to come within `wait`, through any instance, or an empty `batch` at its end. A waiting long-poll whose session or service token ends or whose device is revoked ends with `401`, as a new request would. A service token needs the `receive` permission, and gets notices of its space only.",
+        "description": "Acks the device's mailbox up to the `sync` frame's cursor and answers a `batch` of the entries after it, in `seq` order, a `space-notice` for each space with a roster revision stored since the device's previous long-poll answer, and a `link-notice` if a run of a device of the account has opened since then and is still open (docs/protocol/delivery.md, \"Mailbox\"). It answers at once when it has some or `wait` is 0; otherwise with the first to come within `wait`, through any instance, or an empty `batch` at its end. A waiting long-poll whose session or service token ends or whose device is revoked ends with `401`, as a new request would. A service token needs the `receive` permission, and gets notices of its space only and no `link-notice`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -6516,7 +6516,7 @@
       "get": {
         "operationId": "openWebSocket",
         "summary": "WebSocket opening request",
-        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there) and, from the connection's first `sync`, sends its device's mailbox (\"Mailbox\" there). Once the server stores a roster revision, it sends `space-notice` on each connection of a device of an account the revision lists (\"Frames\" there). A connection on a service token's challenge sends only with the token's `send` permission, in its channels, gets notices of its space only, and gets nothing of its mailbox, its `sync` and `ack` ignored, without its `receive` permission.",
+        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there) and, from the connection's first `sync`, sends its device's mailbox (\"Mailbox\" there). Once the server stores a roster revision, it sends `space-notice` on each connection of a device of an account the revision lists, and once a run of a device opens, `link-notice` on each connection of a device session of its account (\"Frames\" there). A connection on a service token's challenge sends only with the token's `send` permission, in its channels, gets notices of its space only, and gets nothing of its mailbox, its `sync` and `ack` ignored, without its `receive` permission.",
         "parameters": [
           {
             "name": "Sec-WebSocket-Protocol",

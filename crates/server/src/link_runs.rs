@@ -2,7 +2,9 @@
 //! between sessions of one account, as the bytes it got, and never sees the code. A hello naming a
 //! device of the account without a certificate opens the device's run and replaces its open one;
 //! later messages go by the run's `session`. A run ends on a `link-abort` from either side, once its
-//! device has a certificate and at its expiry; a sweep deletes the runs that ended so.
+//! device has a certificate and at its expiry; a sweep deletes the runs that ended so. A run that
+//! opens sends each connection of the account's device sessions a `link-notice`, through any
+//! instance.
 
 use std::time::Duration;
 
@@ -12,11 +14,12 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse as _;
 use serde::{Deserialize, Serialize};
-use skald_proto::{Cbor as _, DeviceId, LinkMessage};
+use skald_proto::{AccountId, Cbor as _, DeviceId, LinkMessage};
 use sqlx::{PgExecutor, PgPool};
 
 use crate::AppState;
 use crate::devices::{base64, bytes};
+use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
 use crate::sweeps::{self, PAGE, PAUSE};
 
@@ -132,7 +135,14 @@ pub(crate) async fn open(
     if opened.rows_affected() == 0 {
         return Err(Refusal::LinkSessionTaken);
     }
+    let account_id: AccountId = account.parse().expect("a signed-in account ID");
+    state
+        .instance
+        .tell(&mut tx, &[Event::Linking(account_id)])
+        .await
+        .map_err(failed)?;
     tx.commit().await.map_err(failed)?;
+    state.notices.link(account_id);
     Ok(StatusCode::CREATED.into_response())
 }
 
@@ -260,6 +270,53 @@ pub(crate) async fn waiting(State(state): State<AppState>, SignedIn(account): Si
         })
         .collect();
     Ok(Json(WaitingDevices { devices }).into_response())
+}
+
+/// Whether `account` has an open run of a link code that opened since the previous call for
+/// `device`, any open run at the first call; records the latest, so that the next call gives only
+/// a later one.
+pub(crate) async fn since_last_answer(
+    db: &PgPool,
+    device: DeviceId,
+    account: AccountId,
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(i64,)> = sqlx::query_as(concat!(
+        "WITH latest AS (
+             SELECT max(r.id) AS run_id FROM link_runs r JOIN devices d ON d.id = r.device_id
+             WHERE r.account_id = $2::uuid AND ",
+        open!(),
+        "
+         )
+         INSERT INTO long_poll_link_runs (device_id, run_id)
+         SELECT $1::uuid, run_id FROM latest WHERE run_id IS NOT NULL
+         ON CONFLICT (device_id) DO UPDATE SET run_id = EXCLUDED.run_id
+         WHERE long_poll_link_runs.run_id < EXCLUDED.run_id
+         RETURNING run_id"
+    ))
+    .bind(device.to_string())
+    .bind(account.to_string())
+    .fetch_optional(db)
+    .await?;
+    Ok(found.is_some())
+}
+
+/// The accounts of `accounts`, account IDs in their text form, with an open run.
+pub(crate) async fn linking(
+    db: &PgPool,
+    accounts: &[String],
+) -> Result<Vec<AccountId>, sqlx::Error> {
+    let found: Vec<(String,)> = sqlx::query_as(concat!(
+        "SELECT DISTINCT r.account_id::text FROM link_runs r JOIN devices d ON d.id = r.device_id
+         WHERE r.account_id = ANY($1::text[]::uuid[]) AND ",
+        open!()
+    ))
+    .bind(accounts)
+    .fetch_all(db)
+    .await?;
+    Ok(found
+        .into_iter()
+        .map(|(account,)| account.parse().expect("a stored account ID"))
+        .collect())
 }
 
 /// Looks for runs that ended at their expiry or once their device has a certificate, as

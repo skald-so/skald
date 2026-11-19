@@ -34,6 +34,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `history`](#frame-history)
 - [Frame `history-stored`](#frame-history-stored)
 - [Frame `history-refused`](#frame-history-refused)
+- [Frame `link-notice`](#frame-link-notice)
 - [HTTPS proof](#https-proof)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
@@ -592,6 +593,18 @@ c1c2c3c4c5c6c7c8c9cacbcccdcecf
 
 ```hex
 830d066e65706f63682d6d69736d61746368
+```
+
+## Frame `link-notice`
+
+```cbor-diag
+[
+  14
+]
+```
+
+```hex
+810e
 ```
 
 ## HTTPS proof
