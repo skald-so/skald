@@ -400,6 +400,18 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1),
         PRIMARY KEY (channel, recipient)
     ) STRICT",
+    // The limit on replies without a human (`docs/protocol/README.md`, "Content"): the `hops` of
+    // each kept message and own message waiting for the server, none for one an older client kept;
+    // and, for each agent in each space, the highest `hops` of the messages handed over to it since
+    // the device last sent a message as it, no row when none was.
+    "ALTER TABLE kept ADD COLUMN hops INTEGER CHECK (hops >= 0);
+    ALTER TABLE own_message ADD COLUMN hops INTEGER CHECK (hops >= 0);
+    CREATE TABLE agent_hops (
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        highest INTEGER NOT NULL CHECK (highest >= 0),
+        PRIMARY KEY (space, agent)
+    ) STRICT",
 ];
 
 /// The first `seq` the device gives its own messages it keeps, above any `seq` of its mailbox, so
@@ -597,6 +609,8 @@ pub struct Kept {
     /// How long it waits for an agent, and can be replied to, after the device wrote its entry, in
     /// seconds.
     pub wait: u64,
+    /// Its content's `hops`.
+    pub hops: u64,
     pub agents: Vec<String>,
     /// The `replied` it gives a message the device sent, if it is such a reply.
     pub replied: Option<Replied>,
@@ -2100,8 +2114,9 @@ impl State {
     }
 
     /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
-    /// reply to it, and that its `read` receipt is due if `agent` is its `to`, or, for an own
-    /// message of the device's, that it is `read`, at once.
+    /// reply to it, counts its `hops` for the agent's next send ([`State::handed_hops`]), and that
+    /// its `read` receipt is due if `agent` is its `to`, or, for an own message of the device's,
+    /// that it is `read`, at once.
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
@@ -2116,6 +2131,12 @@ impl State {
             params![seq, agent],
         )?;
         tx.execute(
+            "INSERT INTO agent_hops (space, agent, highest)
+             SELECT space, ?2, hops FROM kept WHERE seq = ?1 AND hops IS NOT NULL
+             ON CONFLICT DO UPDATE SET highest = max(highest, excluded.highest)",
+            params![seq, agent],
+        )?;
+        tx.execute(
             "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
             params![seq, agent],
         )?;
@@ -2123,6 +2144,24 @@ impl State {
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The highest `hops` of the messages handed over to the agent `agent` in the space `space`
+    /// since the device last sent a message as it, if any was.
+    pub fn handed_hops(&self, space: SpaceId, agent: &str) -> Result<Option<u64>, Error> {
+        let highest: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT highest FROM agent_hops WHERE space = ?1 AND agent = ?2",
+                params![space.to_string(), agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        highest
+            .map(|highest| {
+                u64::try_from(highest).map_err(|_| Error::Malformed(format!("the hops {highest}")))
+            })
+            .transpose()
     }
 
     /// The messages the person, or else the agent `agent` in the space `space`, can reply to by
@@ -2439,9 +2478,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target)
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
          SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
-             ?7, ?8
+             ?7, ?8, ?9
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -2451,7 +2490,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             wait,
             kept.msg_id.to_string(),
             kept.channel.to_string(),
-            kept.target
+            kept.target,
+            // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
+            i64::try_from(kept.hops).unwrap_or(i64::MAX)
         ],
     )?;
     if let Some(replied) = &kept.replied {
@@ -2588,8 +2629,8 @@ fn sql_u64(value: u64) -> Result<i64, Error> {
 
 /// Adds `message` to the outbox, after those in it, records its counter as its channel's last, or
 /// for a copy as the last to its recipient there, and, unless it is a receipt, its space, channel,
-/// agent and `to` as those of its message ID, in `tx`; fails unless the counter is the one after
-/// that last.
+/// agent and `to` as those of its message ID, and that its agent sent a message, in `tx`; fails
+/// unless the counter is the one after that last.
 fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
     let Counted {
         outgoing,
@@ -2641,6 +2682,11 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
              ON CONFLICT DO NOTHING",
             params![msg_id, space, channel, agent, addressee],
         )?;
+        // The agent's next send counts only what is handed to it from now on.
+        tx.execute(
+            "DELETE FROM agent_hops WHERE space = ?1 AND agent = ?2",
+            params![space, agent],
+        )?;
     }
     Ok(())
 }
@@ -2675,8 +2721,8 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
     let replied = kept.replied.as_ref();
     tx.execute(
         "INSERT INTO own_message (msg_id, seq, space, channel, line, target, wait, person, sender,
-             addressed, addressee, read, replied, replied_status, replied_agent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             addressed, addressee, read, replied, replied_status, replied_agent, hops)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             kept.msg_id.to_string(),
             seq,
@@ -2693,6 +2739,7 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
             replied.map(|replied| replied.msg_id.to_string()),
             replied.map(|replied| replied.status.clone()),
             replied.and_then(|replied| replied.agent.clone()),
+            sql_u64(kept.hops)?,
         ],
     )?;
     Ok(())
@@ -2706,8 +2753,8 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     let msg_id = msg_id.to_string();
     let now = sql_u64(unix_now())?;
     let kept = tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target)
-         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target FROM own_message
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
+         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops FROM own_message
          WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
         params![msg_id, now],
     )?;
@@ -3584,6 +3631,62 @@ pub(crate) mod tests {
         assert_eq!(state.channel_counter(channel).unwrap(), 2);
     }
 
+    /// The highest `hops` handed over to an agent in a space counts until the device sends a
+    /// message as that agent there; the person's messages and another agent's leave it, and a
+    /// `hops` past what SQLite holds counts as the highest it holds.
+    #[test]
+    fn handed_hops_are_the_highest_handed_over_since_the_agent_s_last_message() {
+        let dir = TestDir::new("state-hops");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let (space, other) = (space_of_kept(), SpaceId::generate());
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        state
+            .write_entries(&[(1, vec![1]), (2, vec![2]), (3, vec![3])])
+            .unwrap();
+        for (seq, hops) in [(1, 7), (2, 3), (3, u64::MAX)] {
+            let mut kept = kept(&["claude"]);
+            kept.hops = hops;
+            state.keep(seq, (sender, kept.msg_id), &kept).unwrap();
+        }
+        let channel = ChannelId::generate();
+        let sends = |counter: u64, (space, agent): (SpaceId, Option<&str>)| {
+            let message = Counted {
+                outgoing: Outgoing {
+                    msg_id: MessageId::generate(),
+                    recipient: None,
+                    space,
+                    envelope: vec![1],
+                    report: true,
+                },
+                channel,
+                counter,
+                agent: agent.map(str::to_owned),
+                addressee: None,
+            };
+            put(&state, &[&message]).unwrap();
+        };
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), None);
+
+        state.handed_over(2, "claude").unwrap();
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(3));
+        state.handed_over(1, "claude").unwrap();
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(7));
+        assert_eq!(state.handed_hops(space, "codex").unwrap(), None);
+        assert_eq!(state.handed_hops(other, "claude").unwrap(), None);
+        sends(1, (space, None));
+        sends(2, (space, Some("codex")));
+        sends(3, (other, Some("claude")));
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(7));
+        sends(4, (space, Some("claude")));
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), None);
+        state.handed_over(3, "claude").unwrap();
+        let highest = i64::MAX as u64;
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(highest));
+    }
+
     #[test]
     fn mailbox_entries_after_the_cursor_wait_in_the_inbox_until_shown() {
         let dir = TestDir::new("state-inbox");
@@ -3629,6 +3732,7 @@ pub(crate) mod tests {
             line: b"line".to_vec(),
             target: b"target".to_vec(),
             wait: 86_400,
+            hops: 0,
             agents: agents.iter().map(|&agent| agent.to_owned()).collect(),
             read: None,
             replied: None,

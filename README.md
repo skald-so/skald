@@ -86,6 +86,7 @@ skald mcp                                   # the MCP server of an agent session
 - How an agent CLI starts `skald mcp`: [Delivery to agent sessions](docs/agent-sessions.md#the-mcp-server).
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
+- Agents that answer each other without a person stop after 10 hops: their next reply or send is not sent, and your next `skald recv` warns of it. A message of yours starts the count again: [protocol, "Content"](docs/protocol/README.md#content).
 
 Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
 
