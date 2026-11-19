@@ -4034,6 +4034,85 @@
         }
       }
     },
+    "/service-token": {
+      "get": {
+        "operationId": "getServiceToken",
+        "summary": "The service token's own record",
+        "description": "The record and grant of the request's service token, until it ends as `POST /spaces/{space}/service-tokens` says. Records its use, to the minute.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token's record and grant.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnServiceToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The problem `https://skald.so/problems/not-signed-in`: the request has no service token, or an unknown or ended one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/session": {
       "get": {
         "operationId": "getSession",
@@ -5737,6 +5816,371 @@
         }
       }
     },
+    "/spaces/{space}/service-tokens": {
+      "get": {
+        "operationId": "listServiceTokens",
+        "summary": "The space's service tokens",
+        "description": "The space's tokens that have not ended, oldest first, without their values. Only for a session of an account that is an admin in the space's latest revision.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's tokens.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTokens"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createServiceToken",
+        "summary": "Create a service token",
+        "description": "Creates a token for a `service` device of the session's account that the space's latest revision lists in a service agent entry, while that account is an admin in it. A session alone creates none: the request carries the proof of a `client` device of the account, as `POST /mailbox/send` does. The server takes the grant (docs/protocol/README.md, \"Service grant\") only if it names the device, its `signer` is an admin's device in the latest revision (docs/protocol/membership.md, \"Roster\") whose certificate its signature verifies with, it lists only channels of that revision, and it has not expired. The token has the grant's channels and expiry. Its value is in this answer only: the server holds its SHA-256. A token ends at its expiry, at its revocation, once its device is revoked and once the space's latest revision lists its device in no service agent entry.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The token, with its value.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewServiceToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: `https://skald.so/problems/invalid-request` for a body that is not a `ServiceTokenRequest`, or `https://skald.so/problems/invalid-grant` for a grant that does not decode or fails a check. Nothing is stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and nothing is stored: `not-signed-in` for no device session of the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision, or the device is not a `service` device of the account with a certificate, not revoked, that the revision lists in a service agent entry. Nothing is stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/service-tokens/{token}": {
+      "delete": {
+        "operationId": "revokeServiceToken",
+        "summary": "Revoke a service token",
+        "description": "Ends a token of the space at once: every later request with it is refused. Only for a session of an account that is an admin in the space's latest revision. A web session's cookie only from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token's ID, as `GET /spaces/{space}/service-tokens` lists it.",
+            "schema": {
+              "$ref": "#/components/schemas/ServiceTokenId"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The token is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision, or a web session's request does not come from a page of the web URL. Nothing is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it; or the problem `https://skald.so/problems/no-service-token`: the space has no such token that has not ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/usage": {
       "get": {
         "operationId": "getSpaceUsage",
@@ -5954,7 +6398,7 @@
         }
       },
       "NoStore": {
-        "description": "`no-store`: the response holds a sign-in's codes, token or outcome.",
+        "description": "`no-store`: the response holds a sign-in's codes, token or outcome, or a service token.",
         "required": true,
         "schema": {
           "type": "string",
@@ -5973,6 +6417,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "The session token that the device flow gives: `Authorization: Bearer <token>`."
+      },
+      "serviceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A service device's token from `POST /spaces/{space}/service-tokens`: `Authorization: Bearer <token>`."
       }
     },
     "schemas": {
@@ -6717,6 +7166,80 @@
         },
         "additionalProperties": false
       },
+      "NewServiceToken": {
+        "description": "A new service token, with its value.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at",
+          "token"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "token": {
+            "description": "The token's value, for `Authorization: Bearer <token>`: 256 random bits in base64url without padding. No other answer holds it.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "OAuthError": {
         "description": "An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5).",
         "type": "object",
@@ -6761,6 +7284,79 @@
             "items": {
               "$ref": "#/components/schemas/Space"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnServiceToken": {
+        "description": "A service token's record and grant, as the token reads them.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at",
+          "grant"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/ServiceGrant"
           }
         },
         "additionalProperties": false
@@ -6901,6 +7497,133 @@
         "not": {
           "pattern": "(^|\\.)[0-9]+$"
         }
+      },
+      "ServiceGrant": {
+        "description": "A grant's CBOR (docs/protocol/README.md, \"Service grant\") in base64url without padding.",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "ServicePermission": {
+        "description": "What a token lets its device do: `send` and `receive` messages, and `queues`, work on every queue of its channels (docs/protocol/queues.md, \"Claim checks\").",
+        "type": "string",
+        "enum": [
+          "send",
+          "receive",
+          "queues"
+        ]
+      },
+      "ServiceToken": {
+        "description": "A token of a `service` device for a space, without its value.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServiceTokenId": {
+        "description": "A service token's ID: random, it reveals nothing of the token's value.",
+        "type": "string",
+        "format": "uuid"
+      },
+      "ServiceTokenRequest": {
+        "type": "object",
+        "required": [
+          "device",
+          "grant",
+          "permissions"
+        ],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/ServiceGrant"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServiceTokens": {
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceToken"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Session": {
         "type": "object",

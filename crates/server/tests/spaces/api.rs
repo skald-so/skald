@@ -26,7 +26,7 @@ pub fn the_spec() -> &'static Value {
 
 /// The spec's path that `path` matches, a parameter matching any segment, such as
 /// `/spaces/{space}/revisions` for `/spaces/<ID>/revisions`; `path` itself if none does.
-fn template(path: &str) -> String {
+pub fn template(path: &str) -> String {
     let segments: Vec<&str> = path.split('/').collect();
     let paths = the_spec()["paths"].as_object().expect("paths in the spec");
     let matches = |candidate: &str| {

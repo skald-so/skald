@@ -226,7 +226,10 @@ impl Route {
 }
 
 /// The latest roster revision of `space`, if it has one.
-pub(crate) async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>, sqlx::Error> {
+pub(crate) async fn latest(
+    db: impl sqlx::PgExecutor<'_>,
+    space: SpaceId,
+) -> Result<Option<Roster>, sqlx::Error> {
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid
          ORDER BY revision DESC LIMIT 1",
