@@ -7,6 +7,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use serde::Deserialize;
 use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, Unknown};
 
 use crate::connection::{Connection, Method};
@@ -14,6 +15,26 @@ use crate::device;
 use crate::devices::text;
 use crate::follow::{self, ATTEMPTS};
 use crate::state::State;
+
+/// The account's anchors objects: `POST` stores the device's, `GET` gives them all.
+pub const PATH: &str = "/account/anchors";
+
+/// `AccountAnchors` in the API spec.
+#[derive(Deserialize)]
+struct Account {
+    anchors: Vec<String>,
+}
+
+/// The anchors objects of `body`, an `AccountAnchors` answer, that decode.
+pub fn objects(body: &[u8]) -> Result<Vec<Anchors>, String> {
+    let account: Account = serde_json::from_slice(body).map_err(|_| {
+        "unexpected answer from the server: anchors objects without their list".to_owned()
+    })?;
+    Ok((account.anchors.iter())
+        .filter_map(|text| URL_SAFE_NO_PAD.decode(text).ok())
+        .filter_map(|bytes| Anchors::from_cbor(&bytes).ok())
+        .collect())
+}
 
 /// Who signs the anchors object: the account, the device and its keys.
 pub struct Signer<'k> {
@@ -106,7 +127,7 @@ fn store(
 ) -> Result<(), String> {
     let request = serde_json::json!({ "anchors": URL_SAFE_NO_PAD.encode(anchors) }).to_string();
     connection
-        .send_json_as(Method::Post, "/account/anchors", token, request.as_bytes())
+        .send_json_as(Method::Post, PATH, token, request.as_bytes())
         .map_err(|err| {
             format!(
                 "{err}; this device's anchors object waits for the server to take it: the next \

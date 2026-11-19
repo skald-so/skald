@@ -50,6 +50,7 @@ use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
 use crate::recv;
 use crate::secrets;
+use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, Outgoing, State};
 use crate::wraps;
@@ -210,12 +211,25 @@ fn sent(
             .map_err(|err| err.to_string())?;
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    let from = sender(&follower, &roster, server, agent)?;
+    // A service agent's message carries its token's grant.
+    let (from, grant) = match follower.service {
+        Some(_) => {
+            let grant = service::grant(&mut follower.connection, &follower.token)?;
+            let at = (follower.this, channel);
+            let from = service::sender(at, (&roster, &devices), &follower.own, server, &grant)?;
+            (from, Some(grant))
+        }
+        None => (sender(&follower, &roster, server, agent)?, None),
+    };
     groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
-        |msg_id, counter| content((&from, to.as_ref()), msg_id, counter, text),
+        |msg_id, counter| {
+            let mut content = content((&from, to.as_ref()), msg_id, counter, text);
+            content.grant = grant;
+            content
+        },
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
     let queued = queued(&follower.state, scope)?;
@@ -299,10 +313,12 @@ fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
     )
 }
 
-/// The admitted `client` devices of `channel` in `roster`, the space's latest revision, but `this`
-/// one, each with its valid certificate among `devices`: those of the accounts of the channel's
-/// members that their member's `excluded` does not list. The certificates of `own`'s account are
-/// checked against the master key it pinned, any other's against the revision's.
+/// The devices admitted to `channel` in `roster`, the space's latest revision, but `this` one,
+/// each with its valid certificate among `devices` ("Admitted devices"): the `client` devices of
+/// the accounts of the channel's members that their member's `excluded` does not list, and the
+/// `service` devices of the channel's `services`, of a member's account. The certificates of
+/// `own`'s account are checked against the master key it pinned, any other's against the
+/// revision's.
 pub fn admitted<'d>(
     own: &Own,
     this: DeviceId,
@@ -322,6 +338,17 @@ pub fn admitted<'d>(
         for cert in devices.of(roster, own, member) {
             let body = cert.body();
             if body.kind == DeviceKind::Client && body.device != this {
+                admitted.insert(body.device, cert);
+            }
+        }
+    }
+    for member in body.members.iter() {
+        for cert in devices.of(roster, own, member) {
+            let body = cert.body();
+            if body.kind == DeviceKind::Service
+                && body.device != this
+                && channel.services.contains(&body.device)
+            {
                 admitted.insert(body.device, cert);
             }
         }
@@ -984,10 +1011,12 @@ pub(crate) mod tests {
     }
 
     /// Admitted: the `client` devices with a valid certificate of the channel's members' accounts,
-    /// this one, a browser, one the member's `excluded` lists, one with a certificate by another
-    /// key and one of a member outside the channel aside.
+    /// and the `service` devices of the channel's `services` with one of a member's account; this
+    /// one, a browser, one the member's `excluded` lists, one with a certificate by another key,
+    /// one of a member outside the channel, a `service` device the channel does not list and one
+    /// with a forged certificate aside.
     #[test]
-    fn admitted_devices_are_the_channels_valid_client_devices_but_this_one() {
+    fn admitted_devices_are_the_channels_valid_client_and_service_devices_but_this_one() {
         let (ada, bob, carol) = (Account::new(), Account::new(), Account::new());
         let id = |cert: &Cert| cert.body().device;
         let (this, _, this_key) = ada.client();
@@ -997,7 +1026,12 @@ pub(crate) mod tests {
         let (barred, ..) = bob.client();
         let (forged, ..) = bob.device(DeviceKind::Client, &SigningKey::generate(), None);
         let (outside, ..) = carol.client();
-        let certs = vec![this, laptop, browser, phone, barred, forged, outside];
+        let (bot, bot_hpke, _) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (unlisted, ..) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (fake, ..) = ada.device(DeviceKind::Service, &SigningKey::generate(), None);
+        let certs = vec![
+            this, laptop, browser, phone, barred, forged, outside, bot, unlisted, fake,
+        ];
 
         let mut body = first(ada.id).body().clone();
         let mut bobs = member(bob.id, "bob", bob.master.public_key());
@@ -1007,6 +1041,7 @@ pub(crate) mod tests {
             .push(member(carol.id, "carol", carol.master.public_key()));
         let channel = ChannelId::generate();
         body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
+        body.channels[0].services = vec![id(&certs[7]), id(&certs[9])];
         let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
         let own = Own {
             account: ada.id,
@@ -1026,7 +1061,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             given,
-            BTreeMap::from([(id(&certs[1]), laptop_hpke), (id(&certs[3]), phone_hpke)])
+            BTreeMap::from([
+                (id(&certs[1]), laptop_hpke),
+                (id(&certs[3]), phone_hpke),
+                (id(&certs[7]), bot_hpke),
+            ])
         );
         let elsewhere = admitted(
             &own,

@@ -58,6 +58,7 @@ mod recv;
 mod revocations;
 mod secrets;
 mod send;
+mod service;
 mod service_agents;
 mod set_username;
 mod sign_in;
@@ -75,7 +76,7 @@ mod wraps;
 
 use std::io::{self, IsTerminal as _};
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -298,6 +299,10 @@ enum Command {
         address: String,
         #[command(flatten)]
         granted: service_agents::Granted,
+        /// Makes the agent a member of its channels: it runs with a state directory and is in
+        /// their MLS groups, so its token needs the receive permission.
+        #[arg(long)]
+        member: bool,
     },
     /// Creates a token of a service agent of a space this device follows, on a device of an admin
     /// of it, with a new grant; revokes the agent's earlier tokens. Writes the token to standard
@@ -735,6 +740,11 @@ fn main() -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
+    match service::from_env() {
+        Ok(Some(_)) => return as_service(operation),
+        Ok(None) => {}
+        Err(err) => return exit(Err(err)),
+    }
     if let Command::Mcp {
         relayed,
         call: None,
@@ -763,17 +773,49 @@ fn main() -> ExitCode {
     let starts = !one_shot && operation.command.starts_helper();
     match helper::route(&dir, &operation, create, starts) {
         Ok(helper::Route::Here(lock)) if operation.command.waits() => {
-            let waited = wait::here(&dir, &operation, lock);
-            mailbox::close_kept();
-            match waited {
-                Ok(Some(code)) => code,
-                Ok(None) => ExitCode::SUCCESS,
-                Err(err) => exit(Err(err)),
-            }
+            waits_here(&dir, &operation, lock)
         }
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
+        Err(err) => exit(Err(err)),
+    }
+}
+
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send` and `skald recv`, as
+/// no agent, in this process, without a helper, holding the lock of the state directory, which it
+/// creates if it is missing.
+fn as_service(operation: Operation) -> ExitCode {
+    if !matches!(
+        operation.command,
+        Command::Send { .. } | Command::Recv { .. }
+    ) || operation.agent.is_some()
+    {
+        return exit(Err(format!(
+            "with {} and {} set, skald runs as the service agent of the key secret, which only \
+             sends and receives: skald send and skald recv, without --agent",
+            service::KEY_VARIABLE,
+            service::TOKEN_VARIABLE
+        )));
+    }
+    let lock = state::dir(operation.state_dir.clone())
+        .and_then(|dir| lock::take(&dir, true, operation.timeout).map(|lock| (dir, lock)));
+    match lock {
+        Ok((dir, lock)) if operation.command.waits() => waits_here(&dir, &operation, lock),
+        // Held until the run exits.
+        Ok((_, _lock)) => exit(here(operation)),
+        Err(err) => exit(Err(err)),
+    }
+}
+
+/// Runs `operation`, a command that waits, in this process with `lock`, the lock of the state
+/// directory `dir` ([`wait::here`]), then closes the connection it kept.
+fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> ExitCode {
+    let waited = wait::here(dir, operation, lock);
+    mailbox::close_kept();
+    match waited {
+        Ok(Some(code)) => code,
+        Ok(None) => ExitCode::SUCCESS,
         Err(err) => exit(Err(err)),
     }
 }
@@ -911,8 +953,9 @@ fn perform(operation: Operation) -> Result<(), String> {
             space,
             address,
             granted,
+            member,
         } => synced(state_dir, key_storage, speaks, timeout, &space, false)
-            .and_then(|synced| service_agents::create(synced, &address, &granted)),
+            .and_then(|synced| service_agents::create(synced, &address, &granted, member)),
         Command::CreateServiceToken {
             space,
             address,

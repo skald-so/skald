@@ -1,17 +1,20 @@
 //! Anchors objects (`docs/protocol/membership.md`, "Anchors"): the server keeps the last one of each
 //! `client` device of an account that it took from a session of the account, also once the device
-//! is revoked, and gives them, as the bytes it got, only to the account's sessions.
+//! is revoked, and gives them, as the bytes it got, only to the account's sessions and to its
+//! service tokens with their device's proof.
 
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::response::IntoResponse as _;
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse as _, Response};
 use serde::{Deserialize, Serialize};
 use skald_proto::{AccountId, Anchors, Cbor as _, DeviceKind, Revocation};
 
 use crate::AppState;
 use crate::devices::{base64, bytes, taken};
-use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::refusal::{Answer, Caller, Refusal, SignedIn, answer, parse};
+use crate::requests;
 use crate::revocations;
 use crate::spaces::certs;
 
@@ -98,17 +101,31 @@ pub(crate) async fn store(
     )
 }
 
-/// `GET /account/anchors`: the last anchors object of each device of the session's account, as the
-/// bytes the server got.
-pub(crate) async fn list(State(state): State<AppState>, SignedIn(account): SignedIn) -> Answer {
-    let held: Vec<(Vec<u8>,)> = sqlx::query_as(
-        "SELECT anchors FROM devices WHERE account_id = $1::uuid AND anchors IS NOT NULL
-         ORDER BY id",
-    )
-    .bind(&account)
-    .fetch_all(&state.db)
+/// `GET /account/anchors`: the last anchors object of each device of the account, as the bytes the
+/// server got, to a session of the account, or to a service token of its with its device's proof.
+pub(crate) async fn list(
+    State(state): State<AppState>,
+    caller: Caller,
+    headers: HeaderMap,
+) -> Response {
+    let account = match caller {
+        Caller::Session(account) => account,
+        Caller::Token(_) => match requests::prove(&state, &headers).await {
+            Ok(proved) => proved.account.to_string(),
+            Err(refused) => return refused,
+        },
+    };
+    answer(async {
+        let held: Vec<(Vec<u8>,)> = sqlx::query_as(
+            "SELECT anchors FROM devices WHERE account_id = $1::uuid AND anchors IS NOT NULL
+             ORDER BY id",
+        )
+        .bind(&account)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|err| Refusal::Database("read the anchors objects", err))?;
+        let anchors = held.iter().map(|(bytes,)| base64(bytes)).collect();
+        Ok(Json(AccountAnchors { anchors }).into_response())
+    })
     .await
-    .map_err(|err| Refusal::Database("read the anchors objects", err))?;
-    let anchors = held.iter().map(|(bytes,)| base64(bytes)).collect();
-    Ok(Json(AccountAnchors { anchors }).into_response())
 }

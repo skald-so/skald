@@ -94,7 +94,7 @@ export const getListAnchorsUrl = () => {
 };
 
 /**
- * The last anchors object of each device of the session's account (docs/protocol/membership.md, "Anchors"), revoked devices included, each as the bytes the server got.
+ * The last anchors object of each device of the account (docs/protocol/membership.md, "Anchors"), revoked devices included, each as the bytes the server got: to a session of the account, or to a service token of its device with the device's proof. A service token without the proof gets none.
  * @summary The account's anchors objects
  */
 export const listAnchors = async (

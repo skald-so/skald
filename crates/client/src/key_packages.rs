@@ -61,16 +61,27 @@ pub fn state_key(secrets: &Secrets, sealed: &SealedState) -> Result<StateKey, St
 
 /// The device of `keys` keeps its KeyPackages on the server of `connection`, as the session
 /// `token`: it asks how many the server holds and, if it needs more, makes them in its MLS state in
-/// `state`, sealed under the state key in `secrets`, saves that state, then uploads them.
+/// `state`, sealed under the state key in `secrets`, saves that state, then uploads them. A
+/// `service` device, whose token counts none, asks with an upload of none.
 pub fn keep(
     connection: &mut Connection,
     token: &str,
-    state: &State,
+    (state, secrets): (&State, &Secrets),
     keys: &Keys,
-    secrets: &Secrets,
+    service: bool,
 ) -> Result<(), String> {
     let path = format!("/devices/{}/key-packages", keys.id());
-    let answer = connection.get_as(&path, token).map_err(text)?;
+    let answer = if service {
+        let none = serde_json::to_vec(&Upload {
+            key_packages: Vec::new(),
+            last_resort: None,
+        })
+        .expect("an upload is JSON");
+        connection.send_json_as(Method::Post, &path, token, &none)
+    } else {
+        connection.get_as(&path, token)
+    }
+    .map_err(text)?;
     let count: Count = serde_json::from_slice(&answer)
         .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())?;
     let (others, last) = wanted(&count);

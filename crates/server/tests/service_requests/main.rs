@@ -5,8 +5,9 @@
 //! connects over WebSocket, long-poll and SSE: reads and acks need the receive permission, sends,
 //! Commits included, the send permission and a channel of its grant. The token alone uploads
 //! GroupInfo and its own device's KeyPackages, and reads the space's revisions, devices and
-//! revocations, its grant, and the GroupInfo and history of its channels; it is refused every
-//! other request. Its connections and waiting requests end when it ends, on every instance.
+//! revocations, its grant, and the GroupInfo and history of its channels; with the proof, it also
+//! reads its account's anchors objects. It is refused every other request. Its connections and
+//! waiting requests end when it ends, on every instance.
 //! Against a `skald-server` as in the tests of service tokens, whose stage these tests share: alice's
 //! `service` device, the bot, certified by her laptop and listed as `ci/deploy-bot`, with tokens
 //! that alice's session creates for `general`. Every response is checked against the OpenAPI spec
@@ -69,9 +70,14 @@ mod api;
 #[path = "../spaces/rosters.rs"]
 mod rosters;
 
+// The anchors objects and requests of the tests of anchors objects.
+#[path = "../anchors/objects.rs"]
+mod anchors;
+
 mod bot;
 
 mod alone;
+mod anchors_read;
 mod connecting;
 mod ends;
 mod group;

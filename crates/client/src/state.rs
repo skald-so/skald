@@ -1105,6 +1105,17 @@ impl State {
         self.insert_space(id, name, first, true)
     }
 
+    /// Records the space `id` named `name` that a `service` device follows from `anchor`, in CBOR,
+    /// the revision its key secret pins, as its anchor and last accepted revision; nothing waits.
+    pub fn follow_space(&self, id: SpaceId, name: &str, anchor: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO space (space, name, anchor, accepted, pending, personal)
+             VALUES (?1, ?2, ?3, ?3, NULL, 0)",
+            params![id.to_string(), name, anchor],
+        )?;
+        Ok(())
+    }
+
     fn insert_space(
         &self,
         id: SpaceId,

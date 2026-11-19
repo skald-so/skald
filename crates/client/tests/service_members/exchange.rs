@@ -8,7 +8,7 @@ use skald_proto::{DeviceId, MessageId, RawEnvelope};
 
 use crate::gaps::{assert_reported_once, bob_in, msg_id_of, second_dropped};
 use crate::joins::drop_entry;
-use crate::kit::{RECV, assert_listed_with, channels, latest, received, warnings_naming};
+use crate::kit::{RECV, assert_listed_with, channels, latest, line_of, received, warnings_naming};
 use crate::member::{Bot, JSON, assert_not_shown, shown_once, texts_of};
 use crate::service_kit::{BOT, entry_of};
 use crate::world::{ACME, run};
@@ -70,7 +70,15 @@ fn a_member_agent_is_listed_in_its_channel_and_gets_into_the_group() {
     }
     let listed = channels(&bot.talk.ada.machine, ACME);
     assert!(listed.success, "{listed:?}");
-    assert_listed_with(&listed, bot.channel(), &[BOT], &[]);
+    assert_listed_with(&listed, bot.channel(), &[], &[]);
+    // The agent's name holds a `/`, which splits it into two words of `assert_listed_with`.
+    let line = line_of(&listed, bot.channel());
+    let names: Vec<&str> = line.split([' ', ',']).collect();
+    assert!(
+        names.contains(&BOT),
+        "{} without {BOT}: {listed:?}",
+        bot.channel()
+    );
 }
 
 /// With the agent in the group, Ada's message reaches the agent's run once, from Ada's address and

@@ -230,10 +230,11 @@ A service agent's server token, and its device key with the token: they usually 
 - Send and enqueue tasks as the service agent, at the `service` trust level, in the channels its grant lists ([Service grant](protocol/README.md#service-grant), [queues.md](protocol/queues.md#security-considerations)).
 - Ask the person questions as the service agent and read the answers ([agents.md](protocol/agents.md#security-considerations)).
 - Read what is sent to the device under `hpke`; for a member device, also open and run the tasks it claims and read what its keys reach: its channels, their history and presence ([queues.md](protocol/queues.md#security-considerations)).
+- Read the account's anchors objects: the IDs of its spaces, the revisions its devices accepted and its personal space ([Anchors](protocol/membership.md#anchors)).
 
 **Defenses:**
 - A token alone reads, acks and sends nothing, and uploads no history: those take a proof by the device's key on a challenge of the token ([Connecting](protocol/delivery.md#connecting), [Uploads](protocol/membership.md#uploads)). It reads the mailbox only with its `receive` permission, and sends, Commits included, only with its `send` permission in its grant's channels ([Send](protocol/delivery.md#send)).
-- A token makes no request of the account: no session, registration, certificate, revocation, revision, invite or token, and no other device's KeyPackages, so it adds no device ([api/openapi.json](../api/openapi.json)).
+- Beyond reading its anchors objects, a token makes no request of the account: no session, registration, certificate, revocation, revision, invite or token, and no other device's KeyPackages, so it adds no device ([api/openapi.json](../api/openapi.json)).
 - A token alone signs nothing: it asks no question, signs no task, and creates, changes or deletes no queue ([agents.md](protocol/agents.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device releases, restarts and cancels no task, so neither leak makes an `at-most-once` task run twice ([Claims and leases](protocol/queues.md#claims-and-leases), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device sends only as its roster entry, only in its grant's channels until the grant expires, and never answers a question ([Envelope](protocol/README.md#envelope), [Service grant](protocol/README.md#service-grant), [Person](protocol/agents.md#person)).
