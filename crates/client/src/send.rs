@@ -8,11 +8,13 @@
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
 //! there waits for the server (`docs/protocol/membership.md`, "Admitted devices"), or no other
-//! device is in the group and nothing on this device gets the message. The content is from the
-//! person address or the agent's, to the agent
-//! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
-//! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
-//! "Content").
+//! device is in the group, nothing on this device gets the message and no service agent gets a
+//! copy. The content is from the person address or the agent's, to the agent `--to` names or, for
+//! `--all`, to no one in particular, with `hops` 0, the device's next `counter` in the channel and
+//! an A2A message with the text (`docs/protocol/README.md`, "Content"). With it go its copies under
+//! `hpke` to service agents outside the channel's group ([`crate::copies`]), each with the counter
+//! the device keeps for that agent in the channel; the run warns when it sends an agent its first
+//! copy of the channel's messages. A `service` device sends none: its token gets no grants.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
@@ -45,6 +47,7 @@ use tungstenite::stream::MaybeTlsStream;
 
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{self, WebSocket, printable};
+use crate::copies;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::forms::{self, References};
@@ -278,20 +281,27 @@ pub fn send_synced(
             .map_err(|err| err.to_string())?;
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    // A service agent's message carries its token's grant.
-    let (from, grant) = match follower.service {
+    // A service agent's message carries its token's grant; only a member's has copies.
+    let (from, grant, readers) = match follower.service {
         Some(_) => {
             let grant = service::grant(&mut follower.connection, &follower.token)?;
             let at = (follower.this, channel);
             let from = service::sender(at, (&roster, &devices), &follower.own, server, &grant)?;
-            (from, Some(grant))
+            (from, Some(grant), Vec::new())
         }
-        None => (sender(&follower, &roster, server, agent)?, None),
+        None => {
+            let from = sender(&follower, &roster, server.clone(), agent)?;
+            let to = draft.to.as_ref();
+            let readers =
+                copies::readers(&mut follower, (&roster, &devices), (channel, to), &server);
+            (from, None, readers)
+        }
     };
-    groups::encrypt(
+    let (_, first) = groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
+        &readers,
         |msg_id, counter| {
             let mut content = content(&from, draft, msg_id, counter);
             content.grant = grant;
@@ -299,6 +309,9 @@ pub fn send_synced(
         },
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
+    for reader in first {
+        eprintln!("skald: warning: {}", copies::first_copy(reader, channel));
+    }
     let queued = queued(&follower.state, scope)?;
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
     match Link::new(&follower) {

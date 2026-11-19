@@ -659,6 +659,16 @@ export interface StoredRosterRevision {
 }
 
 /**
+ * A grant's CBOR (docs/protocol/README.md, "Service grant") in base64url without padding.
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type ServiceGrant = string;
+
+export interface ServiceGrants {
+  grants: ServiceGrant[];
+}
+
+/**
  * A service token's ID: random, it reveals nothing of the token's value.
  */
 export type ServiceTokenId = string;

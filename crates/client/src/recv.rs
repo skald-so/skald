@@ -1258,7 +1258,7 @@ fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
 
 /// [`valid_cert`] of `device` in `roster`, with the space's devices `devices` and the device's own
 /// account and pinned master key `own`.
-fn member_cert<'c>(
+pub fn member_cert<'c>(
     own: &Own,
     (roster, devices): (&'c Roster, &'c SpaceDevices),
     device: DeviceId,
@@ -1414,7 +1414,7 @@ fn check_service(
 }
 
 /// The service agent entry of `device` in `roster`, if it lists one.
-fn service_entry(roster: &Roster, device: DeviceId) -> Option<&ServiceAgent> {
+pub fn service_entry(roster: &Roster, device: DeviceId) -> Option<&ServiceAgent> {
     (roster.body().service_agents.iter()).find(|agent| agent.device == device)
 }
 

@@ -1,6 +1,7 @@
 //! Tokens of `service` devices for a space: an admin's session creates one, with the proof of one
 //! of its account's `client` devices and the device's grant (`docs/protocol/README.md`, "Service
-//! grant"); any admin of the space lists and revokes them, and a token reads its own record. The
+//! grant"); any admin of the space lists and revokes them, a token reads its own record, and the
+//! space's members get the grants of those that receive ([`grants`]). The
 //! value is given once and stored only as its SHA-256. A token ends at its expiry, at its
 //! revocation, once its device is revoked and once the space's latest revision lists its device in
 //! no service agent entry; its connections close then, on every instance. What a token reaches,
@@ -378,6 +379,29 @@ pub(crate) async fn list(State(state): State<AppState>, Gotten(found): Gotten) -
         .filter_map(|row| record(row, &roster))
         .collect();
     Ok(Json(Tokens { tokens }).into_response())
+}
+
+/// `ServiceGrants` in the spec.
+#[derive(Serialize)]
+struct Grants {
+    grants: Vec<String>,
+}
+
+/// `GET /spaces/<space>/service-grants`: the grants of the space's tokens that have not ended and
+/// have the receive permission, oldest first, for a session of an account that gets the space.
+pub(crate) async fn grants(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
+    let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT t.grant_cbor FROM service_tokens t JOIN devices d ON d.id = t.device_id
+         WHERE t.space_id = $1::uuid AND t.expires_at > now() AND NOT d.revoked
+             AND 'receive' = ANY(t.permissions)
+         ORDER BY t.created_at, t.id",
+    )
+    .bind(found.id.to_string())
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| Refusal::Database("read the service grants", err))?;
+    let grants = rows.iter().map(|(grant,)| base64(grant)).collect();
+    Ok(Json(Grants { grants }).into_response())
 }
 
 /// `DELETE /spaces/<space>/service-tokens/<token>`: ends that token of the space, for an admin's

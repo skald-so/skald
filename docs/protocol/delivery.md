@@ -131,11 +131,24 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
 | `not-a-member` | Comes from a device that may not send in `channel`, such as on a service token without the `send` permission or that does not list `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
-| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
+| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`, such as a `service` device without a token that has not ended, has the `receive` permission and lists `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
+
+### Copies to service agents
+A member device's message with an `a2a` body also goes under [`hpke`](README.md#scheme-hpke), with the same `msg_id`, to each `service` device that:
+- has a `service-agent` entry in the latest revision the sending device accepted, but is not in the channel's `services` there, even one that has not joined the group yet;
+- has a valid certificate ([Device checks](membership.md#device-checks));
+- has a grant from the server that lists `channel` and passes the checks of [Service grant](README.md#service-grant);
+- and only when the content has no `to`, or `to` names that entry.
+
+- The server gives the space's members the grants of its service tokens that have not ended and have the `receive` permission: `listServiceGrants` in the [OpenAPI spec](../../api/openapi.json). This is its word; the device checks each grant itself.
+- A `service` device sends no copies: a service token gets no grants.
+- Each copy's content has the `counter` the sending device keeps for that recipient device in the channel.
+- The sending device warns its user, naming the agent and the channel, when it starts sending a channel's copies to a `service` device it sent none of them before.
+- A refused copy is not retried; the device says so, and the message itself stays sent.
 
 ## Mailbox
 - The server keeps a mailbox for each device. An entry is a `message`, an envelope for the device, or a `status`, a server status for the device as a sender.
