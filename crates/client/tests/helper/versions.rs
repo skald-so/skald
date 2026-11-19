@@ -59,8 +59,7 @@ fn older_command_beside_a_newer_helper_fails_saying_to_run_it_again() {
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     let older = older();
     let before = talk.front.sent().len();
 

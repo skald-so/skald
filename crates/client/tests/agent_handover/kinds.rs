@@ -6,7 +6,7 @@ use crate::kit::received;
 use crate::lines::{AgentLine, agent_line, lines_referring_to};
 use crate::talk::{BOB_HOST, Line, assert_shows_once};
 use crate::world::{ACME, HOST};
-use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
+use crate::{Agents, CLAUDE, assert_handed_line, assert_not_handed};
 
 /// The texts Bob's device sends; none is anywhere else.
 const TO_ALL: &str = "the release branch is cut";
@@ -45,7 +45,7 @@ fn message_to_a_person_and_a_receipt_go_to_no_agent() {
 
     let claude = agents.run_as(CLAUDE).shown();
 
-    assert_handed_once(&claude, TO_ALL, to_all);
+    assert_handed_line(&claude, TO_ALL, to_all);
     assert_not_handed(&claude, TO_ADA);
     for id in [to_ada, receipt] {
         let handed: Vec<AgentLine> = (lines_referring_to(&claude, id).iter())

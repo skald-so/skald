@@ -45,6 +45,9 @@ pub enum Body {
     Receipt(Receipt),
 }
 
+/// What a [`Grant`]'s signature is labelled with.
+pub const GRANT_LABEL: &str = "skald grant";
+
 /// A space admin's permission for a service device to send in some channels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Grant {

@@ -42,9 +42,7 @@ fn first_send_starts_the_helper_and_later_commands_reuse_its_connection() {
     helped.assert_none();
     let since = talk.cloud().relay.mark();
 
-    helped.sent(&talk, FIRST);
-
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     helped.received();
     helped.sent(&talk, SECOND);
     assert_eq!(helped.helpers(), [helper], "not the same helper");
@@ -122,7 +120,14 @@ fn one_shot_flag_or_setting_starts_no_helper() {
     let channel = talk.channel.to_string();
     let since = talk.cloud().relay.mark();
 
-    let flagged = helped.run(&[ONE_SHOT, crate::fixtures::SEND, &channel, FIRST]);
+    let flagged = helped.run(&[
+        ONE_SHOT,
+        crate::fixtures::SEND,
+        "--all",
+        "--channel",
+        &channel,
+        FIRST,
+    ]);
 
     assert!(flagged.success, "{flagged:?}");
     helped.assert_none();
@@ -154,8 +159,7 @@ fn one_shot_runs_and_folder_bindings_go_through_a_running_helper_without_waiting
         false,
     );
     let helped = Helped::new(&talk.ada.machine);
-    helped.sent(&talk, FIRST);
-    let helper = helped.one_helper();
+    let helper = helped.helper_after_sending(&talk, &[], FIRST);
     let rule = dir_of(&talk.ada.machine, &format!("work/{RULE_FOLDER}"));
     let approved = dir_of(&talk.ada.machine, "work/approved");
     fs::write(
@@ -176,7 +180,17 @@ fn one_shot_runs_and_folder_bindings_go_through_a_running_helper_without_waiting
         finished
     };
 
-    quick(&[], &[ONE_SHOT, crate::fixtures::SEND, &channel, SECOND]);
+    quick(
+        &[],
+        &[
+            ONE_SHOT,
+            crate::fixtures::SEND,
+            "--all",
+            "--channel",
+            &channel,
+            SECOND,
+        ],
+    );
     quick(&[(ONE_SHOT_SETTING, "1")], &[RECV]);
     quick(&[], &[ADD_RULE, path(&rule), ACME]);
     let listed = helped.run(&[RULES]);

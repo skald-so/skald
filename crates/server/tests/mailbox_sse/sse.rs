@@ -2,19 +2,17 @@
 //! thread of its own so that a test can wait for each event with a deadline.
 
 use std::io::{BufRead, BufReader, Read};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use skald_proto::{Cbor, DeviceId, Frame, PROTOCOL_VERSION, Push, SpaceId, VERSION_HEADER};
 
-use crate::api::Person;
+use crate::api::{Person, the_spec};
 use crate::common::agent::{agent, get};
 use crate::common::device_flow::{DeviceFlow, text};
 use crate::common::devices::Device;
-use crate::common::spec::{operation_violations, spec};
+use crate::common::spec::operation_violations;
 use crate::common::{Response, Server};
 use crate::fixture::Fixture;
 use crate::https::{Https, PROOF};
@@ -44,12 +42,6 @@ pub enum Event {
     Closed,
     /// An event that is not one frame of those a stream sends.
     Bad(String),
-}
-
-/// The spec, read once.
-fn the_spec() -> &'static Value {
-    static SPEC: OnceLock<Value> = OnceLock::new();
-    SPEC.get_or_init(spec)
 }
 
 /// Checks that `response` to the opening of a stream conforms to the spec; an open stream's body

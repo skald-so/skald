@@ -89,13 +89,13 @@ fn send_beside_a_one_shot_wait_never_waits_and_what_it_caught_up_on_is_shown_by_
     let quick = start(
         &talk,
         QUICK.parse().expect("seconds"),
-        &[SEND, &channel, FIRST],
+        &[SEND, "--all", "--channel", &channel, FIRST],
     )
     .finish();
 
     assert!(quick.success, "it waited beside the wait: {quick:?}");
     assert_keeps_waiting(&mut waiting);
-    let (holder, _) = holding(&talk, LONG, &[SEND, &channel, SECOND]);
+    let (holder, _) = holding(&talk, LONG, &[SEND, "--all", "--channel", &channel, SECOND]);
     let (from_bob, channel_id, _) = bob_in(&talk);
     bob_sends(&mut talk, 1, BOB_SAYS);
     thread::sleep(PUSHED);

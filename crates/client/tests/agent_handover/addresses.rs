@@ -5,7 +5,7 @@ use crate::fixtures::SEND;
 use crate::kit::received;
 use crate::talk::Line;
 use crate::world::{ACME, AGENT, GLOBEX, HOST};
-use crate::{Agents, CLAUDE, CODEX, assert_handed_once, assert_not_handed};
+use crate::{Agents, CLAUDE, CODEX, assert_handed_line, assert_not_handed};
 
 /// The texts of these tests: Bob's device sends all but `SAID`, which Ada's device sends as codex;
 /// none is anywhere else.
@@ -51,7 +51,7 @@ fn to_names_this_device_s_agent_only_by_its_space_account_and_server() {
 
     let claude = agents.run_as(CLAUDE).shown();
 
-    assert_handed_once(&claude, TO_CLAUDE, ids[3]);
+    assert_handed_line(&claude, TO_CLAUDE, ids[3]);
     for text in [TO_BOBS, TO_GLOBEX, TO_ELSEWHERE] {
         assert_not_handed(&claude, text);
     }
@@ -68,7 +68,10 @@ fn agent_whose_only_run_is_a_send_gets_the_messages_that_come_after() {
     );
     let channel = agents.talk.channel.to_string();
     let sent = (agents.talk.ada.machine)
-        .start_in(&agents.folder, &[AGENT, CODEX, SEND, &channel, SAID])
+        .start_in(
+            &agents.folder,
+            &[AGENT, CODEX, SEND, "--all", "--channel", &channel, SAID],
+        )
         .finish();
     assert!(sent.success, "{sent:?}");
     let bob = agents.bob();
@@ -78,5 +81,5 @@ fn agent_whose_only_run_is_a_send_gets_the_messages_that_come_after() {
 
     let codex = agents.run_as(CODEX).shown();
 
-    assert_handed_once(&codex, TO_ALL, id);
+    assert_handed_line(&codex, TO_ALL, id);
 }
