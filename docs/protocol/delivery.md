@@ -134,6 +134,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 | `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`, such as a `service` device without a token that has not ended, has the `receive` permission and lists `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
+| `rate-limited` | Is a message over its sending device's rate on the server, counted as for `quota-exceeded`; never a handshake message ([Mailbox](#mailbox)) (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
 

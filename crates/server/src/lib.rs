@@ -78,6 +78,9 @@ pub const MAILBOX_LONGEST: u64 = 100 * 365 * 24 * 3_600;
 /// The longest history retention, in seconds: 100 years.
 pub const HISTORY_LONGEST: u64 = MAILBOX_LONGEST;
 
+/// The window of the send rate limit without a setting: a minute.
+pub const SEND_RATE_WINDOW: Duration = Duration::from_secs(60);
+
 /// How long to wait for a PostgreSQL connection, and for PostgreSQL to answer the health check.
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -131,6 +134,11 @@ pub struct Settings {
     /// The number of messages a space stores per calendar month in UTC (`docs/dev/architecture.md`,
     /// "Cloud limits"); no limit without it.
     pub monthly_messages_limit: Option<u64>,
+    /// The number of messages one device stores within [`Settings::send_rate_window`]
+    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    pub send_rate_limit: Option<u64>,
+    /// The sliding window of [`Settings::send_rate_limit`]; [`SEND_RATE_WINDOW`] without it.
+    pub send_rate_window: Option<Duration>,
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
@@ -436,6 +444,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,
+                send_rate: settings
+                    .send_rate_limit
+                    .map(|messages| mailboxes::SendRate {
+                        messages,
+                        window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
+                    }),
             },
             devices_limit: settings.devices_limit,
             service_agents_limit: settings.service_agents_limit,
