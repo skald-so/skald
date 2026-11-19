@@ -30,6 +30,8 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
+use super::relay::{answered_in_full, reset};
+
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
 
@@ -128,7 +130,7 @@ struct State {
     held_auths: usize,
 }
 
-/// What the front knows of one WebSocket connection.
+/// What the front knows of one connection.
 #[derive(Default)]
 struct Link {
     /// The device its `auth` names.
@@ -143,9 +145,24 @@ struct Link {
     noticed: AtomicBool,
     /// The end of catch-up it holds back until a `space-notice` comes, as it would forward it.
     held_end: Mutex<Option<Vec<u8>>>,
+    /// What the machine sent and what the server answered on it, while it is no WebSocket.
+    http: Mutex<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Link {
+    /// Keeps `bytes` of HTTP the machine sent, if `sent`, or the server answered.
+    fn http(&self, bytes: &[u8], sent: bool) {
+        let mut http = self.http.lock().expect("a connection's HTTP");
+        let kept = if sent { &mut http.0 } else { &mut http.1 };
+        kept.extend_from_slice(bytes);
+    }
+
+    /// Whether the server has answered every request the machine sent whole, as HTTP.
+    fn answered_in_full(&self) -> bool {
+        let http = self.http.lock().expect("a connection's HTTP");
+        answered_in_full(&http.0, &http.1)
+    }
+
     fn device(&self) -> Option<DeviceId> {
         *self.device.lock().expect("a connection's device")
     }
@@ -448,7 +465,14 @@ fn to_server(
     let mut buffer = [0; 16 * 1024];
     loop {
         let count = match machine.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => {
+                // The machine left a connection the server has answered in full: it ends with a
+                // reset.
+                if frames.is_none() && link.answered_in_full() {
+                    return reset(&server);
+                }
+                break;
+            }
             Ok(count) => count,
         };
         let chunk = &buffer[..count];
@@ -473,6 +497,7 @@ fn to_server(
                 frames = Some(chunk[head..].to_vec());
                 continue;
             }
+            link.http(chunk, true);
             if server.write_all(chunk).is_err() {
                 break;
             }
@@ -600,6 +625,7 @@ fn to_machine(
             continue;
         }
         if !upgrading.load(Ordering::SeqCst) {
+            link.http(chunk, false);
             if machine.write_all(chunk).is_err() {
                 break;
             }

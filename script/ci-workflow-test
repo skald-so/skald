@@ -31,6 +31,8 @@
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
 //     script/changed-parts and runs exactly when that job's workspace output is true, whatever the
 //     other outputs are, and on a push to dev;
+//   - before it starts PostgreSQL, it sets fsync = off and max_connections = 500 in
+//     $env:PGDATA\postgresql.conf, as script/lib/postgres.sh sets the tests' PostgreSQL;
 //   - before the tests, it starts the runner image's PostgreSQL service and waits for it, installs
 //     the packages of web/ and then, with their playwright-core, Chrome Headless Shell, which that
 //     playwright-core drives; the tests get the server through SKALD_TEST_DATABASE_URL;
@@ -441,6 +443,23 @@ const starts = before.findIndex((step) => {
   return /\bStart-Service\b/.test(text) && /['"]?postgresql\*['"]?/.test(text);
 });
 if (starts < 0) fail(`job ${key} does not start the runner image's PostgreSQL service, postgresql*, before its tests`);
+// The settings script/lib/postgres.sh gives the tests' PostgreSQL, in its configuration before it starts.
+const configured = (setting) =>
+  before.slice(0, starts + 1).some((step, i) => {
+    const lines = commands(step.run);
+    const until = i === starts ? lines.findIndex((line) => /\bStart-Service\b/.test(line)) : lines.length;
+    return lines
+      .slice(0, until)
+      .some((line) => /^\s*Add-Content\b/.test(line) && line.includes('"$env:PGDATA\\postgresql.conf"') && setting.test(line));
+  });
+for (const [name, setting] of [
+  ['fsync = off', /'fsync\s*=\s*off'/],
+  ['max_connections = 500', /'max_connections\s*=\s*500'/],
+]) {
+  if (starts >= 0 && !configured(setting)) {
+    fail(`job ${key} does not set ${name} in $env:PGDATA\\postgresql.conf before it starts PostgreSQL, as script/lib/postgres.sh sets it`);
+  }
+}
 const waits = before.findIndex(
   (step, i) => i >= starts && commands(step.run).some((line) => /pg_isready\b/.test(line) && /--host\s+127\.0\.0\.1\b/.test(line) && /--port\s+5432\b/.test(line)),
 );
