@@ -17,7 +17,7 @@ use crate::linking::{LINK, NewDevice, YES, link, says, start_link, typed};
 use crate::reading::{assert_history, sends, shown_history};
 use crate::talk::Talk;
 use crate::terminal::Shown;
-use crate::world::ACME;
+use crate::world::{ACME, WARNING};
 
 /// The host name of Ada's new machine.
 const LAPTOP: &str = "ada-laptop";
@@ -67,10 +67,22 @@ fn link_without_key_packages(
     linked
 }
 
-/// In the talk's channel Bob says a line and Ada's machine says one. Ada's new machine is linked
-/// with its code on her first one; then the new machine runs, and her first one. Both of the
-/// space's channels have Ada's two devices and Bob's, each once, and the new machine's `skald
-/// history` shows both lines, oldest first.
+/// Fails if a warning of `shown`, a run's output, names a Commit: one the server did not answer or
+/// refused.
+#[track_caller]
+fn assert_no_commit_warning(shown: &str) {
+    let named: Vec<String> = (shown.lines().map(str::to_lowercase))
+        .filter(|line| line.contains(WARNING) && line.contains("commit"))
+        .collect();
+    assert!(named.is_empty(), "{named:?}: {shown}");
+}
+
+/// In the talk's channel Bob says a line and Ada's machine says one. Ada's machines reach the
+/// server at its public address. Her new machine is linked with its code on her first one: by the
+/// end of `skald link`, which warns of no Commit, her first device's Commit that adds the new one
+/// is stored, as both of the space's channels have Ada's two devices and Bob's, each once. Then
+/// the new machine runs, and her first one, each warning of no Commit, and the new machine's
+/// `skald history` shows both lines, oldest first.
 #[test]
 fn the_linked_device_gets_into_the_accounts_channels_and_reads_their_history() {
     let mut talk = Talk::new(
@@ -85,45 +97,17 @@ fn the_linked_device_gets_into_the_accounts_channels_and_reads_their_history() {
     ];
 
     let mut new = NewDevice::start(&talk.world, &talk.ada, LAPTOP);
-    link(talk.cloud(), &talk.ada, &mut new);
+    let linked = link(talk.cloud(), &talk.ada, &mut new);
+    assert_no_commit_warning(&linked.text);
+    assert_channels_have(&talk, &[new.device]);
     let laptop = new.into_person(talk.cloud(), &talk.ada);
-    received(&laptop.machine);
-    received(&talk.ada.machine);
-    received(&laptop.machine);
+    for machine in [&laptop.machine, &talk.ada.machine, &laptop.machine] {
+        assert_no_commit_warning(&received(machine).shown());
+    }
 
     assert_channels_have(&talk, &[laptop.device]);
     let shown = shown_history(&laptop.machine, at.1);
     assert_history(&shown, at.1, &said, &[]);
-}
-
-/// Fails if a warning of `shown`, a run's output, names a Commit: one the server did not answer or
-/// refused.
-#[track_caller]
-fn assert_no_commit_warning(shown: &str) {
-    let named: Vec<String> = (shown.lines().map(str::to_lowercase))
-        .filter(|line| line.contains("warning") && line.contains("commit"))
-        .collect();
-    assert!(named.is_empty(), "{named:?}: {shown}");
-}
-
-/// Ada's machines reach the server at its public address. Her new machine is linked with its code
-/// on her first one: by the end of `skald link`, which warns of no Commit, her first device's Commit
-/// that adds the new one is stored, as both of the space's channels have it. Then her first
-/// machine's `skald recv` and her new machine's warn of no Commit either.
-#[test]
-fn linking_with_a_code_leaves_no_commit_unanswered_or_refused() {
-    let (talk, mut new) = with_new_device(
-        &[4_175_201_041, 4_175_201_042],
-        &["ada-links-without-refusals", "bob-beside-the-link"],
-    );
-    let linked = link(talk.cloud(), &talk.ada, &mut new);
-    assert_no_commit_warning(&linked.text);
-    assert_channels_have(&talk, &[new.device]);
-
-    let laptop = new.into_person(talk.cloud(), &talk.ada);
-    for machine in [&talk.ada.machine, &laptop.machine] {
-        assert_no_commit_warning(&received(machine).shown());
-    }
 }
 
 /// Bob is an admin of the talk's space and his device signs its latest revision, so Ada's first
