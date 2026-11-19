@@ -98,8 +98,9 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - GitHub: forge a `/skald` comment from a user with write access, which the GitHub bridge turns into a task ([architecture.md, "Components"](dev/architecture.md#components)).
 
 **Defenses:**
-- A session alone reads, acks and sends nothing: a WebSocket, each HTTPS mailbox request and each SSE stream take a proof by the key of a `client` device with a certificate ([Connecting](protocol/delivery.md#connecting)).
+- A session alone reads, acks and sends nothing: a WebSocket, each HTTPS mailbox request and each SSE stream take a proof by the key of a `client` device with a certificate, or of a `service` device with its token ([Connecting](protocol/delivery.md#connecting)).
 - A session alone uploads no history link, wrap or entry: that takes a member device's key ([Uploads](protocol/membership.md#uploads)).
+- A session alone creates no service token: that takes a proof by a `client` device of an admin, and a grant signed by an admin's device (`createServiceToken` in the [OpenAPI spec](../api/openapi.json)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
@@ -220,6 +221,8 @@ Anyone who sends to an agent: a member, a service agent, or an agent prompt inje
 A service agent's server token, and its device key with the token: they usually sit in one CI secret.
 
 **Can, with the token alone:**
+- Read what the server keeps of its space for members: the revisions, the devices of the accounts they list and those accounts' revocations, its own grant, and the GroupInfo and the history ciphertext of the grant's channels ([api/openapi.json](../api/openapi.json)).
+- Upload a GroupInfo that lists the device, as the server takes it from a member ([MLS profile](protocol/membership.md#mls-profile)), and the device's KeyPackages, the used ones again included, so that Adds with them fail ([KeyPackages](protocol/membership.md#keypackages)).
 - Trigger the `ask-user` notifications of the service agent's person, without content, within the server's rate limits ([agents.md](protocol/agents.md#security-considerations)).
 - For a `service` device that is a member of its channels: claim tasks it cannot open, and fail them or let their leases end, the device's live claims included, so they go to `dead` or back after the backoff ([queues.md](protocol/queues.md#security-considerations)); replace the device's presence value with one readers drop, so its agent shows as `offline` once the last valid value expires ([agents.md](protocol/agents.md#security-considerations)).
 
@@ -229,6 +232,8 @@ A service agent's server token, and its device key with the token: they usually 
 - Read what is sent to the device under `hpke`; for a member device, also open and run the tasks it claims and read what its keys reach: its channels, their history and presence ([queues.md](protocol/queues.md#security-considerations)).
 
 **Defenses:**
+- A token alone reads, acks and sends nothing, and uploads no history: those take a proof by the device's key on a challenge of the token ([Connecting](protocol/delivery.md#connecting), [Uploads](protocol/membership.md#uploads)). It reads the mailbox only with its `receive` permission, and sends, Commits included, only with its `send` permission in its grant's channels ([Send](protocol/delivery.md#send)).
+- A token makes no request of the account: no session, registration, certificate, revocation, revision, invite or token, and no other device's KeyPackages, so it adds no device ([api/openapi.json](../api/openapi.json)).
 - A token alone signs nothing: it asks no question, signs no task, and creates, changes or deletes no queue ([agents.md](protocol/agents.md#security-considerations), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device releases, restarts and cancels no task, so neither leak makes an `at-most-once` task run twice ([Claims and leases](protocol/queues.md#claims-and-leases), [queues.md](protocol/queues.md#security-considerations)).
 - A `service` device sends only as its roster entry, only in its grant's channels until the grant expires, and never answers a question ([Envelope](protocol/README.md#envelope), [Service grant](protocol/README.md#service-grant), [Person](protocol/agents.md#person)).
