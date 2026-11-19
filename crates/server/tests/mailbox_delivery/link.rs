@@ -103,6 +103,16 @@ impl Link {
         }
     }
 
+    /// `socket`'s connection, such as a `service` device's on its token. The tests of delivering a
+    /// mailbox make none.
+    #[allow(dead_code)]
+    pub fn on(socket: Socket) -> Self {
+        Link {
+            socket,
+            pending: VecDeque::new(),
+        }
+    }
+
     /// The connection of `person`'s certified laptop, which states `cursor` in its first `sync`
     /// and checks that catch-up sends `expected`.
     #[track_caller]

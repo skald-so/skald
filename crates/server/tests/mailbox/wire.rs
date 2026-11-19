@@ -13,7 +13,7 @@ use sqlx::PgConnection;
 use tungstenite::Message;
 use tungstenite::stream::MaybeTlsStream;
 
-use crate::api::Person;
+use crate::api::{Person, Session};
 use crate::common::cbor::{array_of, byte_item, uint};
 use crate::common::device_flow::{DeviceFlow, json, text};
 use crate::common::devices::{CHALLENGE, Device, auth_frame, auth_signature, random, unb64};
@@ -93,7 +93,11 @@ pub fn now() -> u64 {
 
 /// A challenge of `person`'s device session from `server`, the request stating `version`.
 fn challenge(server: &Server, person: &Person, version: NonZeroU64) -> Vec<u8> {
-    let session = person.session.on(server);
+    challenge_of(&person.session.on(server), version)
+}
+
+/// A challenge of `session`, the request stating `version`.
+fn challenge_of(session: &Session, version: NonZeroU64) -> Vec<u8> {
     let response = session.call_stating(version, "post", CHALLENGE, None);
     assert_eq!(response.status, 200, "a challenge: {}", text(&response));
     let body = json(&response);
@@ -129,6 +133,26 @@ impl Socket {
         version: NonZeroU64,
     ) -> Self {
         let challenge = challenge(server, person, version);
+        Self::on_challenge(server, flow, &challenge, device, version)
+    }
+
+    /// The connection of `device` to `server`, an instance of `flow`'s server, on a challenge of
+    /// the bearer token `token`, such as a `service` device's token.
+    pub fn on_session(server: &Server, flow: &DeviceFlow, token: &str, device: &Device) -> Self {
+        let challenge = challenge_of(&Session::of_token(flow, token).on(server), PROTOCOL_VERSION);
+        Self::on_challenge(server, flow, &challenge, device, PROTOCOL_VERSION)
+    }
+
+    /// The connection of `device` to `server`, an instance of `flow`'s server, of the protocol
+    /// version `version`, on `challenge`: it opens `/ws` offering the version's subprotocol and
+    /// sends `auth`, signed over the server's public address.
+    pub fn on_challenge(
+        server: &Server,
+        flow: &DeviceFlow,
+        challenge: &[u8],
+        device: &Device,
+        version: NonZeroU64,
+    ) -> Self {
         let offer = skald_proto::subprotocol(version);
         let (mut socket, _) = server
             .open_websocket("/ws", Some(&offer))
@@ -137,8 +161,8 @@ impl Socket {
             TcpStream::set_read_timeout(stream, Some(Duration::from_millis(200)))
                 .expect("a read timeout");
         }
-        let signature = auth_signature(&device.signing.key, &challenge, &flow.stand.public);
-        let auth = auth_frame(&challenge, device.id, &signature);
+        let signature = auth_signature(&device.signing.key, challenge, &flow.stand.public);
+        let auth = auth_frame(challenge, device.id, &signature);
         socket
             .send(Message::Binary(auth.into()))
             .expect("send auth");

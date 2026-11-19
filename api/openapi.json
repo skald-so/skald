@@ -3226,7 +3226,7 @@
       "post": {
         "operationId": "uploadKeyPackages",
         "summary": "Upload a device's KeyPackages",
-        "description": "Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, \"KeyPackages\"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.",
+        "description": "Takes KeyPackages of a `client` device of the session's account, or a service token's own `service` device, with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, \"KeyPackages\"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3241,6 +3241,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "requestBody": {
@@ -3292,7 +3295,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3307,7 +3310,7 @@
             }
           },
           "403": {
-            "description": "The device is not a `client` device with a certificate, or is revoked, or it would hold more than 100 unused KeyPackages.",
+            "description": "The device is not a `client` device, or for a service token a `service` one, with a certificate, or is revoked, or it would hold more than 100 unused KeyPackages.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3322,7 +3325,7 @@
             }
           },
           "404": {
-            "description": "The problem `https://skald.so/problems/no-device`: the session's account has no such device.",
+            "description": "The problem `https://skald.so/problems/no-device`: the session's account has no such device, or it is not the service token's.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3485,7 +3488,7 @@
       "post": {
         "operationId": "ackMailbox",
         "summary": "Ack the mailbox",
-        "description": "Deletes the entries of the device's mailbox up to `seq`, as `ack` on a WebSocket does (docs/protocol/delivery.md, \"Mailbox\").",
+        "description": "Deletes the entries of the device's mailbox up to `seq`, as `ack` on a WebSocket does (docs/protocol/delivery.md, \"Mailbox\"). A service token needs the `receive` permission.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3497,6 +3500,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "requestBody": {
@@ -3542,7 +3548,22 @@
             }
           },
           "401": {
-            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session or service token that has not ended as the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the bearer token is a service token without the `receive` permission, and the server reads and acks nothing.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3593,7 +3614,7 @@
       "get": {
         "operationId": "streamMailbox",
         "summary": "Stream the mailbox",
-        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session ends or its device is revoked. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
+        "description": "Server-sent events (docs/protocol/delivery.md, \"Frames\" and \"Mailbox\"). Acks the device's mailbox up to the cursor in `Last-Event-ID`, then sends the entries after it in `seq` order, then an empty `batch` once it has sent every entry the mailbox held at the opening, then each new entry and `space-notice`, through any instance. Each event's `data` is one frame, its CBOR in base64url without padding; the `id` of a `message` or `status` event is its `seq`. While idle, the stream sends a comment line at the interval of the server setting `--sse-keep-alive`. It ends when its session or service token ends or its device is revoked. A service token needs the `receive` permission, and gets notices of its space only. The device sends and acks with `POST /mailbox/send` and `POST /mailbox/ack`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3615,6 +3636,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -3656,7 +3680,22 @@
             }
           },
           "401": {
-            "description": "The stream is not proved, and the server reads and acks nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "description": "The stream is not proved, and the server reads and acks nothing: `not-signed-in` for no device session or service token that has not ended as the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the bearer token is a service token without the `receive` permission, and the server reads and acks nothing.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3692,7 +3731,7 @@
       "post": {
         "operationId": "pollMailbox",
         "summary": "Long-poll the mailbox",
-        "description": "Acks the device's mailbox up to the `sync` frame's cursor and answers a `batch` of the entries after it, in `seq` order, and a `space-notice` for each space with a roster revision stored since the device's previous long-poll answer (docs/protocol/delivery.md, \"Mailbox\"). It answers at once when it has some or `wait` is 0; otherwise with the first to come within `wait`, through any instance, or an empty `batch` at its end. A waiting long-poll whose session ends or whose device is revoked ends with `401`, as a new request would.",
+        "description": "Acks the device's mailbox up to the `sync` frame's cursor and answers a `batch` of the entries after it, in `seq` order, and a `space-notice` for each space with a roster revision stored since the device's previous long-poll answer (docs/protocol/delivery.md, \"Mailbox\"). It answers at once when it has some or `wait` is 0; otherwise with the first to come within `wait`, through any instance, or an empty `batch` at its end. A waiting long-poll whose session or service token ends or whose device is revoked ends with `401`, as a new request would. A service token needs the `receive` permission, and gets notices of its space only.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3714,6 +3753,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "requestBody": {
@@ -3766,7 +3808,22 @@
             }
           },
           "401": {
-            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session or service token that has not ended as the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the bearer token is a service token without the `receive` permission, and the server reads and acks nothing.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -3817,7 +3874,7 @@
       "post": {
         "operationId": "sendEnvelope",
         "summary": "Send an envelope",
-        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order.",
+        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3829,6 +3886,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "requestBody": {
@@ -3881,7 +3941,7 @@
             }
           },
           "401": {
-            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session of the bearer token, such as an ended one; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "description": "The request is not proved, and the server reads, acks and stores nothing: `not-signed-in` for no device session or service token that has not ended as the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4027,6 +4087,85 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/service-token": {
+      "get": {
+        "operationId": "getServiceToken",
+        "summary": "The service token's own record",
+        "description": "The record and grant of the request's service token, until it ends as `POST /spaces/{space}/service-tokens` says. Records its use, to the minute.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The token's record and grant.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnServiceToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The problem `https://skald.so/problems/not-signed-in`: the request has no service token, or an unknown or ended one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -4198,7 +4337,7 @@
       "post": {
         "operationId": "issueChallenge",
         "summary": "A challenge for a WebSocket",
-        "description": "A new challenge for the device session of the request's bearer token, which the first frame of a WebSocket signs to prove its device (docs/protocol/delivery.md, \"Connecting\"). It works once, for less than a minute, while its session lasts. The request has no body.",
+        "description": "A new challenge for the device session or the service token that is the request's bearer token, which the first frame of a WebSocket signs to prove its device (docs/protocol/delivery.md, \"Connecting\"): a `client` device of the session's account, or the token's `service` device. It works once, for less than a minute, while its session or token lasts. The request has no body.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4207,6 +4346,9 @@
         "security": [
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -4241,7 +4383,7 @@
             }
           },
           "401": {
-            "description": "The request has no `Authorization` header, one that is not `Bearer <token>`, or the token of no device session, such as a web session's or an ended one.",
+            "description": "The request has no `Authorization` header, one that is not `Bearer <token>`, or the token of no device session or service token that has not ended, such as a web session's or an ended one.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4670,7 +4812,7 @@
       "get": {
         "operationId": "getGroupInfo",
         "summary": "The channel's GroupInfo",
-        "description": "Whether the channel has an MLS group, and its GroupInfo of the current epoch if the server has one (docs/protocol/membership.md, \"MLS profile\"). After each Commit the server has none until a member device uploads one of the new epoch.",
+        "description": "Whether the channel has an MLS group, and its GroupInfo of the current epoch if the server has one (docs/protocol/membership.md, \"MLS profile\"). After each Commit the server has none until a member device uploads one of the new epoch. For sessions of the channel's members in the space's latest revision, and service tokens that list the channel.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4688,6 +4830,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -4722,7 +4867,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4737,7 +4882,7 @@
             }
           },
           "403": {
-            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "description": "The session's account is no member of the channel in the space's latest revision, or the service token does not list the channel.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4786,7 +4931,7 @@
       "put": {
         "operationId": "uploadGroupInfo",
         "summary": "Upload the channel's GroupInfo",
-        "description": "The server keeps a GroupInfo of the channel's current epoch, with the `ratchet_tree` and `external_pub` extensions, that verifies, has the GroupContext of the group the server follows and lists a member device of the session's account; it gives the latest one. The channel's first GroupInfo, of epoch 1, comes only from the account of the device whose Commit of epoch 0 the server kept, listing that device; the server follows the group from it (docs/protocol/membership.md, \"MLS profile\", \"Creating a channel\" and \"Commit ordering\").",
+        "description": "The server keeps a GroupInfo of the channel's current epoch, with the `ratchet_tree` and `external_pub` extensions, that verifies, has the GroupContext of the group the server follows and lists a member device of the session's account, or the `service` device of a service token that lists the channel; it gives the latest one. The channel's first GroupInfo, of epoch 1, comes only from the account of the device whose Commit of epoch 0 the server kept, listing that device; the server follows the group from it (docs/protocol/membership.md, \"MLS profile\", \"Creating a channel\" and \"Commit ordering\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4804,6 +4949,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "requestBody": {
@@ -4848,7 +4996,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4863,7 +5011,7 @@
             }
           },
           "403": {
-            "description": "The GroupInfo lists no device of the session's account with a certificate, or, the channel's first, not the device of its first Commit.",
+            "description": "The GroupInfo lists no device of the session's account with a certificate, or, for a service token, not its device, or the token does not list the channel; or, the channel's first, not the device of its first Commit.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4929,7 +5077,7 @@
       "get": {
         "operationId": "getHistoryEntries",
         "summary": "The channel's history entries",
-        "description": "The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, \"History entry\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
+        "description": "The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, \"History entry\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4947,6 +5095,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -4981,7 +5132,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4996,7 +5147,7 @@
             }
           },
           "403": {
-            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "description": "The session's account is no member of the channel in the space's latest revision, or the service token does not list the channel.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5047,7 +5198,7 @@
       "get": {
         "operationId": "getHistoryLinks",
         "summary": "The channel's history links",
-        "description": "The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, \"Key chain\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, \"Access\").",
+        "description": "The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, \"Key chain\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -5065,6 +5216,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -5099,7 +5253,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5114,7 +5268,7 @@
             }
           },
           "403": {
-            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "description": "The session's account is no member of the channel in the space's latest revision, or the service token does not list the channel.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5165,7 +5319,7 @@
       "get": {
         "operationId": "getHistoryWraps",
         "summary": "The channel's history wraps",
-        "description": "The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, \"Wraps\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
+        "description": "The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, \"Wraps\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, \"Access\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -5183,6 +5337,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -5217,7 +5374,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5232,7 +5389,7 @@
             }
           },
           "403": {
-            "description": "The session's account is no member of the channel in the space's latest revision.",
+            "description": "The session's account is no member of the channel in the space's latest revision, or the service token does not list the channel.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5297,6 +5454,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -5331,7 +5491,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5346,7 +5506,7 @@
             }
           },
           "404": {
-            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1. A service token gets only its own space.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5496,6 +5656,9 @@
           },
           {
             "bearer": []
+          },
+          {
+            "serviceToken": []
           }
         ],
         "responses": {
@@ -5530,7 +5693,7 @@
             }
           },
           "401": {
-            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session or of a service token that has not ended.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5545,7 +5708,7 @@
             }
           },
           "404": {
-            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1. A service token gets only its own space.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5737,6 +5900,371 @@
         }
       }
     },
+    "/spaces/{space}/service-tokens": {
+      "get": {
+        "operationId": "listServiceTokens",
+        "summary": "The space's service tokens",
+        "description": "The space's tokens that have not ended, oldest first, without their values. Only for a session of an account that is an admin in the space's latest revision.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's tokens.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServiceTokens"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createServiceToken",
+        "summary": "Create a service token",
+        "description": "Creates a token for a `service` device of the session's account that the space's latest revision lists in a service agent entry, while that account is an admin in it. A session alone creates none: the request carries the proof of a `client` device of the account, as `POST /mailbox/send` does. The server takes the grant (docs/protocol/README.md, \"Service grant\") only if it names the device, its `signer` is an admin's device in the latest revision (docs/protocol/membership.md, \"Roster\") whose certificate its signature verifies with, it lists only channels of that revision, and it has not expired. The token has the grant's channels and expiry. Its value is in this answer only: the server holds its SHA-256. A token ends at its expiry, at its revocation, once its device is revoked and once the space's latest revision lists its device in no service agent entry.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ServiceTokenRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The token, with its value.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewServiceToken"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: `https://skald.so/problems/invalid-request` for a body that is not a `ServiceTokenRequest`, or `https://skald.so/problems/invalid-grant` for a grant that does not decode or fails a check. Nothing is stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and nothing is stored: `not-signed-in` for no device session of the bearer token; otherwise the reason a WebSocket's `auth` is refused for (docs/protocol/delivery.md, \"Connecting\"): `auth-required` without a valid `Skald-Device-Proof`, `challenge-refused`, `device-refused` or `signature-refused`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision, or the device is not a `service` device of the account with a certificate, not revoked, that the revision lists in a service agent entry. Nothing is stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/service-tokens/{token}": {
+      "delete": {
+        "operationId": "revokeServiceToken",
+        "summary": "Revoke a service token",
+        "description": "Ends a token of the space at once: every later request with it is refused. Only for a session of an account that is an admin in the space's latest revision. A web session's cookie only from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "description": "The token's ID, as `GET /spaces/{space}/service-tokens` lists it.",
+            "schema": {
+              "$ref": "#/components/schemas/ServiceTokenId"
+            }
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The token is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the session's account is no admin in the space's latest revision, or a web session's request does not come from a page of the web URL. Nothing is ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it; or the problem `https://skald.so/problems/no-service-token`: the space has no such token that has not ended.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/usage": {
       "get": {
         "operationId": "getSpaceUsage",
@@ -5841,7 +6369,7 @@
       "get": {
         "operationId": "openWebSocket",
         "summary": "WebSocket opening request",
-        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there) and, from the connection's first `sync`, sends its device's mailbox (\"Mailbox\" there). Once the server stores a roster revision, it sends `space-notice` on each connection of a device of an account the revision lists (\"Frames\" there).",
+        "description": "Opens a WebSocket (RFC 6455) after checking the protocol version the request states, as docs/protocol/README.md, \"Server answers\", says. Its first frame, `auth`, proves the connection's device on a challenge of `POST /session/challenge` (docs/protocol/delivery.md, \"Connecting\"); a connection without a valid proof is closed as \"Connecting\" there says. The server then answers each `send` with `stored` or `send-refused` (\"Send\" there) and, from the connection's first `sync`, sends its device's mailbox (\"Mailbox\" there). Once the server stores a roster revision, it sends `space-notice` on each connection of a device of an account the revision lists (\"Frames\" there). A connection on a service token's challenge sends only with the token's `send` permission, in its channels, gets notices of its space only, and gets nothing of its mailbox, its `sync` and `ack` ignored, without its `receive` permission.",
         "parameters": [
           {
             "name": "Sec-WebSocket-Protocol",
@@ -5918,7 +6446,7 @@
         "name": "Skald-Device-Proof",
         "in": "header",
         "required": true,
-        "description": "The device's proof (docs/protocol/delivery.md, \"Connecting\"): the CBOR `[challenge: bstr, device: id, signature: bstr .size 64]` in base64url without padding. `challenge` is a challenge of the bearer token's session from `POST /session/challenge`, which works once; `signature` signs `[\"skald request\", challenge, origin]`.",
+        "description": "The device's proof (docs/protocol/delivery.md, \"Connecting\"): the CBOR `[challenge: bstr, device: id, signature: bstr .size 64]` in base64url without padding. `challenge` is a challenge of the bearer token's session or service token from `POST /session/challenge`, which works once; `signature` signs `[\"skald request\", challenge, origin]`.",
         "schema": {
           "type": "string",
           "pattern": "^[A-Za-z0-9_-]+$"
@@ -5954,7 +6482,7 @@
         }
       },
       "NoStore": {
-        "description": "`no-store`: the response holds a sign-in's codes, token or outcome.",
+        "description": "`no-store`: the response holds a sign-in's codes, token or outcome, or a service token.",
         "required": true,
         "schema": {
           "type": "string",
@@ -5973,6 +6501,11 @@
         "type": "http",
         "scheme": "bearer",
         "description": "The session token that the device flow gives: `Authorization: Bearer <token>`."
+      },
+      "serviceToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A service device's token from `POST /spaces/{space}/service-tokens`: `Authorization: Bearer <token>`. It takes only the operations that list it, and its device's mailbox only with the device's proof (docs/protocol/delivery.md, \"Connecting\"); any other request with it is refused as one without a session."
       }
     },
     "schemas": {
@@ -6717,6 +7250,80 @@
         },
         "additionalProperties": false
       },
+      "NewServiceToken": {
+        "description": "A new service token, with its value.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at",
+          "token"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "token": {
+            "description": "The token's value, for `Authorization: Bearer <token>`: 256 random bits in base64url without padding. No other answer holds it.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "OAuthError": {
         "description": "An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5).",
         "type": "object",
@@ -6761,6 +7368,79 @@
             "items": {
               "$ref": "#/components/schemas/Space"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnServiceToken": {
+        "description": "A service token's record and grant, as the token reads them.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at",
+          "grant"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/ServiceGrant"
           }
         },
         "additionalProperties": false
@@ -6901,6 +7581,133 @@
         "not": {
           "pattern": "(^|\\.)[0-9]+$"
         }
+      },
+      "ServiceGrant": {
+        "description": "A grant's CBOR (docs/protocol/README.md, \"Service grant\") in base64url without padding.",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "ServicePermission": {
+        "description": "What a token lets its device do: `send` and `receive` messages, and `queues`, work on every queue of its channels (docs/protocol/queues.md, \"Claim checks\").",
+        "type": "string",
+        "enum": [
+          "send",
+          "receive",
+          "queues"
+        ]
+      },
+      "ServiceToken": {
+        "description": "A token of a `service` device for a space, without its value.",
+        "type": "object",
+        "required": [
+          "id",
+          "device",
+          "owner",
+          "agent",
+          "permissions",
+          "channels",
+          "created_at",
+          "last_used_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ServiceTokenId"
+          },
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "owner": {
+            "description": "The `owner` of the device's service agent entry in the space's latest revision, such as `ci`.",
+            "type": "string"
+          },
+          "agent": {
+            "description": "The `agent` of that entry, such as `deploy-bot`.",
+            "type": "string"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          },
+          "channels": {
+            "description": "The grant's channels.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ChannelId"
+            }
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "description": "The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first.",
+            "oneOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expires_at": {
+            "description": "The grant's expiry.",
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServiceTokenId": {
+        "description": "A service token's ID: random, it reveals nothing of the token's value.",
+        "type": "string",
+        "format": "uuid"
+      },
+      "ServiceTokenRequest": {
+        "type": "object",
+        "required": [
+          "device",
+          "grant",
+          "permissions"
+        ],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "grant": {
+            "$ref": "#/components/schemas/ServiceGrant"
+          },
+          "permissions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ServicePermission"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ServiceTokens": {
+        "type": "object",
+        "required": [
+          "tokens"
+        ],
+        "properties": {
+          "tokens": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServiceToken"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "Session": {
         "type": "object",

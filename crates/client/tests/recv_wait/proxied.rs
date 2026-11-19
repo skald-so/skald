@@ -356,7 +356,16 @@ fn push_that_comes_while_a_send_through_the_helper_waits_for_its_answer_is_shown
     let delayed = behind.filter.delayed_tunnel_writes();
     behind.filter.delay_next_tunnel_write(SEND_HELD_BACK);
     let channel = behind.channel.to_string();
-    let mut sending = helped.start(&[], &[SEND, &channel, "ada, sent while bob writes"]);
+    let mut sending = helped.start(
+        &[],
+        &[
+            SEND,
+            "--all",
+            "--channel",
+            &channel,
+            "ada, sent while bob writes",
+        ],
+    );
     await_running(&mut sending, "a send held back", || {
         behind.filter.delayed_tunnel_writes() > delayed
     });

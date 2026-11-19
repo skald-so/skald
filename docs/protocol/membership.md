@@ -422,7 +422,8 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
 - Forward secrecy: a device deletes a message's key once it decrypts the message. It keeps the secrets of the 3 epochs before its current one, for messages stored after a Commit their sender had not processed yet ([Order](delivery.md#order)), and deletes older ones. Within an epoch it keeps the keys of skipped messages up to 1024 generations ahead, until it deletes that epoch's secrets.
 - Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none.
-- The server keeps an upload of the current epoch from a session of an account with a member device that the GroupInfo lists, with both extensions, whose signature verifies and whose GroupContext is that of the group it follows ([Commit ordering](#commit-ordering)). It gives the latest only while it is of the current epoch, so after a Commit it has none until one of the new epoch is uploaded, and only to sessions of accounts the latest revision lists as the channel's members; without one, it says whether the channel has a group yet.
+- The server keeps an upload of the current epoch from a session of an account with a member device that the GroupInfo lists, or from a service token that lists the channel, whose `service` device the GroupInfo lists, with both extensions, whose signature verifies and whose GroupContext is that of the group it follows ([Commit ordering](#commit-ordering)). It gives the latest only while it is of the current epoch, so after a Commit it has none until one of the new epoch is uploaded, and only to sessions of accounts the latest revision lists as the channel's members and to service tokens that list the channel; without one, it says whether the channel has a group yet.
+- A `service` device sends its Commits on a connection of its service token, which needs the token's `send` permission and the channel among its channels ([Send](delivery.md#send)); its token alone uploads the GroupInfo.
 
 ### Admitted devices
 A device is admitted to a channel when its certificate is valid and it is one of:
@@ -445,6 +446,7 @@ A member device:
 - Every device that can be a member keeps unused KeyPackages on the server: when fewer than 10 remain, it uploads enough to have 20. Their `lifetime` is at most 60 days; a device replaces a KeyPackage 7 days before it expires.
 - Each device also keeps one last-resort KeyPackage, which the server hands out only when no other remains and does not delete. The device replaces it once it was used, and as the others.
 - The server hands out each other KeyPackage once, then deletes it, and deletes expired ones. It hands them only to devices of accounts that share a space with the KeyPackage's device.
+- A `service` device uploads its own KeyPackages with its service token alone. A service token gets no other device's KeyPackages, and uploads or counts none of them.
 - A device MUST NOT add a KeyPackage unless its MLS signature verifies, its `lifetime` holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` match an admitted device's valid certificate.
 
 ### Commit ordering
@@ -542,18 +544,18 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
 - A device never uploads again a link the server has had, having taken it from the device or listed it to it, nor one the server refused: a link that retention deleted stays deleted.
-- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session alone uploads none.
+- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
 - The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
 - It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
 
 | Problem | The item |
 |---|---|
 | `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
-| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
+| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows, or, on a service token's connection, a channel the token does not list |
 | `epoch-mismatch` | Is of an epoch the channel has not had; a link or wrap, of an epoch before the channel's cutoff; an entry, of an epoch other than the channel's current or previous one |
 
 - With a history retention, the server deletes each entry stored longer ago than it. A channel's cutoff is the latest epoch of an entry the server has deleted, and never moves back. The server deletes the links and wraps of epochs before the cutoff; those of the cutoff and later epochs stay, whatever their age. Without a retention, it deletes none.
-- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
+- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members, and to service tokens that list the channel: [api/openapi.json](../../api/openapi.json).
 
 ### History entry
 The sending device writes a copy of each message with an `a2a` or [`task-result`](queues.md#results) body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.

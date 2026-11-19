@@ -137,7 +137,7 @@ queue-key-body = {
 ```
 
 - The sender of each Commit uploads the queue key object of the new epoch with its link and wraps; any member device of an epoch uploads it if the server has none. A device uploads none for an epoch it did not judge clean.
-- The server keeps the first per channel and epoch, and takes uploads only from member devices of the epoch.
+- The server keeps the first per channel and epoch, and takes uploads only from member devices of the epoch, each on its connection, which proves its key, as [Uploads](membership.md#uploads) says of links and wraps: a member `service` device's on a connection of its service token, in the token's channels; a session or a service token alone uploads none.
 - A member device that finds the server's object with a `key` other than the `pk` it derives MUST warn its user.
 - A `service` device that is not a member holds no `sk`: it enqueues tasks and reads none.
 

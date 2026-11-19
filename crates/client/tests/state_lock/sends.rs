@@ -90,7 +90,11 @@ fn send_killed_while_holding_the_lock_lets_the_next_in_at_once() {
     send_holding(&talk, FIRST).kill();
 
     let [channel, text] = send_of(&talk, SECOND);
-    let (next, took) = holding(&talk, AFTER_KILLED, &[SEND, &channel, &text]);
+    let (next, took) = holding(
+        &talk,
+        AFTER_KILLED,
+        &[SEND, "--all", "--channel", &channel, &text],
+    );
 
     assert!(
         took < Duration::from_secs(AFTER_KILLED / 2),

@@ -10,17 +10,20 @@
 //! wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
 //! "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
-//! the sending device under `mls`, the group as this device holds it under `hpke`; only if
+//! the sending device under `mls`, the group as this device holds it under `hpke`; from a
+//! `service` device, its service agent entry and its grant ("Service grant") in place of the
+//! group, the revisions fetched and accepted again once when no entry lists the device; only if
 //! [`crate::gaps`] accepts its `counter`, warning first of the counters it makes missing and
 //! marking it as following missing ones, or, without `counter`, once per sending device and
 //! `msg_id`; a duplicate or a replay without a word; a warning for any other; and each `delivered`
 //! and `expired` of the device's messages. As an agent, only those of its folder's space: the rest
 //! wait in the local state.
 //!
-//! A message that passes the checks is kept for the person and for the agents it is for
-//! (`docs/protocol/delivery.md`, "Device to agent"), among the agents this device had run as in
-//! the space when it wrote the entry: with `to`, the one it names; without `to`, each; a message to
-//! a person, none. The person's run shows each kept message once,
+//! A message that passes the checks is kept, with the trust level its sending device's certificate
+//! and the space's roster give (`docs/protocol/membership.md`, "Trust levels"), for the person and
+//! for the agents it is for (`docs/protocol/delivery.md`, "Device to agent"), among the agents
+//! this device had run as in the space when it wrote the entry: with `to`, the one it names;
+//! without `to`, each; a message to a person, none. The person's run shows each kept message once,
 //! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
@@ -39,11 +42,13 @@ use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
 
-use skald_crypto::{HpkeError, HpkeMessage, MemberDevice, StateKey, open_message};
+use skald_crypto::{
+    HpkeError, HpkeMessage, MemberDevice, StateKey, check_grant, open_message, trust_level,
+};
 use skald_proto::{
     AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope,
-    Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName, ServerStatus, SpaceId,
-    VersionRange,
+    Frame, Header, MessageId, Name, Push, Roster, RosterBody, ServerName, ServerStatus,
+    ServiceAgent, SpaceId, TrustLevel, VersionRange,
 };
 
 use crate::agents::server_name;
@@ -359,6 +364,9 @@ pub struct Checks {
     pub synced: Rosters,
     server: Option<Option<ServerName>>,
     inbox_key: Option<StateKey>,
+    /// Each space and device a message from which made the run fetch the space's revisions again,
+    /// as no entry listed the device: once each.
+    refetched: BTreeSet<(SpaceId, DeviceId)>,
 }
 
 impl Checks {
@@ -369,6 +377,7 @@ impl Checks {
             synced,
             server: None,
             inbox_key: None,
+            refetched: BTreeSet::new(),
         })
     }
 
@@ -512,6 +521,7 @@ fn kept(
         from: message.from.to_string(),
         device: sender.to_string(),
         device_name: message.device.clone(),
+        level: message.level,
         text: message.text.clone(),
         after_missing: gap.is_some(),
     };
@@ -648,7 +658,8 @@ fn shown_statuses(
 
 /// Writes each of `kept`, kept messages by `seq` with their sealed lines, in `form` with
 /// `references`, to the output, then calls `mark` with its `seq`; one that does not open is warned
-/// of and marked. A line an older client kept is written as it is. Gives how many it wrote.
+/// of and marked. A line an older client kept is written as it is. In the short form,
+/// [`forms::DATA_WARNING`] comes before the first line below `own`. Gives how many it wrote.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
@@ -660,10 +671,18 @@ fn shown_kept(
     }
     let key = groups::inbox_key(follower)?;
     let mut shown = 0;
+    let mut warned = false;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
-                let line = kept_line(&opened, form, references);
+                let (line, level) = kept_line(&opened, form, references);
+                let warns = form == Form::Short && !warned && level < TrustLevel::Own;
+                let line = if warns {
+                    warned = true;
+                    format!("{}\n{line}", forms::DATA_WARNING)
+                } else {
+                    line
+                };
                 output::write(Stream::Out, format!("{line}\n").as_bytes())
                     .map_err(|err| format!("cannot write a message to the output: {err}"))?;
                 shown += 1;
@@ -677,14 +696,17 @@ fn shown_kept(
     Ok(shown)
 }
 
-/// The line of a kept message, `opened` its record, in `form` with `references`; one an older
-/// client kept is its line as it is.
-fn kept_line(opened: &[u8], form: Form, references: &References) -> String {
+/// The line of a kept message, `opened` its record, in `form` with `references`, and its sending
+/// device's trust level; one an older client kept is its line as it is, at the level `peer`.
+fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, TrustLevel) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
-        (Some(record), Some(msg_id)) => record.shown(form, &references.of(msg_id)),
-        _ => String::from_utf8_lossy(opened).into_owned(),
+        (Some(record), Some(msg_id)) => (record.shown(form, &references.of(msg_id)), record.level),
+        _ => (
+            String::from_utf8_lossy(opened).into_owned(),
+            TrustLevel::Peer,
+        ),
     }
 }
 
@@ -820,6 +842,17 @@ fn judge(
     };
     if let Entry::Vacant(vacant) = checks.synced.entry(space.id) {
         vacant.insert(follower.sync(space)?);
+    } else if !listed(&follower.own, &checks.synced[&space.id], sender)
+        && checks.refetched.insert((space.id, sender))
+    {
+        // Before it refuses a device no entry lists, as "Admitted devices" says: so a new service
+        // agent's first messages are taken.
+        match follower.sync(space) {
+            Ok(done) => {
+                checks.synced.insert(space.id, done);
+            }
+            Err(err) => eprintln!("skald: warning: {err}"),
+        }
     }
     if checks.server.is_none() {
         checks.server = Some(server_name(&mut follower.connection)?);
@@ -904,6 +937,8 @@ struct Received {
     to: Option<Address>,
     /// The sending device's certificate `name`.
     device: String,
+    /// The sending device's trust level.
+    level: TrustLevel,
     text: String,
     counter: Option<NonZeroU64>,
 }
@@ -912,9 +947,27 @@ struct Received {
 /// member's `excluded` does not list, checked against the master key the device pinned for its own
 /// account and the revision's for any other.
 fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
-    context.roster.body().members.iter().find_map(|member| {
-        let certs = context.devices.of(context.roster, context.own, member);
+    member_cert(context.own, (context.roster, context.devices), device)
+}
+
+/// [`valid_cert`] of `device` in `roster`, with the space's devices `devices` and the device's own
+/// account and pinned master key `own`.
+fn member_cert<'c>(
+    own: &Own,
+    (roster, devices): (&'c Roster, &'c SpaceDevices),
+    device: DeviceId,
+) -> Option<&'c Cert> {
+    roster.body().members.iter().find_map(|member| {
+        let certs = devices.of(roster, own, member);
         certs.into_iter().find(|cert| cert.body().device == device)
+    })
+}
+
+/// Whether `synced`, a space's last accepted revision and its devices, lists `device`: with a
+/// valid certificate on a member's account, and, for a `service` device, in a service agent entry.
+fn listed(own: &Own, (roster, devices): &(Roster, SpaceDevices), device: DeviceId) -> bool {
+    member_cert(own, (roster, devices), device).is_some_and(|cert| {
+        cert.body().kind != DeviceKind::Service || service_entry(roster, device).is_some()
     })
 }
 
@@ -951,6 +1004,9 @@ fn check(
              valid certificate that it does not bar"
         )
     })?;
+    let level = trust_level(context.own.account, cert, body).ok_or_else(|| {
+        format!("its sending device has no trust level in revision {revision} of the space {name}")
+    })?;
     let content = content(cert)?;
     // Under `hpke`, only the revision binds the channel to the space.
     if matches!(context.group, Group::Held(_))
@@ -960,29 +1016,93 @@ fn check(
             "revision {revision} of the space {name} has no such channel"
         ));
     }
-    if !of_account(&content.from, body, cert.body().account, context.server) {
-        return Err(format!(
-            "its from is no address of the sending device's account in the space {name}"
-        ));
-    }
-    if !in_group(context, cert) {
-        return Err(
-            "no client device of the sending device's account is in the channel's group on this \
-             device"
-                .to_owned(),
-        );
-    }
-    if content.counter.is_none() {
-        return Err("its content has no counter".to_owned());
+    if cert.body().kind == DeviceKind::Service {
+        check_service(sender, &content, header, context)?;
+    } else {
+        if content.grant.is_some() {
+            return Err(
+                "its content carries a grant, which only a service device's may".to_owned(),
+            );
+        }
+        if !of_account(&content.from, body, cert.body().account, context.server) {
+            return Err(format!(
+                "its from is no address of the sending device's account in the space {name}"
+            ));
+        }
+        if !in_group(context, cert) {
+            return Err(
+                "no client device of the sending device's account is in the channel's group on \
+                 this device"
+                    .to_owned(),
+            );
+        }
+        if content.counter.is_none() {
+            return Err("its content has no counter".to_owned());
+        }
     }
     let text = a2a_text(&content, header.msg_id)?;
     Ok(Received {
         from: content.from,
         to: content.to,
         device: cert.body().name.clone(),
+        level,
         text,
         counter: content.counter,
     })
+}
+
+/// Checks 2 and 3 of "Envelope" and the `counter` of `content` from `sender`, a `service` device
+/// with a valid certificate on a member's account, in an envelope with `header`, against `context`:
+/// `from` is the device's entry in the revision, its grant passes the checks of "Service grant",
+/// and content without `counter` comes only under `hpke`.
+fn check_service(
+    sender: DeviceId,
+    content: &Content,
+    header: &Header,
+    context: &Context,
+) -> Result<(), String> {
+    let body = context.roster.body();
+    let (name, revision) = (body.name.as_str(), body.revision);
+    let entry = service_entry(context.roster, sender).ok_or_else(|| {
+        format!("revision {revision} of the space {name} lists the service device as no agent")
+    })?;
+    let listed = context.server.map(|server| {
+        Address::new(
+            body.name.clone(),
+            entry.owner.clone(),
+            entry.agent.clone(),
+            server.clone(),
+        )
+    });
+    if listed.as_ref() != Some(&content.from) {
+        return Err(format!(
+            "its from is not the service device's agent in revision {revision} of the space {name}"
+        ));
+    }
+    let grant = (content.grant.as_ref())
+        .ok_or_else(|| "its content from a service device carries no grant".to_owned())?;
+    let own = (context.own.account, &context.own.master);
+    check_grant(
+        grant,
+        (sender, header.channel),
+        context.roster,
+        &context.devices.certs,
+        &context.devices.revocations,
+        own,
+        state::unix_now(),
+    )
+    .map_err(|err| err.to_string())?;
+    if content.counter.is_none() && matches!(context.group, Group::Sender) {
+        return Err(
+            "its content has no counter, which only content under hpke may lack".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+/// The service agent entry of `device` in `roster`, if it lists one.
+fn service_entry(roster: &Roster, device: DeviceId) -> Option<&ServiceAgent> {
+    (roster.body().service_agents.iter()).find(|agent| agent.device == device)
 }
 
 /// Whether `from` is an address of `account` in the space of `body`, a revision of it, on
@@ -1021,8 +1141,8 @@ pub fn a2a_text(content: &Content, msg_id: MessageId) -> Result<String, String> 
 mod tests {
     use skald_crypto::{HpkeKey, SigningKey, seal_message};
     use skald_proto::{
-        Content, DeliveryStatus, HpkePayload, HpkePlaintext, MessageId, NonEmpty, RawEnvelope,
-        Receipt, ReceiptStatus, Scheme, Unknown,
+        Content, DeliveryStatus, GRANT_LABEL, Grant, GrantBody, HpkePayload, HpkePlaintext,
+        MessageId, NonEmpty, RawEnvelope, Receipt, ReceiptStatus, Scheme, Unknown,
     };
 
     use super::*;
@@ -1052,6 +1172,8 @@ mod tests {
         server: ServerName,
         members: Vec<MemberDevice>,
         bob_account: Account,
+        /// The signing key of this device, an admin's.
+        ada_key: SigningKey,
     }
 
     impl World {
@@ -1091,6 +1213,7 @@ mod tests {
                 server: "skald.example".parse().unwrap(),
                 members,
                 bob_account: bob,
+                ada_key: this_key,
             }
         }
 
@@ -1166,6 +1289,20 @@ mod tests {
             check(opened.sender(), signed(opened), header, &context)
         }
 
+        /// The space's devices with one more of Bob's, of `kind`, issued by his device; and its ID.
+        fn with_bobs(&self, kind: DeviceKind) -> (SpaceDevices, DeviceId) {
+            let (cert, ..) = (self.bob_account).device(kind, &self.bob_key, Some(self.bob));
+            let id = cert.body().device;
+            let mut devices = SpaceDevices {
+                ids: self.devices.ids.clone(),
+                certs: self.devices.certs.clone(),
+                revocations: Vec::new(),
+            };
+            devices.ids.push(id);
+            devices.certs.push(cert);
+            (devices, id)
+        }
+
         fn checked(&self, header: &Header, content: &Content) -> Result<Received, String> {
             self.checked_in(&self.roster, header, content, &self.bob_key)
         }
@@ -1173,7 +1310,8 @@ mod tests {
 
     /// A message from an admitted device of a member of the channel, from its account's person
     /// address in the space on this server, with a counter and an A2A message whose `messageId` is
-    /// `msg_id`, gives its text parts, each on a line, `from` and the device's name.
+    /// `msg_id`, gives its text parts, each on a line, `from`, the device's name and its level,
+    /// `peer` for a device of another account.
     #[test]
     fn message_that_passes_the_checks_gives_its_text() {
         let world = World::new();
@@ -1186,6 +1324,7 @@ mod tests {
                 from: content.from.clone(),
                 to: None,
                 device: "laptop".to_owned(),
+                level: TrustLevel::Peer,
                 text: "first\nsecond".to_owned(),
                 counter: NonZeroU64::new(1),
             })
@@ -1275,16 +1414,7 @@ mod tests {
         let as_client = check(world.bob, |_| Ok(content.clone()), &header, &context);
         assert!(as_client.is_ok(), "{as_client:?}");
 
-        let bob = &world.bob_account;
-        let (service, ..) = bob.device(DeviceKind::Service, &world.bob_key, Some(world.bob));
-        let id = service.body().device;
-        let mut devices = SpaceDevices {
-            ids: world.devices.ids.clone(),
-            certs: world.devices.certs.clone(),
-            revocations: Vec::new(),
-        };
-        devices.ids.push(id);
-        devices.certs.push(service);
+        let (devices, id) = world.with_bobs(DeviceKind::Browser);
         let context = Context {
             devices: &devices,
             ..world.context(&world.roster, Group::Sender)
@@ -1298,6 +1428,58 @@ mod tests {
                     .to_owned()
             )
         );
+    }
+
+    /// Content from Bob's `service` device, which the revision lists as `ci/deploy-bot`, with a
+    /// grant this device signs, an admin's: without `counter` it passes under `hpke` and fails under
+    /// `mls`, where it passes with one.
+    #[test]
+    fn service_content_without_counter_passes_only_under_hpke() {
+        let world = World::new();
+        let (devices, id) = world.with_bobs(DeviceKind::Service);
+        let mut body = world.roster.body().clone();
+        body.service_agents.push(ServiceAgent {
+            device: id,
+            owner: "ci".parse().unwrap(),
+            agent: "deploy-bot".parse().unwrap(),
+            unknown: Unknown::default(),
+        });
+        let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+        let grant = GrantBody {
+            service: id,
+            channels: NonEmpty::new(world.channel),
+            signer: world.this,
+            expires: state::unix_now() + 3600,
+            unknown: Unknown::default(),
+        };
+        let signature = world.ada_key.sign(GRANT_LABEL, &[&grant.to_cbor()]);
+        let header = world.header();
+        let content = Content {
+            from: "acme/ci/deploy-bot@skald.example".parse().unwrap(),
+            counter: None,
+            grant: Some(Grant {
+                body: grant,
+                signature,
+            }),
+            ..world.content(World::a2a(&header, &["deployed"]))
+        };
+        let counted = Content {
+            counter: NonZeroU64::new(1),
+            ..content.clone()
+        };
+        let context = |group| Context {
+            devices: &devices,
+            ..world.context(&roster, group)
+        };
+        let checked =
+            |content: &Content, group| check(id, |_| Ok(content.clone()), &header, &context(group));
+
+        assert_eq!(
+            checked(&content, Group::Sender),
+            Err("its content has no counter, which only content under hpke may lack".to_owned())
+        );
+        assert!(checked(&counted, Group::Sender).is_ok());
+        assert!(checked(&content, Group::Held(None)).is_ok());
     }
 
     /// Content signed by a key other than that of the certificate of the device it names fails.
