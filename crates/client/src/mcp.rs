@@ -9,7 +9,9 @@
 //!   them handed over ([`recv::inbox`]): a result not written, or a call that fails, leaves them
 //!   for the next call. [`Written`] says whether each result was written.
 //! - The registration and each tool call are operations, as a command's: through the helper, or
-//!   one-shot, and through a helper newer than the server too, as after an update while it runs.
+//!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
+//!   server's binary was is newer, as after an update while the server runs, that `skald` runs each
+//!   ([`helper::relay`]).
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -95,9 +97,8 @@ pub fn perform(
 
 /// The default name of an agent of the MCP client named `client` on the device `device` named
 /// `device_name`: the client's name, the device's name and the first [`REFERENCE`] characters of
-/// the base32 of SHA-256 of the device ID's bytes, joined with `-`. Each name is lowercased, each
-/// run of characters a `name` does not allow made `-`, `-` trimmed at both ends, and left out if
-/// empty. Over 63 characters, the device's name is cut from its end, then, once it is gone, the
+/// the base32 of SHA-256 of the device ID's bytes, joined with `-`. Each name is made as
+/// [`name_part`] makes it, and left out if empty. Over 63 characters, the device's name is cut from its end, then, once it is gone, the
 /// client's, each cut name's `-` at its end trimmed.
 pub fn default_name(client: &str, device_name: &str, device: DeviceId) -> Name {
     let reference = &forms::hashed(device.as_bytes())[..REFERENCE];
@@ -123,18 +124,15 @@ pub fn default_name(client: &str, device_name: &str, device: DeviceId) -> Name {
         .expect("a default name is a valid name")
 }
 
-/// `text` lowercased, each run of characters a `name` does not allow made `-`, `-` trimmed at both
-/// ends, as `architecture.md`, "Data model", makes a username.
+/// `text` with its ASCII letters lowercased, each run of characters other than `a`–`z` and `0`–`9`
+/// made one `-`, `-` trimmed at both ends, as `architecture.md`, "Data model", makes a username.
 fn name_part(text: &str) -> String {
     let mut part = String::new();
-    let mut in_run = false;
-    for char in text.to_lowercase().chars() {
-        if char.is_ascii_lowercase() || char.is_ascii_digit() || char == '-' {
+    for char in text.chars().map(|char| char.to_ascii_lowercase()) {
+        if char.is_ascii_lowercase() || char.is_ascii_digit() {
             part.push(char);
-            in_run = false;
-        } else if !in_run {
+        } else if !part.ends_with('-') {
             part.push('-');
-            in_run = true;
         }
     }
     part.trim_matches('-').to_owned()
@@ -156,14 +154,7 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
     recovery::say_if_waiting(&dir);
     let pending = Pending::default();
     let server = Server {
-        settings: Settings {
-            speaks: operation.speaks,
-            timeout: operation.timeout,
-            clock_offset: operation.clock_offset,
-            state_dir: operation.state_dir,
-            key_storage: operation.key_storage,
-            one_shot,
-        },
+        settings: Settings::of(&operation, one_shot, helper::installed()),
         dir,
         agent: Mutex::new(agent),
         pending: Arc::clone(&pending),
@@ -190,6 +181,33 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
     served
 }
 
+/// `skald mcp --relayed`: runs the call an older `skald mcp` relays to this one
+/// ([`helper::relay`]), as a run in one-shot mode if `one_shot`, its output going back to it.
+pub fn relayed(one_shot: bool) -> Result<(), String> {
+    let (cwd, operation) = helper::relayed()?;
+    let ran = std::env::set_current_dir(&cwd)
+        .map_err(|err| format!("cannot use the working directory {}: {err}", cwd.display()))
+        .and_then(|()| match (&operation.command, operation.agent()?) {
+            (
+                Command::Mcp {
+                    call: Some(call), ..
+                },
+                Some(agent),
+            ) => {
+                Settings::of(&operation, one_shot, None).run(*call, &agent, || helper::to_relaying)
+            }
+            _ => Err("skald mcp relays only its own calls".to_owned()),
+        });
+    let code = match ran {
+        Ok(ran) => u8::from(!ran),
+        Err(err) => {
+            let _ = helper::to_relaying(Stream::Err, format!("skald: {err}\n").as_bytes());
+            1
+        }
+    };
+    helper::relayed_code(code)
+}
+
 /// What a call's operation takes from the server's own settings.
 #[derive(Clone)]
 struct Settings {
@@ -199,9 +217,25 @@ struct Settings {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     one_shot: bool,
+    /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
+    installed: Option<PathBuf>,
 }
 
 impl Settings {
+    /// The settings of `operation`'s server, in one-shot mode if `one_shot`, installed at
+    /// `installed`.
+    fn of(operation: &Operation, one_shot: bool, installed: Option<PathBuf>) -> Self {
+        Settings {
+            speaks: operation.speaks,
+            timeout: operation.timeout,
+            clock_offset: operation.clock_offset,
+            state_dir: operation.state_dir.clone(),
+            key_storage: operation.key_storage,
+            one_shot,
+            installed,
+        }
+    }
+
     /// The operation of `call` as `agent`.
     fn operation(&self, call: Call, agent: &Name) -> Operation {
         Operation {
@@ -211,28 +245,35 @@ impl Settings {
             state_dir: self.state_dir.clone(),
             key_storage: self.key_storage,
             agent: Some(agent.to_string()),
-            command: Command::Mcp { call: Some(call) },
+            command: Command::Mcp {
+                relayed: false,
+                call: Some(call),
+            },
         }
     }
 
-    /// Runs `call` as `agent`, as a command runs its operation, its output going to `said`; gives
-    /// whether it succeeded.
-    fn run(&self, call: Call, agent: &Name, said: &Said) -> bool {
+    /// Runs `call` as `agent`, as a command runs its operation, or with the newer `skald`
+    /// installed where the server's binary was, each write of its output going to a sink `sink`
+    /// gives; gives whether it succeeded, or fails with its error.
+    fn run<S>(&self, call: Call, agent: &Name, sink: impl Fn() -> S) -> Result<bool, String>
+    where
+        S: FnMut(Stream, &[u8]) -> io::Result<()> + 'static,
+    {
         let operation = self.operation(call, agent);
-        let dir = match state::dir(operation.state_dir.clone()) {
-            Ok(dir) => dir,
-            Err(err) => return said.failed(&err),
-        };
-        let mut sink = said.sink();
-        match helper::route_into(&dir, &operation, (false, !self.one_shot, true), &mut sink) {
-            Ok(Route::Helped(code)) => code == ExitCode::SUCCESS,
-            Ok(Route::Here(lock)) => {
-                let ran = output::into(said.sink(), || crate::perform(operation));
+        let succeeded = |code| code == ExitCode::SUCCESS;
+        if let Some(exe) = (self.installed.as_deref()).filter(|exe| helper::newer_at(exe)) {
+            return helper::relay(exe, &operation, self.one_shot, &mut sink()).map(succeeded);
+        }
+        let dir = state::dir(operation.state_dir.clone())?;
+        let route = (false, !self.one_shot, true);
+        match helper::route_into(&dir, &operation, route, &mut sink())? {
+            Route::Helped(code) => Ok(succeeded(code)),
+            Route::Here(lock) => {
+                let ran = output::into(sink(), || crate::perform(operation));
                 mailbox::close_kept();
                 drop(lock);
-                ran.map_or_else(|err| said.failed(&err), |()| true)
+                ran.map(|()| true)
             }
-            Err(err) => said.failed(&err),
         }
     }
 }
@@ -271,7 +312,7 @@ impl Server {
         let settings = self.settings.clone();
         let mut running = tokio::task::spawn_blocking({
             let said = said.clone();
-            move || settings.run(Call::Inbox, &agent, &said)
+            move || said.ran(settings.run(Call::Inbox, &agent, || said.sink()))
         });
         let ran = tokio::select! {
             biased;
@@ -305,7 +346,7 @@ impl ServerHandler for Server {
             let settings = self.settings.clone();
             let said = Said::default();
             let registered = tokio::task::spawn_blocking(move || {
-                let registered = settings.run(Call::Register, &agent, &said);
+                let registered = said.ran(settings.run(Call::Register, &agent, || said.sink()));
                 (registered, said.text())
             })
             .await;
@@ -403,10 +444,12 @@ impl Said {
         lock(&self.0).text.clone()
     }
 
-    /// Takes in the run's error `err` as its error output; gives that it failed.
-    fn failed(&self, err: &str) -> bool {
-        let _ = self.take(Stream::Err, format!("skald: {err}\n").as_bytes());
-        false
+    /// Whether the run that gave `ran` succeeded; takes in its error as its error output.
+    fn ran(&self, ran: Result<bool, String>) -> bool {
+        ran.unwrap_or_else(|err| {
+            let _ = self.take(Stream::Err, format!("skald: {err}\n").as_bytes());
+            false
+        })
     }
 
     /// The sink of the run's writes ([`Said::take`]).
@@ -503,8 +546,9 @@ mod tests {
         (id, forms::hashed(id.as_bytes())[..REFERENCE].to_owned())
     }
 
-    /// The client's and the device's names, each lowercased, each run of characters a name does
-    /// not allow made `-` and `-` trimmed at both ends, then the device's reference.
+    /// The client's and the device's names, each with its ASCII letters lowercased, each run of
+    /// other characters than `a`–`z` and `0`–`9` made one `-` and `-` trimmed at both ends, then the
+    /// device's reference.
     #[test]
     fn default_name_joins_the_cleaned_names_and_the_reference() {
         let (id, r) = device();
@@ -519,7 +563,10 @@ mod tests {
                 "Ada's Mac",
                 format!("codex-cli-v2-ada-s-mac-{r}"),
             ),
-            ("a-_b", "x", format!("a--b-x-{r}")),
+            ("a-_b", "x", format!("a-b-x-{r}")),
+            ("Claude - Code", "x", format!("claude-code-x-{r}")),
+            // U+212A KELVIN SIGN lowercases to `k`, but only ASCII letters are lowercased.
+            ("\u{212A}ilo", "Ädä", format!("ilo-d-{r}")),
             ("", "ada-workstation", format!("ada-workstation-{r}")),
             ("Claude Code", "", format!("claude-code-{r}")),
             ("Claude Code", "★ ★", format!("claude-code-{r}")),
@@ -566,6 +613,147 @@ mod tests {
             assert_eq!(name.as_str(), expected, "{client:?} on {device_name:?}");
             assert!(name.as_str().len() <= NAME_MOST, "{name}");
         }
+    }
+
+    /// A transport whose writes work if `works`.
+    struct Stdio {
+        works: bool,
+    }
+
+    impl Transport<RoleServer> for Stdio {
+        type Error = io::Error;
+
+        fn send(
+            &mut self,
+            _message: TxJsonRpcMessage<RoleServer>,
+        ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+            let works = self.works;
+            async move {
+                if works {
+                    Ok(())
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the client is gone",
+                    ))
+                }
+            }
+        }
+
+        async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleServer>> {
+            None
+        }
+
+        async fn close(&mut self) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    /// The message `json` the server sends.
+    fn message(json: serde_json::Value) -> TxJsonRpcMessage<RoleServer> {
+        serde_json::from_value(json).expect("a message the server sends")
+    }
+
+    /// `Written` over a transport whose writes work if `works`, with the tool call `7` waiting:
+    /// with what it learns of its result, and a runtime to send on.
+    fn waiting(
+        works: bool,
+    ) -> (
+        Written<Stdio>,
+        mpsc::Receiver<bool>,
+        tokio::runtime::Runtime,
+    ) {
+        let pending = Pending::default();
+        let (written, said) = mpsc::channel();
+        lock(&pending).insert(RequestId::Number(7), written);
+        let transport = Written {
+            stdio: Stdio { works },
+            pending,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("a runtime");
+        (transport, said, runtime)
+    }
+
+    /// What `Written` over a transport whose writes work if `works` says of the tool call `7`
+    /// whose answer is `answer`; `None` if it says nothing.
+    fn said_written(works: bool, answer: serde_json::Value) -> Option<bool> {
+        let (mut transport, said, runtime) = waiting(works);
+        let _ = runtime.block_on(transport.send(message(answer)));
+        assert!(lock(&transport.pending).is_empty(), "the call still waits");
+        said.try_recv().ok()
+    }
+
+    /// A tool call's result is written only once its write worked; an error in its place is not
+    /// its result.
+    #[test]
+    fn result_is_written_only_once_its_write_works() {
+        let result = json!({ "jsonrpc": "2.0", "id": 7, "result": { "content": [] } });
+        let error = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "error": { "code": -32603, "message": "it failed" },
+        });
+        assert_eq!(said_written(true, result.clone()), Some(true));
+        assert_eq!(said_written(false, result), Some(false));
+        assert_eq!(said_written(true, error), Some(false));
+    }
+
+    /// A message for another request leaves the call waiting; once the transport closes, the call
+    /// learns its result was not written.
+    #[test]
+    fn closed_transport_leaves_no_result_written() {
+        let (mut transport, said, runtime) = waiting(true);
+        let other = json!({ "jsonrpc": "2.0", "id": 8, "result": {} });
+        let _ = runtime.block_on(transport.send(message(other)));
+        assert_eq!(
+            lock(&transport.pending).len(),
+            1,
+            "the call no longer waits"
+        );
+
+        let _ = runtime.block_on(transport.close());
+
+        assert!(said.try_recv().is_err(), "a result was written");
+    }
+
+    /// A run that fails gives that it failed, and its error as what it said.
+    #[test]
+    fn failed_run_says_its_error() {
+        let said = Said::default();
+        let _ = said.take(Stream::Err, b"skald: dropped #k3vq: it does not open\n");
+
+        assert!(!said.ran(Err("cannot read the local state".to_owned())));
+        assert_eq!(
+            said.text(),
+            "skald: dropped #k3vq: it does not open\nskald: cannot read the local state\n"
+        );
+        assert!(Said::default().ran(Ok(true)));
+    }
+
+    /// The server says it has tools, as skald.
+    #[test]
+    fn server_says_it_has_tools() {
+        let server = Server {
+            settings: Settings {
+                speaks: VersionRange::default(),
+                timeout: Duration::from_secs(1),
+                clock_offset: 0,
+                state_dir: None,
+                key_storage: secrets::Storage::File,
+                one_shot: true,
+                installed: None,
+            },
+            dir: PathBuf::new(),
+            agent: Mutex::new(None),
+            pending: Pending::default(),
+        };
+
+        let info = server.get_info();
+
+        assert!(info.capabilities.tools.is_some(), "no tools: {info:?}");
+        assert_eq!(info.server_info.name, "skald");
     }
 
     /// Two devices of one name give one client two names.

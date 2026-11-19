@@ -616,7 +616,9 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
     shown += shown_statuses(
         statuses,
         (form, &references),
-        (written("a status"), |seq| state.status_shown_to_person(seq)),
+        (&mut written("a status"), &mut |seq| {
+            state.status_shown_to_person(seq)
+        }),
     )?;
     let kept = state.for_person().map_err(text)?;
     Ok(shown
@@ -624,7 +626,9 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
             follower,
             kept,
             (form, &references),
-            (written("a message"), |seq| state.shown_to_person(seq)),
+            (&mut written("a message"), &mut |seq| {
+                state.shown_to_person(seq)
+            }),
         )?)
 }
 
@@ -642,10 +646,9 @@ pub fn hand_over(
         (space, agent),
         form,
         |what, line| written(what)(line),
-        (
-            |seq| state.status_taken_by_agent(seq),
-            |seq| state.handed_over(seq, agent.as_str()),
-        ),
+        (&mut |seq| state.status_taken_by_agent(seq), &mut |seq| {
+            state.handed_over(seq, agent.as_str())
+        }),
     )
 }
 
@@ -668,11 +671,11 @@ fn hand_over_whole(
             Ok(())
         },
         (
-            |seq| {
+            &mut |seq| {
                 statuses.push(seq);
                 Ok(())
             },
-            |seq| {
+            &mut |seq| {
                 messages.push(seq);
                 Ok(())
             },
@@ -693,17 +696,13 @@ fn hand_over_whole(
 
 /// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits
 /// for it there, in `form`, in `seq` order, with `put`, which takes what it is, such as a status,
-/// and its line; then marks it with the status's or the message's of `marks`. Gives how many
-/// messages it put.
+/// and its line; then marks it with `status` or `message`. Gives how many messages it put.
 fn handing_over(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
     form: Form,
     mut put: impl FnMut(&'static str, String) -> Result<(), String>,
-    (status, message): (
-        impl FnMut(u64) -> Result<(), state::Error>,
-        impl FnMut(u64) -> Result<(), state::Error>,
-    ),
+    (status, message): (&mut Mark, &mut Mark),
 ) -> Result<usize, String> {
     let state = &follower.state;
     let references = References::new(state.kept_ids().map_err(text)?);
@@ -711,14 +710,14 @@ fn handing_over(
     shown_statuses(
         statuses,
         (form, &references),
-        (|line| put("a status", line), status),
+        (&mut |line| put("a status", line), status),
     )?;
     let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
     shown_kept(
         follower,
         kept,
         (form, &references),
-        (|line| put("a message", line), message),
+        (&mut |line| put("a message", line), message),
     )
 }
 
@@ -730,34 +729,19 @@ fn written(what: &'static str) -> impl FnMut(String) -> Result<(), String> {
     }
 }
 
-/// What puts each line shown, with its end, and then marks its status or message by `seq`: a pair
-/// of the two.
-trait Shows {
-    fn put(&mut self, line: String) -> Result<(), String>;
-    fn mark(&mut self, seq: u64) -> Result<(), state::Error>;
-}
+/// What puts each line shown, with its end.
+type Put<'p> = dyn FnMut(String) -> Result<(), String> + 'p;
 
-impl<P, M> Shows for (P, M)
-where
-    P: FnMut(String) -> Result<(), String>,
-    M: FnMut(u64) -> Result<(), state::Error>,
-{
-    fn put(&mut self, line: String) -> Result<(), String> {
-        (self.0)(line)
-    }
+/// What marks a status or message shown, by its `seq`.
+type Mark<'m> = dyn FnMut(u64) -> Result<(), state::Error> + 'm;
 
-    fn mark(&mut self, seq: u64) -> Result<(), state::Error> {
-        (self.1)(seq)
-    }
-}
-
-/// Puts each of `kept`, kept statuses by `seq` as JSON, in `form` with `references`, with
-/// `shows`, unless the form leaves it out, then marks its `seq`; one that does
+/// Puts each of `kept`, kept statuses by `seq` as JSON, in `form` with `references`, with `put`,
+/// unless the form leaves it out, then marks its `seq` with `mark`; one that does
 /// not decode is warned of and marked. Gives how many it put.
 fn shown_statuses(
     kept: Vec<(u64, String)>,
     (form, references): (Form, &References),
-    mut shows: impl Shows,
+    (put, mark): (&mut Put, &mut Mark),
 ) -> Result<usize, String> {
     let mut shown = 0;
     for (seq, json) in kept {
@@ -766,7 +750,7 @@ fn shown_statuses(
         match (status, msg_id) {
             (Some(status), Some(msg_id)) => {
                 if let Some(line) = status.shown(form, &references.of(msg_id)) {
-                    shows.put(format!("{line}\n"))?;
+                    put(format!("{line}\n"))?;
                     shown += 1;
                 }
             }
@@ -774,19 +758,19 @@ fn shown_statuses(
                 "skald: warning: a status this device kept does not decode, so it is not shown"
             ),
         }
-        shows.mark(seq).map_err(text)?;
+        mark(seq).map_err(text)?;
     }
     Ok(shown)
 }
 
 /// Puts each of `kept`, kept messages by `seq` with their sealed lines, in `form` with
-/// `references`, with `shows`, then marks its `seq`; one that does not open
+/// `references`, with `put`, then marks its `seq` with `mark`; one that does not open
 /// is warned of and marked. A line an older client kept is put as it is. Gives how many it put.
 fn shown_kept(
     follower: &Follower,
     kept: Vec<(u64, Vec<u8>)>,
     (form, references): (Form, &References),
-    mut shows: impl Shows,
+    (put, mark): (&mut Put, &mut Mark),
 ) -> Result<usize, String> {
     if kept.is_empty() {
         return Ok(0);
@@ -797,14 +781,14 @@ fn shown_kept(
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
                 let line = kept_line(&opened, form, references);
-                shows.put(format!("{line}\n"))?;
+                put(format!("{line}\n"))?;
                 shown += 1;
             }
             None => eprintln!(
                 "skald: warning: a message this device kept does not open, so it is not shown"
             ),
         }
-        shows.mark(seq).map_err(text)?;
+        mark(seq).map_err(text)?;
     }
     Ok(shown)
 }

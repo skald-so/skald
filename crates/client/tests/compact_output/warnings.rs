@@ -5,11 +5,11 @@ use skald_proto::MessageId;
 
 use crate::agents::{Agents, CLAUDE, CODEX};
 use crate::front::Answers;
-use crate::gaps::{MISSING, msg_id_of, reports_of, second_dropped};
+use crate::gaps::{MISSING, reports_of, second_dropped};
 use crate::kit::received;
 use crate::lines::{agent_line, agent_notes, assert_no_uuid, lines_referring_to};
 use crate::said::send_as;
-use crate::talk::{BOB_HOST, Line, Talk};
+use crate::talk::{BOB_HOST, Talk};
 use crate::world::WARNING;
 
 /// What Bob's device and claude say; none is anywhere else.
@@ -47,13 +47,7 @@ fn agent_warning_of_a_dropped_message_names_it_by_its_reference() {
         ["ada-agent-told-what-dropped", "bob-forged-once-more"],
     );
     agents.run_as(CLAUDE);
-    let forged = {
-        let mut line = Line::new(&agents.bob(), 1, FORGED);
-        line.message_id = Some(MessageId::generate());
-        agents.bob_says(&line)
-    };
-    let msg_id = msg_id_of(&forged);
-    (agents.talk.front).inject(agents.talk.ada.device, vec![forged]);
+    let msg_id = agents.bob_forges(FORGED);
 
     let claude = agents.run_as(CLAUDE).shown();
 

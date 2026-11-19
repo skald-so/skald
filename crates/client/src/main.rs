@@ -488,8 +488,13 @@ enum Command {
     /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
     /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
     /// skald recv, each once. Each tool call goes through the helper or runs one-shot, as a command
-    /// does, and through a newer helper too, as when skald was updated while it runs.
+    /// does, and through a newer helper too; once the skald installed where it was is newer, as
+    /// when skald was updated while it runs, that skald runs each call.
     Mcp {
+        /// Runs the call an older skald mcp relays to this one.
+        #[arg(long, hide = true)]
+        #[serde(default)]
+        relayed: bool,
         /// A tool call the server hands over as a command does its operation.
         #[arg(skip)]
         #[serde(default)]
@@ -533,7 +538,6 @@ impl Command {
         matches!(
             self,
             Command::Send { .. }
-                | Command::Mcp { .. }
                 | Command::Recv { .. }
                 | Command::Spaces
                 | Command::Members { .. }
@@ -653,8 +657,16 @@ fn main() -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
-    if let Command::Mcp { call: None } = operation.command {
-        return exit(mcp::serve(operation, one_shot));
+    if let Command::Mcp {
+        relayed,
+        call: None,
+    } = operation.command
+    {
+        return exit(if relayed {
+            mcp::relayed(one_shot)
+        } else {
+            mcp::serve(operation, one_shot)
+        });
     }
     if let Command::Helper { idle } = operation.command {
         let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
@@ -907,7 +919,7 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .and_then(|dir| agents::address(&dir, key_storage, &agent, speaks, timeout))
             }),
         Command::Update { github_api_url } => update::run(&github_api_url, timeout),
-        Command::Mcp { call } => state::dir(state_dir).and_then(|dir| {
+        Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),
         Command::Helper { .. } => Err("the helper runs only as itself".to_owned()),

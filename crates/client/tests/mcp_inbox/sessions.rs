@@ -23,6 +23,7 @@ const SAYS: [&str; 3] = [
     "inbox test: the second, which never arrives",
     "inbox test: the third of three",
 ];
+const FORGED: &str = "inbox test: a message whose messageId is not its msg_id";
 
 /// Ada's device has run as claude in `~/work/acme`, and a session of the MCP client `claude-code`
 /// starts there and initializes. Bob's device sends a message to the channel, which the person's
@@ -104,5 +105,39 @@ fn inbox_warns_of_missing_messages_as_the_agents_recv_does() {
         note.contains(BOB_HOST) && note.to_lowercase().contains(MISSING),
         "{note}"
     );
+    assert_no_uuid(&shown);
+}
+
+/// A session of `claude-code` starts in `~/work/acme`. A proxy puts into Ada's catch-up Bob's
+/// message in the channel whose `messageId` is not its `msg_id`, which the device drops. The
+/// session's `inbox` gives the one line of warning of it that the agent's `skald recv` shows, by
+/// its reference and naming Bob's device, and not the text, nor the line of nothing waiting.
+#[test]
+fn inbox_that_has_only_a_warning_gives_it() {
+    let mut agents = Agents::new(
+        [4_627_004_001, 4_627_004_002],
+        ["ada-session-told-of-a-drop", "bob-forges-for-the-session"],
+    );
+    let mut session = session_in(&agents.talk.ada.machine, &agents.folder, &[], CLIENT);
+    let msg_id = agents.bob_forges(FORGED);
+
+    let shown = session.inbox();
+
+    let lines: Vec<&str> = (shown.lines().map(str::trim))
+        .filter(|line| !line.is_empty())
+        .collect();
+    let [note] = lines.as_slice() else {
+        panic!("not one line: {shown:?}");
+    };
+    assert_eq!(
+        lines_referring_to(&shown, msg_id),
+        [note.to_string()],
+        "{shown:?}"
+    );
+    assert!(
+        note.contains(BOB_HOST) && agent_line(note).is_none(),
+        "{note}"
+    );
+    assert!(!shown.contains(FORGED), "{shown:?}");
     assert_no_uuid(&shown);
 }
