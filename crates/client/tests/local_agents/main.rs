@@ -51,6 +51,7 @@ mod outbox;
 mod refusals;
 mod session;
 mod solo;
+mod waiting;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices and the helpers of the tests of reading the
@@ -81,3 +82,14 @@ mod receipts;
 mod replying;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
+
+// The waiting device and the line that names it, as the tests of the prompt while a device waits
+// for linking have them, and the new device, the terminal and the grants they need.
+#[path = "../link_codes/linking.rs"]
+mod linking;
+#[path = "../link_prompt/prompt.rs"]
+mod prompt;
+#[path = "../recovery_key/terminal.rs"]
+mod terminal;
+#[path = "../recovery_key/grants.rs"]
+mod terminal_grants;
