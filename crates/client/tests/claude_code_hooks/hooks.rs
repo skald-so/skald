@@ -171,9 +171,10 @@ pub fn hook_in(machine: &Machine, dir: &Path, agent: Option<&str>, event: Event)
 
 /// Ada's machine alone in `clienta`, with web's MCP session running in `~/work/clientA/web`.
 pub struct Web {
-    pub solo: Solo,
-    /// `skald --agent web mcp` in web's folder.
+    /// `skald --agent web mcp` in web's folder. Ends before `solo` removes the machine's
+    /// directory, which Windows does not remove while the session holds files in it.
     pub session: Session,
+    pub solo: Solo,
 }
 
 impl Web {
