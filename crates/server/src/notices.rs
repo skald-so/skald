@@ -199,12 +199,15 @@ mod tests {
         mem::take(&mut listening.pending.noticed.lock().unwrap().linking)
     }
 
+    /// Two connections of account 1 and one of account 2, listening to `notices`.
+    fn two_accounts(notices: &Arc<Notices>) -> [Listening; 3] {
+        [account(1), account(1), account(2)].map(|account| notices.listen(account))
+    }
+
     #[test]
     fn a_notice_reaches_each_connection_of_its_accounts_only() {
         let notices = Arc::new(Notices::default());
-        let first = notices.listen(account(1));
-        let second = notices.listen(account(1));
-        let other = notices.listen(account(2));
+        let [first, second, other] = two_accounts(&notices);
 
         notices.notify([account(1)], space(1));
 
@@ -260,9 +263,7 @@ mod tests {
     #[test]
     fn a_link_notice_reaches_each_connection_of_its_account_only() {
         let notices = Arc::new(Notices::default());
-        let first = notices.listen(account(1));
-        let second = notices.listen(account(1));
-        let other = notices.listen(account(2));
+        let [first, second, other] = two_accounts(&notices);
 
         notices.link(account(1));
 
