@@ -626,7 +626,7 @@ export const getGetWaitingDevicesUrl = () => {
 };
 
 /**
- * The devices of the session's account with an open run (docs/protocol/membership.md, "Link code"), by the kind and `name` they registered with: what a linked device tells its user to link. Only a prompt: a device takes the new device's keys only from the run.
+ * The devices of the session's account with an open run (docs/protocol/membership.md, "Link code"), by the kind and `name` they registered with: what a linked device tells its user to link, on each command that reaches the server and on a `link-notice` (docs/protocol/delivery.md, "Frames"). Only a prompt: a device takes the new device's keys only from the run.
  * @summary The account's devices waiting for linking
  */
 export const getWaitingDevices = async (

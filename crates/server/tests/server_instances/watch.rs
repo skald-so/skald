@@ -1,5 +1,5 @@
 //! A device's connection to one instance, as its reader sees it: mailbox entries, `space-notice`s,
-//! the end of catch-up and the server's close, each awaited until a deadline.
+//! `link-notice`s, the end of catch-up and the server's close, each awaited until a deadline.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -19,6 +19,8 @@ pub enum Came {
     Entry(Entry),
     /// A `space-notice` for the space.
     Notice(SpaceId),
+    /// A `link-notice`.
+    LinkNotice,
     /// An empty `batch`: the end of catch-up.
     End,
 }
@@ -157,6 +159,15 @@ impl Watch {
         }
     }
 
+    /// Checks that the next thing to come is a `link-notice`, within `within` from now.
+    #[track_caller]
+    pub fn link_notice_within(&mut self, within: Duration) {
+        match self.next(Instant::now() + within) {
+            Some(Came::LinkNotice) => {}
+            other => panic!("a link-notice within {within:?}, not {other:?}"),
+        }
+    }
+
     /// Checks that nothing comes within `QUIET`.
     #[track_caller]
     pub fn assert_quiet(&mut self) {
@@ -183,6 +194,7 @@ impl Watch {
 fn came_of(push: Push) -> Option<Came> {
     match push {
         Push::SpaceNotice { space } => Some(Came::Notice(space)),
+        Push::LinkNotice => Some(Came::LinkNotice),
         push => Entry::of(push).map(Came::Entry),
     }
 }

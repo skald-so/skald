@@ -174,6 +174,11 @@ pub fn frames() -> Vec<(&'static str, Frame, String)> {
             },
             format!("83 0d 05 69{}", to_hex(b"malformed")),
         ),
+        (
+            "link-notice",
+            Frame::Push(Push::LinkNotice),
+            "81 0e".to_owned(),
+        ),
     ]
 }
 

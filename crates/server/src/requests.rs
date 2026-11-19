@@ -21,9 +21,10 @@ use sqlx::PgPool;
 use crate::connections::{self, Closing, LISTEN_WAIT, NOT_LISTENING, Proof, Proved, Unproved};
 use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
+use crate::notices::Noticed;
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in, param};
-use crate::{AppState, database_failed, error_reports, notices, problem, service_tokens};
+use crate::{AppState, database_failed, error_reports, link_runs, notices, problem};
 
 /// The longest wait of a long-poll without the server setting.
 pub const LONG_POLL_MAX_WAIT: Duration = Duration::from_secs(30);
@@ -174,7 +175,8 @@ pub(crate) async fn listening(state: &AppState) -> Result<(), Box<Response>> {
 }
 
 /// What a long-poll of `proved`'s device answers now: the next entries of `reader`, then a
-/// `space-notice` of each space with a revision since its previous answer.
+/// `space-notice` of each space with a revision since its previous answer, and a `link-notice` if
+/// a run of a link code opened since.
 async fn answer(
     db: &PgPool,
     reader: &mut Reader,
@@ -194,8 +196,13 @@ async fn answer(
     let spaces = notices::since_last_answer(db, proved.device, proved.account)
         .await
         .map_err(|err| ("read the notices", err))?;
-    let spaces = service_tokens::seen(proved.token.as_ref(), spaces);
-    pushes.extend(spaces.into_iter().map(|space| Push::SpaceNotice { space }));
+    // A service token's long-poll records no run: it gets no `link-notice`.
+    let linking = proved.token.is_none()
+        && link_runs::since_last_answer(db, proved.device, proved.account)
+            .await
+            .map_err(|err| ("read the notices", err))?;
+    let noticed = Noticed { spaces, linking };
+    pushes.extend(noticed.pushes(proved.token.as_ref()));
     Ok(pushes)
 }
 
