@@ -1,14 +1,14 @@
 //! Past what the other tests of service tokens check: the grant's signer and expiry at their edges,
 //! a revoked `service` device, repeated permissions, a revocation through another space or of an
-//! ended token, an entry listed again, a creation while a revision drops the entry, and a use
-//! recorded once a minute.
+//! ended token, an entry listed again, a creation while a revision drops the entry, a revision
+//! while a creation holds the space, and a use recorded once a minute.
 
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skald_proto::DeviceKind;
-use sqlx::Connection as _;
+use sqlx::{Connection as _, PgConnection};
 
 use crate::api::assert_refused;
 use crate::common::device_flow::{json, text};
@@ -267,4 +267,37 @@ fn a_token_asked_for_while_a_revision_drops_its_entry_is_not_given() {
     let entry = service_agent(&stage.bot);
     stage.f.revise(|body| body.service_agents.push(entry));
     assert!(stage.list(&stage.f.team.alice).is_empty(), "a token given");
+}
+
+/// While the space's row is locked as a token's creation locks it, a revision stored through the
+/// API waits until the lock is released.
+#[test]
+fn a_revision_waits_for_a_tokens_creation() {
+    const HELD: Duration = Duration::from_secs(1);
+    let mut stage = Stage::new(3_535_600_051);
+    let (url, space) = (stage.db().url(), stage.space().to_string());
+    let (locked, wait) = mpsc::channel();
+    let holding = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("a tokio runtime");
+        runtime.block_on(async {
+            let mut conn = PgConnection::connect(&url).await?;
+            let mut tx = conn.begin().await?;
+            sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR SHARE")
+                .bind(&space)
+                .execute(&mut *tx)
+                .await?;
+            locked.send(()).expect("the revision");
+            tokio::time::sleep(HELD).await;
+            tx.commit().await
+        })
+    });
+    wait.recv().expect("the space locked");
+    let started = Instant::now();
+    stage.f.revise(|_| {});
+    let waited = started.elapsed();
+    holding.join().expect("the lock").expect("hold the lock");
+    assert!(waited >= HELD / 2, "stored after {waited:?}, the lock held");
 }
