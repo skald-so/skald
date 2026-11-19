@@ -27,6 +27,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -210,6 +211,14 @@ async function navigation(tab, navigate) {
   }
   return { url: tab.url(), status, navigations, error };
 }
+
+/**
+ * The error of a navigation that Chrome on GitHub's Windows runners now and then gets for a local
+ * connection, Windows' WSAENOBUFS; and the waits before each next try of such a navigation. The
+ * harness's browser fails, not the server under test.
+ */
+const NO_BUFFER_SPACE = "net::ERR_NO_BUFFER_SPACE";
+const NO_BUFFER_SPACE_WAITS = [250, 500, 1000, 2000];
 
 /** How long `followRefreshes` waits in all, as long as playwright-core waits for a navigation. */
 const REFRESH_TIMEOUT = 30_000;
@@ -399,9 +408,15 @@ function forwardUpgrade(target, request, socket, head, upgraded) {
 }
 
 const ops = {
-  /** Opens a page in a new browser context: a browser with no cookies and no storage. */
-  async newPage({ session }) {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  /**
+   * Opens a page in a new browser context: a browser with no cookies and no storage, its window
+   * `width` CSS pixels wide if given, as a phone's.
+   */
+  async newPage({ session, width }) {
+    const context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      ...(width === undefined ? {} : { viewport: { width, height: 800 } }),
+    });
     opened(session).contexts.push(context);
     const id = nextPage++;
     pages.set(id, { session, context, page: await context.newPage() });
@@ -444,18 +459,25 @@ const ops = {
    * frame requested on the way, redirects and refreshes included, and the navigation error, if any.
    */
   async goto({ page: id, url, settle = false }) {
-    // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
-    // error response, such as a 404 without a body, after goto gave up on it, and that commit
-    // would interrupt the next navigation in the same tab.
-    const found = page(id);
-    const tab = await found.context.newPage();
-    found.page.close().catch(() => {});
-    found.page = tab;
-    return navigation(tab, async () => {
-      const response = await tab.goto(url, { waitUntil: "load" });
-      if (settle) await followRefreshes(tab);
-      return response;
-    });
+    // A navigation that fails with NO_BUFFER_SPACE goes again, after each of NO_BUFFER_SPACE_WAITS;
+    // any other error, or the last try's, is the visit's.
+    for (const wait of [...NO_BUFFER_SPACE_WAITS, null]) {
+      // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
+      // error response, such as a 404 without a body, after goto gave up on it, and that commit
+      // would interrupt the next navigation in the same tab.
+      const found = page(id);
+      const tab = await found.context.newPage();
+      found.page.close().catch(() => {});
+      found.page = tab;
+      const visit = await navigation(tab, async () => {
+        const response = await tab.goto(url, { waitUntil: "load" });
+        if (settle) await followRefreshes(tab);
+        return response;
+      });
+      if (wait === null || !visit.error?.includes(NO_BUFFER_SPACE)) return visit;
+      console.error(`browser: ${url}: ${NO_BUFFER_SPACE}; navigating again in ${wait} ms`);
+      await sleep(wait);
+    }
   },
 
   /**

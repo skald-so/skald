@@ -204,11 +204,25 @@ struct Records {
     tokens: Vec<Record>,
 }
 
+/// What a command reads of `SpaceUsage` in the API spec: the limit on the space's service agents,
+/// absent while none applies.
+#[derive(Deserialize)]
+struct Usage {
+    service_agents: Option<Limited>,
+}
+
+/// What a command reads of `UsageCount` in the API spec.
+#[derive(Deserialize)]
+struct Limited {
+    limit: Option<u64>,
+}
+
 /// `skald create-service-agent`: creates the service agent `address` in `synced`, a space whose
 /// admin's device this is, with `granted`; writes its key secret and token to stdout, or its key
 /// secret alone when the space lists the agent and its token fails. Refused before anything is
 /// registered or signed: on a device that is no admin's, for an address the space's last accepted
-/// revision has, and for channels or an expiry that `granted` gets wrong.
+/// revision has, for channels or an expiry that `granted` gets wrong, and when that revision has as
+/// many service agents as the server allows.
 pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<(), String> {
     let Synced {
         mut follower,
@@ -226,6 +240,14 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
         ));
     }
     let checked = granted.checked(&latest, now())?;
+    if let Some(limit) = agents_limit(&mut follower, space.id)?
+        && latest.body().service_agents.len() as u64 >= limit
+    {
+        return Err(format!(
+            "the space {name} has as many service agents as it may on this server: {limit}; \
+             nothing changed"
+        ));
+    }
     let admin = follower.keys()?;
     let keys = Keys::generate();
     let device = keys.id();
@@ -520,6 +542,18 @@ fn records(follower: &mut Follower, space: SpaceId) -> Result<Vec<Record>, Strin
     serde_json::from_slice::<Records>(&answer)
         .map(|records| records.tokens)
         .map_err(|_| "the server's answer holds no list of tokens".to_owned())
+}
+
+/// `GET /spaces/<space>/usage`: the server's limit on the service agents of `space`, if it has one.
+fn agents_limit(follower: &mut Follower, space: SpaceId) -> Result<Option<u64>, String> {
+    let path = format!("/spaces/{space}/usage");
+    let answer = follower
+        .connection
+        .get_as(&path, &follower.token)
+        .map_err(text)?;
+    serde_json::from_slice::<Usage>(&answer)
+        .map(|usage| usage.service_agents.and_then(|agents| agents.limit))
+        .map_err(|_| "the server's answer holds no usage of the space".to_owned())
 }
 
 /// `DELETE /spaces/<space>/service-tokens/<id>`.

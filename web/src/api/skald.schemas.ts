@@ -712,7 +712,7 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and the limits on its messages and history, each while one applies.
+ * A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.
  */
 export interface SpaceUsage {
   /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
@@ -723,6 +723,8 @@ export interface SpaceUsage {
   mailbox_retention: UsageLimit;
   /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
   history_retention: UsageLimit;
+  /** The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`. */
+  service_agents: UsageCount;
 }
 
 /**

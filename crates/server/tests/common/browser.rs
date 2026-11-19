@@ -285,6 +285,12 @@ impl Browser {
         Page { browser: self, id }
     }
 
+    /// As [`Browser::page`], its window `width` CSS pixels wide, as a phone's at 360.
+    pub fn page_of_width(&self, width: u32) -> Page<'_> {
+        let id = self.call("newPage", json!({ "width": width }));
+        Page { browser: self, id }
+    }
+
     /// Starts an echo server, over HTTPS with `tls`; gives its port. It answers any host, any path.
     pub fn echo(&self, tls: bool) -> u16 {
         serde_json::from_value(self.call("echo", json!({ "tls": tls }))).expect("a port")

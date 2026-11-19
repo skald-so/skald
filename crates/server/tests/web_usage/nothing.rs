@@ -24,6 +24,7 @@ fn nothing_of(response: &Response, what: &str) {
         "monthly_messages",
         "message_size",
         "mailbox_retention",
+        "service_agents",
         "owned_spaces",
     ] {
         assert!(!body.contains(part), "{what}: {body}");
