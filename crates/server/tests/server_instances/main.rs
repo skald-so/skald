@@ -47,6 +47,11 @@ mod wire;
 #[path = "../revocations/kit.rs"]
 mod kit;
 
+// The runs of the tests of relaying link messages; this binary uses some of them.
+#[allow(dead_code)]
+#[path = "../link_relay/kit.rs"]
+mod link_kit;
+
 mod instances;
 mod proxy;
 mod watch;

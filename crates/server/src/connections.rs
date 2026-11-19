@@ -22,7 +22,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame, Push, SpaceId};
+use skald_proto::{AUTH_LABEL, AccountId, Cbor as _, DeviceId, Frame, Push};
 use tokio::sync::oneshot;
 use tokio::task::AbortHandle;
 use tokio::time::Instant;
@@ -339,7 +339,8 @@ enum Stop {
 
 /// Serves `socket`, `sender`'s connection, until the client closes it, `ended` fires, or a frame
 /// does not decode: answers its frames in the order they arrive, delivers its device's mailbox and
-/// sends the notices of its account's spaces; of its token's space only, for a service token.
+/// sends the notices of its account's spaces and devices waiting for linking; of its token's space
+/// only, for a service token.
 async fn hold(
     state: &AppState,
     mut socket: WebSocket,
@@ -361,8 +362,8 @@ async fn hold(
                 return close(socket, closing.unwrap_or(Closing::SessionEnded)).await;
             }
             () = reader.woken() => deliver(state, &mut socket, &mut reader, i64::MAX).await,
-            spaces = notices.next() => {
-                notify(&mut socket, service_tokens::seen(sender.token.as_ref(), spaces)).await
+            noticed = notices.next() => {
+                notify(&mut socket, noticed.pushes(sender.token.as_ref())).await
             }
             message = socket.recv() => match message {
                 Some(Ok(Message::Binary(bytes))) => {
@@ -479,10 +480,10 @@ async fn deliver(
     Ok(())
 }
 
-/// Sends a `space-notice` of each of `spaces` on `socket`.
-async fn notify(socket: &mut WebSocket, spaces: Vec<SpaceId>) -> Result<(), Stop> {
-    for space in spaces {
-        send_frame(socket, &Frame::Push(Push::SpaceNotice { space })).await?;
+/// Sends each of the notices `pushes` on `socket`.
+async fn notify(socket: &mut WebSocket, pushes: Vec<Push>) -> Result<(), Stop> {
+    for push in pushes {
+        send_frame(socket, &Frame::Push(push)).await?;
     }
     Ok(())
 }

@@ -627,7 +627,7 @@ export const getGetWaitingDevicesUrl = () => {
 };
 
 /**
- * The devices of the session's account with an open run (docs/protocol/membership.md, "Link code"), by the kind and `name` they registered with: what a linked device tells its user to link. Only a prompt: a device takes the new device's keys only from the run.
+ * The devices of the session's account with an open run (docs/protocol/membership.md, "Link code"), by the kind and `name` they registered with: what a linked device tells its user to link, on each command that reaches the server and on a `link-notice` (docs/protocol/delivery.md, "Frames"). Only a prompt: a device takes the new device's keys only from the run.
  * @summary The account's devices waiting for linking
  */
 export const getWaitingDevices = async (
@@ -1737,7 +1737,7 @@ export const getStoreDeviceCertificateUrl = (device: string) => {
 };
 
 /**
- * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account: of a linked device (docs/protocol/membership.md, "Link code"), whose link code run then ends, or of a `service` device ("Device certificate"). The account's first device gives its certificate with the master key, `PUT /account/master`.
+ * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account: of a linked device (docs/protocol/membership.md, "Link code"), whose link code run then ends, or of a `service` device ("Device certificate"); or issued by the account's master key, of a `client` device linked with the recovery key ("Linking a device"). The account's first device gives its certificate with the master key, `PUT /account/master`.
  * @summary Store a device's certificate
  */
 export const storeDeviceCertificate = async (

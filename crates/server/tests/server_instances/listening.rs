@@ -1,7 +1,7 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
-//! they missed: entries, notices and the close of an ended session's or a revoked device's
-//! connections. It also notices a listening connection that goes silent, and takes no connection
-//! before it first listens.
+//! they missed: entries, notices, a device that started waiting for linking and the close of an
+//! ended session's or a revoked device's connections. It also notices a listening connection that
+//! goes silent, and takes no connection before it first listens.
 
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use crate::common::devices::assert_taken;
 use crate::fixture::Fixture;
 use crate::instances::{CLOSE, RELISTEN, Role, WAKE, sender, store, watch};
 use crate::link::{Entry, messages};
+use crate::link_kit::{fresh_session, hello};
 use crate::proxy::Proxy;
 use crate::rosters::{member, next};
 use crate::watch::Watch;
@@ -54,7 +55,7 @@ fn entries_stored_while_an_instance_did_not_listen_reach_its_connections_once_it
 }
 
 #[test]
-fn a_revision_a_sign_out_and_a_revocation_an_instance_missed_reach_it_once_it_listens_again() {
+fn a_revision_run_sign_out_and_revocation_an_instance_missed_reach_it_once_it_listens_again() {
     let fixture = Fixture::new(3_121_290_091);
     let t = &fixture.team;
     let first = &t.flow.stand.server;
@@ -74,12 +75,20 @@ fn a_revision_a_sign_out_and_a_revocation_an_instance_missed_reach_it_once_it_li
         .push(member(&fixture.eve, skald_proto::Role::Member));
     let revision = t.alice.sign(&body);
     assert_taken(&t.alice.session.on(first).store(t.space, &revision));
+    let hello = hello(&fresh_session());
+    assert_taken(
+        &t.carol
+            .session
+            .on(first)
+            .send_hello(t.carol.uncertified.id, &hello),
+    );
     let ended = t.bob.session.on(first).sign_out();
     assert_eq!(ended.status, 204, "{}", text(&ended));
     t.dave.revoke(&t.dave.by_master(t.dave.laptop.id, &[]));
     role.set_login(true);
 
     assert_eq!(carol.notice_within(RELISTEN), t.space);
+    carol.link_notice_within(WAKE);
     carol.assert_quiet();
     let session_ended = Some(Closed::Frame(CloseCode::Policy, "session-ended".to_owned()));
     assert_eq!(bob.closed_within(WAKE), session_ended);

@@ -49,6 +49,7 @@ mod intake;
 mod key_chain;
 mod key_packages;
 mod link_code;
+mod link_prompt;
 mod lock;
 mod mailbox;
 mod mcp;
@@ -57,6 +58,7 @@ mod plain_path;
 mod proxy;
 mod receipts;
 mod recovery;
+mod recovery_link;
 mod recv;
 mod reply;
 mod revocations;
@@ -87,7 +89,7 @@ use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use device::First;
 use serde::{Deserialize, Serialize};
-use skald_proto::VersionRange;
+use skald_proto::{DeviceId, VersionRange};
 use spaces::Scope;
 
 /// Message broker and task queue for AI agents.
@@ -206,6 +208,15 @@ enum Command {
     /// skald link on a linked device of the account, and exits once that device linked it; Enter
     /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
     /// others add it to channels, on the server, here and on each skald send and skald recv.
+    ///
+    /// With --with-recovery-key, a device that waits for linking links with the account's recovery
+    /// key instead, only as its person at a terminal, who types the key there without echo. It
+    /// issues its own certificate with the account's master key and shows the account's devices.
+    /// Then it revokes with the master key the devices named stolen, which voids the revocations
+    /// they signed, starts from the spaces of the devices not named stolen, and revokes with its
+    /// own key the devices named lost or wiped. It keeps neither key. Without --stolen, --lost,
+    /// --keep or --keep-revoked it asks which devices are which. A run that stops before it is done
+    /// leaves the rest to a later one with --with-recovery-key.
     SignIn {
         /// The server's URL, such as https://api.skald.so; plain http:// only to this machine, such as
         /// http://localhost:8080.
@@ -217,6 +228,30 @@ enum Command {
         /// The device's name, 1 to 64 bytes, set at its first sign-in [default: the host name].
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Links this device, not the account's first, with the account's recovery key, typed at
+        /// the terminal.
+        #[arg(long)]
+        with_recovery_key: bool,
+        /// The ID of a device that is stolen, revoked with the master key, for scripts; once per
+        /// device.
+        #[arg(long = "stolen", value_name = "DEVICE", requires = "with_recovery_key")]
+        stolen: Vec<String>,
+        /// The ID of a device that is lost or wiped, revoked with this device's key, for scripts;
+        /// once per device.
+        #[arg(long = "lost", value_name = "DEVICE", requires = "with_recovery_key")]
+        lost: Vec<String>,
+        /// The ID of a device a stolen or lost one certified that stays valid, for scripts; once
+        /// per device.
+        #[arg(long = "keep", value_name = "DEVICE", requires = "with_recovery_key")]
+        keep: Vec<String>,
+        /// The ID of a device a stolen one revoked that stays revoked, for scripts; once per
+        /// device.
+        #[arg(
+            long = "keep-revoked",
+            value_name = "DEVICE",
+            requires = "with_recovery_key"
+        )]
+        keep_revoked: Vec<String>,
     },
     /// Lists the devices of the account this machine signed in to, from the server of its session.
     ///
@@ -678,6 +713,21 @@ impl Command {
             )
     }
 
+    /// Whether a run of it says which devices wait for linking ([`link_prompt`]): one that
+    /// reaches the server from a linked device, or a tool call of the MCP server.
+    fn prompts(&self) -> bool {
+        self.connects()
+            || matches!(
+                self,
+                Command::CreateServiceAgent { .. }
+                    | Command::CreateServiceToken { .. }
+                    | Command::ServiceTokens { .. }
+                    | Command::RevokeServiceToken { .. }
+                    | Command::SignOut
+            )
+            || matches!(self, Command::Mcp { call: Some(call), .. } if *call != mcp::Call::Register)
+    }
+
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
     fn traces(&self) -> bool {
         matches!(
@@ -735,6 +785,49 @@ impl InChannel {
     }
 }
 
+/// The devices `skald sign-in --with-recovery-key` names, by the IDs given to `--stolen`,
+/// `--lost`, `--keep` and `--keep-revoked`; refused, before it connects, unless its person runs it
+/// at a terminal, `person_at_terminal`, as no first device.
+fn recovery_named(
+    person_at_terminal: bool,
+    first_device: Option<Answer>,
+    [stolen, lost, keep, keep_revoked]: [&[String]; 4],
+) -> Result<recovery_link::Named, String> {
+    if !person_at_terminal {
+        return Err(
+            "skald reads the recovery key only from its person typing it at a terminal, never \
+             from a pipe, an argument or the environment, and not as an agent; nothing is signed"
+                .to_owned(),
+        );
+    }
+    if matches!(first_device, Some(Answer::Yes)) {
+        return Err(
+            "the account's first device has no recovery key to link with: run skald sign-in \
+             --first-device no --with-recovery-key"
+                .to_owned(),
+        );
+    }
+    let ids = |given: &[String]| -> Result<Vec<DeviceId>, String> {
+        let mut ids: Vec<DeviceId> = Vec::new();
+        for text in given {
+            let id = text
+                .parse()
+                .map_err(|_| format!("\"{}\" is not a device ID", connection::printable(text)))?;
+            if ids.contains(&id) {
+                return Err(format!("the device {id} is named twice"));
+            }
+            ids.push(id);
+        }
+        Ok(ids)
+    };
+    Ok(recovery_link::Named {
+        stolen: ids(stolen)?,
+        lost: ids(lost)?,
+        keep: ids(keep)?,
+        keep_revoked: ids(keep_revoked)?,
+    })
+}
+
 /// An answer to a question.
 #[derive(Clone, Copy, clap::ValueEnum, Serialize, Deserialize)]
 enum Answer {
@@ -780,6 +873,7 @@ fn main() -> ExitCode {
         key_storage: cli.key_storage,
         agent: cli.agent,
         command: cli.command,
+        said: link_prompt::Said::default(),
     };
     if let Err(err) = operation.agent() {
         return exit(Err(err));
@@ -845,6 +939,7 @@ fn link(operation: Operation, starts: bool) -> ExitCode {
             command: Command::LinkStep { step },
             state_dir: operation.state_dir.clone(),
             agent: None,
+            said: link_prompt::Said::default(),
             ..operation
         };
         if held.is_none() {
@@ -877,6 +972,10 @@ struct Operation {
     key_storage: secrets::Storage,
     agent: Option<String>,
     command: Command,
+    /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
+    /// runs `skald recv` again and again, and says each once.
+    #[serde(skip)]
+    said: link_prompt::Said,
 }
 
 impl Operation {
@@ -909,12 +1008,20 @@ fn perform(operation: Operation) -> Result<(), String> {
         state_dir,
         key_storage,
         command,
+        said,
         ..
     } = operation;
     if let Ok(dir) = state::dir(state_dir.clone()) {
         // A grant the device took waits for the server to store its certificate.
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
+        }
+        if command.prompts() {
+            let json = matches!(
+                command,
+                Command::Recv { json: true, .. } | Command::Send { json: true, .. }
+            );
+            link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
         // An MCP server says it once, to its agent CLI's log, not in a tool's result.
         if !matches!(
@@ -933,12 +1040,27 @@ fn perform(operation: Operation) -> Result<(), String> {
             server,
             first_device,
             name,
+            with_recovery_key,
+            stolen,
+            lost,
+            keep,
+            keep_revoked,
         } => {
+            let recovery = with_recovery_key
+                .then(|| {
+                    recovery_named(
+                        agent.is_none() && link_code::at_terminal(),
+                        first_device,
+                        [&stolen, &lost, &keep, &keep_revoked],
+                    )
+                })
+                .transpose()?;
             let options = sign_in::Options {
                 storage: key_storage,
                 first: match first_device {
                     Some(Answer::Yes) => First::Yes,
                     Some(Answer::No) => First::No,
+                    None if recovery.is_some() => First::No,
                     None => First::Ask,
                 },
                 name,
@@ -948,6 +1070,7 @@ fn perform(operation: Operation) -> Result<(), String> {
                     .into_owned(),
                 // A recovery key or a link code is shown only to the person, at a terminal.
                 shows: agent.is_none() && link_code::at_terminal(),
+                recovery,
             };
             state::dir(state_dir).and_then(|dir| {
                 let mut connection =
@@ -1135,19 +1258,30 @@ fn perform(operation: Operation) -> Result<(), String> {
 }
 
 /// One run of `skald recv` for `operation`, a `skald recv --wait`, which leaves its connection to
-/// watch ([`wait`]): whether it showed what the wait waits for.
+/// watch ([`wait`]), and the devices waiting for linking it did not say yet ([`link_prompt`]):
+/// whether it showed what the wait waits for.
 fn received(operation: &Operation) -> Result<bool, String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
-    recv::run(
+    let shown = recv::run(
         &dir,
         operation.key_storage,
         settings,
         agent.as_ref(),
         (true, operation.json()),
-    )
+    )?;
+    // After the run, so that a `link-notice` it read is in what the server gives.
+    let prompted = link_prompt::show(
+        &dir,
+        operation.key_storage,
+        settings,
+        operation.json(),
+        &operation.said,
+    );
+    // The person's wait shows it as a warning; an agent's waits for a message.
+    Ok(shown || (prompted && agent.is_none()))
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an

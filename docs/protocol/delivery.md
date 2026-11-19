@@ -30,7 +30,7 @@ Client and server exchange envelopes, answers and statuses as frames: CBOR items
 
 ```cddl
 frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice /
-        history / history-stored / history-refused
+        history / history-stored / history-refused / link-notice
 
 ; client → server
 auth = [10, challenge: bstr, device: id, signature: bstr .size 64]
@@ -44,10 +44,11 @@ stored = [2, send-key, timestamp]
 send-refused = [3, send-key, problem: tstr]
 message = [5, seq, envelope: bstr .cbor envelope]
 status = [6, seq, delivery-status]
-batch = [8, [* (message / status / space-notice)]]
+batch = [8, [* (message / status / space-notice / link-notice)]]
 space-notice = [9, space: id]
 history-stored = [12, upload: uint]
 history-refused = [13, upload: uint, problem: tstr]
+link-notice = [14]
 
 history-item = [1, link: bstr .cbor history-link] /
                [2, wrap: bstr .cbor history-wrap] /
@@ -74,12 +75,13 @@ timestamp = uint       ; seconds since the Unix epoch
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
 - `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
+- `link-notice`: a device of the account has opened a run to be linked ([membership.md](membership.md#link-code)); the client fetches the account's waiting devices over HTTPS (`getWaitingDevices` in the OpenAPI spec). Like `space-notice`, it is not a mailbox entry. Only connections of device sessions get it.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
-  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
+  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status`, `space-notice` or `link-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
@@ -102,7 +104,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
 - A connection closes, with code 1008 and the reason `session-ended`, when the session or service token of its challenge ends, a token at its expiry too, and with the reason `device-refused` when its device is revoked.
-- A connection of a service token reads and acks its device's mailbox only with the token's `receive` permission: without it, the server ignores its `sync` and `ack` and sends it no `message` or `status`. It gets the `space-notice` of the token's space only.
+- A connection of a service token reads and acks its device's mailbox only with the token's `receive` permission: without it, the server ignores its `sync` and `ack` and sends it no `message` or `status`. It gets the `space-notice` of the token's space only, and no `link-notice`.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
 Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session or a service token:
@@ -160,7 +162,8 @@ A member device's message with an `a2a` body also goes under [`hpke`](README.md#
   - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
 - **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
   - the entries after the cursor in `seq` order, up to a server limit per answer;
-  - a `space-notice` of each space with a roster revision listing the device's account stored since the device's previous long-poll answer, every such space at its first, so none is lost between requests.
+  - a `space-notice` of each space with a roster revision listing the device's account stored since the device's previous long-poll answer, every such space at its first, so none is lost between requests;
+  - a `link-notice` if a run of a device of the account has opened since the device's previous long-poll answer and is still open.
 
   It answers at once when it has some or the wait is 0; otherwise with the first to arrive within the wait, through any server instance, or empty at the wait's end.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
