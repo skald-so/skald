@@ -1,11 +1,11 @@
 //! The MCP reply tool: it replies as `skald reply` does, by `#<ref>` or by `msg_id`, and returns
 //! what an agent's `skald reply` shows.
 
-use serde_json::{Value, json};
+use serde_json::json;
 use skald_proto::MessageId;
 
 use crate::agents::{Agents, CLAUDE};
-use crate::client::{MCP, Session};
+use crate::client::{MCP, Session, required};
 use crate::lines::{agent_line_of, assert_says_sent};
 use crate::replying::{
     BOB_CLAUDE, REPLY, Writes, agent_of, assert_bob_never_reads, assert_reply, bob_reads,
@@ -104,11 +104,7 @@ fn tools_list_names_reply_with_its_message_and_text() {
         .find(|tool| tool["name"].as_str() == Some(REPLY))
         .unwrap_or_else(|| panic!("no {REPLY}: {listed}"));
     let schema = &reply["inputSchema"];
-    let required: Vec<&str> = (schema["required"].as_array().map(Vec::as_slice))
-        .unwrap_or_default()
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
+    let required = required(schema);
     for argument in [MESSAGE, TEXT] {
         assert!(
             schema["properties"].get(argument).is_some() && required.contains(&argument),
