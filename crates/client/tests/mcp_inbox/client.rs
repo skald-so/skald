@@ -4,6 +4,7 @@
 //! in without acting on them.
 
 use std::io::{Read, Write};
+use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -12,11 +13,29 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::machine::RUN_LIMIT;
+use crate::machine::{Machine, RUN_LIMIT};
 
 /// The command of the MCP server, and its tool that reads the agent's messages.
 pub const MCP: &str = "mcp";
 pub const INBOX: &str = "inbox";
+
+/// The send tool and the reply tool, and their arguments.
+pub const SEND_TOOL: &str = "send";
+pub const REPLY_TOOL: &str = "reply";
+pub const TO_FIELD: &str = "to";
+pub const TEXT_FIELD: &str = "text";
+pub const CHANNEL_FIELD: &str = "channel";
+pub const MESSAGE_FIELD: &str = "message";
+
+/// What the send tool's `to` takes for every agent in the channel.
+pub const EVERYONE: &str = "*";
+
+/// The name the MCP client of most tests gives itself at initialization.
+pub const CLIENT: &str = "claude-code";
+
+/// How many bytes the result of `tools/list` has at most, as compact JSON: room for `inbox`, the
+/// send tool and the reply tool, with short descriptions.
+pub const TOOLS_BOUND: usize = 2048;
 
 /// The MCP revision the client asks for.
 const PROTOCOL: &str = "2025-06-18";
@@ -27,6 +46,14 @@ const STATELESS: &str = "2026-07-28";
 
 /// How long the server is given to exit once its client is gone.
 const EXIT: Duration = Duration::from_secs(30);
+
+/// Starts `skald <args> mcp` on `machine` in `dir`, set up as the machine's runs are, and
+/// initializes it as the MCP client named `client`.
+pub fn session_in(machine: &Machine, dir: &Path, args: &[&str], client: &str) -> Session {
+    let mut all = args.to_vec();
+    all.push(MCP);
+    Session::start(&mut machine.command_in(dir, &all), client)
+}
 
 /// The fields the input schema `schema` of a tool requires.
 pub fn required(schema: &Value) -> Vec<&str> {

@@ -2,13 +2,10 @@
 //! `inbox`, and not the person's run.
 
 use crate::agents::CLAUDE;
-use crate::client::{MCP, Session};
+use crate::client::{CLIENT, session_in};
 use crate::kit::received;
 use crate::receipts::{Roles, assert_shows_once, shows_no_read, shows_read_once, waiting};
 use crate::world::AGENT;
-
-/// The name the MCP client gives itself at initialization.
-const CLIENT: &str = "claude-code";
 
 /// How B's agent takes the message.
 #[derive(Debug, Clone, Copy)]
@@ -42,8 +39,7 @@ fn read_once_claude_has_it(ids: [u64; 2], logins: [&str; 2], handover: Handover,
         }
         Handover::Inbox => {
             let folder = &roles.senders.agents.folder;
-            let args = [AGENT, CLAUDE, MCP];
-            let mut started = Session::start(&mut roles.b().command_in(folder, &args), CLIENT);
+            let mut started = session_in(roles.b(), folder, &[AGENT, CLAUDE], CLIENT);
             let shown = started.inbox();
             session = Some(started);
             shown

@@ -5,19 +5,14 @@ use serde_json::json;
 use skald_proto::MessageId;
 
 use crate::agents::{Agents, CLAUDE};
-use crate::client::{MCP, Session, required};
+use crate::client::{CLIENT, MESSAGE_FIELD, REPLY_TOOL, TEXT_FIELD, required, session_in};
 use crate::lines::{agent_line_of, assert_says_sent};
 use crate::replying::{
-    BOB_CLAUDE, REPLY, Writes, agent_of, assert_bob_never_reads, assert_reply, bob_reads,
-    bob_writes, handles, of_text, the_one,
+    BOB_CLAUDE, Writes, agent_of, assert_bob_never_reads, assert_reply, bob_reads, bob_writes,
+    handles, of_text, the_one,
 };
 use crate::talk::ADA_HOST;
 use crate::world::{ACME, AGENT, World, dir_of};
-
-/// The name the MCP client gives itself at initialization, and the reply tool's arguments.
-const CLIENT: &str = "claude-code";
-const MESSAGE: &str = "message";
-const TEXT: &str = "text";
 
 /// What Bob's device says, and what Ada's claude answers with the tool; none is anywhere else.
 const ASKED: [&str; 2] = [
@@ -42,9 +37,8 @@ fn reply_tool_answers_by_reference_and_by_msg_id_in_the_message_s_channel() {
         [4_656_051_001, 4_656_051_002],
         ["ada-replies-over-mcp", "bob-asks-the-mcp-session"],
     );
-    let args = [AGENT, CLAUDE, MCP];
-    let command = &mut (agents.talk.ada.machine).command_in(&agents.folder, &args);
-    let mut session = Session::start(command, CLIENT);
+    let machine = &agents.talk.ada.machine;
+    let mut session = session_in(machine, &agents.folder, &[AGENT, CLAUDE], CLIENT);
     let (bob, ada) = handles(&agents.talk);
     let (bob_claude, ada_claude) = (
         agent_of(&bob, ACME, BOB_CLAUDE),
@@ -59,8 +53,13 @@ fn reply_tool_answers_by_reference_and_by_msg_id_in_the_message_s_channel() {
     let shown = session.inbox();
     let first = format!("#{}", agent_line_of(&shown, ASKED[0]).reference);
 
-    let called = [(first, ANSWERS[0]), (asked[1].to_string(), ANSWERS[1])]
-        .map(|(message, text)| session.call(REPLY, json!({ MESSAGE: message, TEXT: text })));
+    let called =
+        [(first, ANSWERS[0]), (asked[1].to_string(), ANSWERS[1])].map(|(message, text)| {
+            session.call(
+                REPLY_TOOL,
+                json!({ MESSAGE_FIELD: message, TEXT_FIELD: text }),
+            )
+        });
 
     let read = bob_reads(&mut agents.talk, at.1);
     for ((called, text), original) in called.iter().zip(ANSWERS).zip(&asked) {
@@ -79,7 +78,10 @@ fn reply_tool_answers_by_reference_and_by_msg_id_in_the_message_s_channel() {
     }
 
     let unknown = MessageId::generate().to_string();
-    let refused = session.call(REPLY, json!({ MESSAGE: unknown, TEXT: NEVER }));
+    let refused = session.call(
+        REPLY_TOOL,
+        json!({ MESSAGE_FIELD: unknown, TEXT_FIELD: NEVER }),
+    );
 
     let said = refused.text.trim().to_lowercase();
     assert!(!said.is_empty() && !said.starts_with("sent"), "{refused:?}");
@@ -94,18 +96,17 @@ fn tools_list_names_reply_with_its_message_and_text() {
     let world = World::start();
     let ada = world.sign_up(4_656_052_001, "ada-lists-the-reply-tool", ADA_HOST);
     let folder = dir_of(&ada.machine, "work");
-    let command = &mut ada.machine.command_in(&folder, &[MCP]);
-    let mut session = Session::start(command, CLIENT);
+    let mut session = session_in(&ada.machine, &folder, &[], CLIENT);
 
     let listed = session.tools();
 
     let tools = listed["tools"].as_array().cloned().unwrap_or_default();
     let reply = (tools.iter())
-        .find(|tool| tool["name"].as_str() == Some(REPLY))
-        .unwrap_or_else(|| panic!("no {REPLY}: {listed}"));
+        .find(|tool| tool["name"].as_str() == Some(REPLY_TOOL))
+        .unwrap_or_else(|| panic!("no {REPLY_TOOL}: {listed}"));
     let schema = &reply["inputSchema"];
     let required = required(schema);
-    for argument in [MESSAGE, TEXT] {
+    for argument in [MESSAGE_FIELD, TEXT_FIELD] {
         assert!(
             schema["properties"].get(argument).is_some() && required.contains(&argument),
             "{argument} is not required: {reply}"

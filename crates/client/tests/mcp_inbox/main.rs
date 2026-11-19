@@ -60,29 +60,10 @@ mod sessions;
 mod spaces;
 mod tools;
 
-use std::path::Path;
-
-pub use client::{MCP, Session};
-
-use crate::machine::Machine;
-
-/// The name the MCP client of most tests gives itself at initialization.
-pub const CLIENT: &str = "claude-code";
+pub use client::{CLIENT, MCP, Session, TOOLS_BOUND, session_in};
 
 /// How many characters the line of an `inbox` with nothing waiting has at most.
 pub const SHORT: usize = 60;
-
-/// How many bytes the result of `tools/list` has at most, as compact JSON: room for `inbox`, the
-/// send tool and the reply tool, with short descriptions.
-pub const TOOLS_BOUND: usize = 2048;
-
-/// Starts `skald <args> mcp` on `machine` in `dir`, set up as the machine's runs are, and
-/// initializes it as the MCP client named `client`.
-pub fn session_in(machine: &Machine, dir: &Path, args: &[&str], client: &str) -> Session {
-    let mut all = args.to_vec();
-    all.push(MCP);
-    Session::start(&mut machine.command_in(dir, &all), client)
-}
 
 /// Fails unless `shown`, the text of an `inbox`, is one line of at most [`SHORT`] characters, no
 /// message, and holds no ID.

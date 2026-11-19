@@ -7,10 +7,8 @@ use crate::client::Session;
 use crate::clients::{BOB_CLAUDE, Clients};
 use crate::front::Answers;
 use crate::talk::one_message_sent;
-use crate::world::{CLIENT_A, CLIENT_B, HOST};
 use crate::{
-    CHANNEL_FIELD, EVERYONE, SEND_TOOL, TEXT_FIELD, TO_FIELD, assert_bob_read_nothing,
-    assert_says_not_sent, session_in,
+    CHANNEL_FIELD, EVERYONE, SEND_TOOL, TEXT_FIELD, TO_FIELD, assert_says_not_sent, session_in,
 };
 
 /// The text of every refused call; it is nowhere else.
@@ -41,7 +39,7 @@ fn refused(clients: &mut Clients, session: &mut Session, cases: &[(&str, Value, 
         assert_says_not_sent(&called.text, what);
         clients.assert_no_message_sent(from, what);
     }
-    assert_bob_read_nothing(clients);
+    clients.assert_bob_read_nothing();
 }
 
 /// The arguments of a call `to` `to` with [`REFUSED`] in `channel`.
@@ -83,10 +81,7 @@ fn call_without_to_sends_nothing_and_says_why() {
         assert_says_not_sent(&called.text, what);
         clients.assert_no_message_sent(from, what);
     }
-    for channel in clients.channels() {
-        let read = clients.bob_reads(channel);
-        assert!(read.is_empty(), "read in {channel}: {read:?}");
-    }
+    clients.assert_bob_read_nothing();
 }
 
 /// A session in `~/work/clientA` calls the send tool `to` a person's address, Bob's or Ada's, full
@@ -99,17 +94,9 @@ fn person_s_address_sends_nothing_and_says_only_a_reply_goes_to_a_person() {
         ["ada-mcp-to-a-person", "bob-mcp-the-person"],
     );
     let channel = clients.talk.channel.to_string();
-    let bob = clients.bob();
-    let ada = clients.talk.ada.handle.to_string();
     let mut session = session_in(&clients, &clients.folder_a);
-    let addresses = [
-        ("bob, full", format!("{CLIENT_A}/{bob}/user@{HOST}")),
-        ("bob, short", format!("{bob}/user")),
-        ("bob, uppercase", format!("{bob}/USER")),
-        ("ada, full", format!("{CLIENT_A}/{ada}/user@{HOST}")),
-    ];
-    let cases: Vec<(&str, Value, &[&str])> = (addresses.iter())
-        .map(|(what, address)| (*what, to(address, &channel), &["person", "reply"][..]))
+    let cases: Vec<(&str, Value, &[&str])> = (clients.person_addresses().into_iter())
+        .map(|(what, address)| (what, to(&address, &channel), &["person", "reply"][..]))
         .collect();
 
     refused(&mut clients, &mut session, &cases);
@@ -125,36 +112,13 @@ fn invalid_address_or_one_of_another_space_or_server_sends_nothing_and_says_why(
         ["ada-mcp-bad-addresses", "bob-mcp-badly-addressed"],
     );
     let channel = clients.talk.channel.to_string();
-    let bob = clients.bob();
     let invalid: &[&str] = &["address"];
-    let mut cases = Vec::new();
-    for address in [
-        String::new(),
-        BOB_CLAUDE.to_owned(),
-        format!("{bob}/"),
-        format!("/{BOB_CLAUDE}"),
-        format!("{bob}/claude_r4n8vz"),
-        format!("{EVERYONE}/{BOB_CLAUDE}"),
-        format!("{CLIENT_A}//{BOB_CLAUDE}@{HOST}"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@{HOST}:8443"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE} x@{HOST}"),
-    ] {
-        cases.push(("invalid", to(&address, &channel), invalid));
-    }
-    cases.push((
-        "another space",
-        to(&format!("{CLIENT_B}/{bob}/{BOB_CLAUDE}@{HOST}"), &channel),
-        &["space"],
-    ));
-    cases.push((
-        "another server",
-        to(
-            &format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@elsewhere.example"),
-            &channel,
-        ),
-        &["server"],
-    ));
+    let more = [String::new(), format!("{EVERYONE}/{BOB_CLAUDE}")];
+    let cases: Vec<(&str, Value, &[&str])> = (more.into_iter())
+        .map(|address| ("invalid", address, invalid))
+        .chain(clients.invalid_addresses())
+        .map(|(what, address, words)| (what, to(&address, &channel), words))
+        .collect();
     let mut session = session_in(&clients, &clients.folder_a);
 
     refused(&mut clients, &mut session, &cases);

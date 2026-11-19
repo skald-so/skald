@@ -38,34 +38,20 @@ mod tools;
 use std::path::Path;
 
 use serde_json::Value;
-use skald_proto::{Cbor as _, ChannelId, Content, MessageId};
+use skald_proto::{ChannelId, MessageId};
 
-use crate::client::{MCP, Session};
+use crate::client::Session;
+pub use crate::client::{
+    CHANNEL_FIELD, CLIENT, EVERYONE, SEND_TOOL, TEXT_FIELD, TO_FIELD, TOOLS_BOUND,
+};
 use crate::clients::{ADA_AGENT, Clients};
-use crate::lines::{SENT, assert_says_sent};
+use crate::lines::{assert_says_sent, says_sent};
 use crate::talk::one_message_sent;
 use crate::world::{AGENT, CLIENT_A, HOST};
 
-/// The send tool, and its arguments.
-pub const SEND_TOOL: &str = "send";
-pub const TO_FIELD: &str = "to";
-pub const TEXT_FIELD: &str = "text";
-pub const CHANNEL_FIELD: &str = "channel";
-
-/// What `to` takes for every agent in the channel.
-pub const EVERYONE: &str = "*";
-
-/// The name the MCP client gives itself at initialization.
-pub const CLIENT: &str = "claude-code";
-
-/// How many bytes the result of `tools/list` has at most, as compact JSON: the bound the tests of
-/// `inbox` set, with room for `inbox`, the send tool and the reply tool.
-pub const TOOLS_BOUND: usize = 2048;
-
 /// Starts `skald --agent <ADA_AGENT> mcp` on Ada's machine in `dir`, initialized as [`CLIENT`].
 pub fn session_in(clients: &Clients, dir: &Path) -> Session {
-    let args = [AGENT, ADA_AGENT, MCP];
-    Session::start(&mut clients.ada().command_in(dir, &args), CLIENT)
+    client::session_in(clients.ada(), dir, &[AGENT, ADA_AGENT], CLIENT)
 }
 
 /// The address of the agent the sessions run as, in `clienta`.
@@ -75,13 +61,8 @@ pub fn ada_agent(clients: &Clients) -> String {
 
 /// The `from` of every message Bob's device read so far in `channel`, in text form.
 pub fn senders_read(clients: &mut Clients, channel: ChannelId) -> Vec<String> {
-    clients.bob_reads(channel);
-    (clients.talk.played[0].read_in(channel).into_iter())
-        .map(|(msg_id, decrypted)| {
-            let content = Content::from_cbor(&decrypted.plaintext)
-                .unwrap_or_else(|err| panic!("{msg_id} holds no content: {err:?}"));
-            content.from.to_string()
-        })
+    (clients.bob_reads(channel).into_iter())
+        .map(|read| read.from)
         .collect()
 }
 
@@ -107,21 +88,10 @@ pub fn sent_by(
     msg_id
 }
 
-/// Fails unless Bob's device, once it takes in its mailbox, has read no message in any channel of
-/// both spaces.
-#[track_caller]
-pub fn assert_bob_read_nothing(clients: &mut Clients) {
-    for channel in clients.channels() {
-        let got = clients.bob_reads(channel);
-        assert!(got.is_empty(), "Bob read in {channel}: {got:?}");
-    }
-}
-
 /// Fails if a line of `shown` says `sent #`.
 #[track_caller]
 pub fn assert_says_not_sent(shown: &str, what: &str) {
-    let said_sent = (shown.lines()).any(|line| line.trim().starts_with(&format!("{SENT} #")));
-    assert!(!said_sent, "{what}: says sent: {shown}");
+    assert!(!says_sent(shown), "{what}: says sent: {shown}");
 }
 
 // The server's tests' readers of the KeyPackages API's answers and their person's browser.

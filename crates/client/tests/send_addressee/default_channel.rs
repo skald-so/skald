@@ -109,8 +109,5 @@ fn send_naming_no_channel_in_a_folder_in_no_space_sends_nothing_and_says_so() {
         assert_refused(&finished, &["no space"], what);
         clients.assert_no_message_sent(from, what);
     }
-    for channel in clients.channels() {
-        let read = clients.bob_reads(channel);
-        assert!(read.is_empty(), "read in {channel}: {read:?}");
-    }
+    clients.assert_bob_read_nothing();
 }

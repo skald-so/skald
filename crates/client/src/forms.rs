@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use skald_proto::{Address, MessageId, TrustLevel};
+use skald_proto::{Address, ChannelId, DeviceId, MessageId, SpaceId, TrustLevel};
 
 use crate::connection::printable;
 
@@ -261,6 +261,27 @@ pub const READ: &str = "read";
 pub const REPLIED: &str = "replied";
 
 impl Status {
+    /// The status `status`, such as [`READ`] or [`REPLIED`], that the device `device`, named
+    /// `device_name` if known, gives now to the message `msg_id` in `channel` of `space`, as JSON.
+    pub fn from_device(
+        status: &str,
+        msg_id: MessageId,
+        (space, channel): (SpaceId, ChannelId),
+        (device, device_name): (DeviceId, Option<String>),
+    ) -> String {
+        let status = Status {
+            msg_id: msg_id.to_string(),
+            space: Some(space.to_string()),
+            channel: Some(channel.to_string()),
+            status: status.to_owned(),
+            device: Some(device.to_string()),
+            device_name,
+            problem: None,
+            timestamp: crate::state::unix_now(),
+        };
+        serde_json::to_string(&status).expect("a status encodes")
+    }
+
     /// How `form` shows it, `reference` its message's reference: an agent's short form shows only
     /// `expired` and `refused`, so a `read` or `replied` costs an agent no token.
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {

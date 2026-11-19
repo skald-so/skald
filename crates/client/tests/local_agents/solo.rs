@@ -7,9 +7,12 @@ use rusqlite::{Connection, params};
 use serde_json::json;
 use skald_proto::{ChannelId, MessageId, Role};
 
-use crate::client::{Called, MCP, Session};
+pub use crate::client::{
+    CLIENT, EVERYONE, MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, TEXT_FIELD, TO_FIELD,
+};
+use crate::client::{Called, Session, session_in as session_of};
 use crate::kit::{Change, bind_client_a, create_space, latest, received, revise};
-use crate::lines::{SENT, agent_line_of, assert_no_uuid, assert_says_sent, refers_to};
+use crate::lines::{SENT, agent_line_of, assert_no_uuid, assert_says_sent, refers_to, says_sent};
 use crate::machine::{Finished, Machine};
 use crate::senders::{assert_labelled, labelled_of};
 use crate::talk::{BOB_HOST, Talk, messages_sent, one_message_sent};
@@ -18,19 +21,6 @@ use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, Person, dir_of, path, ru
 /// The agents of Ada's device, each in its folder under `~/work/clientA`.
 pub const API: &str = "api";
 pub const WEB: &str = "web";
-
-/// The name the MCP client gives itself at initialization.
-pub const CLIENT: &str = "claude-code";
-
-/// The send tool and the reply tool, and their arguments.
-pub const SEND_TOOL: &str = "send";
-pub const REPLY_TOOL: &str = "reply";
-pub const TO_FIELD: &str = "to";
-pub const TEXT_FIELD: &str = "text";
-pub const MESSAGE_FIELD: &str = "message";
-
-/// What the send tool's `to` takes for every agent in the channel.
-pub const EVERYONE: &str = "*";
 
 /// The levels as an agent's line shows them.
 pub const OWN: &str = "own";
@@ -210,7 +200,7 @@ fn follows_as(machine: &Machine, other: &Machine, name: &str) {
 
 /// Starts `skald --agent <agent> mcp` on `machine` in `dir`, initialized as [`CLIENT`].
 pub fn session_in(machine: &Machine, dir: &Path, agent: &str) -> Session {
-    Session::start(&mut machine.command_in(dir, &[AGENT, agent, MCP]), CLIENT)
+    session_of(machine, dir, &[AGENT, agent], CLIENT)
 }
 
 /// Fails unless `shown`, an agent's output, shows `text` once as the message `msg_id`, from
@@ -239,8 +229,7 @@ pub fn assert_not_shown(shown: &str, text: &str, who: &str) {
 #[track_caller]
 pub fn assert_not_sent(called: &Called, what: &str) {
     assert!(!called.text.trim().is_empty(), "{what}: says nothing");
-    let said_sent = (called.text.lines()).any(|line| line.trim().starts_with(&format!("{SENT} #")));
-    assert!(!said_sent, "{what}: says sent: {called:?}");
+    assert!(!says_sent(&called.text), "{what}: says sent: {called:?}");
 }
 
 /// `session` replies with the reply tool to the message whose line in `shown`, its `inbox`, holds
