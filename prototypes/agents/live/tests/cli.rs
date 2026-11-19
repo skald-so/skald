@@ -63,6 +63,12 @@ fn wrong_arguments_print_the_usage() {
         &["channel"],
         &["channel", "codex"],
         &["channel", "claude", "--verbose"],
+        &["permission", "codex"],
+        &["permission", "claude", "--busy"],
+        &["gui-permission", "codex-desktop"],
+        &["gui-permission", "claude-desktop", "--busy"],
+        &["gui-permission-link"],
+        &["gui-permission-result"],
         &["stop"],
         &["stop", "gemini"],
         &["post-tool-use", "claude", "--verbose"],
@@ -831,6 +837,34 @@ fn gui_prepares_a_bypass_session_only_for_the_socket() {
     assert_eq!(refused.status.code(), Some(2), "{}", stderr(&refused));
 }
 
+/// Runs `live-check <command> <work>` with `tmp` as `HOME` and only a stand-in `open` on `PATH`,
+/// and asserts that it opened `link`, and only it.
+fn opens(tmp: &Path, command: &str, work: &Path, link: &str) {
+    let bin = tmp.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let opened = tmp.join("opened");
+    let open = bin.join("open");
+    fs::write(
+        &open,
+        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >'{}'\n", opened.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
+        .args([command, work.to_str().unwrap()])
+        .env_clear()
+        .env("PATH", &bin)
+        .env("HOME", tmp)
+        .output()
+        .expect("live-check runs");
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("opened: {link}\n")
+    );
+    assert_eq!(fs::read_to_string(&opened).unwrap(), format!("{link}\n"));
+}
+
 #[test]
 fn gui_link_opens_the_sessions_deep_link() {
     let tmp = tempfile::tempdir().unwrap();
@@ -841,31 +875,83 @@ fn gui_link_opens_the_sessions_deep_link() {
         r#"{"surface":"codex-desktop","path":"read","version":"v","token":"tok","busy":false,"thread":"019a-thread"}"#,
     )
     .unwrap();
-    let bin = tmp.path().join("bin");
-    fs::create_dir_all(&bin).unwrap();
-    let opened = tmp.path().join("opened");
-    let open = bin.join("open");
+    opens(tmp.path(), "gui-link", &work, "codex://threads/019a-thread");
+}
+
+/// The hook runs of a Claude Code session answered yes, recorded by `live-check permission claude`.
+const PERMISSION_RUNS: &str = include_str!("permission/yes.jsonl");
+
+#[test]
+fn gui_permission_prepares_a_check_whose_result_reads_the_hook_runs() {
+    let home = home_with_claude_code_for_vs_code();
+    let tmp = tempfile::tempdir().unwrap();
+    let args = ["gui-permission", "claude-vscode"];
+    let (_, lines) = succeeded(home.path(), tmp.path(), &args);
+    let [version, project, prompt, then] = lines.as_slice() else {
+        panic!("{lines:?}");
+    };
+    assert_eq!(*version, "claude-vscode: Claude Code for VS Code 2.1.322");
+    assert_eq!(
+        *prompt,
+        format!("prompt: {}", agent_live::permission::prompt())
+    );
+    let work = then
+        .strip_prefix("once it is answered: live-check gui-permission-result ")
+        .expect("the command to run");
+    assert_eq!(*project, format!("project: {work}/project"));
+    assert!(
+        Path::new(work)
+            .join("project/.claude/settings.local.json")
+            .exists()
+    );
+
+    let result = || live_check_in(home.path(), tmp.path(), &["gui-permission-result", work]);
+    let nothing = result();
+    assert_eq!(nothing.status.code(), Some(1), "{}", stderr(&nothing));
+    fs::write(Path::new(work).join("hook-runs.jsonl"), PERMISSION_RUNS).unwrap();
+    let told = result();
+    assert!(told.status.success(), "{}", stderr(&told));
+    let stdout = String::from_utf8(told.stdout).unwrap();
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 6, "{stdout}");
+    assert_eq!(
+        lines[0],
+        "claude-vscode: Claude Code for VS Code 2.1.322, no session transcript"
+    );
+    assert!(lines[2].starts_with("  claude-vscode, PermissionRequest hook: pass — told "));
+    assert!(lines[3].starts_with("  claude-vscode, Notification hook, permission_prompt: pass"));
+    assert_eq!(lines[5], "permission prompts on claude-vscode: pass");
+}
+
+#[test]
+fn gui_permission_link_opens_the_desktop_apps_needs_input_link() {
+    let tmp = tempfile::tempdir().unwrap();
+    let work = tmp.path().join("check");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("hook-runs.jsonl"), PERMISSION_RUNS).unwrap();
+    let records = tmp
+        .path()
+        .join("Library/Application Support/Claude/claude-code-sessions/account/organization");
+    fs::create_dir_all(&records).unwrap();
     fs::write(
-        &open,
-        format!("#!/bin/sh\nprintf '%s\\n' \"$@\" >'{}'\n", opened.display()),
+        records.join("local_7.json"),
+        r#"{"sessionId":"local_7","cliSessionId":"94288116-c540-4fdf-9190-31915b97792f"}"#,
     )
     .unwrap();
-    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_live-check"))
-        .args(["gui-link", work.to_str().unwrap()])
-        .env_clear()
-        .env("PATH", &bin)
-        .env("HOME", tmp.path())
-        .output()
-        .expect("live-check runs");
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(
-        String::from_utf8(output.stdout).unwrap(),
-        "opened: codex://threads/019a-thread\n"
+    opens(
+        tmp.path(),
+        "gui-permission-link",
+        &work,
+        "claude://code/needs-input?session=local_7",
     );
-    assert_eq!(
-        fs::read_to_string(&opened).unwrap(),
-        "codex://threads/019a-thread\n"
+    let none = tmp.path().join("none");
+    assert_failed(
+        &live_check_in(
+            tmp.path(),
+            tmp.path(),
+            &["gui-permission-link", none.to_str().unwrap()],
+        ),
+        "live-check: no hook ran yet",
     );
 }
 
@@ -1111,6 +1197,43 @@ fn settings_of(session: &Recorded) -> serde_json::Value {
         .position(|arg| arg == "--settings")
         .expect("a settings file");
     serde_json::from_str(&fs::read_to_string(&session.args[at + 1]).unwrap()).unwrap()
+}
+
+#[test]
+fn permission_sessions_get_only_their_environment_and_nothing_skips_the_prompt() {
+    let live = env!("CARGO_BIN_EXE_live-check");
+    for (flags, sessions) in runs(1, 2) {
+        let checked = checked_sessions(
+            Agent::Claude,
+            &["permission", "claude"],
+            flags,
+            sessions,
+            stub_environment,
+        );
+        let at = &checked.at;
+        for session in &checked.sessions {
+            let args = &session.args;
+            let flag = |name: &str| {
+                let at = args.iter().position(|arg| arg == name)?;
+                args.get(at + 1).map(String::as_str)
+            };
+            assert_eq!(flag("--permission-mode"), Some("default"), "{at}");
+            assert_eq!(flag(CHANNEL_FLAG), Some("server:skald"), "{at}");
+            assert_eq!(flag("--tools"), Some("Bash"), "{at}");
+            let settings = settings_of(session);
+            assert!(
+                settings.get("permissions").is_none(),
+                "{at}: nothing allowed"
+            );
+            for event in ["PermissionRequest", "Notification"] {
+                let recorder = &hook_commands(&settings, event)[0][0];
+                assert!(
+                    recorder.starts_with(&format!("'{live}' 'timed-hook' ")),
+                    "{at}: {event}"
+                );
+            }
+        }
+    }
 }
 
 /// The commands of the hooks of `event` in `settings`, each with its arguments.

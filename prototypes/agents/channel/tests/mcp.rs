@@ -78,6 +78,43 @@ async fn declares_a_channel_on_a_revision_with_a_handshake() {
     client.cancel().await.unwrap();
 }
 
+/// Waits up to 10 s for `count` records in the permission log `log`; returns its text and records.
+async fn logged(log: &Path, count: usize) -> (String, Vec<serde_json::Value>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let lines = loop {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        if text.lines().count() >= count || std::time::Instant::now() > deadline {
+            break text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let records: Vec<serde_json::Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), count, "{lines}");
+    (lines, records)
+}
+
+#[test]
+fn other_arguments_print_the_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().to_str().unwrap();
+    for args in [&[][..], &["--log", "file", source], &[source, source]] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-channel"))
+            .args(args)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("usage: agent-channel"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn with_a_permission_log_records_each_notification_and_answers_none() {
     let dir = tempfile::tempdir().unwrap();
@@ -93,6 +130,10 @@ async fn with_a_permission_log_records_each_notification_and_answers_none() {
         "{info:?}"
     );
 
+    // The server handles notifications concurrently: the CLI too sends a prompt's only after the
+    // handshake's end is recorded.
+    let (lines, records) = logged(&log, 1).await;
+    assert_eq!(records[0]["method"], "notifications/initialized", "{lines}");
     let params = json!({
         "request_id": "abcde",
         "tool_name": "Bash",
@@ -109,28 +150,20 @@ async fn with_a_permission_log_records_each_notification_and_answers_none() {
             .await
             .unwrap();
     }
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let lines = loop {
-        let text = std::fs::read_to_string(&log).unwrap_or_default();
-        if text.lines().count() >= 3 || std::time::Instant::now() > deadline {
-            break text;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    };
-    let records: Vec<serde_json::Value> = lines
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(records.len(), 3, "{lines}");
-    // The handshake's end, then each notification the client sent.
-    assert_eq!(records[0]["method"], "notifications/initialized");
-    assert_eq!(
-        records[1]["method"],
-        "notifications/claude/channel/permission_request"
+    let (lines, records) = logged(&log, 3).await;
+    // The handshake's end, then each notification the client sent, handled in no set order.
+    let request = records[1..]
+        .iter()
+        .find(|r| r["method"] == "notifications/claude/channel/permission_request")
+        .expect("the permission request");
+    assert_eq!(request["params"], params);
+    assert!(request["at_ms"].as_u64().unwrap() > 0, "{lines}");
+    assert!(
+        records[1..]
+            .iter()
+            .any(|r| r["method"] == "notifications/other"),
+        "{lines}"
     );
-    assert_eq!(records[1]["params"], params);
-    assert!(records[1]["at_ms"].as_u64().unwrap() > 0, "{lines}");
-    assert_eq!(records[2]["method"], "notifications/other");
     // It never answers: no verdict, nor any other notification, goes to the client.
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(received.try_recv().is_err(), "no notification to the CLI");

@@ -53,14 +53,15 @@ pub fn permission(options: &Options) -> Result<bool> {
         let mut observed = Observed::default();
         // A prompt that opens before the channel is ready is never relayed.
         let ready = session.wait(TURN, |_| Observed::read(&dir).channel_ready_ms().is_some())?;
-        if !ready {
+        if ready {
+            session.press(permission::prompt().as_bytes())?;
+            // The terminal UI takes text typed at once as a paste, and Enter after it as sending it.
+            session.pump_for(Duration::from_millis(500))?;
+            session.press(ENTER)?;
+        } else {
             eprintln!("live-check: session {name}'s channel never got ready");
         }
-        session.press(permission::prompt().as_bytes())?;
-        // The terminal UI takes text typed at once as a paste, and Enter after it as sending it.
-        session.pump_for(Duration::from_millis(500))?;
-        session.press(ENTER)?;
-        if shows(&mut session, DIALOG, TURN)? {
+        if ready && shows(&mut session, DIALOG, TURN)? {
             observed.shown_ms = Some(now_ms());
             session.pump_for(HOLD)?;
             session.press(answer.keys())?;
@@ -141,10 +142,14 @@ pub fn gui_link(work: &Path) -> Result<bool> {
 pub fn gui_result(work: &Path) -> Result<bool> {
     let (surface, version) = permission::gui_check(work)?;
     let sessions = session_versions(&home()?, &work.join("project"))?;
-    println!(
-        "{version}; the session ran Claude Code {}",
-        sessions.join(", ")
-    );
+    if sessions.is_empty() {
+        println!("{version}, no session transcript");
+    } else {
+        println!(
+            "{version}; the session ran Claude Code {}",
+            sessions.join(", ")
+        );
+    }
     let mut check = PermissionCheck::default();
     let lines = check.session(
         surface.name(),

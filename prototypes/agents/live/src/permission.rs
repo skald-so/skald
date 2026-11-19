@@ -639,6 +639,7 @@ mod tests {
         );
         let methods: Vec<&str> = yes.notices.iter().map(|n| n.method.as_str()).collect();
         assert_eq!(methods, [INITIALIZED, PERMISSION_REQUEST]);
+        assert_eq!(yes.channel_ready_ms(), Some(1_795_122_136_128));
         assert!(yes.channel_ready_ms() < yes.called_ms());
         assert_eq!(observed(YES, "").channel_ready_ms(), None);
         assert!(hook_runs("not json\n{}\n").is_empty());
@@ -669,11 +670,32 @@ mod tests {
     }
 
     #[test]
+    fn a_delay_has_a_sign_only_from_what_rounds_to_a_tenth() {
+        assert_eq!(signed(1_000, 1_000), "0.0 s");
+        assert_eq!(signed(1_600, 1_000), "0.6 s");
+        assert_eq!(signed(951, 1_000), "0.0 s");
+        assert_eq!(signed(950, 1_000), format!("-{}", seconds(50)));
+        assert_eq!(signed(100, 1_000), "-0.9 s");
+    }
+
+    #[test]
     fn a_candidate_that_did_not_run_tells_nothing() {
         let mut yes = observed(YES, "");
         assert_eq!(Candidate::Relay.told(&yes), None);
         yes.runs.retain(|run| run.event != "Notification");
         assert_eq!(Candidate::Notification.told(&yes), None);
+        // Another hook's run of the prompted call is not the PermissionRequest hook's.
+        let mut other = observed(YES, "");
+        other.runs.retain(|run| run.event != "PermissionRequest");
+        assert_eq!(Candidate::PermissionRequest.told(&other), None);
+        // A notification of another type is not the prompt's.
+        let mut idle = observed(YES, "");
+        for run in &mut idle.runs {
+            if run.event == "Notification" {
+                run.input["notification_type"] = "idle_prompt".into();
+            }
+        }
+        assert_eq!(Candidate::Notification.told(&idle), None);
         // A run about another command is not the prompt's.
         for run in &mut yes.runs {
             run.input["tool_input"]["command"] = "ls".into();
@@ -729,6 +751,10 @@ mod tests {
         let mut check = PermissionCheck::default();
         let lines = check.session("a", &yes, &Candidate::CLI, Some(Answer::Yes), "replies []");
         assert!(check.pass(), "{lines:#?}");
+        assert_eq!(
+            check.verdict(&Options::default()),
+            "permission prompts on claude with the model stub: pass"
+        );
         assert_eq!(lines.len(), 5);
         assert!(lines[0].starts_with("  a, prompt: pass — replies []; the agent called"));
         assert!(
@@ -756,6 +782,11 @@ mod tests {
         let mut check = PermissionCheck::default();
         let lines = check.session("a", &observed(YES, ""), &Candidate::GUI, None, "s");
         assert!(check.pass(), "{lines:#?}");
+        assert!(
+            lines[0].ends_with("the agent called `touch prompted.txt`"),
+            "{}",
+            lines[0]
+        );
         assert!(lines[3].starts_with("  a, after the call: PostToolUse hook "));
     }
 
@@ -828,10 +859,9 @@ mod tests {
             "claude://code/needs-input?session=local_1%202"
         );
         let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Observed::read(dir.path()), Observed::default());
         fs::write(dir.path().join(RUNS), YES).unwrap();
-        assert_eq!(
-            Observed::read(dir.path()).session_id(),
-            observed(YES, "").session_id()
-        );
+        fs::write(dir.path().join(NOTICES), YES_NOTICES).unwrap();
+        assert_eq!(Observed::read(dir.path()), observed(YES, YES_NOTICES));
     }
 }
