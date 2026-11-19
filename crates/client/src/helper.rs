@@ -8,7 +8,8 @@
 //!   that runs; one whose helper cannot start runs here, holding the lock itself.
 //! - On the socket, the command and the helper first say their versions. A helper older than the
 //!   command exits once it has closed its socket, and the command goes on as if none ran. A command
-//!   older than the helper fails, naming both versions, and leaves it running.
+//!   older than the helper fails, naming both versions, and leaves it running; an MCP server's tool
+//!   call goes through it ([`route_into`]).
 //! - A command hands its operation and working directory over; the helper runs it there, and the
 //!   command shows its output and exits with its exit code. A write of the operation's output
 //!   returns once the command has written it, or fails as the command's write did, so the
@@ -92,6 +93,14 @@ enum Kind {
 }
 
 impl Kind {
+    /// The kind of a write to `stream`.
+    fn output(stream: output::Stream) -> Self {
+        match stream {
+            output::Stream::Out => Kind::Out,
+            output::Stream::Err => Kind::Err,
+        }
+    }
+
     fn of(byte: u8) -> Option<Self> {
         [
             Kind::Hello,
@@ -139,15 +148,41 @@ pub fn version() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// What takes the output of an operation a helper runs, on the command's side: each write, to
+/// standard output or standard error, which it gives back whether it wrote.
+pub type Sink<'s> = dyn FnMut(output::Stream, &[u8]) -> io::Result<()> + 's;
+
 /// Where `operation`, of a command that changes the state in `dir`, runs: through the helper that
 /// runs, or one it starts if `starts` and there is a state; otherwise here, once it holds the lock,
 /// waiting for it as [`lock::take`] does, with a missing `dir` created if `create`, unless a helper
-/// starts meanwhile.
+/// starts meanwhile. What a helper's run of it shows goes to standard output and standard error.
 pub fn route(
     dir: &Path,
     operation: &Operation,
     create: bool,
     starts: bool,
+) -> Result<Route, String> {
+    route_into(dir, operation, (create, starts, false), &mut shown)
+}
+
+/// Writes `bytes` to the standard output or standard error, as `stream` says.
+fn shown(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
+    match stream {
+        output::Stream::Out => {
+            let mut out = io::stdout().lock();
+            out.write_all(bytes).and_then(|()| out.flush())
+        }
+        output::Stream::Err => io::stderr().lock().write_all(bytes),
+    }
+}
+
+/// As [`route`], what a helper's run of `operation` shows going to `sink`; through a helper newer
+/// than this run too if `newer`, as an MCP server's tool call goes ([`crate::mcp`]).
+pub fn route_into(
+    dir: &Path,
+    operation: &Operation,
+    (create, starts, newer): (bool, bool, bool),
+    sink: &mut Sink,
 ) -> Result<Route, String> {
     let dir = std::path::absolute(dir)
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
@@ -159,7 +194,10 @@ pub fn route(
             if let Some(stream) = connect(&dir) {
                 if let Some((stream, helper)) = greet(stream, timeout)? {
                     match compare(&version(), &helper) {
-                        Ordering::Equal => return hand(stream, operation).map(Route::Helped),
+                        Ordering::Equal => return hand(stream, operation, sink).map(Route::Helped),
+                        Ordering::Less if newer => {
+                            return hand(stream, operation, sink).map(Route::Helped);
+                        }
                         Ordering::Greater => dismiss(stream, timeout),
                         Ordering::Less => return Err(older(&version(), &helper)),
                     }
@@ -264,35 +302,42 @@ fn dismiss(mut stream: UnixStream, timeout: Duration) {
     }
 }
 
-/// Hands `operation` over on `stream` and shows what the helper's run of it shows, saying whether
-/// each write of it worked; gives its exit code.
-fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, String> {
+/// Hands `operation` over on `stream` and gives `sink` what the helper's run of it shows, saying
+/// whether each write of it worked; gives its exit code.
+fn hand(stream: UnixStream, operation: &Operation, sink: &mut Sink) -> Result<ExitCode, String> {
+    let gone = "the helper of the local state exited before the command finished; run the \
+                command again";
+    stream.set_read_timeout(None).map_err(|_| gone.to_owned())?;
+    handed((&mut &stream, &mut &stream), operation, sink, gone)
+}
+
+/// Hands `operation` over on `to` and gives `sink` what the run of it shows on `from`, saying on
+/// `to` whether each write of it worked; gives its exit code, or fails with `gone` once `from` or
+/// `to` ends before it.
+fn handed(
+    (from, to): (&mut impl Read, &mut impl Write),
+    operation: &Operation,
+    sink: &mut Sink,
+    gone: &str,
+) -> Result<ExitCode, String> {
     let cwd = std::env::current_dir()
         .map_err(|err| format!("cannot read the working directory: {err}"))?;
     let request = serde_json::to_vec(&Handed { cwd, operation })
-        .map_err(|err| format!("cannot hand the command to the helper: {err}"))?;
-    let gone = "the helper of the local state exited before the command finished; run the \
-                command again";
-    stream
-        .set_read_timeout(None)
-        .and_then(|()| send(&mut stream, Kind::Run, &request))
-        .map_err(|_| gone.to_owned())?;
+        .map_err(|err| format!("cannot hand the command over: {err}"))?;
+    send(to, Kind::Run, &request).map_err(|_| gone.to_owned())?;
     loop {
-        let written = match receive(&mut stream) {
-            Ok(Some((Kind::Out, bytes))) => {
-                let mut out = io::stdout().lock();
-                out.write_all(&bytes).and_then(|()| out.flush())
-            }
-            Ok(Some((Kind::Err, bytes))) => io::stderr().lock().write_all(&bytes),
+        let written = match receive(from) {
+            Ok(Some((Kind::Out, bytes))) => sink(output::Stream::Out, &bytes),
+            Ok(Some((Kind::Err, bytes))) => sink(output::Stream::Err, &bytes),
             Ok(Some((Kind::Code, code))) => {
                 return Ok(ExitCode::from(code.first().copied().unwrap_or(1)));
             }
             _ => return Err(gone.to_owned()),
         };
-        // A helper gone meanwhile shows as the end of the stream.
+        // A run gone meanwhile shows as the end of the stream.
         let _ = match written {
-            Ok(()) => send(&mut stream, Kind::Written, &[]),
-            Err(err) => send(&mut stream, Kind::Unwritten, err.to_string().as_bytes()),
+            Ok(()) => send(to, Kind::Written, &[]),
+            Err(err) => send(to, Kind::Unwritten, err.to_string().as_bytes()),
         };
     }
 }
@@ -332,15 +377,31 @@ fn older(command: &str, helper: &str) -> String {
 
 /// The version of the `skald` installed where this run's binary is, as it says.
 fn on_disk() -> Option<String> {
+    version_at(&installed()?)
+}
+
+/// Where this run's binary is installed, also once another `skald` replaced it there.
+pub fn installed() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     // Linux names a replaced binary so.
-    let exe = match exe
-        .to_str()
-        .and_then(|path| path.strip_suffix(" (deleted)"))
-    {
-        Some(path) => PathBuf::from(path),
-        None => exe,
-    };
+    Some(
+        match exe
+            .to_str()
+            .and_then(|path| path.strip_suffix(" (deleted)"))
+        {
+            Some(path) => PathBuf::from(path),
+            None => exe,
+        },
+    )
+}
+
+/// Whether the `skald` at `exe` is newer than this run, as it says its version.
+pub fn newer_at(exe: &Path) -> bool {
+    version_at(exe).is_some_and(|disk| compare(&version(), &disk) == Ordering::Less)
+}
+
+/// The version the `skald` at `exe` says it is.
+fn version_at(exe: &Path) -> Option<String> {
     let said = std::process::Command::new(exe)
         .arg("--version")
         .env_remove(VERSION_SETTING)
@@ -352,6 +413,82 @@ fn on_disk() -> Option<String> {
     let version = text.split_whitespace().nth(1)?;
     semver::Version::parse(version).ok()?;
     Some(version.to_owned())
+}
+
+/// The flag of `skald mcp` with which it runs an operation that an older `skald` relays to it.
+const RELAYED: &str = "--relayed";
+
+/// Runs `operation` with the newer `skald` at `exe`, one-shot if `one_shot`: hands it over on its
+/// standard input, as to a helper, and gives `sink` what its run of it shows on its standard
+/// output, saying whether each write of it worked ([`relayed`]); gives its exit code.
+pub fn relay(
+    exe: &Path,
+    operation: &Operation,
+    one_shot: bool,
+    sink: &mut Sink,
+) -> Result<ExitCode, String> {
+    let mut command = std::process::Command::new(exe);
+    if one_shot {
+        command.arg("--one-shot");
+    }
+    let mut child = command
+        .args(["mcp", RELAYED])
+        .env_remove(VERSION_SETTING)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot run the installed skald {}: {err}", exe.display()))?;
+    let (Some(mut to), Some(mut from)) = (child.stdin.take(), child.stdout.take()) else {
+        unreachable!("the run's standard input and output are pipes");
+    };
+    let gone = format!(
+        "the installed skald {} exited before the command finished; run it again",
+        exe.display()
+    );
+    let ran = handed((&mut from, &mut to), operation, sink, &gone);
+    drop((to, from));
+    let _ = child.wait();
+    ran
+}
+
+/// For a run that an older `skald` relays an operation to ([`relay`]): the working directory and
+/// the operation it hands over on standard input.
+pub fn relayed() -> Result<(PathBuf, Operation), String> {
+    let cant = |why: String| format!("cannot take the relayed command: {why}");
+    match receive(&mut io::stdin().lock()) {
+        Ok(Some((Kind::Run, request))) => serde_json::from_slice::<Request>(&request)
+            .map(|request| (request.cwd, request.operation))
+            .map_err(|err| cant(err.to_string())),
+        Ok(_) => Err(cant("nothing came".to_owned())),
+        Err(err) => Err(cant(err.to_string())),
+    }
+}
+
+/// Writes `bytes` to `stream` of the `skald` that relayed the operation: returns once it has
+/// written them, or fails as its write did.
+pub fn to_relaying(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
+    send(&mut io::stdout().lock(), Kind::output(stream), bytes)?;
+    answered(&mut io::stdin().lock())
+}
+
+/// Gives the `skald` that relayed the operation its exit code.
+pub fn relayed_code(code: u8) -> Result<(), String> {
+    send(&mut io::stdout().lock(), Kind::Code, &[code])
+        .map_err(|err| format!("cannot give the relayed command its exit code: {err}"))
+}
+
+/// Takes the answer to a write on `stream`: whether it was written.
+fn answered(stream: &mut impl Read) -> io::Result<()> {
+    match receive(stream)? {
+        Some((Kind::Written, _)) => Ok(()),
+        Some((Kind::Unwritten, why)) => {
+            Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "the command went away",
+        )),
+    }
 }
 
 /// Starts the helper of the state in `dir`, detached from this run's terminal and outputs, as this
@@ -621,21 +758,8 @@ fn on_behalf(
     let mut sink = stream.try_clone().ok()?;
     let ran = output::into(
         move |stream, bytes| {
-            let kind = match stream {
-                output::Stream::Out => Kind::Out,
-                output::Stream::Err => Kind::Err,
-            };
-            send(&mut sink, kind, bytes)?;
-            match receive(&mut sink)? {
-                Some((Kind::Written, _)) => Ok(()),
-                Some((Kind::Unwritten, why)) => {
-                    Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()))
-                }
-                _ => Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "the command went away",
-                )),
-            }
+            send(&mut sink, Kind::output(stream), bytes)?;
+            answered(&mut sink)
         },
         || {
             panic::catch_unwind(AssertUnwindSafe(|| {

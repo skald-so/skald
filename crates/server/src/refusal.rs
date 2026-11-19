@@ -10,7 +10,8 @@ use axum::response::{IntoResponse, Response};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use sqlx::PgPool;
 
-use crate::sign_in::{not_signed_in, signed_in};
+use crate::service_tokens::{self, Token};
+use crate::sign_in::{bearer, digest, not_signed_in, signed_in};
 use crate::{AppState, database_failed, problem};
 
 /// Why the server refuses a request.
@@ -69,6 +70,10 @@ pub(crate) enum Refusal {
     LinkSessionTaken,
     /// No such open run of the session's account.
     NoLinkRun,
+    /// A grant the server does not take, for the reason it holds.
+    Grant(String),
+    /// No such service token of the space.
+    NoServiceToken,
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -221,6 +226,13 @@ impl IntoResponse for Refusal {
                 "No such link run",
                 "The session's account has no open run with this session: it ended or never opened.",
             ),
+            Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
+            Refusal::NoServiceToken => problem(
+                StatusCode::NOT_FOUND,
+                "no-service-token",
+                "No such service token",
+                "The space has no such service token, or it has ended.",
+            ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }
     }
@@ -244,6 +256,51 @@ pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, 
 
 /// The ID of the account of the request's session, as a handler's argument.
 pub(crate) struct SignedIn(pub String);
+
+/// Who a request comes from, for the requests a service token alone also makes, or whom a
+/// connection's challenge is of: a session's account, or a service token that has not ended.
+pub(crate) enum Caller {
+    /// The ID of the session's account.
+    Session(String),
+    Token(Token),
+}
+
+impl Caller {
+    /// The ID of its account: the session's, or the token's device's.
+    pub(crate) fn account(&self) -> String {
+        match self {
+            Caller::Session(account) => account.clone(),
+            Caller::Token(token) => token.account.to_string(),
+        }
+    }
+
+    /// Its service token, if it is one.
+    pub(crate) fn token(&self) -> Option<&Token> {
+        match self {
+            Caller::Session(_) => None,
+            Caller::Token(token) => Some(token),
+        }
+    }
+}
+
+impl FromRequestParts<AppState> for Caller {
+    type Rejection = Refusal;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
+        let failed = |err| Refusal::Database("read a session", err);
+        let headers = &parts.headers;
+        if let Some(session) = signed_in(&state.db, headers).await.map_err(failed)? {
+            return Ok(Caller::Session(session.account));
+        }
+        let Some(Some(token)) = bearer(headers) else {
+            return Err(Refusal::NotSignedIn);
+        };
+        let token = service_tokens::live(&state.db, &digest(token))
+            .await
+            .map_err(failed)?;
+        Ok(Caller::Token(token.ok_or(Refusal::NotSignedIn)?))
+    }
+}
 
 impl FromRequestParts<AppState> for SignedIn {
     type Rejection = Refusal;

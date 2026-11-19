@@ -42,6 +42,24 @@ impl Terminal {
         Self::spawn(&machine.command_in(&home, args), &home)
     }
 
+    /// As [`Terminal::start`], its input not the terminal but empty, as a shell redirects it.
+    #[cfg(unix)]
+    pub fn start_without_input(machine: &Machine, args: &[&str]) -> Self {
+        let home = machine.root().join("home");
+        let skald = machine.command_in(&home, args);
+        let mut shell = Command::new("/bin/sh");
+        shell
+            .args(["-c", "exec \"$0\" \"$@\" < /dev/null"])
+            .arg(skald.get_program())
+            .args(skald.get_args());
+        for (name, value) in skald.get_envs() {
+            if let Some(value) = value {
+                shell.env(name, value);
+            }
+        }
+        Self::spawn(&shell, &home)
+    }
+
     fn spawn(command: &Command, dir: &Path) -> Self {
         let mut builder = CommandBuilder::new(command.get_program());
         builder.args(command.get_args());

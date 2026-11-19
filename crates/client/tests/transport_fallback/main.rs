@@ -206,7 +206,7 @@ fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
         at_once(
             &behind,
             transport,
-            &["send", &channel, &mine],
+            &["send", "--all", "--channel", &channel, &mine],
             "send with an empty mailbox",
         );
         behind.bob_sends(&format!("bob, waiting for a send over {transport:?}"));
@@ -214,7 +214,7 @@ fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
         at_once(
             &behind,
             transport,
-            &["send", &channel, &again],
+            &["send", "--all", "--channel", &channel, &again],
             "send with an entry waiting",
         );
         let waiting = format!("bob, waiting for a recv over {transport:?}");

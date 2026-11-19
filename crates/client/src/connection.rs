@@ -169,12 +169,13 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `text` with its control characters escaped, such as `\u{1b}` for ESC: the server's text must not
-/// drive the terminal.
+/// `text` with its control characters and the line and paragraph separators U+2028 and U+2029
+/// escaped, such as `\u{1b}` for ESC: the server's text must not drive the terminal, nor break a
+/// line for a reader that breaks lines there.
 pub fn printable(text: &str) -> String {
     text.chars()
         .map(|char| {
-            if char.is_control() {
+            if char.is_control() || matches!(char, '\u{2028}' | '\u{2029}') {
                 char.escape_debug().to_string()
             } else {
                 char.to_string()
@@ -641,6 +642,8 @@ enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
     Json(Method, &'a [u8]),
+    /// JSON, `POST`ed with the device's proof `proof`.
+    ProvedJson { json: &'a [u8], proof: &'a str },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
     /// the timeout.
     Frame {
@@ -833,6 +836,16 @@ impl Connection {
         self.http(path, Some(token), Body::Json(method, json))
     }
 
+    /// `POST <path>` of the JSON `json` as the device of `proof`, on the device session of `token`.
+    pub fn post_json_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        json: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::ProvedJson { json, proof })
+    }
+
     /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
     /// of the answer that serves it, awaited for `wait` more than the timeout.
     pub fn post_frame_as(
@@ -870,6 +883,12 @@ impl Connection {
                 }
                 .content_type("application/json")
                 .send(json),
+                Body::ProvedJson { json, proof } => {
+                    with_headers(agent.post(&url), &version, bearer)
+                        .header(PROOF_HEADER, proof)
+                        .content_type("application/json")
+                        .send(json)
+                }
                 Body::Frame { frame, proof, .. } => {
                     with_headers(agent.post(&url), &version, bearer)
                         .header(PROOF_HEADER, proof)
@@ -1221,6 +1240,15 @@ pub(crate) mod tests {
         assert_eq!(
             error("Unknown code.\u{1b}").to_string(),
             "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
+        );
+    }
+
+    /// Control characters and the line and paragraph separators are escaped; other text is kept.
+    #[test]
+    fn printable_escapes_control_characters_and_line_separators() {
+        assert_eq!(
+            printable("a\nb\u{1b}c\u{85}d\u{2028}e\u{2029}f · é"),
+            "a\\nb\\u{1b}c\\u{85}d\\u{2028}e\\u{2029}f · é"
         );
     }
 

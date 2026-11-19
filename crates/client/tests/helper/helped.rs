@@ -155,7 +155,7 @@ impl Helped {
     /// Runs `skald send` of `text` to the talk's channel, with `settings`.
     pub fn send_with(&self, talk: &Talk, settings: &[(&str, &str)], text: &str) -> Finished {
         let channel = talk.channel.to_string();
-        self.run_with(settings, &[SEND, &channel, text])
+        self.run_with(settings, &[SEND, "--all", "--channel", &channel, text])
     }
 
     /// As [`Helped::send_with`], without settings; fails unless it succeeds.
@@ -241,6 +241,25 @@ impl Helped {
             );
             thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// The copy.
+    pub fn exe(&self) -> &Path {
+        &self.exe
+    }
+
+    /// Replaces the copy with `with`, as `skald update` replaces its binary while runs of it go on
+    /// (`update.rs`): a staged copy is renamed over it, once the old file is set aside on
+    /// Windows, which does not replace a running program's file.
+    pub fn replace(&self, with: &Path) {
+        let suffix = std::env::consts::EXE_SUFFIX;
+        let staged = self.exe.with_file_name(format!("staged-skald{suffix}"));
+        fs::copy(with, &staged).expect("stage the new copy");
+        if cfg!(windows) {
+            let aside = self.exe.with_file_name(format!("old-skald{suffix}"));
+            fs::rename(&self.exe, aside).expect("set the old copy aside");
+        }
+        fs::rename(&staged, &self.exe).expect("replace the copy");
     }
 
     /// Kills the process `pid` of the copy and waits until it no longer runs.

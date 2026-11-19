@@ -429,6 +429,7 @@ export type DeviceRegistrationKind =
 
 export const DeviceRegistrationKind = {
   client: "client",
+  service: "service",
 } as const;
 
 export interface DeviceRegistration {
@@ -655,6 +656,51 @@ export interface StoredRosterRevision {
    * @minimum 1
    */
   revision: number;
+}
+
+/**
+ * A service token's ID: random, it reveals nothing of the token's value.
+ */
+export type ServiceTokenId = string;
+
+/**
+ * What a token lets its device do: `send` and `receive` messages, and `queues`, work on every queue of its channels (docs/protocol/queues.md, "Claim checks").
+ */
+export type ServicePermission =
+  (typeof ServicePermission)[keyof typeof ServicePermission];
+
+export const ServicePermission = {
+  send: "send",
+  receive: "receive",
+  queues: "queues",
+} as const;
+
+/**
+ * A token of a `service` device for a space, without its value.
+ */
+export interface ServiceToken {
+  id: ServiceTokenId;
+  device: DeviceId;
+  /** The `owner` of the device's service agent entry in the space's latest revision, such as `ci`. */
+  owner: string;
+  /** The `agent` of that entry, such as `deploy-bot`. */
+  agent: string;
+  /** @minItems 1 */
+  permissions: ServicePermission[];
+  /**
+   * The grant's channels.
+   * @minItems 1
+   */
+  channels: ChannelId[];
+  created_at: string;
+  /** The token's last request, to the minute: a request records its use only when the last one is a minute old or more. `null` before its first. */
+  last_used_at: string | null;
+  /** The grant's expiry. */
+  expires_at: string;
+}
+
+export interface ServiceTokens {
+  tokens: ServiceToken[];
 }
 
 /**

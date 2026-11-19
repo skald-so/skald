@@ -17,8 +17,10 @@ use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
 use crate::sign_in::{bearer, digest};
 use crate::{AppState, revocations};
 
-/// The only kind of device that registers here; other kinds come with later stories.
+/// The kinds of device that register here: a person's `client` device, and a `service` device a
+/// `client` device of the account creates.
 const CLIENT: &str = "client";
+const SERVICE: &str = "service";
 
 /// The bytes of `text`, base64url without padding; `field` names it in the refusal.
 pub(crate) fn bytes(text: &str, field: &str) -> Result<Vec<u8>, Refusal> {
@@ -120,9 +122,10 @@ struct Registration {
     name: String,
 }
 
-/// A registration's device, keys and `name`, checked.
+/// A registration's device, kind, keys and `name`, checked.
 struct Checked {
     device: DeviceId,
+    kind: &'static str,
     signing: [u8; 32],
     hpke: [u8; 32],
     name: String,
@@ -135,9 +138,15 @@ impl Checked {
             .device
             .parse()
             .map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
-        if registration.kind != CLIENT {
-            return Err(invalid("kind: only `client` devices register"));
-        }
+        let kind = match registration.kind.as_str() {
+            CLIENT => CLIENT,
+            SERVICE => SERVICE,
+            _ => {
+                return Err(invalid(
+                    "kind: only `client` and `service` devices register",
+                ));
+            }
+        };
         let signing = key(&registration.signing, "signing")?;
         let hpke = key(&registration.hpke, "hpke")?;
         if !(1..=CERT_NAME_MAX).contains(&registration.name.len()) {
@@ -150,6 +159,7 @@ impl Checked {
         }
         Ok(Checked {
             device,
+            kind,
             signing,
             hpke,
             name: registration.name,
@@ -157,9 +167,9 @@ impl Checked {
     }
 }
 
-/// `POST /devices`: registers a device of the session's account, which a device session then lists;
-/// the same registration again is taken as stored. It certifies nothing, so the devices limit does
-/// not count it.
+/// `POST /devices`: registers a `client` or `service` device of the session's account; a device
+/// session then lists the `client` one. The same registration again is taken as stored. It
+/// certifies nothing, so the devices limit does not count it.
 pub(crate) async fn register(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -181,7 +191,7 @@ pub(crate) async fn register(
         )
         .bind(&device)
         .bind(&account)
-        .bind(CLIENT)
+        .bind(checked.kind)
         .bind(checked.signing.as_slice())
         .bind(checked.hpke.as_slice())
         .bind(checked.name.as_bytes())
@@ -189,8 +199,11 @@ pub(crate) async fn register(
         .await
         .map_err(|err| Refusal::Database("register a device", err))?;
         let (created, cert) = stored.ok_or(Refusal::DeviceTaken)?;
-        // A device session lists the device it registered.
-        if let Some(Some(token)) = bearer(&headers) {
+        // A device session lists the `client` device it registered: a `service` device it registers
+        // is not the session's.
+        if checked.kind == CLIENT
+            && let Some(Some(token)) = bearer(&headers)
+        {
             sqlx::query(
                 "UPDATE sessions SET device_id = $1::uuid WHERE kind = 'device' AND token_hash = $2",
             )

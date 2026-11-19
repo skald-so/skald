@@ -14,7 +14,9 @@ mod link;
 mod receipt;
 mod revocation;
 mod roster;
+mod service_key;
 mod signed;
+mod trust;
 mod version;
 
 pub use account::{ACCOUNT_LABEL, AccountBody, AccountRecord, MasterBackup};
@@ -26,7 +28,9 @@ pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };
 pub use cert::{CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL};
-pub use content::{Attachment, Body, Content, Delegation, DelegationBody, Grant, GrantBody};
+pub use content::{
+    Attachment, Body, Content, Delegation, DelegationBody, GRANT_LABEL, Grant, GrantBody,
+};
 pub use envelope::{Envelope, Header, HpkePayload, HpkePlaintext, Scheme};
 pub use frame::{
     AUTH_LABEL, Frame, HistoryItem, PROOF_HEADER, Push, REQUEST_LABEL, RawEnvelope, RequestProof,
@@ -47,7 +51,9 @@ pub use roster::{
     Ceilings, Channel, ChannelMember, HISTORY_MIN, Member, Mode, NEW_SPACE_HISTORY, Policy,
     ROSTER_LABEL, Role, Roster, RosterBody, ServiceAgent,
 };
+pub use service_key::ServiceKey;
 pub use signed::{Signed, SignedBody};
+pub use trust::{TrustLevel, TrustLevelError};
 pub use version::{
     LATEST_HEADER, PROTOCOL_VERSION, SUBPROTOCOL_PREFIX, VERSION_HEADER, VersionProblem,
     VersionRange, describe_versions, parse_version, subprotocol,

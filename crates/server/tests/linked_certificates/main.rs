@@ -12,8 +12,9 @@
 //! The interface, as these tests use it, each request stating the protocol version with a
 //! session's token:
 //! - `PUT /devices/{device}/cert` of `{"cert": <bytes>}`, the complete certificate of `device`:
-//!   stored with `201`; the same certificate again, a retry after a lost answer, with `200`. The
-//!   account's `GET /devices` then gives it as sent.
+//!   stored with `201`; the same certificate again, a retry after a lost answer, with `200`, also
+//!   when both arrive at once at the limit's last place. The account's `GET /devices` then gives
+//!   it as sent.
 //! - Refused, with a problem details object and nothing stored: `401` without a valid session; with
 //!   `403` and the problem `https://skald.so/problems/devices-limit` over the devices limit; with
 //!   another `4xx` for a malformed body or certificate, one that fails check 1 or 2, one whose

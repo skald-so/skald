@@ -237,12 +237,19 @@ pub fn assert_device_refused(socket: &mut Socket) {
 /// `since`.
 #[track_caller]
 pub fn assert_closes(socket: &mut Socket, since: Instant, what: &str) {
-    let deadline = since + CLOSE;
+    assert_closes_within(socket, since, CLOSE, what);
+}
+
+/// Checks that the server closes `socket`, with a close frame or without, within `within` of
+/// `since`.
+#[track_caller]
+pub fn assert_closes_within(socket: &mut Socket, since: Instant, within: Duration, what: &str) {
+    let deadline = since + within;
     loop {
         match socket.next(deadline) {
             Ok(Some(Message::Close(_))) | Err(_) => return,
             Ok(Some(_)) => {}
-            Ok(None) => panic!("{what}: still open {CLOSE:?} after the revocation"),
+            Ok(None) => panic!("{what}: still open {within:?} after the revocation"),
         }
     }
 }

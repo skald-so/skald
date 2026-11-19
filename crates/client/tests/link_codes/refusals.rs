@@ -1,12 +1,13 @@
 //! A link code is shown and typed only by a person at a terminal: a new device signing in through a
-//! pipe shows no code and sends no hello; `skald link` through a pipe, or as an agent at a
-//! terminal, refuses and sends nothing to the link code relay.
+//! pipe, or as an agent at a terminal, shows no code and sends no hello; `skald link` through a
+//! pipe, with only its output at a terminal, or as an agent at a terminal, refuses and sends
+//! nothing to the link code relay.
 
 use std::time::Instant;
 
 use crate::cloud::Cloud;
-use crate::linking::{HELLO, LINK, RELAYED, codes_in, says};
-use crate::machine::{FIRST_DEVICE, Machine, NO};
+use crate::linking::{HELLO, LINK, RELAYED, approve, codes_in, says};
+use crate::machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN};
 use crate::terminal::Terminal;
 use crate::world::{AGENT, World};
 
@@ -74,4 +75,54 @@ fn an_agent_cannot_link_a_device() {
         refused.text
     );
     assert_eq!(relayed_since(cloud, since), Vec::<String>::new());
+}
+
+/// `skald link` on Ada's first machine with its output at a terminal and its input not one fails,
+/// says it needs a terminal, and sends no request to the link code relay.
+// Only a Unix shell here redirects the input alone.
+#[cfg(unix)]
+#[test]
+fn with_only_its_output_at_a_terminal_no_code_is_taken() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_175_901_021, "ada-redirects-the-input", "ada-workstation");
+    let since = cloud.relay.mark();
+
+    let refused = Terminal::start_without_input(&ada.machine, &[LINK]).finish();
+    assert!(!refused.success, "{}", refused.text);
+    assert!(says(&refused.text, &[TERMINAL]), "{}", refused.text);
+    assert_eq!(relayed_since(cloud, since), Vec::<String>::new());
+}
+
+/// `skald --agent builder sign-in --first-device no` at a terminal on Ada's new machine: once its
+/// sign-in is approved, it exits with success, shows no code and sends no hello.
+#[test]
+fn an_agent_signing_in_at_a_terminal_shows_no_code() {
+    let world = World::start();
+    let cloud = &world.cloud;
+    let ada = world.sign_up(4_175_901_031, "ada-agent-signs-in", "ada-workstation");
+    let since = cloud.relay.mark();
+
+    let machine = Machine::new().with_host_name("ada-laptop");
+    let grants = cloud.grants().len();
+    let args = [
+        AGENT,
+        "builder",
+        SIGN_IN,
+        SERVER,
+        &cloud.url,
+        FIRST_DEVICE,
+        NO,
+    ];
+    let mut run = Terminal::start(&machine, &args);
+    approve(&world, &ada, &mut run, grants);
+    let shown = run.finish();
+    assert!(shown.success, "{}", shown.text);
+    assert_eq!(
+        codes_in(&shown.text),
+        Vec::<String>::new(),
+        "{}",
+        shown.text
+    );
+    assert_eq!(cloud.count_sent(since, HELLO), 0, "a hello as an agent");
 }

@@ -9,6 +9,7 @@ CDDL rules not defined here, such as `id`, `address` and `timestamp`, are in [RE
 - [Account](#account)
 - [Device certificate](#device-certificate)
 - [Linking a device](#linking-a-device)
+- [Service device](#service-device)
 - [Revocation](#revocation)
 - [Device checks](#device-checks)
 - [Trust levels](#trust-levels)
@@ -89,20 +90,20 @@ cert-body = {
 device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 ```
 
-- Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it.
+- Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it, except a `service` device's: [Service device](#service-device).
 - **Proof check:** a client MUST discard a certificate unless `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)) and `proof` verifies with `signing`. A discarded certificate counts nowhere and is not shown: the certificate of a device ID, a device's chain and issuers, the signer of an object and the devices a device certified come only from certificates that pass this check, here and in [README.md](README.md). So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
 - A device signs `proof` for one certificate only, the one issued for it when it joins the account. Certificates of one `device` with the same `body` are one certificate: a client uses a copy whose `signature` passes check 1 of [Device checks](#device-checks). A client that sees two certificates of one `device` with different bodies that pass the proof check treats neither as valid and warns its user.
 - A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
   - a `client` device of the same account: any kind.
-- A `service` device is certified on the account of the admin who creates it.
+- A `service` device is certified on the account of the admin who creates it, by the `client` device it is created on.
 - `name` and `issued` are for display; nothing depends on them. A client shows a device only by its certificate's `name`, `kind` and `issued`, never by a name the server gives.
 - **SSH signature** (`ssh`, optional): an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, all byte strings. It is made with one of the user's SSH keys on GitHub. A client that checks it fetches the user's keys from GitHub, not from the Skald server; a signature that does not verify is a key change.
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it has with other keys or `name`, or on another account; the same registration sent again counts as stored. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
+A `service` device does not link: [Service device](#service-device). A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it has with other keys or `name`, or on another account; the same registration sent again counts as stored. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
 
 A new `client` device first asks its user whether it is the account's first device, before it learns from the server whether the account has a master key:
 
@@ -214,6 +215,32 @@ anchors-body = {
 - For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
 - It pins as its personal space the `personal` of the valid anchors objects that have one. When they name different spaces, it pins none and warns its user.
 
+## Service device
+A space admin's `client` device creates the `service` device of a service agent of the space:
+1. refuses an `owner/agent` that the space's latest accepted revision has ([Roster](#roster), check 3);
+2. generates the device's keys in memory;
+3. registers the device on its account, with `name` the address `owner/agent` cut to 64 bytes, and issues its certificate;
+4. signs the space's next revision with the device's `service-agent` entry; refused for a revision signed meanwhile, it signs the entry into that one ([Roster](#roster));
+5. signs the device's [service grant](README.md#service-grant), which a service token carries.
+
+The device's private keys leave the admin's device only in its key secret, shown once and kept nowhere:
+
+```cddl
+service-key = {
+  1 => bstr .size 32,      ; signing: the Ed25519 private key, its seed
+  2 => bstr .size 32,      ; hpke: the X25519 private key
+  3 => id,                 ; account: the admin's
+  4 => bstr .size 32,      ; master: the account's master public key
+  5 => id,                 ; space
+  6 => bstr .size 32,      ; anchor: hash of the revision with the device's entry
+  7 => tstr,               ; server: its public address, e.g. "https://api.skald.so"
+  * int => any,            ; fields of later versions
+}
+```
+
+- A `service` device that keeps no state between runs pins `master` as its account's master key ([Device checks](#device-checks)) and starts from `anchor` ([Roster](#roster)).
+- In the CLI, the key secret is base64url without padding [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §5]: [Service agents](../service-agents.md).
+
 ## Revocation
 A revocation removes a device from its account.
 
@@ -248,7 +275,7 @@ A certificate is valid when:
 3. no counting revocation names the device in `device` or `also`;
 4. for each revoked issuer in the chain, every counting revocation of it lists in `keep` the next device down the chain.
 
-The master key is the one the client pinned: its own account's on linking, or the `master` of the member in the [roster](#roster). A device is trusted only with a valid certificate; a client MUST NOT send to, accept content from or admit to a channel any other device.
+The master key is the one the client pinned: its own account's on linking or, for a `service` device, from its [key secret](#service-device); or the `master` of the member in the [roster](#roster). A device is trusted only with a valid certificate; a client MUST NOT send to, accept content from or admit to a channel any other device.
 
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
@@ -328,7 +355,7 @@ channel-member = [
 - It sends a [`space-notice`](delivery.md#frames) to the space's devices when it stores a revision.
 - A `service` device sends only as `space/owner/agent` from its entry ([Envelope](README.md#envelope)).
 
-A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). It MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
+A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). A `service` device that keeps no state between runs starts from its [key secret](#service-device)'s `anchor`. A client MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
 1. its signature verifies with the certificate of `signer`, an admin's device in revision n;
 2. `space` and `name` are those of revision n, `revision` is n+1, and `prev` is the hash of revision n;
 3. it has at least one admin; no list repeats an account, device, channel or invite; `name`, handles, owners and agents are valid names ([Agent address](README.md#agent-address)); no two members share a handle, and no owner is a handle; service agents may share an owner, but not an owner and agent;
@@ -422,7 +449,8 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 - Application messages are PrivateMessages. Proposals and Commits are PublicMessages, so the server knows each epoch's member devices.
 - Forward secrecy: a device deletes a message's key once it decrypts the message. It keeps the secrets of the 3 epochs before its current one, for messages stored after a Commit their sender had not processed yet ([Order](delivery.md#order)), and deletes older ones. Within an epoch it keeps the keys of skipped messages up to 1024 generations ahead, until it deletes that epoch's secrets.
 - Each Commit's sender uploads the GroupInfo of the new epoch, with the `ratchet_tree` and `external_pub` extensions, over HTTPS. Any member device of the current epoch uploads one if the server has none.
-- The server keeps an upload of the current epoch from a session of an account with a member device that the GroupInfo lists, with both extensions, whose signature verifies and whose GroupContext is that of the group it follows ([Commit ordering](#commit-ordering)). It gives the latest only while it is of the current epoch, so after a Commit it has none until one of the new epoch is uploaded, and only to sessions of accounts the latest revision lists as the channel's members; without one, it says whether the channel has a group yet.
+- The server keeps an upload of the current epoch from a session of an account with a member device that the GroupInfo lists, or from a service token that lists the channel, whose `service` device the GroupInfo lists, with both extensions, whose signature verifies and whose GroupContext is that of the group it follows ([Commit ordering](#commit-ordering)). It gives the latest only while it is of the current epoch, so after a Commit it has none until one of the new epoch is uploaded, and only to sessions of accounts the latest revision lists as the channel's members and to service tokens that list the channel; without one, it says whether the channel has a group yet.
+- A `service` device sends its Commits on a connection of its service token, which needs the token's `send` permission and the channel among its channels ([Send](delivery.md#send)); its token alone uploads the GroupInfo.
 
 ### Admitted devices
 A device is admitted to a channel when its certificate is valid and it is one of:
@@ -445,6 +473,7 @@ A member device:
 - Every device that can be a member keeps unused KeyPackages on the server: when fewer than 10 remain, it uploads enough to have 20. Their `lifetime` is at most 60 days; a device replaces a KeyPackage 7 days before it expires.
 - Each device also keeps one last-resort KeyPackage, which the server hands out only when no other remains and does not delete. The device replaces it once it was used, and as the others.
 - The server hands out each other KeyPackage once, then deletes it, and deletes expired ones. It hands them only to devices of accounts that share a space with the KeyPackage's device.
+- A `service` device uploads its own KeyPackages with its service token alone. A service token gets no other device's KeyPackages, and uploads or counts none of them.
 - A device MUST NOT add a KeyPackage unless its MLS signature verifies, its `lifetime` holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` match an admitted device's valid certificate.
 
 ### Commit ordering
@@ -542,18 +571,18 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
 - A device never uploads again a link the server has had, having taken it from the device or listed it to it, nor one the server refused: a link that retention deleted stays deleted.
-- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session alone uploads none.
+- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
 - The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
 - It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
 
 | Problem | The item |
 |---|---|
 | `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
-| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows |
+| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows, or, on a service token's connection, a channel the token does not list |
 | `epoch-mismatch` | Is of an epoch the channel has not had; a link or wrap, of an epoch before the channel's cutoff; an entry, of an epoch other than the channel's current or previous one |
 
 - With a history retention, the server deletes each entry stored longer ago than it. A channel's cutoff is the latest epoch of an entry the server has deleted, and never moves back. The server deletes the links and wraps of epochs before the cutoff; those of the cutoff and later epochs stay, whatever their age. Without a retention, it deletes none.
-- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members: [api/openapi.json](../../api/openapi.json).
+- The server gives a channel's links, wraps and entries, as the bytes it got, to sessions of accounts the latest revision lists as the channel's members, and to service tokens that list the channel: [api/openapi.json](../../api/openapi.json).
 
 ### History entry
 The sending device writes a copy of each message with an `a2a` or [`task-result`](queues.md#results) body it sends in the channel, under the key of its current epoch; a browser as [Wraps](#wraps) says. A device without a history key, such as a stateless `service` device, writes none.

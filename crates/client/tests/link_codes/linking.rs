@@ -127,6 +127,9 @@ pub fn holds(bytes: &[u8], form: &str) -> bool {
 
 /// A new device of a person's account, signed in as no first device at a terminal.
 pub struct NewDevice {
+    /// Dropped first, so its run ends before the machine's directories go: Windows removes no file
+    /// a running process holds.
+    run: Option<Terminal>,
     pub machine: Machine,
     pub host: &'static str,
     /// Its session token and its device.
@@ -136,7 +139,6 @@ pub struct NewDevice {
     pub started: Instant,
     /// The hellos it sent that a run took.
     pub runs: usize,
-    run: Option<Terminal>,
 }
 
 impl NewDevice {
@@ -263,7 +265,7 @@ impl NewDevice {
 
 /// Approves, as the person of `first`'s account, the device authorization `run` shows after the
 /// `before` ones the server granted.
-fn approve(world: &World, first: &Person, run: &mut Terminal, before: usize) {
+pub fn approve(world: &World, first: &Person, run: &mut Terminal, before: usize) {
     let cloud = &world.cloud;
     let grant = crate::terminal_grants::shown_grant(cloud, run, before);
     cloud.decide(&world.browser.page(), &first.user, &grant, APPROVE);

@@ -33,7 +33,7 @@
 //!   on the server, failing once the run ends without it. After 3 failed runs in a row, its next
 //!   runs first ask, on a line holding `new code`, whether the new device shows a new one, and take
 //!   a code only after `yes`. Through a pipe, or with `--agent <name>`, it refuses and sends
-//!   nothing.
+//!   nothing. Beside a running helper, it goes through it.
 //! - A device of the account, and a device of a member of a space with the account, warns of each
 //!   device added to the account since it last checked, on a warning line holding the device's ID.
 //! - A new device whose certificate the server refuses as over the devices limit ends the run, says
@@ -50,6 +50,7 @@ mod channels;
 mod confirming;
 mod crashes;
 mod grants;
+mod helped;
 mod issuers;
 mod limit;
 mod limit_problem;

@@ -12,12 +12,13 @@
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
 		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
 		path /devices/*/cert /devices/*/key-packages /health /key-packages /mailbox/ack
-		path /mailbox/events
-		path /mailbox/poll /mailbox/send /openapi.json /protocol /server /session /session/challenge
+		path /mailbox/events /mailbox/poll /mailbox/send /openapi.json /protocol /server
+		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
 		path /spaces/*/channels/*/history/wraps /spaces/*/devices /spaces/*/members
-		path /spaces/*/revisions /spaces/*/usage /ws
+		path /spaces/*/revisions /spaces/*/service-tokens /spaces/*/service-tokens/* /spaces/*/usage
+		path /ws
 	}
 	handle @server {
 		reverse_proxy skald-server:8080

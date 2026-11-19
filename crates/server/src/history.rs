@@ -21,7 +21,7 @@ use crate::AppState;
 use crate::devices::base64;
 use crate::groups::members_channel;
 use crate::mailboxes::{Sender, receiving};
-use crate::refusal::{Answer, Refusal, SignedIn};
+use crate::refusal::{Answer, Caller, Refusal};
 
 /// Why an upload is refused: the problems of "Uploads".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +154,10 @@ async fn keep(
     let Some(upload) = decode(item, channel) else {
         return Ok(Err(Problem::Malformed));
     };
+    // A `service` device uploads with its token only in the token's channels.
+    if (sender.token.as_ref()).is_some_and(|token| !token.lists(space, channel)) {
+        return Ok(Err(Problem::NotAMember));
+    }
     // The group's row lock makes a Commit or the retention's deletion wait for the upload, or the
     // upload see it.
     let current: Option<(i64, i64)> = sqlx::query_as(
@@ -246,11 +250,12 @@ pub(crate) const ENTRIES: u8 = 2;
 
 /// `GET /spaces/<space>/channels/<channel>/history/<links|wraps|entries>`: the channel's items of
 /// `KIND`, base64url without padding, in a JSON object under the kind's name; for sessions of the
-/// channel's members in the latest revision. A member without `history` gets only the links whose
+/// channel's members in the latest revision and service tokens that list the channel. A member
+/// without `history`, and a token whose device's account is none, gets only the links whose
 /// `prev`, and the wraps and entries whose epoch, is at or after its account's join ("Access").
 pub(crate) async fn given<const KIND: u8>(
     State(state): State<AppState>,
-    SignedIn(account): SignedIn,
+    caller: Caller,
     Path(path): Path<(String, String)>,
 ) -> Answer {
     let (name, query) = match KIND {
@@ -269,7 +274,8 @@ pub(crate) async fn given<const KIND: u8>(
             "SELECT entry FROM history_entries WHERE channel_id = $1::uuid",
         ),
     };
-    let (channel, history) = members_channel(&state, &account, &path.0, &path.1).await?;
+    let (channel, history) = members_channel(&state, &caller, &path.0, &path.1).await?;
+    let account = caller.account();
     let failed = |err| Refusal::Database("read a channel's history", err);
     let from = if history {
         0

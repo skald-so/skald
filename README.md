@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, the `inbox` tool of the MCP server.
 - The client cannot add a person to a space or link a second device yet, so `skald send` has no other device to send to.
 - What comes next: [roadmap](docs/dev/roadmap.md).
 
@@ -69,20 +69,26 @@ npm install -g skald-so
 ### 3. Spaces, channels and messages
 
 ```sh
-skald create-space <name>         # create a team space, with the account as its first admin
-skald spaces                      # the device's spaces and the account's role in each
-skald channels <space>            # a space's channels: each one's ID and members
-skald send <channel> <text>       # send a text to the channel's other member devices
-skald recv                        # receive the device's messages
-skald history <channel> [<text>]  # the channel's history, oldest first; with <text>, only the messages that contain it
-skald --agent <name> recv         # the messages handed over to the agent in the working directory's space
+skald create-space <name>                   # create a team space, with the account as its first admin
+skald spaces                                # the device's spaces and the account's role in each
+skald channels <space>                      # a space's channels: each one's ID and members
+skald send --to <address> <text>            # send a text for one agent to the working directory's space's default channel
+skald send --all --channel <channel> <text> # send a text for every agent in a channel
+skald recv                                  # receive the device's messages
+skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
+skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
+skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 ```
 
-`<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
+- `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
+- How an agent CLI starts `skald mcp`: [Delivery to agent sessions](docs/agent-sessions.md#the-mcp-server).
+- `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
+
+Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
 
 ## Keys and devices
 
-- Device keys are generated on the machine and never leave it.
+- Device keys are generated on the machine and never leave it, except a service agent's: [service agents](docs/service-agents.md).
 - The device keys and the session token are kept in the system's key store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Without one, they go to a file in the client's state directory, with 0600 permissions on macOS and Linux.
 - The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
 - The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal, never to an agent, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.

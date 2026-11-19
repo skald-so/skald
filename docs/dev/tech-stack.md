@@ -17,7 +17,7 @@ Versions as of 2026-11-09.
 | Hashes, randomness | sha2 0.11; getrandom 0.4 for the random bits of UUIDv7 IDs, for signing-key seeds, X25519 private keys, the MLS state's key and its nonces, the nonces of history links and entries, for session tokens, the sign-in `state`, `nonce` and PKCE verifier, the device flow's device and user codes, and link codes and CPace scalars; zeroize 1 clears the seeds, the ISK, link keys and CPace scalars |
 | Keys | keyring-core 1 with the keyring project's stores: apple-native-keyring-store 1 (Keychain), dbus-secret-service-keyring-store 1 (the Secret Service; the Linux client builds in libdbus, under AFL-2.1), windows-native-keyring-store 1. Fallback: a file ([architecture.md](architecture.md#cryptography)) |
 | Local state | SQLite, bundled with rusqlite 0.39, the newest that sqlx 0.9 allows: [deny.toml](../../deny.toml) |
-| MCP | rmcp 3.9, stdio |
+| MCP | rmcp 3.11, stdio |
 | Authentication | GitHub OAuth over the server's HTTP client; OIDC over it too, with no OIDC or JOSE crate: the server's own code reads the metadata, keys and ID tokens with serde_json and base64, and ring 0.17 verifies RS256 and ES256; device flow (RFC 8628) |
 | Session list | The server's own code, no parser crate, reads a web session's browser and OS by name from the `User-Agent` of its sign-in; no version, IP address or location is kept |
 | Server HTTP client | ureq 3 with rustls 0.23 (ring) and the platform's root certificates (rustls-native-certs 0.8), blocking, in tokio's blocking threads |

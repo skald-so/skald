@@ -38,6 +38,8 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Server,
+  ServiceTokenId,
+  ServiceTokens,
   Session,
   SessionId,
   Sessions,
@@ -1622,7 +1624,7 @@ export const getRegisterDeviceUrl = () => {
 };
 
 /**
- * A new device registers its ID and public keys with its account (docs/protocol/membership.md, "Linking a device"). Only `client` devices register here.
+ * A new device registers its ID and public keys with its account (docs/protocol/membership.md, "Linking a device"). A `client` device registers itself, and a device session then lists it as the session's device; a `client` device of the account registers a `service` device it creates, which leaves the session's device as it was ("Device certificate"). `browser` devices do not register here.
  * @summary Register a device
  */
 export const registerDevice = async (
@@ -1734,8 +1736,8 @@ export const getStoreDeviceCertificateUrl = (device: string) => {
 };
 
 /**
- * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account (docs/protocol/membership.md, "Link code") or, for a device linked with the recovery key, by the account's master key ("Linking a device"). Its link code run then ends. The account's first device gives its certificate with the master key, `PUT /account/master`.
- * @summary Store a linked device's certificate
+ * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account: of a linked device (docs/protocol/membership.md, "Link code"), whose link code run then ends, or of a `service` device ("Device certificate"); or issued by the account's master key, of a `client` device linked with the recovery key ("Linking a device"). The account's first device gives its certificate with the master key, `PUT /account/master`.
+ * @summary Store a device's certificate
  */
 export const storeDeviceCertificate = async (
   device: string,
@@ -1904,7 +1906,7 @@ export const getUploadKeyPackagesUrl = (device: string) => {
 };
 
 /**
- * Takes KeyPackages of a `client` device of the session's account with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, "KeyPackages"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.
+ * Takes KeyPackages of a `client` device of the session's account, or a service token's own `service` device, with a certificate, not revoked, and its last-resort one, which replaces the one it had (docs/protocol/membership.md, "KeyPackages"). Each must pass the checks a device runs before it adds one: its MLS signatures verify, its lifetime holds and spans at most 60 days, its ciphersuite is `0x0001`, and its `identity` and `signature_key` are the device's; the last-resort one also carries the `last_resort` extension. One that fails refuses them all. The same KeyPackage again is stored once.
  * @summary Upload a device's KeyPackages
  */
 export const uploadKeyPackages = async (
@@ -2615,7 +2617,7 @@ export const getGetGroupInfoUrl = (space: string, channel: string) => {
 };
 
 /**
- * Whether the channel has an MLS group, and its GroupInfo of the current epoch if the server has one (docs/protocol/membership.md, "MLS profile"). After each Commit the server has none until a member device uploads one of the new epoch.
+ * Whether the channel has an MLS group, and its GroupInfo of the current epoch if the server has one (docs/protocol/membership.md, "MLS profile"). After each Commit the server has none until a member device uploads one of the new epoch. For sessions of the channel's members in the space's latest revision, and service tokens that list the channel.
  * @summary The channel's GroupInfo
  */
 export const getGroupInfo = async (
@@ -2695,7 +2697,7 @@ export const getUploadGroupInfoUrl = (space: string, channel: string) => {
 };
 
 /**
- * The server keeps a GroupInfo of the channel's current epoch, with the `ratchet_tree` and `external_pub` extensions, that verifies, has the GroupContext of the group the server follows and lists a member device of the session's account; it gives the latest one. The channel's first GroupInfo, of epoch 1, comes only from the account of the device whose Commit of epoch 0 the server kept, listing that device; the server follows the group from it (docs/protocol/membership.md, "MLS profile", "Creating a channel" and "Commit ordering").
+ * The server keeps a GroupInfo of the channel's current epoch, with the `ratchet_tree` and `external_pub` extensions, that verifies, has the GroupContext of the group the server follows and lists a member device of the session's account, or the `service` device of a service token that lists the channel; it gives the latest one. The channel's first GroupInfo, of epoch 1, comes only from the account of the device whose Commit of epoch 0 the server kept, listing that device; the server follows the group from it (docs/protocol/membership.md, "MLS profile", "Creating a channel" and "Commit ordering").
  * @summary Upload the channel's GroupInfo
  */
 export const uploadGroupInfo = async (
@@ -2798,7 +2800,7 @@ export const getGetHistoryEntriesUrl = (space: string, channel: string) => {
 };
 
 /**
- * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
+ * The history entries the server keeps of the channel, one per sending device and message, as their uploaders encoded them (docs/protocol/membership.md, "History entry"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the entries of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history entries
  */
 export const getHistoryEntries = async (
@@ -2872,7 +2874,7 @@ export const getGetHistoryLinksUrl = (space: string, channel: string) => {
 };
 
 /**
- * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, "Access").
+ * The links of the channel's key chain the server keeps, one per epoch and `prev`, as their uploaders encoded them (docs/protocol/membership.md, "Key chain"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the links whose `prev` is the epoch whose Commit added it or a later one (docs/protocol/membership.md, "Access").
  * @summary The channel's history links
  */
 export const getHistoryLinks = async (
@@ -2946,7 +2948,7 @@ export const getGetHistoryWrapsUrl = (space: string, channel: string) => {
 };
 
 /**
- * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
+ * The wraps of the channel's history keys the server keeps, one per epoch and recipient, as their uploaders encoded them (docs/protocol/membership.md, "Wraps"). Devices upload them on their connection (docs/protocol/delivery.md, "Frames"; docs/protocol/membership.md, "Uploads"). For sessions of accounts the space's latest revision lists as the channel's members, and service tokens that list the channel: as their device's account, or, when the revision lists that account as no member, as an account whose `history` is false. An account whose `history` is false in that revision gets only the wraps of the epoch whose Commit added it and later ones (docs/protocol/membership.md, "Access").
  * @summary The channel's history wraps
  */
 export const getHistoryWraps = async (
@@ -3282,6 +3284,159 @@ export const storeRosterRevision = async (
     status: res.status,
     headers: res.headers,
   } as storeRosterRevisionResponse;
+};
+
+export type listServiceTokensResponse200 = {
+  data: ServiceTokens;
+  status: 200;
+};
+
+export type listServiceTokensResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listServiceTokensResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listServiceTokensResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listServiceTokensResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listServiceTokensResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listServiceTokensResponseSuccess = listServiceTokensResponse200 & {
+  headers: Headers;
+};
+export type listServiceTokensResponseError = (
+  | listServiceTokensResponse400
+  | listServiceTokensResponse401
+  | listServiceTokensResponse403
+  | listServiceTokensResponse404
+  | listServiceTokensResponse500
+) & {
+  headers: Headers;
+};
+
+export type listServiceTokensResponse =
+  listServiceTokensResponseSuccess | listServiceTokensResponseError;
+
+export const getListServiceTokensUrl = (space: string) => {
+  return `/spaces/${space}/service-tokens`;
+};
+
+/**
+ * The space's tokens that have not ended, oldest first, without their values. Only for a session of an account that is an admin in the space's latest revision.
+ * @summary The space's service tokens
+ */
+export const listServiceTokens = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listServiceTokensResponse> => {
+  const res = await fetch(getListServiceTokensUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listServiceTokensResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listServiceTokensResponse;
+};
+
+export type revokeServiceTokenResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type revokeServiceTokenResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type revokeServiceTokenResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type revokeServiceTokenResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type revokeServiceTokenResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type revokeServiceTokenResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type revokeServiceTokenResponseSuccess =
+  revokeServiceTokenResponse204 & {
+    headers: Headers;
+  };
+export type revokeServiceTokenResponseError = (
+  | revokeServiceTokenResponse400
+  | revokeServiceTokenResponse401
+  | revokeServiceTokenResponse403
+  | revokeServiceTokenResponse404
+  | revokeServiceTokenResponse500
+) & {
+  headers: Headers;
+};
+
+export type revokeServiceTokenResponse =
+  revokeServiceTokenResponseSuccess | revokeServiceTokenResponseError;
+
+export const getRevokeServiceTokenUrl = (
+  space: string,
+  token: ServiceTokenId,
+) => {
+  return `/spaces/${space}/service-tokens/${token}`;
+};
+
+/**
+ * Ends a token of the space at once: every later request with it is refused. Only for a session of an account that is an admin in the space's latest revision. A web session's cookie only from a page of the web URL: a request whose `Origin` is any other, or that has none, ends nothing.
+ * @summary Revoke a service token
+ */
+export const revokeServiceToken = async (
+  space: string,
+  token: ServiceTokenId,
+  options?: RequestInit,
+): Promise<revokeServiceTokenResponse> => {
+  const res = await fetch(getRevokeServiceTokenUrl(space, token), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: revokeServiceTokenResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as revokeServiceTokenResponse;
 };
 
 export type getSpaceUsageResponse200 = {

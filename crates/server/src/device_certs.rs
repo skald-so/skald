@@ -1,12 +1,13 @@
 //! Certificates of new devices: a session of the account stores the certificate of a device of the
-//! account registered without one, issued by a linked device (`docs/protocol/membership.md`, "Link
-//! code", step 4 of the new device) or by the master key for a device linked with the recovery key
+//! account registered without one, issued by a `client` device of the account, of a linked device
+//! (`docs/protocol/membership.md`, "Link code", step 4 of the new device) or a `service` device
+//! ("Device certificate"), or by the master key, of a `client` device linked with the recovery key
 //! ("Linking a device").
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
-use skald_proto::{Cbor as _, Cert, DeviceId};
+use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind};
 
 use crate::AppState;
 use crate::devices::{base64, bytes, taken};
@@ -32,8 +33,9 @@ struct Stored {
 /// `PUT /devices/{device}/cert`: stores the certificate of `device`, registered on the session's
 /// account without one, once it passes checks 1 and 2 against the account's master key and the
 /// certificates the account holds and matches the registration; the same certificate again is
-/// taken as stored. With the devices limit, one that would give the account more devices with a
-/// certificate, `service` and revoked devices aside, is refused.
+/// taken as stored. With the devices limit, the certificate of a device other than a `service` one
+/// that would give the account more devices with a certificate, `service` and revoked devices
+/// aside, is refused.
 pub(crate) async fn store(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -64,24 +66,28 @@ pub(crate) async fn store(
     .map_err(|err| Refusal::Database("read a device", err))?;
     let (kind, signing, hpke, name, held) = registered.ok_or(Refusal::NoDevice)?;
     if let Some(held) = held {
-        return if held == sent {
-            taken(false, Stored::of(device, &sent))
-        } else {
-            Err(Refusal::DeviceCertified)
-        };
+        return again(device, &sent, &held);
     }
-    // Only `client` devices register, so only they are issued here: by a linked device, or by the
-    // master key for a device linked with the recovery key.
+    let service = kind == "service";
+    let same_kind = match body.kind {
+        DeviceKind::Client => kind == "client",
+        DeviceKind::Service => service,
+        // A browser links otherwise.
+        DeviceKind::Browser => false,
+    };
     let matches = body.account.to_string() == account
-        && kind == "client"
-        && body.kind == skald_proto::DeviceKind::Client
+        && same_kind
         && signing == body.signing
         && hpke == body.hpke
         && name == body.name.as_bytes();
-    if !matches {
-        return Err(Refusal::Cert(
-            "the certificate does not match its device's registration on this account".to_owned(),
-        ));
+    // Of the devices stored here, the master key certifies only a `client` one, linked with the
+    // recovery key.
+    if !matches || (body.issuer.is_none() && service) {
+        return Err(Refusal::Cert(if matches {
+            "the master key certifies no service device".to_owned()
+        } else {
+            "the certificate does not match its device's registration on this account".to_owned()
+        }));
     }
     let (master, mut certs) = account_certs(&state, &account).await?;
     let master = master.ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;
@@ -98,7 +104,17 @@ pub(crate) async fn store(
         .execute(&mut *tx)
         .await
         .map_err(failed)?;
-    if let Some(limit) = state.devices_limit {
+    // One sent at once with this one may have been stored meanwhile.
+    let (held,): (Option<Vec<u8>>,) =
+        sqlx::query_as("SELECT cert FROM devices WHERE id = $1::uuid")
+            .bind(&device)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(failed)?;
+    if let Some(held) = held {
+        return again(device, &sent, &held);
+    }
+    if let Some(limit) = state.devices_limit.filter(|_| !service) {
         let (certified,): (i64,) = sqlx::query_as(
             "SELECT count(*) FROM devices
              WHERE account_id = $1::uuid AND cert IS NOT NULL AND kind <> 'service' AND NOT revoked",
@@ -128,8 +144,17 @@ pub(crate) async fn store(
             .fetch_one(db)
             .await
             .map_err(|err| Refusal::Database("read a device", err))?;
-    if held.as_deref() == Some(sent.as_slice()) {
-        taken(false, Stored::of(device, &sent))
+    match held {
+        Some(held) => again(device, &sent, &held),
+        None => Err(Refusal::DeviceCertified),
+    }
+}
+
+/// The answer to `sent`, a certificate of `device`, which holds `held`: taken again if it is the
+/// same, otherwise refused.
+fn again(device: String, sent: &[u8], held: &[u8]) -> Answer {
+    if held == sent {
+        taken(false, Stored::of(device, sent))
     } else {
         Err(Refusal::DeviceCertified)
     }

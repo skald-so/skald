@@ -10,7 +10,7 @@ import type {
   RequestHandlerOptions,
 } from "msw";
 
-import { SignInProvider } from "./skald.schemas";
+import { ServicePermission, SignInProvider } from "./skald.schemas";
 import type {
   AccountAnchors,
   AccountUsage,
@@ -47,6 +47,7 @@ import type {
   RosterRevisionRequest,
   RosterRevisions,
   Server,
+  ServiceTokens,
   Session,
   Sessions,
   SignInMethods,
@@ -3440,6 +3441,186 @@ export const getStoreRosterRevisionResponseMock409 = (
 });
 
 export const getStoreRosterRevisionResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock = (
+  overrideResponse: Partial<Extract<ServiceTokens, object>> = {},
+): ServiceTokens => ({
+  tokens: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.uuid(),
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    owner: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    agent: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    permissions: faker.helpers.arrayElements(Object.values(ServicePermission)),
+    channels: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() =>
+      faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+    ),
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    last_used_at: faker.helpers.arrayElement([
+      faker.date.past().toISOString().slice(0, 19) + "Z",
+      null,
+    ]),
+    expires_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  })),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock200 = (
+  overrideResponse: Partial<Extract<ServiceTokens, object>> = {},
+): ServiceTokens => ({
+  tokens: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    id: faker.string.uuid(),
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    owner: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    agent: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    permissions: faker.helpers.arrayElements(Object.values(ServicePermission)),
+    channels: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() =>
+      faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+    ),
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    last_used_at: faker.helpers.arrayElement([
+      faker.date.past().toISOString().slice(0, 19) + "Z",
+      null,
+    ]),
+    expires_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+  })),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListServiceTokensResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeServiceTokenResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getRevokeServiceTokenResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeServiceTokenResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeServiceTokenResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeServiceTokenResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -10734,6 +10915,408 @@ export const getStoreRosterRevisionMockHandler500 = (
   );
 };
 
+export const getListServiceTokensMockHandler = (
+  overrideResponse?:
+    | ServiceTokens
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ServiceTokens> | ServiceTokens),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler200 = (
+  overrideResponse?:
+    | ServiceTokens
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ServiceTokens> | ServiceTokens),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListServiceTokensMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/service-tokens",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListServiceTokensResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler204 = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeServiceTokenResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeServiceTokenResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeServiceTokenResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeServiceTokenResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeServiceTokenMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; token: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; token: string }>(
+    "*/spaces/:space/service-tokens/:token",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; token: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeServiceTokenResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetSpaceUsageMockHandler = (
   overrideResponse?:
     | SpaceUsage
@@ -10934,5 +11517,7 @@ export const getSkaldAPIMock = () => [
   getListSpaceMembersMockHandler(),
   getGetRosterRevisionsMockHandler(),
   getStoreRosterRevisionMockHandler(),
+  getListServiceTokensMockHandler(),
+  getRevokeServiceTokenMockHandler(),
   getGetSpaceUsageMockHandler(),
 ];

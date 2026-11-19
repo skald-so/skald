@@ -68,6 +68,17 @@ impl Agents {
         let envelope = self.bob_says(line);
         sends(&self.talk, &envelope)
     }
+
+    /// Bob's device says `text` in the channel, as message `1`, in an envelope whose `messageId`
+    /// is not its `msg_id`, which a proxy puts into Ada's next catch-up. Gives its `msg_id`.
+    pub fn bob_forges(&mut self, text: &str) -> MessageId {
+        let mut line = Line::new(&self.bob(), 1, text);
+        line.message_id = Some(MessageId::generate());
+        let forged = self.bob_says(&line);
+        let msg_id = forged.envelope().header.msg_id;
+        (self.talk.front).inject(self.talk.ada.device, vec![forged]);
+        msg_id
+    }
 }
 
 /// Runs `skald --agent <agent> recv` on `machine` in `dir`; fails unless it succeeds.
