@@ -1,7 +1,8 @@
-//! Certificates a `client` device of the account issued: a session of the account stores the
-//! certificate of a device of the account registered without one, a linked device
+//! Certificates of new devices: a session of the account stores the certificate of a device of the
+//! account registered without one, issued by a `client` device of the account, of a linked device
 //! (`docs/protocol/membership.md`, "Link code", step 4 of the new device) or a `service` device
-//! ("Device certificate").
+//! ("Device certificate"), or by the master key, of a `client` device linked with the recovery key
+//! ("Linking a device").
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -79,9 +80,11 @@ pub(crate) async fn store(
         && signing == body.signing
         && hpke == body.hpke
         && name == body.name.as_bytes();
-    if !matches || body.issuer.is_none() {
+    // Of the devices stored here, the master key certifies only a `client` one, linked with the
+    // recovery key.
+    if !matches || (body.issuer.is_none() && service) {
         return Err(Refusal::Cert(if matches {
-            "the master key certifies only the account's first device".to_owned()
+            "the master key certifies no service device".to_owned()
         } else {
             "the certificate does not match its device's registration on this account".to_owned()
         }));

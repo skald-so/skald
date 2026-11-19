@@ -319,7 +319,7 @@ pub fn check<'c>(master: &[u8; 32], devices: &'c SpaceDevices) -> Checked<'c> {
 
 /// The list of `checked` on `this` device: the linked devices, the revoked ones, then those not
 /// linked, each part under its heading if it has any.
-fn listing(checked: &Checked, this: DeviceId) -> String {
+pub fn listing(checked: &Checked, this: DeviceId) -> String {
     let mut out = String::new();
     if !checked.linked.is_empty() {
         out.push_str(

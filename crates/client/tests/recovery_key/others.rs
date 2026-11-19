@@ -117,8 +117,16 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
     );
 }
 
+/// Whether `text`, what a machine that waits for linking printed at a terminal, says on a line that
+/// the recovery key links it too, with `skald sign-in --first-device no --with-recovery-key`.
+fn offers_the_recovery_key(text: &str) -> bool {
+    text.lines()
+        .any(|line| line.contains("skald sign-in --first-device no --with-recovery-key"))
+}
+
 /// A second machine of the account gets no recovery key: it shows none and says none waits, at
-/// its sign-in and later, and the account keeps the first machine's record and backup.
+/// its sign-in and later, and the account keeps the first machine's record and backup. Waiting for
+/// linking, it says the account's recovery key links it too.
 #[test]
 fn a_second_machine_of_the_account_gets_no_recovery_key() {
     let (cloud, browser) = setup();
@@ -142,6 +150,9 @@ fn a_second_machine_of_the_account_gets_no_recovery_key() {
         &sign_in(&cloud, &[FIRST_DEVICE, NO]),
     ));
     assert_quiet(&cloud, "its next sign-in", &again.text);
+    for (what, shown) in [("its sign-in", &signed_in), ("its next sign-in", &again)] {
+        assert!(offers_the_recovery_key(&shown.text), "{what}: {shown:?}");
+    }
     let text = second.start(&[DEVICES]).finish().shown();
     assert_quiet(&cloud, "its skald devices", &text);
     for file in second.files() {
