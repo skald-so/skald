@@ -802,15 +802,28 @@ impl Follower {
         latest: &Roster,
         next: &Roster,
     ) -> Result<Roster, String> {
+        self.submitted(space, latest, next)
+            .map_err(|unsent| unsent.why)
+    }
+
+    /// As [`Follower::submit`]; when the server took no revision, says whether one waits.
+    pub fn submitted(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        next: &Roster,
+    ) -> Result<Roster, Unsent> {
         let next = next.to_cbor();
+        let dropped = |why: String| Unsent { waits: false, why };
         if !self
             .state
             .set_pending(space.id, &latest.to_cbor(), None, &next)
-            .map_err(text)?
+            .map_err(text)
+            .map_err(dropped)?
         {
-            return Err(CHANGED_MEANWHILE.to_owned());
+            return Err(dropped(CHANGED_MEANWHILE.to_owned()));
         }
-        self.store(space, next).map_err(|unsent| unsent.why)
+        self.store(space, next)
     }
 
     /// The revision after `latest`, with `first` added before its channels and `channels` after
@@ -1826,7 +1839,7 @@ pub(crate) mod tests {
     }
 
     /// The service agent `owner/agent` on the device of the signing key of `byte` repeated.
-    fn agent(owner: &str, agent: &str, byte: u8) -> ServiceAgent {
+    pub(crate) fn agent(owner: &str, agent: &str, byte: u8) -> ServiceAgent {
         ServiceAgent {
             device: DeviceId::from_signing_key(&[byte; 32]),
             owner: owner.parse().unwrap(),
@@ -1850,19 +1863,22 @@ pub(crate) mod tests {
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
     /// channel, adds Dave to it, adds a channel, sets the history period and adds a service agent
     /// changes the same in a later revision that added Eve, who stays in every channel she is in,
-    /// and another service agent.
+    /// and another service agent; a service agent all of them list stays once.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
         let [default, team, new] = [(); 3].map(|()| ChannelId::generate());
         let barred = DeviceId::from_signing_key(&[9; 32]);
-        let base = acme(
+        // A service agent every revision lists.
+        let watch = agent("ops", "watch-bot", 5);
+        let mut base = acme(
             &[ada, bob, carol, dave],
             &[
                 (default, &[ada, bob, carol, dave]),
                 (team, &[ada, bob, carol]),
             ],
         );
+        base.service_agents.push(watch.clone());
         let mut next = acme(
             &[ada, bob, dave],
             &[
@@ -1875,7 +1891,7 @@ pub(crate) mod tests {
         next.policy.history = 2 * HISTORY_MIN;
         bar(&mut next, bob, barred);
         let (deploy, release) = (agent("ci", "deploy-bot", 7), agent("ci", "release-bot", 8));
-        next.service_agents.push(deploy.clone());
+        next.service_agents = vec![watch.clone(), deploy.clone()];
 
         let change = Change::between(&base, &next);
 
@@ -1903,7 +1919,7 @@ pub(crate) mod tests {
                 (team, &[ada, bob, carol, eve]),
             ],
         );
-        latest.service_agents.push(release.clone());
+        latest.service_agents = vec![watch.clone(), release.clone()];
         let (space, signer) = (latest.space, latest.signer);
         change.onto(&mut latest, false);
         let mut expected = acme(
@@ -1917,7 +1933,7 @@ pub(crate) mod tests {
         expected.channels[1].members.push(dave_in);
         expected.policy.history = 2 * HISTORY_MIN;
         bar(&mut expected, bob, barred);
-        expected.service_agents = vec![release, deploy];
+        expected.service_agents = vec![watch, release, deploy];
         (expected.space, expected.signer) = (space, signer);
         assert_eq!(latest, expected);
     }

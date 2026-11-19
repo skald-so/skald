@@ -1737,7 +1737,7 @@ export const getStoreDeviceCertificateUrl = (device: string) => {
 
 /**
  * Stores the certificate of a device the session's account registered without one, issued by a `client` device of the account: of a linked device (docs/protocol/membership.md, "Link code"), whose link code run then ends, or of a `service` device ("Device certificate"). The account's first device gives its certificate with the master key, `PUT /account/master`.
- * @summary Store a linked device's certificate
+ * @summary Store a device's certificate
  */
 export const storeDeviceCertificate = async (
   device: string,

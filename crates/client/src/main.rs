@@ -315,7 +315,8 @@ enum Command {
         keep_earlier: bool,
     },
     /// Lists the live tokens of the service agents of a space this device follows, on a device of
-    /// an admin of it: each one's ID, address, permissions, channels, expiry and last use.
+    /// an admin of it: each one's ID, address, permissions, channel IDs, creation and expiry times
+    /// and last use.
     ServiceTokens {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]

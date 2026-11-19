@@ -32,7 +32,7 @@ Keep both in your CI's secret store as these environment variables, for example 
 
 ```sh
 skald create-service-token acme ci/deploy-bot --channel <channel> [--expires …] [--permission …] [--keep-earlier]
-skald service-tokens acme                   # live tokens: ID, address, permissions, channels, expiry, last use
+skald service-tokens acme                   # live tokens: ID, address, permissions, channel IDs, created, expires, last used
 skald revoke-service-token acme <token ID>
 ```
 

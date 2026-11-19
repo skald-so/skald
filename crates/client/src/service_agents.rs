@@ -181,17 +181,19 @@ struct TokenRequest {
     permissions: Vec<Permission>,
 }
 
-/// The fields of `ServiceToken` and `NewServiceToken` in the API spec the CLI uses.
+/// The fields of `ServiceToken` and `NewServiceToken` in the API spec the CLI uses: those a token's
+/// line shows, in its order, then the device and the token's value.
 #[derive(Deserialize)]
 struct Record {
     id: String,
-    device: String,
     owner: String,
     agent: String,
     permissions: Vec<String>,
     channels: Vec<String>,
-    last_used_at: Option<String>,
+    created_at: String,
     expires_at: String,
+    last_used_at: Option<String>,
+    device: String,
     #[serde(default)]
     token: Option<String>,
 }
@@ -203,9 +205,10 @@ struct Records {
 }
 
 /// `skald create-service-agent`: creates the service agent `address` in `synced`, a space whose
-/// admin's device this is, with `granted`; writes its key secret and token to stdout. Refused
-/// before anything is registered or signed: on a device that is no admin's, for an address the
-/// space's last accepted revision has, and for channels or an expiry that `granted` gets wrong.
+/// admin's device this is, with `granted`; writes its key secret and token to stdout, or its key
+/// secret alone when the space lists the agent and its token fails. Refused before anything is
+/// registered or signed: on a device that is no admin's, for an address the space's last accepted
+/// revision has, and for channels or an expiry that `granted` gets wrong.
 pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<(), String> {
     let Synced {
         mut follower,
@@ -246,13 +249,25 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
     let mut certs = devices.certs;
     certs.push(cert);
     follower.accepts(&latest, &next, &certs).map_err(unlisted)?;
-    let stored = follower.submit(&space, &latest, &next).map_err(unlisted)?;
+    let stored = follower
+        .submitted(&space, &latest, &next)
+        .map_err(|unsent| {
+            if unsent.waits {
+                format!(
+                    "{}; the service device {device} is registered and certified: once the server \
+                     takes that revision, the space lists {owner}/{agent} without a key secret, \
+                     which nothing holds",
+                    unsent.why
+                )
+            } else {
+                unlisted(unsent.why)
+            }
+        })?;
     if entry_of(&stored, &owner, &agent) != Some(device) {
         return Err(unlisted(format!(
             "another revision of the space {name} took the address {owner}/{agent} first"
         )));
     }
-    let token = new_token(&mut follower, (space.id, &admin), device, &checked)?;
     let key = ServiceKey {
         signing: *keys.signing().to_bytes(),
         hpke: *keys.hpke().to_bytes(),
@@ -264,10 +279,22 @@ pub fn create(synced: Synced, address_given: &str, granted: &Granted) -> Result<
         unknown: Unknown::default(),
     };
     let key = Zeroizing::new(URL_SAFE_NO_PAD.encode(Zeroizing::new(key.to_cbor())));
+    // The space lists the agent now: without a token, its key secret still goes out.
+    let tokenless = |why: String| {
+        println!("{KEY_VARIABLE}={}", *key);
+        format!(
+            "{why}; the space lists {owner}/{agent}, and {KEY_VARIABLE} above is its key secret: \
+             create its token with skald create-service-token"
+        )
+    };
     let token =
-        Zeroizing::new(token.token.ok_or(
-            "the server's new token has no value; revoke it with skald revoke-service-token",
-        )?);
+        new_token(&mut follower, (space.id, &admin), device, &checked).map_err(tokenless)?;
+    let token = Zeroizing::new(token.token.ok_or_else(|| {
+        tokenless(
+            "the server's new token has no value; revoke it with skald revoke-service-token"
+                .to_owned(),
+        )
+    })?);
     println!("{KEY_VARIABLE}={}\n{TOKEN_VARIABLE}={}", *key, *token);
     Ok(())
 }
@@ -358,14 +385,14 @@ pub fn revoke(synced: Synced, id: &str) -> Result<(), String> {
 
 /// A token's line in `skald service-tokens`.
 fn line(record: &Record) -> String {
-    let channels = record.channels.len();
-    let plural = if channels == 1 { "" } else { "s" };
     format!(
-        "{}  {}/{}  {}  {channels} channel{plural}  expires {}  last used {}",
+        "{}  {}/{}  {}  channels {}  created {}  expires {}  last used {}",
         printable(&record.id),
         printable(&record.owner),
         printable(&record.agent),
         printable(&record.permissions.join(",")),
+        printable(&record.channels.join(",")),
+        printable(&record.created_at),
         printable(&record.expires_at),
         record
             .last_used_at
@@ -625,24 +652,63 @@ mod tests {
         assert_eq!(cert_name(&owner, &agent).len(), CERT_NAME_MAX);
     }
 
-    /// A token's line has its ID, address, permissions, channels, expiry and last use.
+    /// An agent's device is that of the entry with both its owner and its name, among agents that
+    /// share an owner or a name.
+    #[test]
+    fn agent_is_found_by_owner_and_name() {
+        let entry = crate::spaces::tests::agent;
+        let agents = [
+            entry("ci", "deploy-bot", 1),
+            entry("ci", "release-bot", 2),
+            entry("ops", "deploy-bot", 3),
+        ];
+        let mut body = crate::spaces::tests::first(skald_proto::AccountId::generate())
+            .body()
+            .clone();
+        body.service_agents = agents.to_vec();
+        let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+        let name = |text: &str| text.parse::<Name>().unwrap();
+        for agent in &agents {
+            assert_eq!(
+                entry_of(&roster, &agent.owner, &agent.agent),
+                Some(agent.device),
+                "{}/{}",
+                agent.owner,
+                agent.agent
+            );
+        }
+        assert_eq!(entry_of(&roster, &name("ops"), &name("release-bot")), None);
+    }
+
+    /// A token's line has its ID, address, permissions, channel IDs, creation, expiry and last use.
     #[test]
     fn token_lines_show_each_field() {
         let record = Record {
             id: "0193a1b2-0000-7000-8000-000000000001".to_owned(),
-            device: "device".to_owned(),
             owner: "ci".to_owned(),
             agent: "deploy-bot".to_owned(),
             permissions: vec!["send".to_owned(), "receive".to_owned()],
-            channels: vec!["one".to_owned()],
-            last_used_at: None,
+            channels: vec!["one".to_owned(), "two".to_owned()],
+            created_at: "2026-11-02T00:00:00.000000Z".to_owned(),
             expires_at: "2027-01-31T00:00:00.000000Z".to_owned(),
+            last_used_at: None,
+            device: "device".to_owned(),
             token: None,
         };
         assert_eq!(
             line(&record),
-            "0193a1b2-0000-7000-8000-000000000001  ci/deploy-bot  send,receive  1 channel  \
-             expires 2027-01-31T00:00:00.000000Z  last used never"
+            "0193a1b2-0000-7000-8000-000000000001  ci/deploy-bot  send,receive  channels one,two  \
+             created 2026-11-02T00:00:00.000000Z  expires 2027-01-31T00:00:00.000000Z  last used \
+             never"
+        );
+        let used = Record {
+            last_used_at: Some("2026-11-03T00:00:00.000000Z".to_owned()),
+            ..record
+        };
+        assert!(
+            line(&used).ends_with("  last used 2026-11-03T00:00:00.000000Z"),
+            "{}",
+            line(&used)
         );
     }
 }
