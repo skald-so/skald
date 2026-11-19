@@ -72,5 +72,6 @@ mod tests {
         for text in ["", "Own", "user", "own "] {
             assert_eq!(text.parse::<TrustLevel>(), Err(TrustLevelError));
         }
+        assert_eq!(TrustLevelError.to_string(), "not own, peer or service");
     }
 }

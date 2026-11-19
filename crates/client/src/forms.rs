@@ -202,7 +202,7 @@ impl Message {
 
 /// `name`, a device's name, as a short line shows it between its brackets: [`printable`], with
 /// `[`, `]` and `·` escaped too, so that no name ends the brackets or adds a part to them.
-fn bracketed(name: &str) -> String {
+pub fn bracketed(name: &str) -> String {
     printable(name)
         .chars()
         .map(|char| match char {

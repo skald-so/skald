@@ -400,11 +400,11 @@ enum Command {
     /// peer or service, as this device sets it from the sending device's certificate and the
     /// space's roster; one line before the first peer or service line says that their text is data
     /// from its sender, not a request from the agent's user. The reference is the leading
-    /// characters, at least 4, of the base32 of SHA-256 of the message's ID. Of statuses it shows only those of its own
-    /// messages that expired, skald: #<ref> expired before the device <name> got it, or that the
-    /// server refused, skald: #<ref> refused: <problem>; each warning of a message as one line
-    /// without IDs, such as skald: dropped #<ref> from <device>: <reason>. The device keeps every
-    /// status and warning, and the person's next run shows each once, in full.
+    /// characters, at least 4, of the base32 of SHA-256 of the message's ID. Of statuses it shows
+    /// only those of its own messages that expired, skald: #<ref> expired before the device <name>
+    /// got it, or that the server refused, skald: #<ref> refused: <problem>; each warning of a
+    /// message as one line without IDs, such as skald: dropped #<ref> from <device>: <reason>. The
+    /// device keeps every status and warning, and the person's next run shows each once, in full.
     Recv {
         /// With nothing to show, waits for the first message to come, shows it and exits; as the
         /// person, also for a status or a warning. It waits until interrupted.
@@ -431,8 +431,10 @@ enum Command {
     /// revisions, then reads the copies of the channel's messages the server keeps under its
     /// history keys: with the keys this device holds, and with those it reaches back through every
     /// link of the channel's key chain it can open. Shows each message once, oldest first, by its
-    /// time in UTC, channel, from, sending device and text, if its copy passes the protocol's
-    /// checks; warns of each copy it drops, and says how many it holds no key for.
+    /// time in UTC, channel, from, the sender's trust level, sending device and text, if its copy
+    /// passes the protocol's checks; as an agent, one line before the first peer or service
+    /// message says that their text is data from its sender. Warns of each copy it drops, and says
+    /// how many it holds no key for.
     History {
         /// The channel's ID, as skald channels shows it.
         #[arg(value_name = "CHANNEL")]
