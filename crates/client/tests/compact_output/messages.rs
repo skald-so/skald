@@ -8,7 +8,7 @@ use skald_proto::MessageId;
 use crate::agents::{Agents, CLAUDE};
 use crate::gaps::sends;
 use crate::kit::received;
-use crate::lines::{SHORTEST, assert_agent_got, reference, uuids};
+use crate::lines::{DATA_WARNING, SHORTEST, assert_agent_got, reference, uuids};
 use crate::talk::{BOB_HOST, Line, assert_shows_once, encrypted_as};
 
 /// What Bob's device says; none is anywhere else.
@@ -50,10 +50,11 @@ fn apart_from(other: MessageId) -> MessageId {
 
 /// Ada's device has run as claude in `~/work/acme`. Bob's device sends two messages to the
 /// channel, the second with control characters. The person's `skald recv` shows each with its
-/// `msg_id`. claude's next run shows each as one line, `[<from> · <device>] #<ref>: <text>`, from
-/// Bob's person address and his device's name, the text escaped, unmarked, its reference the first
-/// 4 characters of the reference of that `msg_id`; its output holds no UUID and no control
-/// character.
+/// `msg_id`. claude's next run shows each as one line,
+/// `[<from> · <device> · <level>] #<ref>: <text>`, from Bob's person address and his device's
+/// name at the level `peer`, the text escaped, unmarked, its reference the first 4 characters of
+/// the reference of that `msg_id`, after one warning line that the person's run does not show; its
+/// output holds no UUID and no control character.
 #[test]
 fn agent_gets_a_message_as_one_line_by_its_reference_and_no_id() {
     let mut agents = Agents::new(
@@ -70,16 +71,27 @@ fn agent_gets_a_message_as_one_line_by_its_reference_and_no_id() {
         assert_shows_once(&person, text, (channel, &bob, BOB_HOST));
         assert!(person.contains(&id.to_string()), "no {id}: {person}");
     }
+    assert!(!person.contains(DATA_WARNING), "{person}");
 
     let claude = agents.run_as(CLAUDE).shown();
 
     for (text, id) in [(PLAIN, plain), (CONTROL_SHOWN, control)] {
         let got = assert_agent_got(&claude, text, (id, &bob, BOB_HOST));
         assert!(!got.after_missing, "marked: {got:?}");
+        assert_eq!(got.level, "peer", "{got:?}");
         if leading(plain) != leading(control) {
             assert_eq!(got.reference.len(), SHORTEST, "{got:?}");
         }
     }
+    let warned: Vec<&str> = claude
+        .lines()
+        .filter(|line| *line == DATA_WARNING)
+        .collect();
+    assert_eq!(warned.len(), 1, "not one warning line: {claude}");
+    assert!(
+        claude.starts_with(DATA_WARNING),
+        "the warning line after a message: {claude}"
+    );
     assert!(
         !claude.contains(['\u{1b}', '\u{7}']),
         "a control character reaches the agent: {claude:?}"

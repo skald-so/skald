@@ -12,6 +12,7 @@ mod revocation;
 mod roster;
 mod sealed;
 mod sign;
+mod trust;
 mod wrap;
 
 pub use account::{
@@ -32,4 +33,5 @@ pub use revocation::{check_valid_device, counts, revoked_devices, sign_revocatio
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
 pub use sign::{SignatureError, SigningKey, verify};
+pub use trust::trust_level;
 pub use wrap::{OpenedWrap, open_wrap};
