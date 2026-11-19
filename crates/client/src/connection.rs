@@ -169,12 +169,13 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `text` with its control characters escaped, such as `\u{1b}` for ESC: the server's text must not
-/// drive the terminal.
+/// `text` with its control characters and the line and paragraph separators U+2028 and U+2029
+/// escaped, such as `\u{1b}` for ESC: the server's text must not drive the terminal, nor break a
+/// line for a reader that breaks lines there.
 pub fn printable(text: &str) -> String {
     text.chars()
         .map(|char| {
-            if char.is_control() {
+            if char.is_control() || matches!(char, '\u{2028}' | '\u{2029}') {
                 char.escape_debug().to_string()
             } else {
                 char.to_string()
@@ -1239,6 +1240,15 @@ pub(crate) mod tests {
         assert_eq!(
             error("Unknown code.\u{1b}").to_string(),
             "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
+        );
+    }
+
+    /// Control characters and the line and paragraph separators are escaped; other text is kept.
+    #[test]
+    fn printable_escapes_control_characters_and_line_separators() {
+        assert_eq!(
+            printable("a\nb\u{1b}c\u{85}d\u{2028}e\u{2029}f · é"),
+            "a\\nb\\u{1b}c\\u{85}d\\u{2028}e\\u{2029}f · é"
         );
     }
 
