@@ -22,8 +22,11 @@ use super::world::{
     ACME, CREATE_CHANNEL, HOST, Person, World, create, next_by, next_with, now, run, store,
 };
 
-/// The command that sends a message.
+/// The command that sends a message, and its flags.
 pub const SEND: &str = "send";
+pub const TO: &str = "--to";
+pub const ALL: &str = "--all";
+pub const CHANNEL: &str = "--channel";
 
 /// The setting of the request timeout, and the one the tests give a run that retries.
 pub const TIMEOUT_SETTING: &str = "SKALD_TIMEOUT";
@@ -63,7 +66,7 @@ pub fn send(machine: &Machine, channel: ChannelId, text: &str) -> Finished {
 
 /// The arguments of `skald send --all --channel <channel> <text>`.
 pub fn send_args(channel: ChannelId, text: &str) -> Vec<String> {
-    let args = [SEND, "--all", "--channel", &channel.to_string(), text];
+    let args = [SEND, ALL, CHANNEL, &channel.to_string(), text];
     args.map(str::to_owned).to_vec()
 }
 

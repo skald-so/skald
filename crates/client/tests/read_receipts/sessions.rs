@@ -9,12 +9,12 @@ use skald_proto::{Cbor as _, Content, MessageId};
 
 use crate::agents::CLAUDE;
 use crate::cloud::WAIT;
-use crate::fixtures::{SEND, TIMEOUT, TIMEOUT_SETTING};
+use crate::fixtures::{ALL, CHANNEL, SEND, TIMEOUT, TIMEOUT_SETTING, TO};
 use crate::front::Front;
 use crate::helped::Helped;
 use crate::kit::RECV;
 use crate::lines::{JSON_FLAG, json_objects};
-use crate::receipts::{ALL, CHANNEL, Roles, TO, assert_shows_once, shows_read_once};
+use crate::receipts::{Roles, assert_shows_once, shows_read_once};
 use crate::senders::LAPTOP_AGENT;
 use crate::talk::messages_sent;
 use crate::waits::{TRACE_SETTING, TRACED, WAIT_FLAG, assert_keeps_waiting};

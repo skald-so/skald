@@ -7,8 +7,8 @@ use crate::clients::{BOB_CLAUDE, BOB_CODEX, Clients, assert_one};
 use crate::talk::messages_sent;
 use crate::world::{CLIENT_A, CLIENT_B};
 use crate::{
-    CHANNEL_FIELD, EVERYONE, SEND_TOOL, TEXT_FIELD, TO_FIELD, assert_bob_read_nothing,
-    assert_says_not_sent, sent_by, session_in,
+    CHANNEL_FIELD, EVERYONE, SEND_TOOL, TEXT_FIELD, TO_FIELD, assert_says_not_sent, sent_by,
+    session_in,
 };
 
 /// The texts of these tests; none is anywhere else.
@@ -145,5 +145,5 @@ fn send_in_a_folder_in_no_space_sends_nothing_and_says_so() {
         assert_says_not_sent(&called.text, &what);
         clients.assert_no_message_sent(from, &what);
     }
-    assert_bob_read_nothing(&mut clients);
+    clients.assert_bob_read_nothing();
 }

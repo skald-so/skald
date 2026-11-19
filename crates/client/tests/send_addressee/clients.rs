@@ -13,11 +13,6 @@ use crate::machine::{Finished, Machine};
 use crate::talk::{Talk, is_message};
 use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, HOST, dir_of, path, run};
 
-/// The flags of `skald send`.
-pub const TO: &str = "--to";
-pub const ALL: &str = "--all";
-pub const CHANNEL: &str = "--channel";
-
 /// The agent Ada's device runs as in `~/work/clientA`.
 pub const ADA_AGENT: &str = "claude-a9f3qe";
 
@@ -25,10 +20,15 @@ pub const ADA_AGENT: &str = "claude-a9f3qe";
 pub const BOB_CLAUDE: &str = "claude-r4n8vz";
 pub const BOB_CODEX: &str = "codex-k2p7wd";
 
-/// A message Bob's device read in a channel: its `msg_id`, `to` in text form, and its text.
+/// What the refusal of an invalid address says.
+pub const INVALID: &[&str] = &["address"];
+
+/// A message Bob's device read in a channel: its `msg_id`, `from` and `to` in text form, and its
+/// text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Read {
     pub msg_id: MessageId,
+    pub from: String,
     pub to: Option<String>,
     pub text: String,
 }
@@ -150,11 +150,64 @@ impl Clients {
                     .unwrap_or_else(|err| panic!("{msg_id} holds no content: {err:?}"));
                 Read {
                     msg_id,
+                    from: content.from.to_string(),
                     to: content.to.as_ref().map(ToString::to_string),
                     text: text_of(&content),
                 }
             })
             .collect()
+    }
+
+    /// Fails unless Bob's device, once it takes in its mailbox, has read no message in any channel
+    /// of both spaces.
+    #[track_caller]
+    pub fn assert_bob_read_nothing(&mut self) {
+        for channel in self.channels() {
+            let read = self.bob_reads(channel);
+            assert!(read.is_empty(), "read in {channel}: {read:?}");
+        }
+    }
+
+    /// Person addresses, which an agent's address in a send does not take, each with what it is:
+    /// Bob's and Ada's, full, `owner/user` and in uppercase.
+    pub fn person_addresses(&self) -> [(&'static str, String); 4] {
+        let (bob, ada) = (self.bob(), self.talk.ada.handle.to_string());
+        [
+            ("bob, full", format!("{CLIENT_A}/{bob}/user@{HOST}")),
+            ("bob, short", format!("{bob}/user")),
+            ("bob, uppercase", format!("{bob}/USER")),
+            ("ada, full", format!("{CLIENT_A}/{ada}/user@{HOST}")),
+        ]
+    }
+
+    /// Addresses a send to an agent in `clienta` does not take, each with what it is and the words
+    /// its refusal says: invalid ones, one of another space and one of another server.
+    pub fn invalid_addresses(&self) -> Vec<(&'static str, String, &'static [&'static str])> {
+        let bob = self.bob();
+        let invalid = [
+            BOB_CLAUDE.to_owned(),
+            format!("{bob}/"),
+            format!("/{BOB_CLAUDE}"),
+            format!("{bob}/claude_r4n8vz"),
+            format!("{CLIENT_A}//{BOB_CLAUDE}@{HOST}"),
+            format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@{HOST}:8443"),
+            format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@"),
+            format!("{CLIENT_A}/{bob}/{BOB_CLAUDE} x@{HOST}"),
+        ];
+        let mut addresses: Vec<_> = (invalid.into_iter())
+            .map(|address| ("invalid", address, INVALID))
+            .collect();
+        addresses.push((
+            "another space",
+            format!("{CLIENT_B}/{bob}/{BOB_CLAUDE}@{HOST}"),
+            &["space"],
+        ));
+        addresses.push((
+            "another server",
+            format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@elsewhere.example"),
+            &["server"],
+        ));
+        addresses
     }
 }
 

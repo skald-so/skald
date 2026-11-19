@@ -1,9 +1,8 @@
 //! A send that names no channel: to the default channel of the working directory's space, for an
 //! agent and for the person; nothing from a folder in no space.
 
-use crate::clients::{
-    ADA_AGENT, ALL, BOB_CLAUDE, BOB_CODEX, Clients, TO, assert_one, assert_refused,
-};
+use crate::clients::{ADA_AGENT, BOB_CLAUDE, BOB_CODEX, Clients, assert_one, assert_refused};
+use crate::fixtures::{ALL, TO};
 use crate::talk::messages_sent;
 use crate::world::{CLIENT_A, CLIENT_B};
 
@@ -109,8 +108,5 @@ fn send_naming_no_channel_in_a_folder_in_no_space_sends_nothing_and_says_so() {
         assert_refused(&finished, &["no space"], what);
         clients.assert_no_message_sent(from, what);
     }
-    for channel in clients.channels() {
-        let read = clients.bob_reads(channel);
-        assert!(read.is_empty(), "read in {channel}: {read:?}");
-    }
+    clients.assert_bob_read_nothing();
 }

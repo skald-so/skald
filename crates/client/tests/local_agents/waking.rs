@@ -5,7 +5,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::kit::{RECV, received_as_agent};
-use crate::solo::{API, OWN, Solo, WEB, assert_got};
+use crate::senders::OWN;
+use crate::solo::{API, Solo, WEB, assert_got};
 use crate::talk::ADA_HOST;
 use crate::world::AGENT;
 

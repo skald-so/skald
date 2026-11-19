@@ -8,7 +8,7 @@ use serde_json::Value;
 use skald_proto::{Body, Cbor as _, ChannelId, Content, Envelope, MessageId, RawEnvelope, SpaceId};
 
 use crate::agents::Agents;
-use crate::fixtures::SEND;
+use crate::fixtures::{CHANNEL, SEND};
 use crate::lines::{lines_referring_to, reference};
 use crate::machine::{Finished, Machine};
 use crate::played::mls_envelope;
@@ -18,11 +18,6 @@ use crate::world::{AGENT, HOST};
 /// The command that replies, and the status a reply gives the message it answers.
 pub const REPLY: &str = "reply";
 pub const REPLIED: &str = "replied";
-
-/// The flags of `skald send`.
-pub const TO: &str = "--to";
-pub const ALL: &str = "--all";
-pub const CHANNEL: &str = "--channel";
 
 /// Bob's agents, by name.
 pub const BOB_CLAUDE: &str = "claude-p6v3rk";

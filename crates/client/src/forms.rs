@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use skald_proto::{Address, MessageId, TrustLevel};
+use skald_proto::{Address, ChannelId, DeviceId, MessageId, SpaceId, TrustLevel};
 
 use crate::connection::printable;
 
@@ -229,18 +229,19 @@ pub fn bracketed(name: &str) -> String {
         .collect()
 }
 
-/// A status of a message the device sent, the server's or its refusal, as the device keeps it
-/// until it is shown: each ID in its text form.
+/// A status of a message the device sent, the server's, its refusal, or the `read` or `replied` a
+/// device gives it, as the device keeps it until it is shown: each ID in its text form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub msg_id: String,
     /// The message's space and channel, if the device recorded them.
     pub space: Option<String>,
     pub channel: Option<String>,
-    /// `delivered`, `expired`, `refused` or `read`.
+    /// `delivered`, `expired`, `refused`, `read` or `replied`.
     pub status: String,
     /// The recipient device's ID, none for a refusal of an envelope to a channel, and its
-    /// certificate's `name` if the device knows it: for `read`, the device of the `to` agent.
+    /// certificate's `name` if the device knows it: for `read` and `replied`, the device of the `to`
+    /// agent.
     pub device: Option<String>,
     pub device_name: Option<String>,
     /// Why the server refused it.
@@ -261,6 +262,27 @@ pub const READ: &str = "read";
 pub const REPLIED: &str = "replied";
 
 impl Status {
+    /// The status `status`, such as [`READ`] or [`REPLIED`], that the device `device`, named
+    /// `device_name` if known, gives now to the message `msg_id` in `channel` of `space`, as JSON.
+    pub fn from_device(
+        status: &str,
+        msg_id: MessageId,
+        (space, channel): (SpaceId, ChannelId),
+        (device, device_name): (DeviceId, Option<String>),
+    ) -> String {
+        let status = Status {
+            msg_id: msg_id.to_string(),
+            space: Some(space.to_string()),
+            channel: Some(channel.to_string()),
+            status: status.to_owned(),
+            device: Some(device.to_string()),
+            device_name,
+            problem: None,
+            timestamp: crate::state::unix_now(),
+        };
+        serde_json::to_string(&status).expect("a status encodes")
+    }
+
     /// How `form` shows it, `reference` its message's reference: an agent's short form shows only
     /// `expired` and `refused`, so a `read` or `replied` costs an agent no token.
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {

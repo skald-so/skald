@@ -3,7 +3,8 @@
 
 use crate::receipts::read_lines;
 use crate::replying::replied_lines;
-use crate::solo::{API, OWN, Solo, WEB, assert_got, assert_not_shown, replies};
+use crate::senders::OWN;
+use crate::solo::{API, Solo, WEB, assert_got, assert_not_shown, replies};
 use crate::talk::{ADA_HOST, one_message_sent};
 
 /// What api asks web and web answers; neither is anywhere else.

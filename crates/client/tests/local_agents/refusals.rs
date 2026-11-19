@@ -3,12 +3,12 @@
 
 use serde_json::json;
 
+use crate::fixtures::{ALL, SEND, TO};
 use crate::front::Answers;
 use crate::lines::assert_handed_line;
 use crate::machine::Finished;
 use crate::solo::{
-    ALL, API, SEND, SEND_TOOL, Solo, TEXT_FIELD, TO, TO_FIELD, WEB, assert_not_sent,
-    assert_not_shown,
+    API, SEND_TOOL, Solo, TEXT_FIELD, TO_FIELD, WEB, assert_not_sent, assert_not_shown,
 };
 
 /// The text of each refused send; it is nowhere else.

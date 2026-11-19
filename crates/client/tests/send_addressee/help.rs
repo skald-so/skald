@@ -1,7 +1,6 @@
 //! The help of `skald send`: its addressee flags, and what an addressee does not do.
 
-use crate::clients::{ALL, CHANNEL, TO};
-use crate::fixtures::SEND;
+use crate::fixtures::{ALL, CHANNEL, SEND, TO};
 use crate::machine::Machine;
 
 /// `skald send --help` lists `--to`, `--all` and `--channel`, and its text of `--to`, from that

@@ -6,7 +6,8 @@ use std::collections::BTreeSet;
 use skald_proto::{MessageId, ReceiptStatus};
 
 use crate::agents::CLAUDE;
-use crate::receipts::{ALL, Roles, read_lines, shows_read};
+use crate::fixtures::ALL;
+use crate::receipts::{Roles, read_lines, shows_read};
 use crate::senders::LAPTOP_AGENT;
 
 /// What A's agent sends; none is anywhere else.

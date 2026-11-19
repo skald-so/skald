@@ -5,7 +5,7 @@
 use serde_json::json;
 
 use crate::front::Answers;
-use crate::lines::{SENT, agent_line_of};
+use crate::lines::{agent_line_of, says_sent};
 use crate::prompt::{LAPTOP, assert_agent_prompted, waiting_device};
 use crate::solo::{API, MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, Solo, TEXT_FIELD, TO_FIELD, WEB};
 use crate::talk::one_message_sent;
@@ -58,9 +58,4 @@ fn each_tool_result_names_the_waiting_device_once() {
     );
     assert!(!says_sent(&refused.text), "{refused:?}");
     assert_agent_prompted(&refused.text, LAPTOP);
-}
-
-/// Whether a line of `shown`, a tool's result, is `sent #<ref>`.
-fn says_sent(shown: &str) -> bool {
-    (shown.lines()).any(|line| line.trim().starts_with(&format!("{SENT} #")))
 }

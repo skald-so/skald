@@ -3,8 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::clients::{ALL, TO};
-use crate::fixtures::SEND;
+use crate::fixtures::{ALL, SEND, TO};
 
 /// The repository's root, two levels above this crate.
 fn root() -> PathBuf {

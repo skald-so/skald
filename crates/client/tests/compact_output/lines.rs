@@ -167,6 +167,11 @@ pub fn assert_says_sent(shown: &str, msg_id: MessageId) {
     );
 }
 
+/// Whether a line of `shown`, an agent's output or a tool's result, is `sent #<ref>`.
+pub fn says_sent(shown: &str) -> bool {
+    (shown.lines()).any(|line| line.trim().starts_with(&format!("{SENT} #")))
+}
+
 /// The lines of `shown`, an agent's output, that are no message: its warnings and statuses, but
 /// [`DATA_WARNING`].
 pub fn agent_notes(shown: &str) -> Vec<String> {

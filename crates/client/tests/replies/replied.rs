@@ -5,11 +5,12 @@
 use skald_proto::MessageId;
 
 use crate::agents::{Agents, CLAUDE, CODEX, assert_not_handed};
+use crate::fixtures::{ALL, TO};
 use crate::kit::{RECV, received};
 use crate::lines::{JSON_FLAG, json_objects, lines_referring_to, objects_of, refers_to};
 use crate::replying::{
-    ALL, BOB_CLAUDE, BOB_CODEX, REPLIED, TO, Writes, ada_sends, agent_of, assert_reply_line,
-    bob_reads, bob_writes, handles, replied_lines, run_in, the_one,
+    BOB_CLAUDE, BOB_CODEX, REPLIED, Writes, ada_sends, agent_of, assert_reply_line, bob_reads,
+    bob_writes, handles, replied_lines, run_in, the_one,
 };
 use crate::world::ACME;
 
