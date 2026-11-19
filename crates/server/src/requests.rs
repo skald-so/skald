@@ -1,7 +1,8 @@
 //! A device's mailbox over HTTPS requests: `docs/protocol/delivery.md`, "Frames", "Connecting"
 //! and "Mailbox". Each request carries a proof of its device, as a WebSocket's `auth` does, on a
-//! challenge of its bearer token's session; the server reads, acks and stores nothing for a request
-//! it does not prove. A `send` gets what it gets on a WebSocket, an `ack` acks, and a long-poll
+//! challenge of its bearer token's session or service token; the server reads, acks and stores
+//! nothing for a request it does not prove, and a service token reads and acks only with the
+//! receive permission. A `send` gets what it gets on a WebSocket, an `ack` acks, and a long-poll
 //! acks its cursor and answers a `batch` of the entries after it and the notices since the device's
 //! previous long-poll answer, at once or with the first to come within its wait.
 
@@ -22,7 +23,7 @@ use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::sign_in::{bearer, digest, not_signed_in, param};
-use crate::{AppState, database_failed, error_reports, notices, problem};
+use crate::{AppState, database_failed, error_reports, notices, problem, service_tokens};
 
 /// The longest wait of a long-poll without the server setting.
 pub const LONG_POLL_MAX_WAIT: Duration = Duration::from_secs(30);
@@ -47,6 +48,7 @@ pub(crate) async fn send(
         device: proved.device,
         account: proved.account,
         version,
+        token: proved.token,
     };
     let (db, wakers) = (&state.db, &state.wakers);
     let answered = match Frame::from_cbor(&body) {
@@ -71,6 +73,9 @@ pub(crate) async fn ack(State(state): State<AppState>, headers: HeaderMap, body:
         Ok(proved) => proved,
         Err(refused) => return *refused,
     };
+    if let Err(refused) = receiving(&proved) {
+        return refused;
+    }
     let Ok(Frame::Ack { seq }) = Frame::from_cbor(&body) else {
         return invalid("The body is not an ack frame.");
     };
@@ -96,6 +101,9 @@ pub(crate) async fn poll(
         Ok(proved) => proved,
         Err(refused) => return *refused,
     };
+    if let Err(refused) = receiving(&proved) {
+        return refused;
+    }
     let Some(wait) = param(query.as_deref(), "wait").and_then(|wait| wait.parse::<u64>().ok())
     else {
         return invalid("The query has no wait in seconds.");
@@ -192,6 +200,7 @@ async fn answer(
     let spaces = notices::since_last_answer(db, proved.device, proved.account)
         .await
         .map_err(|err| ("read the notices", err))?;
+    let spaces = service_tokens::seen(proved.token.as_ref(), spaces);
     pushes.extend(spaces.into_iter().map(|space| Push::SpaceNotice { space }));
     Ok(pushes)
 }
@@ -215,8 +224,8 @@ async fn proved_with(
     Ok((proved, body))
 }
 
-/// Checks the proof of the request of `headers`, on a challenge of its bearer token's session, and
-/// holds it as its device's; the refusal if the server does not take it.
+/// Checks the proof of the request of `headers`, on a challenge of its bearer token's session or
+/// service token, and holds it as its device's; the refusal if the server does not take it.
 #[expect(
     clippy::result_large_err,
     reason = "the refusal is the request's answer"
@@ -226,7 +235,7 @@ pub(crate) async fn prove(state: &AppState, headers: &HeaderMap) -> Result<Prove
         return Err(not_signed_in());
     };
     let session = digest(token);
-    match device_session(&state.db, &session).await {
+    match bearer_lives(&state.db, &session).await {
         Ok(true) => {}
         Ok(false) => return Err(not_signed_in()),
         Err(err) => return Err(database_failed("read a session", err)),
@@ -248,14 +257,37 @@ pub(crate) async fn prove(state: &AppState, headers: &HeaderMap) -> Result<Prove
         })
 }
 
-/// Whether a device session's token has the SHA-256 `session`.
-async fn device_session(db: &PgPool, session: &[u8]) -> Result<bool, sqlx::Error> {
-    let found: Option<(i32,)> =
-        sqlx::query_as("SELECT 1 FROM sessions WHERE kind = 'device' AND token_hash = $1")
-            .bind(session)
-            .fetch_optional(db)
-            .await?;
+/// Whether the token of a device session, or a service token that has not ended, has the SHA-256
+/// `session`.
+async fn bearer_lives(db: &PgPool, session: &[u8]) -> Result<bool, sqlx::Error> {
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM sessions WHERE kind = 'device' AND token_hash = $1
+         UNION ALL
+         SELECT 1 FROM service_tokens t JOIN devices d ON d.id = t.device_id
+         WHERE t.token_hash = $1 AND t.expires_at > now() AND NOT d.revoked",
+    )
+    .bind(session)
+    .fetch_optional(db)
+    .await?;
     Ok(found.is_some())
+}
+
+/// Refuses `proved` unless it reads and acks its device's mailbox: a service token's needs the
+/// receive permission.
+#[expect(
+    clippy::result_large_err,
+    reason = "the refusal is the request's answer"
+)]
+pub(crate) fn receiving(proved: &Proved) -> Result<(), Response> {
+    if connections::receives(proved.token.as_ref()) {
+        return Ok(());
+    }
+    Err(problem(
+        StatusCode::FORBIDDEN,
+        "not-allowed",
+        "Not allowed",
+        "The service token has no receive permission.",
+    ))
 }
 
 /// The proof in the request's only `Skald-Device-Proof` header, if it decodes.
