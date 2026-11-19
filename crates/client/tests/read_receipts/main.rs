@@ -46,12 +46,14 @@ mod handovers;
 mod json;
 mod others;
 mod receipts;
+mod sessions;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices and the helpers of the tests of reading the
 // history they need; Ada's agents, as the tests of handing messages over have them, with the
 // messages of the tests of gap detection; what an agent reads, as the tests of compact output have
-// it; the senders of the tests of trust levels; and the MCP client of the tests of the MCP server.
+// it; the senders of the tests of trust levels; the MCP client of the tests of the MCP server; and
+// the runs through a helper of the tests of the helper and of `skald recv --wait`.
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
@@ -63,9 +65,13 @@ mod client;
 mod devices;
 #[path = "../gap_detection/gaps.rs"]
 mod gaps;
+#[path = "../helper/helped.rs"]
+mod helped;
 #[path = "../compact_output/lines.rs"]
 mod lines;
 #[path = "../history_reading/reading.rs"]
 mod reading;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
+#[path = "../recv_wait/waits.rs"]
+mod waits;

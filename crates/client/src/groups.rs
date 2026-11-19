@@ -1578,6 +1578,51 @@ pub fn encrypt(
     (channel, agent): (ChannelId, Option<&str>),
     content: impl FnOnce(MessageId, NonZeroU64) -> Content,
 ) -> Result<MessageId, String> {
+    encrypted(
+        follower,
+        (roster, devices),
+        channel,
+        Sending::Message(agent),
+        content,
+    )?
+}
+
+/// As [`encrypt`], a receipt that reports the `read` receipts `issued`, by their `seq`, the
+/// device owed: it goes out with `report` false, and the device owes them no more, all at once.
+/// Gives why it waits, as [`encrypt`] says why it sends nothing, and fails only if the device or
+/// its state does.
+pub fn encrypt_receipt(
+    follower: &Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    (channel, issued): (ChannelId, Vec<u64>),
+    content: impl FnOnce(MessageId, NonZeroU64) -> Content,
+) -> Result<Result<MessageId, String>, String> {
+    encrypted(
+        follower,
+        (roster, devices),
+        channel,
+        Sending::Receipt(issued),
+        content,
+    )
+}
+
+/// What the device encrypts in a channel.
+enum Sending<'a> {
+    /// A message of its user's, from the agent if given.
+    Message(Option<&'a str>),
+    /// A receipt, with the `seq` of each `read` receipt it reports.
+    Receipt(Vec<u64>),
+}
+
+/// [`encrypt`] of what `sending` says; gives why it sends nothing in place of the message ID,
+/// and fails only if the device or its state does.
+fn encrypted(
+    follower: &Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    channel: ChannelId,
+    sending: Sending,
+    content: impl FnOnce(MessageId, NonZeroU64) -> Content,
+) -> Result<Result<MessageId, String>, String> {
     let keys = follower.keys()?;
     let admitted = admitted(follower, roster, devices, channel);
     let waiting = (follower.state.mls_outbox().map_err(text)?)
@@ -1586,17 +1631,22 @@ pub fn encrypt(
     let (space, version) = (roster.body().space, follower.connection.version());
     follower.state.mls_change(|sealed| {
         let mut device = load(follower, &keys, sealed)?;
-        let members = device.members(channel).map_err(|err| match err {
-            MlsError::NoGroup(_) => {
-                format!("this device is in no group of the channel {channel} yet; nothing is sent")
+        // Why nothing is sent, which changes nothing.
+        let unsent = |why: String| Ok((None, MlsChanges::default(), Err(why)));
+        let members = match device.members(channel) {
+            Ok(members) => members,
+            Err(MlsError::NoGroup(_)) => {
+                return unsent(format!(
+                    "this device is in no group of the channel {channel} yet; nothing is sent"
+                ));
             }
-            err => failed(channel, err),
-        })?;
+            Err(err) => return Err(failed(channel, err)),
+        };
         let strangers: Vec<String> = (unadmitted(&admitted, &members).iter())
             .map(ToString::to_string)
             .collect();
         if !strangers.is_empty() {
-            return Err(format!(
+            return unsent(format!(
                 "the group of the channel {channel} holds the devices {}, which are not admitted \
                  to the channel; nothing is sent there until the server stores this device's \
                  Commit that removes them",
@@ -1604,13 +1654,13 @@ pub fn encrypt(
             ));
         }
         if waiting {
-            return Err(format!(
+            return unsent(format!(
                 "this device's Commit in the channel {channel} waits for the server's answer; \
                  nothing is sent there until the server stores it"
             ));
         }
         if members.iter().all(|member| member.device == follower.this) {
-            return Err(format!(
+            return unsent(format!(
                 "no device can receive the message: the group of the channel {channel} holds no \
                  other device; nothing is sent"
             ));
@@ -1634,23 +1684,30 @@ pub fn encrypt(
         let payload = device
             .encrypt(channel, &content.to_cbor())
             .map_err(|err| failed(channel, err))?;
+        let (agent, issued) = match sending {
+            Sending::Message(agent) => (agent.map(str::to_owned), None),
+            Sending::Receipt(issued) => (None, Some(issued)),
+        };
         let message = Counted {
             outgoing: Outgoing {
                 msg_id,
                 recipient: None,
                 space,
                 envelope: mls_envelope(version, (space, channel), msg_id, payload, None),
+                report: issued.is_none(),
             },
             channel,
             counter: counter.get(),
-            agent: agent.map(str::to_owned),
+            agent,
+            addressee: content.to.as_ref().map(ToString::to_string),
         };
         let changes = MlsChanges {
             messages: vec![message],
             entries: entry.into_iter().collect(),
+            issued: issued.unwrap_or_default(),
             ..MlsChanges::default()
         };
-        Ok((Some(device.seal()), changes, msg_id))
+        Ok((Some(device.seal()), changes, Ok(msg_id)))
     })
 }
 
