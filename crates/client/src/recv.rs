@@ -70,6 +70,7 @@ use crate::history;
 use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
+use crate::message_status;
 use crate::output::{self, Stream};
 use crate::receipts;
 use crate::reply;
@@ -638,7 +639,13 @@ fn kept(
         channel: header.channel,
         msg_id: header.msg_id,
         line: key.seal(follower.this, &kept_item(seq), &record),
-        target: reply::seal_target(key, follower.this, seq, (&message.from, message.hops)),
+        target: reply::seal_target(
+            key,
+            follower.this,
+            seq,
+            (&message.from, message.hops),
+            message_status::origin(header.msg_id, (sender, &message.device), message.level),
+        ),
         wait: agent_wait(header.ttl),
         agents,
         read,
@@ -692,7 +699,7 @@ pub fn own_message(
             forms::READ,
             msg_id,
             (space, channel),
-            (follower.this, Some(name)),
+            (follower.this, Some(name.clone())),
         )),
         _ => None,
     };
@@ -708,7 +715,13 @@ pub fn own_message(
             channel,
             msg_id,
             line: key.seal(follower.this, &kept_item(seq), &record),
-            target: reply::seal_target(key, follower.this, seq, (from, content.hops)),
+            target: reply::seal_target(
+                key,
+                follower.this,
+                seq,
+                (from, content.hops),
+                message_status::origin(msg_id, (follower.this, &name), TrustLevel::Own),
+            ),
             wait: agent_wait(None),
             agents: Vec::new(),
             replied,

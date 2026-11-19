@@ -362,7 +362,7 @@ impl Checks<'_> {
 
 /// `seconds` since the Unix epoch in UTC as RFC 3339 to the second, such as
 /// `2026-11-17T08:43:03Z`.
-fn rfc3339(seconds: u64) -> String {
+pub fn rfc3339(seconds: u64) -> String {
     let of_day = seconds % 86_400;
     format!(
         "{}T{:02}:{:02}:{:02}Z",

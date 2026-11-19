@@ -12,6 +12,7 @@
 //! - The send tool sends as the agent's `skald send` does and returns what it says: `to` is its
 //!   `--to`, or `*` its `--all`.
 //! - The reply tool replies as the agent's `skald reply` does and returns what it says.
+//! - The `message_status` tool returns what the agent's `skald message-status` says.
 //! - The registration and each tool call are operations, as a command's: through the helper, or
 //!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
 //!   server's binary was is newer, as after an update while the server runs, that `skald` runs each
@@ -42,7 +43,10 @@ use crate::devices::text;
 use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
-use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, reply, secrets, send};
+use crate::{
+    Command, Operation, folders, forms, mailbox, message_status, recovery, recv, reply, secrets,
+    send,
+};
 
 /// The tool that returns the agent's messages.
 pub const INBOX: &str = "inbox";
@@ -72,6 +76,12 @@ const MESSAGE: &str = "message";
 const REPLY_DESCRIPTION: &str = "Replies to a Skald message, to its sender in its channel: sent \
                                  #<ref>.";
 const MESSAGE_DESCRIPTION: &str = "The message's #<ref>, as inbox shows it, or its msg_id.";
+
+/// The tool that says where a message is.
+pub const MESSAGE_STATUS: &str = "message_status";
+
+const MESSAGE_STATUS_DESCRIPTION: &str = "Where a Skald message this session sent or got is: each \
+                                          device's status, read, replied.";
 
 /// What the send tool says without `to`.
 const NO_TO: &str = "name the addressee in `to`: an agent's address, or * for every agent in the \
@@ -105,6 +115,8 @@ pub enum Call {
     },
     /// The reply tool: `skald reply` to the message `message` names with the text `text`.
     Reply { message: String, text: String },
+    /// The `message_status` tool: `skald message-status` of the message `message` names.
+    Status { message: String },
 }
 
 /// Runs `call` as `agent`, by the state in `dir`, its secrets in `storage`.
@@ -148,6 +160,7 @@ pub fn perform(
             let named = (message.as_str(), text.as_str());
             reply::run(dir, storage, settings, named, Some(agent), false)
         }),
+        Call::Status { message } => message_status::run(dir, storage, &message, Some(agent), false),
     }
 }
 
@@ -179,6 +192,17 @@ fn reply_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, Strin
         message: field(MESSAGE)?,
         text: field(TEXT)?,
     })
+}
+
+/// The call of the `message_status` tool with `arguments`; fails, saying why, without `message`
+/// as a string.
+fn status_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, String> {
+    match arguments.and_then(|arguments| arguments.get(MESSAGE)) {
+        Some(Value::String(message)) => Ok(Call::Status {
+            message: message.clone(),
+        }),
+        _ => Err(format!("give `{MESSAGE}` as a string")),
+    }
 }
 
 /// The default name of an agent of the MCP client named `client` on the device `device` named
@@ -514,10 +538,16 @@ impl ServerHandler for Server {
             },
             "required": [MESSAGE, TEXT],
         }));
+        let status = schema(json!({
+            "type": "object",
+            "properties": { MESSAGE: { "type": "string", "description": MESSAGE_DESCRIPTION } },
+            "required": [MESSAGE],
+        }));
         Ok(ListToolsResult::with_all_items(vec![
             Tool::new(INBOX, INBOX_DESCRIPTION, inbox),
             Tool::new(SEND, SEND_DESCRIPTION, send),
             Tool::new(REPLY, REPLY_DESCRIPTION, reply),
+            Tool::new(MESSAGE_STATUS, MESSAGE_STATUS_DESCRIPTION, status),
         ]))
     }
 
@@ -531,6 +561,7 @@ impl ServerHandler for Server {
             INBOX => None,
             SEND => Some(send_call(arguments)),
             REPLY => Some(reply_call(arguments)),
+            MESSAGE_STATUS => Some(status_call(arguments)),
             name => {
                 return Err(ErrorData::invalid_params(
                     format!("no tool named {name}"),
@@ -974,6 +1005,23 @@ mod tests {
             assert!(why.contains(field), "{arguments}: {why}");
         }
         assert!(reply_call(None).is_err());
+    }
+
+    /// The `message_status` tool's call takes `message`; without it as a string there is none.
+    #[test]
+    fn status_call_takes_a_message() {
+        let call = |arguments: Value| status_call(arguments.as_object());
+        assert_eq!(
+            call(json!({ MESSAGE: "#k2m4" })),
+            Ok(Call::Status {
+                message: "#k2m4".to_owned(),
+            })
+        );
+        for arguments in [json!({}), json!({ MESSAGE: 7 })] {
+            let why = call(arguments.clone()).expect_err(&arguments.to_string());
+            assert!(why.contains("`message`"), "{arguments}: {why}");
+        }
+        assert!(status_call(None).is_err());
     }
 
     /// Two devices of one name give one client two names.
