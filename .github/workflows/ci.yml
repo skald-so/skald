@@ -285,9 +285,22 @@ jobs:
           "netlogs: $(@(Get-ChildItem $env:SKALD_TEST_NETLOG).Count)"
           Get-ChildItem $env:SKALD_TEST_NETLOG | ForEach-Object {
             $hits = Select-String -Path $_.FullName -Pattern '"net_error":-55|"os_error":10055' -Context 6, 2
-            if ($hits) { "NETLOG $($_.Name)"; $hits | ForEach-Object { $_.Context.PreContext; "> $($_.Line)"; $_.Context.PostContext; '--' } }
+            if ($hits) {
+              "NETLOG $($_.Name)"
+              $hits | ForEach-Object { $_.Context.PreContext; "> $($_.Line)"; $_.Context.PostContext; '--' }
+              New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'netlog-hits') | Out-Null
+              Copy-Item $_.FullName (Join-Path $env:RUNNER_TEMP 'netlog-hits')
+            }
           }
           exit $rc
+      # TEMPORARY: the net logs of Chrome that failed with ERR_NO_BUFFER_SPACE.
+      - name: Upload the net logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: netlog-hits
+          path: ${{ runner.temp }}/netlog-hits
+          if-no-files-found: ignore
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures
