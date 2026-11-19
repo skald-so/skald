@@ -453,8 +453,10 @@ enum Command {
     /// an agent, only in the space of the agent's folder. It first accepts the space's latest
     /// roster revisions and goes through the mailbox as skald recv does, showing nothing, then
     /// encrypts the message in the channel's MLS group and has the server store it as one envelope
-    /// to the group. Sends nothing, and says why, while the group holds a device the channel does
-    /// not admit or no other device, or while this device's Commit there waits for the server.
+    /// to the group; once stored, this device's other agents it is for get it, and its person,
+    /// unless the person sent it. Sends nothing, and says why, while the group holds a device the
+    /// channel does not admit, or no other device and nothing on this device gets the message, or
+    /// while this device's Commit there waits for the server.
     /// Says the message's ID and whether the server stored it; as an agent, only sent #<ref> once
     /// it is stored, by the message's reference as skald recv says. What the server has not stored
     /// within the request timeout waits in the local state, and the next skald send or skald recv
@@ -628,16 +630,17 @@ enum Command {
         github_api_url: String,
     },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
-    /// its config; the session's folder is the working directory. Once the client initializes, the
-    /// session registers as its agent in the folder's space: the messages this device takes in from
-    /// then on are kept for it. Without --agent, the agent's name joins with '-' the name the client
-    /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
-    /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
-    /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
-    /// skald recv, each once; its send tool sends as the agent's skald send does, to an agent or,
-    /// with to *, to every agent in the channel. Each tool call goes through the helper or runs
-    /// one-shot, as a command does, and through a newer helper too; once the skald installed where
-    /// it was is newer, as when skald was updated while it runs, that skald runs each call.
+    /// its config; the session's folder is the working directory. Once the client initializes or
+    /// discovers the server, the session registers as its agent in the folder's space: the messages
+    /// this device takes in from then on are kept for it. Without --agent, the agent's name joins
+    /// with '-' the name the client gives itself, the device's name and the device's reference, cut
+    /// to 63 characters, so each device gives one agent CLI its own address; two sessions of one
+    /// agent CLI in one space on this device share it unless --agent names them. Its inbox tool
+    /// returns the agent's lines of skald recv, each once; its send tool sends as the agent's skald
+    /// send does, to an agent or, with to *, to every agent in the channel. Each tool call goes
+    /// through the helper or runs one-shot, as a command does, and through a newer helper too; once
+    /// the skald installed where it was is newer, as when skald was updated while it runs, that
+    /// skald runs each call.
     Mcp {
         /// Runs the call an older skald mcp relays to this one.
         #[arg(long, hide = true)]

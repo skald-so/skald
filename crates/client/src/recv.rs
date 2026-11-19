@@ -27,6 +27,8 @@
 //! whichever run checked it. An agent's run shows the messages kept for it and marks each handed
 //! over only once its line is written, so a run killed in between shows it again; a message waits
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
+//! The device's own channel messages are kept so too, once the server stored them
+//! ([`own_message`]).
 //!
 //! A receipt that passes the checks counts in gap detection and is shown to no one: of each
 //! message it lists that this device sent in the receipt's channel, `to` the receipt's `from`, a
@@ -617,7 +619,8 @@ fn kept(
     let agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
     let replied = match message.reply_to {
         Some(original) => {
-            let reply = (header, sender, &message.from, message.device.as_str());
+            let at = (header.space, header.channel);
+            let reply = (at, sender, &message.from, message.device.as_str());
             reply::replied(&follower.state, reply, original)?
         }
         None => None,
@@ -648,6 +651,91 @@ fn kept(
         read,
         replied,
     })
+}
+
+/// How the device of `follower` keeps its own message `content` of `msg_id` in `channel` of
+/// `space`, from `agent` if given, by `seq`, once the server stores it, sealed with `key`, as a
+/// recipient device keeps it (`docs/protocol/delivery.md`, "Device to agent"): at the level `own`,
+/// for its person unless the person sent it and for the agents of this device it is for but its
+/// sender, with the `replied` it gives a message the device sent and its own `read`. Gives it, and
+/// whether anything on the device gets it: the person, or an agent the device has run as in the
+/// space.
+pub fn own_message(
+    follower: &Follower,
+    key: &StateKey,
+    ((space, channel, msg_id), seq): ((SpaceId, ChannelId, MessageId), u64),
+    (content, agent): (&Content, Option<&str>),
+) -> Result<(state::OwnMessage, bool), String> {
+    let name = (follower.state.device().map_err(text)?)
+        .map(|device| device.name)
+        .unwrap_or_default();
+    let from = &content.from;
+    let record = forms::Message {
+        msg_id: msg_id.to_string(),
+        space: space.to_string(),
+        channel: channel.to_string(),
+        from: from.to_string(),
+        device: follower.this.to_string(),
+        device_name: name.clone(),
+        level: TrustLevel::Own,
+        text: a2a_text(content, msg_id)?,
+        after_missing: false,
+        reply_to: content.reply_to.map(|reply_to| reply_to.to_string()),
+    };
+    let record = serde_json::to_vec(&record).expect("a message encodes");
+    let replied = match content.reply_to {
+        Some(original) => {
+            let reply = ((space, channel), follower.this, from, name.as_str());
+            reply::replied(&follower.state, reply, original)?
+        }
+        None => None,
+    };
+    // Only an agent's address of this account in the space on this server, as `from` is, names an
+    // agent of this device.
+    let to = content.to.as_ref().map(|to| {
+        let ours = !to.is_person()
+            && to.space() == from.space()
+            && to.owner() == from.owner()
+            && to.server() == from.server();
+        ours.then(|| to.agent().to_string())
+    });
+    let read = match &to {
+        Some(Some(_)) => Some(forms::Status {
+            msg_id: msg_id.to_string(),
+            space: Some(space.to_string()),
+            channel: Some(channel.to_string()),
+            status: forms::READ.to_owned(),
+            device: Some(follower.this.to_string()),
+            device_name: Some(name),
+            problem: None,
+            timestamp: state::unix_now(),
+        }),
+        _ => None,
+    };
+    // Every agent it has run as in the space: none ran as one after `seq`, past the cursor.
+    let agents = (follower.state.agents(space, seq)).map_err(text)?;
+    let gets = agent.is_some()
+        || (agents.iter())
+            .any(|it| (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it.as_str())));
+    let own = state::OwnMessage {
+        seq,
+        kept: Kept {
+            space,
+            channel,
+            msg_id,
+            line: key.seal(follower.this, &kept_item(seq), &record),
+            target: reply::seal_target(key, follower.this, seq, (from, content.hops)),
+            wait: agent_wait(None),
+            agents: Vec::new(),
+            replied,
+            read: None,
+        },
+        person: agent.is_some(),
+        sender: agent.map(str::to_owned),
+        to,
+        read: read.map(|read| serde_json::to_string(&read).expect("a status encodes")),
+    };
+    Ok((own, gets))
 }
 
 /// How long a message whose envelope has the `ttl` `ttl`, if any, waits for an agent, in seconds:
