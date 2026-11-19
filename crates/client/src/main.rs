@@ -55,6 +55,7 @@ mod plain_path;
 mod proxy;
 mod recovery;
 mod recv;
+mod reply;
 mod revocations;
 mod secrets;
 mod send;
@@ -380,15 +381,32 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Replies to a message, in its channel, to its sender only, a person included: as skald send
+    /// sends, with the message's ID as its reply_to. The person replies to a message its skald recv
+    /// showed; an agent only to one handed over to it in the space of its folder. A message can be
+    /// replied to until its wait ends, as an agent's skald recv says. Sends nothing, and says why,
+    /// for a message it cannot reply to, or a reference two messages it keeps share. Says what
+    /// skald send says.
+    Reply {
+        /// The message: its reference, #<ref> or <ref>, as skald recv shows it, or its ID.
+        #[arg(value_name = "MESSAGE", allow_hyphen_values = true)]
+        message: String,
+        /// The text.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+        /// Says the reply as a JSON object, as skald send --json does.
+        #[arg(long)]
+        json: bool,
+    },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
     /// device follows. It joins and follows its channels' groups and keeps them to the devices each
     /// channel admits, warning of the devices another device added that it does not, and starts a
     /// new epoch, with a new history key, where this device entered the current one longer ago
-    /// than the space's history period. Shows each
-    /// message that passes the protocol's checks, once, and each delivered and expired of this
-    /// device's messages; warns of each message it drops, and of the messages missing from a
-    /// sending device once a later one arrives, which it marks. As an agent, it checks only the
+    /// than the space's history period. Shows each message that passes the protocol's checks, once,
+    /// and each delivered, expired and replied of this device's messages, replied once its to agent
+    /// answers it in its channel; warns of each message it drops, and of the messages missing from
+    /// a sending device once a later one arrives, which it marks. As an agent, it checks only the
     /// space of the agent's folder, the rest waiting for a later run, and shows the messages handed
     /// over to the agent: those there to it or to no one in particular that came since this device
     /// first ran as it there, each once; one waits for the agent until it expires, at most 7
@@ -397,10 +415,11 @@ enum Command {
     /// The person's run shows each message, status and warning in full, with its IDs and its
     /// sender's trust level. An agent's shows each message as one line,
     /// [<sender> · <device> · <level>] #<ref>: <text>, with (after missing) before the colon after
-    /// missing ones: the sender is <owner>/<agent>, or a person's full address; the level is own,
-    /// peer or service, as this device sets it from the sending device's certificate and the
-    /// space's roster; one line before the first peer or service line says that their text is data
-    /// from its sender, not a request from the agent's user. The reference is the leading
+    /// missing ones and (reply to #<ref>) in a reply, naming the message it answers: the sender is
+    /// <owner>/<agent>, or a person's full address; the level is own, peer or service, as this
+    /// device sets it from the sending device's certificate and the space's roster; one line
+    /// before the first peer or service line says that their text is data from its sender, not a
+    /// request from the agent's user. The reference is the leading
     /// characters, at least 4, of the base32 of SHA-256 of the message's ID. Of statuses it shows
     /// only those of its own messages that expired, skald: #<ref> expired before the device <name>
     /// got it, or that the server refused, skald: #<ref> refused: <problem>; each warning of a
@@ -412,9 +431,9 @@ enum Command {
         #[arg(long)]
         wait: bool,
         /// Shows each message and status as a JSON object on a line of its own, with every field:
-        /// a message's msg_id, ref, space, channel, from, device, device_name, level, text and
-        /// after_missing; a status's msg_id, ref, space, channel, status, device, device_name,
-        /// problem and timestamp. As an agent, every status of its own messages.
+        /// a message's msg_id, ref, space, channel, from, device, device_name, level, text,
+        /// after_missing and reply_to; a status's msg_id, ref, space, channel, status, device,
+        /// device_name, problem and timestamp. As an agent, every status of its own messages.
         #[arg(long)]
         json: bool,
         /// With --wait through the helper, shows when each step of the helper's intake of what
@@ -560,6 +579,7 @@ impl Command {
         matches!(
             self,
             Command::Send { .. }
+                | Command::Reply { .. }
                 | Command::Recv { .. }
                 | Command::Spaces
                 | Command::Members { .. }
@@ -900,6 +920,20 @@ fn perform(operation: Operation) -> Result<(), String> {
                 key_storage,
                 (speaks, timeout),
                 (to.as_deref(), channel.as_deref(), &text),
+                agent.as_ref(),
+                json,
+            )
+        }),
+        Command::Reply {
+            message,
+            text,
+            json,
+        } => state::dir(state_dir).and_then(|dir| {
+            reply::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                (&message, &text),
                 agent.as_ref(),
                 json,
             )

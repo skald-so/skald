@@ -81,7 +81,12 @@ fn reply_in_another_channel_is_handed_to_the_asking_agent_only_and_the_person_se
     assert_reply_line(&claude, ANSWERED, (answered, asked));
     let of_asked = lines_referring_to(&claude, asked);
     assert_eq!(of_asked.len(), 1, "other lines of the message: {claude}");
-    assert!(!claude.to_lowercase().contains(REPLIED), "{claude}");
+    // The answer's own text holds the word.
+    let mut others = claude.lines().filter(|line| !line.contains(ANSWERED));
+    assert!(
+        others.all(|line| !line.to_lowercase().contains(REPLIED)),
+        "{claude}"
+    );
 
     let person = received(&agents.talk.ada.machine).shown();
 

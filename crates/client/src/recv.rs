@@ -29,11 +29,11 @@
 //! for an agent until its envelope's `ttl` ends, at most [`AGENT_WAIT`], after the device wrote it.
 //!
 //! Each status of the device's messages is kept for the person and, for a message an agent sent,
-//! for that agent. The person's run shows each kept status once, and each warning an agent's run
-//! held back for it; an agent's run shows those of its messages it has yet to take. A run shows
-//! them in the form [`crate::forms`] gives: in full as the person, short as an agent, where a
-//! status is shown only if `expired` and a warning in a line of its own without IDs, and as JSON
-//! with `--json`.
+//! for that agent; a kept reply gives its message `replied` ([`crate::reply`]). The person's run
+//! shows each kept status once, and each warning an agent's run held back for it; an agent's run
+//! shows those of its messages it has yet to take. A run shows them in the form [`crate::forms`]
+//! gives: in full as the person, short as an agent, where a status is shown only if `expired` and a
+//! warning in a line of its own without IDs, and as JSON with `--json`.
 
 use std::cell::Cell;
 use std::collections::btree_map::Entry;
@@ -63,6 +63,7 @@ use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::output::{self, Stream};
+use crate::reply;
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
@@ -550,18 +551,29 @@ fn kept(
         level: message.level,
         text: message.text.clone(),
         after_missing: gap.is_some(),
+        reply_to: message.reply_to.map(|reply_to| reply_to.to_string()),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
+    let replied = match message.reply_to {
+        Some(original) => {
+            let reply = (header, sender, &message.from, message.device.as_str());
+            reply::replied(&follower.state, reply, original)?
+        }
+        None => None,
+    };
     let key = match &checks.inbox_key {
         Some(key) => key,
         None => checks.inbox_key.insert(groups::inbox_key(follower)?),
     };
     Ok(Kept {
         space: header.space,
+        channel: header.channel,
         msg_id: header.msg_id,
         line: key.seal(follower.this, &kept_item(seq), &record),
+        target: reply::seal_target(key, follower.this, seq, (&message.from, message.hops)),
         wait: agent_wait(header.ttl),
         agents: agents_of(follower, checks, (seq, header), message.to.as_ref())?,
+        replied,
     })
 }
 
@@ -818,7 +830,13 @@ fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, Tru
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
-        (Some(record), Some(msg_id)) => (record.shown(form, &references.of(msg_id)), record.level),
+        (Some(record), Some(msg_id)) => {
+            let answered = (record.reply_to.as_deref())
+                .and_then(|reply_to| reply_to.parse::<MessageId>().ok())
+                .map(|reply_to| references.of(reply_to));
+            let line = record.shown(form, &references.of(msg_id), answered.as_deref());
+            (line, record.level)
+        }
         _ => (
             String::from_utf8_lossy(opened).into_owned(),
             TrustLevel::Peer,
@@ -1057,6 +1075,9 @@ struct Received {
     level: TrustLevel,
     text: String,
     counter: Option<NonZeroU64>,
+    /// Its content's `hops` and `reply_to`.
+    hops: u64,
+    reply_to: Option<MessageId>,
 }
 
 /// The valid certificate of `device` of an account of the space in `context`'s revision that its
@@ -1164,6 +1185,8 @@ fn check(
         level,
         text,
         counter: content.counter,
+        hops: content.hops,
+        reply_to: content.reply_to,
     })
 }
 
@@ -1443,6 +1466,8 @@ mod tests {
                 level: TrustLevel::Peer,
                 text: "first\nsecond".to_owned(),
                 counter: NonZeroU64::new(1),
+                hops: content.hops,
+                reply_to: None,
             })
         );
     }

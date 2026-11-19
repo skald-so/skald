@@ -1644,6 +1644,7 @@ pub fn encrypt(
             channel,
             counter: counter.get(),
             agent: agent.map(str::to_owned),
+            addressee: content.to.as_ref().map(ToString::to_string),
         };
         let changes = MlsChanges {
             messages: vec![message],

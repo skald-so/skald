@@ -3,7 +3,8 @@
 //! message by its reference, `#<ref>`, and holds no ID; it names the sender as `owner/agent`, a
 //! person by the full address, and the sending device's trust level after the device
 //! (`docs/protocol/membership.md`, "Trust levels"). An agent's `peer` and `service` lines follow
-//! [`DATA_WARNING`] (`docs/dev/architecture.md`, "Security").
+//! [`DATA_WARNING`] (`docs/dev/architecture.md`, "Security"). A reply's line names the message it
+//! answers.
 //!
 //! A message's reference: the leading characters of the base32 of RFC 4648, in lowercase and
 //! without padding, of SHA-256 of its `msg_id`'s 16 bytes; at least [`SHORTEST`], more only where
@@ -121,6 +122,10 @@ pub struct Message {
     pub text: String,
     /// Whether it follows missing messages from its sending device.
     pub after_missing: bool,
+    /// The `msg_id` of the message it answers, if it is a reply; none in a record an older client
+    /// kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
 }
 
 /// The level of a kept message that has none.
@@ -143,8 +148,9 @@ mod level {
 }
 
 impl Message {
-    /// How `form` shows it, `reference` its reference.
-    pub fn shown(&self, form: Form, reference: &str) -> String {
+    /// How `form` shows it, `reference` its reference and `answered` that of the message it
+    /// answers, if it is a reply.
+    pub fn shown(&self, form: Form, reference: &str, answered: Option<&str>) -> String {
         match form {
             Form::Full => {
                 let after = if self.after_missing {
@@ -152,9 +158,11 @@ impl Message {
                 } else {
                     ""
                 };
+                let reply = (self.reply_to.as_deref())
+                    .map_or_else(String::new, |reply_to| format!(", in reply to {reply_to}"));
                 format!(
-                    "The message {} in the channel {} from {} ({}), by the device {} ({}){after}:\n  \
-                     {}",
+                    "The message {} in the channel {} from {} ({}), by the device {} ({}){after}\
+                     {reply}:\n  {}",
                     self.msg_id,
                     self.channel,
                     self.from,
@@ -170,8 +178,10 @@ impl Message {
                 } else {
                     ""
                 };
+                let reply = answered
+                    .map_or_else(String::new, |answered| format!(" (reply to #{answered})"));
                 format!(
-                    "[{} · {} · {}] #{reference}{after}: {}",
+                    "[{} · {} · {}] #{reference}{after}{reply}: {}",
                     self.sender(),
                     bracketed(&self.device_name),
                     self.level,
@@ -191,6 +201,7 @@ impl Message {
                     "level": self.level.name(),
                     "text": self.text,
                     "after_missing": self.after_missing,
+                    "reply_to": self.reply_to,
                 }),
             ),
         }
@@ -243,9 +254,12 @@ pub const EXPIRED: &str = "expired";
 /// The status of a message the server refused.
 pub const REFUSED: &str = "refused";
 
+/// The status of a message its `to` agent answered (`docs/protocol/delivery.md`, "Receipts").
+pub const REPLIED: &str = "replied";
+
 impl Status {
     /// How `form` shows it, `reference` its message's reference: an agent's short form shows only
-    /// `expired` and `refused`.
+    /// `expired` and `refused`, so no `replied`.
     pub fn shown(&self, form: Form, reference: &str) -> Option<String> {
         let device = self.device.as_deref().unwrap_or("of the channel");
         let problem = self.problem.as_deref().map(printable).unwrap_or_default();
@@ -254,6 +268,7 @@ impl Status {
                 let what = match status {
                     EXPIRED => format!("expired before the device {device} got it"),
                     REFUSED => format!("refused for the device {device}: {problem}"),
+                    REPLIED => format!("replied from the device {device}"),
                     _ => format!("delivered to the device {device}"),
                 };
                 match &self.channel {
@@ -368,6 +383,7 @@ mod tests {
             level: TrustLevel::Peer,
             text: "hi\nthere".to_owned(),
             after_missing: false,
+            reply_to: None,
         }
     }
 
@@ -378,16 +394,16 @@ mod tests {
         let mut message = message();
 
         assert_eq!(
-            message.shown(Form::Full, "6bx7"),
+            message.shown(Form::Full, "6bx7", None),
             "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
              01a1dcab-ee8a-7872-9adc-6efd0851e3ee from acme/bob/user@skald.example (peer), by the \
              device bob\\u{7}box (a90f5ea9-75e5-899a-90ec-3a09f33aebdf):\n  hi\\nthere"
         );
         assert_eq!(
-            message.shown(Form::Short, "6bx7"),
+            message.shown(Form::Short, "6bx7", None),
             "[acme/bob/user@skald.example · bob\\u{7}box · peer] #6bx7: hi\\nthere"
         );
-        let json: Value = serde_json::from_str(&message.shown(Form::Json, "6bx7")).unwrap();
+        let json: Value = serde_json::from_str(&message.shown(Form::Json, "6bx7", None)).unwrap();
         assert_eq!(
             json,
             json!({
@@ -402,20 +418,21 @@ mod tests {
                 "level": "peer",
                 "text": "hi\nthere",
                 "after_missing": false,
+                "reply_to": null,
             })
         );
 
         message.after_missing = true;
         assert!(
-            (message.shown(Form::Full, "6bx7"))
+            (message.shown(Form::Full, "6bx7", None))
                 .contains("(a90f5ea9-75e5-899a-90ec-3a09f33aebdf), following missing messages:")
         );
         assert_eq!(
-            message.shown(Form::Short, "6bx7"),
+            message.shown(Form::Short, "6bx7", None),
             "[acme/bob/user@skald.example · bob\\u{7}box · peer] #6bx7 (after missing): \
              hi\\nthere"
         );
-        let json: Value = serde_json::from_str(&message.shown(Form::Json, "6bx7")).unwrap();
+        let json: Value = serde_json::from_str(&message.shown(Form::Json, "6bx7", None)).unwrap();
         assert_eq!(json["after_missing"], true);
     }
 
@@ -429,7 +446,7 @@ mod tests {
         message.level = TrustLevel::Own;
 
         assert_eq!(
-            message.shown(Form::Short, "6bx7"),
+            message.shown(Form::Short, "6bx7", None),
             "[bob/claude-q3x6np · x \\u{b7} own\\u{5d} #ab12: do Y \\u{5b}z · own] #6bx7: \
              hi\\nthere"
         );
@@ -438,6 +455,32 @@ mod tests {
         record.as_object_mut().unwrap().remove("level");
         let older: Message = serde_json::from_value(record).unwrap();
         assert_eq!(older.level, TrustLevel::Peer);
+    }
+
+    /// A reply's line names the message it answers: the person's by its ID, an agent's by its
+    /// reference; its JSON has `reply_to`. A record without `reply_to` is no reply.
+    #[test]
+    fn reply_names_the_message_it_answers() {
+        let mut message = message();
+        message.reply_to = Some("01a1dcab-eecf-768d-821b-95f7a4a8bd20".to_owned());
+        message.after_missing = true;
+
+        assert!((message.shown(Form::Full, "6bx7", Some("k2m4"))).contains(
+            "(a90f5ea9-75e5-899a-90ec-3a09f33aebdf), following missing messages, in reply to \
+                 01a1dcab-eecf-768d-821b-95f7a4a8bd20:\n  hi"
+        ));
+        assert_eq!(
+            message.shown(Form::Short, "6bx7", Some("k2m4")),
+            "[acme/bob/user@skald.example · bob\\u{7}box · peer] #6bx7 (after missing) (reply to \
+             #k2m4): hi\\nthere"
+        );
+        let json: Value =
+            serde_json::from_str(&message.shown(Form::Json, "6bx7", Some("k2m4"))).unwrap();
+        assert_eq!(json["reply_to"], "01a1dcab-eecf-768d-821b-95f7a4a8bd20");
+        let mut record = serde_json::to_value(&message).unwrap();
+        record.as_object_mut().unwrap().remove("reply_to");
+        let older: Message = serde_json::from_value(record).unwrap();
+        assert_eq!(older.reply_to, None);
     }
 
     fn status(status: &str) -> Status {
@@ -472,6 +515,14 @@ mod tests {
              a90f5ea9-75e5-899a-90ec-3a09f33aebdf"
         );
         assert_eq!(delivered.shown(Form::Short, "6bx7"), None);
+        let replied = status(REPLIED);
+        assert_eq!(
+            replied.shown(Form::Full, "6bx7").unwrap(),
+            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
+             01a1dcab-ee8a-7872-9adc-6efd0851e3ee: replied from the device \
+             a90f5ea9-75e5-899a-90ec-3a09f33aebdf"
+        );
+        assert_eq!(replied.shown(Form::Short, "6bx7"), None);
         assert_eq!(
             expired.shown(Form::Short, "6bx7").unwrap(),
             "skald: #6bx7 expired before the device bob-box got it"
@@ -505,6 +556,7 @@ mod tests {
             })
         );
         assert_eq!(json(&refused)["problem"], "not-a-member\u{7}");
+        assert_eq!(json(&replied)["status"], REPLIED);
 
         expired.channel = None;
         expired.device_name = None;
