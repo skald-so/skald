@@ -65,6 +65,7 @@ name = "agent-live"
 version = "0.0.0"
 dependencies = [
  "agent-app-server",
+ "agent-channel",
  "agent-inbox",
  "agent-limits",
  "agent-queue",

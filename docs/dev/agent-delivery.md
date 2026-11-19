@@ -558,6 +558,46 @@ Open questions:
 - A socket message that was `held`, resent by the next path and later released reaches the model twice: nothing drops the released one by `msg_id`.
 - What makes the agent act on a message it got: it acted on socket messages and declined `rewake` ones on both GUI surfaces, which the CLI acted on.
 
+## Permission prompts
+Paths that tell that a Claude Code session waits on its own permission prompt, for the person's notification ([architecture.md, "Notifications"](architecture.md#notifications)):
+- **`PermissionRequest` hook:** runs when Claude Code is about to ask ([docs](https://code.claude.com/docs/en/hooks.md#permissionrequest)).
+- **`Notification` hook** of type `permission_prompt`: runs once the prompt has waited about 6 s without a keystroke ([docs](https://code.claude.com/docs/en/hooks.md#notification)).
+- **Channels permission relay**, on the CLI: a channel that declares `claude/channel/permission` gets `notifications/claude/channel/permission_request` ([docs](https://code.claude.com/docs/en/channels-reference.md#relay-permission-prompts)). The check never answers it.
+
+`live-check permission claude [--all] [--real] [--model <model>] [--keep]`: a terminal UI in a pseudo-terminal, as the [Channels](#channels) check runs it, with `agent-channel --permission-log <file> <source>`, which declares the relay and records each notification Claude Code sends it and when its handshake ended. Every hook event of the session runs `live-check timed-hook <file> true`, which records the input and the time and prints nothing, so it decides nothing. Once the handshake ended, the check types the prompt to run `touch prompted.txt`, which nothing allows; the stub calls it. When the dialog shows, the check waits 10 s without a keystroke, then answers it in the terminal:
+- **A:** Enter, "Yes".
+- **B, with `--all`:** Esc, "No".
+
+Session flags: those of the [Channels](#channels) check, without a prompt, with `--tools Bash --permission-mode default`: Claude Code 2.1.328 starts in auto mode, whose classifier ran the command without a prompt. Each delay is from the call's `PreToolUse` run.
+
+Results on 2026-11-20, Claude Code 2.1.328; the real model is `claude-opus-5-5` on a Claude account:
+
+| Command | Result | `PermissionRequest` | `Notification` | Relay | After "Yes" | After "No" |
+|---|---|---|---|---|---|---|
+| `live-check permission claude --all` | pass | A, B: 0.0 s | A, B: 6.6 s | A, B: 0.0 s | `PostToolUse` 0.1 s | nothing |
+| `live-check permission claude --real` | pass | 0.0 s | 6.0 s | 0.0 s | `PostToolUse` 0.1 s | |
+
+The dialog showed on the screen 0.1–0.7 s after the call, after the `PermissionRequest` run and the relay.
+
+| Check | `PermissionRequest` hook | `Notification` hook | Relay |
+|---|---|---|---|
+| Tells | Yes, at once | Yes, about 6 s after the prompt; a keystroke defers it | Yes, at once |
+| Carries | `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `tool_name`, `tool_input` (the command and the model's description), `permission_suggestions` | `session_id`, `transcript_path`, `cwd`, `prompt_id`, `message` "Claude needs your permission", `notification_type`; no tool | `request_id`, five letters; `tool_name`; `description`, the model's description or "Run shell command"; `input_preview`, the arguments as text |
+| Tells the answer | No. "Yes": the call's `PostToolUse` 0.1 s later. "No": no hook runs; the turn ends as "Interrupted · What should Claude do instead?" without `Stop` | As `PermissionRequest` | No notification after either answer |
+| Needs | The hook in settings | The hook in settings | The channel loaded ([Channels](#channels)), declaring the capability, its handshake ended before the prompt opens; Claude Code 2.1.234 or later relays only to a channel loaded for the session |
+
+GUI checks, as in [GUI live check](#gui-live-check): `live-check gui-permission <claude-desktop|claude-vscode>` prepares a project whose `.claude/settings.local.json` runs the recorder on each event, allows nothing, caps the effort and turns off the user's plugins, connectors and MCP servers' tools; it prints the version, the project and the prompt. The driver opens the project, sends the prompt and, once the prompt shows, waits 10 s. On the desktop app, it then opens another session and runs `live-check gui-permission-link <dir>`, which opens `claude://code/needs-input?session=<the app's ID>`, and reads from a screenshot whether the app shows the waiting session. It answers Allow, then `live-check gui-permission-result <dir>` prints the versions and the hooks' lines.
+
+In a first run the prompt was given as the argument and opened before the channel's handshake ended: the relay sent nothing. The check now types the prompt once the handshake ended.
+
+Findings:
+- On the CLI, the `PermissionRequest` hook and the relay tell within 0.1 s, before the dialog shows; either can be the primary path. The hook needs no channel.
+- The `Notification` hook comes about 6 s later and carries no tool, so it can only be a fallback.
+- No path tells that "No" answered a prompt; "Yes" shows as the call's `PostToolUse`.
+
+Open questions:
+- What tells that a prompt answered "No" ended: such as the next `UserPromptSubmit` or `Stop`.
+
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
