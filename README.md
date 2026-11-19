@@ -70,16 +70,18 @@ npm install -g skald-so
 ### 3. Spaces, channels and messages
 
 ```sh
-skald create-space <name>         # create a team space, with the account as its first admin
-skald spaces                      # the device's spaces and the account's role in each
-skald channels <space>            # a space's channels: each one's ID and members
-skald send <channel> <text>       # send a text to the channel's other member devices
-skald recv                        # receive the device's messages
-skald history <channel> [<text>]  # the channel's history, oldest first; with <text>, only the messages that contain it
-skald --agent <name> recv         # the messages handed over to the agent in the working directory's space
+skald create-space <name>                   # create a team space, with the account as its first admin
+skald spaces                                # the device's spaces and the account's role in each
+skald channels <space>                      # a space's channels: each one's ID and members
+skald send --to <address> <text>            # send a text for one agent to the working directory's space's default channel
+skald send --all --channel <channel> <text> # send a text for every agent in a channel
+skald recv                                  # receive the device's messages
+skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
+skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
 ```
 
-`<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
+- `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
+- `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 
 ## Keys and devices
 

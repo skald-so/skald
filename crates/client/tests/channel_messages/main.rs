@@ -21,8 +21,8 @@
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of sending, of receiving and of
 //! channel groups:
-//! - `skald send <channel> <text>` with no other device in the channel's group fails, says `no
-//!   device` can receive the message, and sends no message;
+//! - `skald send --all --channel <channel> <text>` with no other device in the channel's group
+//!   fails, says `no device` can receive the message, and sends no message;
 //! - while the group has a member that is not admitted, it fails, names that member's device and
 //!   sends no message;
 //! - `skald recv` shows a message as the tests of receiving say: its text once, the channel's ID,

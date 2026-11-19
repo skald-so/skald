@@ -17,8 +17,8 @@ const REFUSED: &str = "send test: this one the server refuses";
 /// The problem the front refuses a message with, in place of the server.
 const REFUSAL: &str = "not-a-member";
 
-/// Runs `skald --agent <CLAUDE> send <channel> <text>` in `~/work/acme`; fails unless it sent one
-/// message. Gives the run and that message's `msg_id`.
+/// Runs `skald --agent <CLAUDE> send --all --channel <channel> <text>` in `~/work/acme`; fails
+/// unless it sent one message. Gives the run and that message's `msg_id`.
 #[track_caller]
 fn claude_sends(agents: &Agents, text: &str) -> (Finished, MessageId) {
     let (finished, sent) = send_as(agents, (CLAUDE, &[]), text);

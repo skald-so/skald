@@ -155,7 +155,7 @@ impl Helped {
     /// Runs `skald send` of `text` to the talk's channel, with `settings`.
     pub fn send_with(&self, talk: &Talk, settings: &[(&str, &str)], text: &str) -> Finished {
         let channel = talk.channel.to_string();
-        self.run_with(settings, &[SEND, &channel, text])
+        self.run_with(settings, &[SEND, "--all", "--channel", &channel, text])
     }
 
     /// As [`Helped::send_with`], without settings; fails unless it succeeds.
