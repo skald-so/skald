@@ -19,6 +19,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use skald_proto::{Cbor as _, DeviceId, Frame, Push, SpaceId};
@@ -94,12 +95,22 @@ struct Kept {
     transport: Transport,
 }
 
+/// Whether a `link-notice` came on a connection a wait watches, on any thread: the long-poll that
+/// watches has its own.
+static LINKING: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     /// The connection kept.
     static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
     /// Whether a run of this thread read and dropped what came on its connection, which a later
     /// run gets: a run that waits for what comes, and ran before it, missed it.
     static MISSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a `link-notice` came on a connection a wait watches ([`Came::add`]) since this was last
+/// asked: each waiting session runs `skald recv` again, which says which devices wait for linking.
+pub fn linking_came() -> bool {
+    LINKING.swap(false, Ordering::SeqCst)
 }
 
 /// Whether a run of this thread dropped what came on its connection since this was last asked.
@@ -133,7 +144,7 @@ pub enum Came {
     Nothing,
     /// Only messages and `space-notice`s, of these spaces.
     In(BTreeSet<SpaceId>),
-    /// Anything else too, such as a status, or the connection's end.
+    /// Anything else too, such as a status, a `link-notice`, or the connection's end.
     Anything,
 }
 
@@ -145,6 +156,10 @@ impl Came {
                 .map(|push| match push {
                     Push::Message { envelope, .. } => Some(envelope.envelope().header.space),
                     Push::SpaceNotice { space } => Some(*space),
+                    Push::LinkNotice => {
+                        LINKING.store(true, Ordering::SeqCst);
+                        None
+                    }
                     Push::Status { .. } | Push::Unknown(_) => None,
                 })
                 .collect::<Option<Vec<_>>>(),

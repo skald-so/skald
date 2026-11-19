@@ -25,4 +25,24 @@ mod kit;
 #[path = "../mailbox/wire.rs"]
 mod wire;
 
+// The revisions of the spaces tests, the fixture of the tests of storing sent envelopes, the entries
+// of the tests of delivering a mailbox, the requests of the tests of the mailbox over HTTPS and the
+// streams of the tests of the mailbox over SSE; this binary uses some of them.
+#[allow(dead_code)]
+#[path = "../mailbox/fixture.rs"]
+mod fixture;
+#[allow(dead_code)]
+#[path = "../mailbox_https/https.rs"]
+mod https;
+#[allow(dead_code)]
+#[path = "../mailbox_delivery/link.rs"]
+mod link;
+#[allow(dead_code)]
+#[path = "../spaces/rosters.rs"]
+mod rosters;
+#[allow(dead_code)]
+#[path = "../mailbox_sse/sse.rs"]
+mod sse;
+
 mod connections;
+mod transports;

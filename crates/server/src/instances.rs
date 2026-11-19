@@ -1,8 +1,8 @@
 //! Server instances waking each other: `docs/dev/architecture.md`, "Network". An instance that adds
-//! mailbox entries, stores a roster revision, ends a session or a service token, or revokes a
-//! device tells the others through PostgreSQL `NOTIFY`, in the transaction that does it. Each
-//! instance listens, and wakes the device's connections, sends the `space-notice`, or closes that
-//! session's, token's or device's connections.
+//! mailbox entries, stores a roster revision, opens a run of a link code, ends a session or a
+//! service token, or revokes a device tells the others through PostgreSQL `NOTIFY`, in the
+//! transaction that does it. Each instance listens, and wakes the device's connections, sends the
+//! `space-notice` or the `link-notice`, or closes that session's, token's or device's connections.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -19,6 +19,7 @@ use crate::DATABASE_TIMEOUT;
 use crate::connections::Connections;
 use crate::delivery::Wakers;
 use crate::error_reports;
+use crate::link_runs;
 use crate::notices::Notices;
 
 /// The channel the instances notify each other on, and the statement that listens on it.
@@ -102,6 +103,8 @@ pub(crate) enum Event {
     Entries(DeviceId),
     /// The space's revision with this number is stored.
     Revision(SpaceId, i64),
+    /// A run of a link code of the account opened.
+    Linking(AccountId),
     /// The session or service token whose token's SHA-256 this is has ended.
     SessionEnded(Vec<u8>),
     /// The device is revoked.
@@ -115,6 +118,7 @@ impl Event {
         match self {
             Self::Entries(device) => format!("{id} entries {device}"),
             Self::Revision(space, revision) => format!("{id} revision {space} {revision}"),
+            Self::Linking(account) => format!("{id} linking {account}"),
             Self::SessionEnded(session) => {
                 format!("{id} session {}", URL_SAFE_NO_PAD.encode(session))
             }
@@ -132,6 +136,7 @@ impl Event {
             ("revision", space, Some(revision)) => {
                 Self::Revision(space.parse().ok()?, revision.parse().ok()?)
             }
+            ("linking", account, None) => Self::Linking(account.parse().ok()?),
             ("session", session, None) => Self::SessionEnded(URL_SAFE_NO_PAD.decode(session).ok()?),
             ("revoked", device, None) => Self::Revoked(device.parse().ok()?),
             _ => return None,
@@ -235,6 +240,7 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
                 Err(err) => error_reports::background_failed("read a revision's members", &err),
             }
         }
+        Event::Linking(account) => local.notices.link(account),
         Event::SessionEnded(session) => local.connections.end_session(&session),
         Event::Revoked(device) => local.connections.end_device(device),
     }
@@ -262,7 +268,8 @@ async fn members(
 /// Sends `local`'s connections what the other instances may have told while `instance` did not
 /// listen: wakes each device's connections, closes each connection whose session has ended or whose
 /// device is revoked, and sends each connected account the notices of the revisions in `latest`,
-/// the latest of each space, that the instance does not know, all of them before it first listens.
+/// the latest of each space, that the instance does not know, all of them before it first listens,
+/// and a `link-notice` if it has an open run of a link code.
 async fn catch_up(
     instance: &Instance,
     local: &Local,
@@ -318,7 +325,7 @@ async fn catch_up(
     )
     .bind(spaces)
     .bind(revisions)
-    .bind(accounts)
+    .bind(&accounts)
     .fetch_all(&local.db)
     .await?;
     for (space, account) in notified {
@@ -326,6 +333,9 @@ async fn catch_up(
             [account.parse().expect("a stored account ID")],
             space.parse().expect("a stored space ID"),
         );
+    }
+    for account in link_runs::linking(&local.db, &accounts).await? {
+        local.notices.link(account);
     }
     Ok(())
 }
@@ -349,6 +359,7 @@ mod tests {
         for event in [
             Event::Entries(device),
             Event::Revision(space, 7),
+            Event::Linking(AccountId::from_bytes([3; 16])),
             Event::SessionEnded(vec![0, 15, 16, 255]),
             Event::Revoked(device),
         ] {
@@ -373,6 +384,8 @@ mod tests {
             "a1 session a".to_owned(),
             "a1 session a=".to_owned(),
             "a1 revoked nodevice".to_owned(),
+            "a1 linking noaccount".to_owned(),
+            format!("a1 linking {space} more"),
             format!("a1 revoked {device} more"),
             format!("a1 later {device}"),
         ] {

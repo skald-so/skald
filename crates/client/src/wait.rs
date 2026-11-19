@@ -289,9 +289,10 @@ impl Sessions {
     }
 
     /// Drops the sessions whose command went away; runs `skald recv` again, with the state in
-    /// `dir`, for each other one that a command ran since, and takes in what came for each one it
-    /// may concern, handing each its own. Gives whether a session waits, which after a run or a
-    /// handover the next look tells; `None` once a run or the intake panicked.
+    /// `dir`, for each other one that a command ran since, or for each once a `link-notice` came,
+    /// and takes in what came for each one it may concern, handing each its own. Gives whether a
+    /// session waits, which after a run or a handover the next look tells; `None` once a run or
+    /// the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
@@ -301,9 +302,14 @@ impl Sessions {
             self.watch.retry_kept();
             // Only drains it.
             mailbox::kept_came();
+            mailbox::linking_came();
             return Some(false);
         }
         let came = self.watch.came();
+        // Each session's run says the devices that wait for linking.
+        if mailbox::linking_came() {
+            self.ran();
+        }
         let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());
         let (mut runs, mut handed) = (Vec::new(), Vec::new());

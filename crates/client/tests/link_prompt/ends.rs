@@ -4,7 +4,7 @@
 use skald_server::Settings;
 
 use crate::devices::second_machine;
-use crate::fixtures::fronted_with;
+use crate::fixtures::{fronted, fronted_with};
 use crate::kit::RECV;
 use crate::linking::{EXPIRED, LIFETIME_SETTING, NewDevice, YES, link_with, says, typed};
 use crate::machine::{DEVICES, Machine};
@@ -62,7 +62,7 @@ fn linked(world: &World, ada: &Person, links: bool) -> NewDevice {
 /// laptop's own `skald devices` name it to link.
 #[test]
 fn no_command_names_a_device_once_it_is_linked() {
-    let world = World::start();
+    let (world, _front) = fronted();
     let ada = world.sign_up(4_178_501_001, "ada-links-the-named-laptop", WORKSTATION);
     let new = linked(&world, &ada, true);
 
@@ -74,7 +74,7 @@ fn no_command_names_a_device_once_it_is_linked() {
 /// Its code expires: her first machine's `skald devices` and `skald recv` no longer name it.
 #[test]
 fn no_command_names_a_device_once_its_code_ends() {
-    let world = World::start();
+    let (world, _front) = fronted();
     let ada = world.sign_up(4_178_502_001, "ada-lets-the-code-expire", WORKSTATION);
     let machine = Machine::new()
         .with_host_name(LAPTOP)

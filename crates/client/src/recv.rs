@@ -374,7 +374,7 @@ fn after(entries: Vec<Push>, cursor: u64) -> Vec<(u64, Vec<u8>)> {
         .filter_map(|push| {
             let seq = match &push {
                 Push::Message { seq, .. } | Push::Status { seq, .. } => seq.get(),
-                Push::SpaceNotice { .. } | Push::Unknown(_) => return None,
+                Push::SpaceNotice { .. } | Push::LinkNotice | Push::Unknown(_) => return None,
             };
             (seq > cursor).then(|| (seq, Frame::Push(push).to_cbor()))
         })
