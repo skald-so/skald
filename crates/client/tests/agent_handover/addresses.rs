@@ -68,7 +68,10 @@ fn agent_whose_only_run_is_a_send_gets_the_messages_that_come_after() {
     );
     let channel = agents.talk.channel.to_string();
     let sent = (agents.talk.ada.machine)
-        .start_in(&agents.folder, &[AGENT, CODEX, SEND, &channel, SAID])
+        .start_in(
+            &agents.folder,
+            &[AGENT, CODEX, SEND, "--all", "--channel", &channel, SAID],
+        )
         .finish();
     assert!(sent.success, "{sent:?}");
     let bob = agents.bob();

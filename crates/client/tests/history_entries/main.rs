@@ -16,9 +16,9 @@
 //! it is in, and check their signatures with the certificate of Ada's device. The front keeps each
 //! `history` frame Ada's machine sends, and can lose or refuse the server's answers.
 //!
-//! The CLI, as these tests use it: `skald send <channel> <text>` and `skald recv`. A run that finds
-//! a message of its device is not in the channel's history says so on a line naming the message's
-//! `msg_id` and holding [`entries::NOT_IN_HISTORY`].
+//! The CLI, as these tests use it: `skald send --all --channel <channel> <text>` and `skald recv`.
+//! A run that finds a message of its device is not in the channel's history says so on a line
+//! naming the message's `msg_id` and holding [`entries::NOT_IN_HISTORY`].
 //!
 //! The server's interface, as these tests use it: `GET
 //! /spaces/{space}/channels/{channel}/history/entries`.

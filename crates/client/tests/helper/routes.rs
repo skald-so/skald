@@ -89,7 +89,10 @@ fn command_waiting_for_a_busy_helper_past_its_timeout_fails_saying_so() {
     talk.front.answer(Answers::Lose);
     let lost = talk.front.lost();
     let channel = talk.channel.to_string();
-    let mut busy = helped.start(&timeout_of(BUSY_FOR), &[SEND, &channel, SECOND]);
+    let mut busy = helped.start(
+        &timeout_of(BUSY_FOR),
+        &[SEND, "--all", "--channel", &channel, SECOND],
+    );
     await_running(&mut busy, "lost stored answer", || talk.front.lost() > lost);
 
     let waited = helped.run_with(&timeout_of(BUSY_WAIT), &[RECV]);
