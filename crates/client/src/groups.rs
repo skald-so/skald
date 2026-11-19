@@ -1019,10 +1019,10 @@ fn create(
 }
 
 /// Commits the Remove of each of `members`, the group of `channel`, that is not admitted, carrying
-/// the revocations of `devices` by which those revoked are; with none, and if this device signed
-/// `roster`, the Adds of the devices of `others`, the other admitted devices, that the group lacks;
-/// with neither, an empty Commit if the epoch is older than the period of `roster`'s policy
-/// ([`rotate_if_aged`]).
+/// the revocations of `devices` by which those revoked are; with none, the Adds of the devices of
+/// `others`, the other admitted devices, that the group lacks: all of them if this device signed
+/// `roster`, otherwise those it certified; with neither, an empty Commit if the epoch is older than
+/// the period of `roster`'s policy ([`rotate_if_aged`]).
 fn keep_in_line(
     follower: &mut Follower,
     link: &mut Link,
@@ -1046,19 +1046,21 @@ fn keep_in_line(
             device.remove_devices(channel, &strangers, &carried, now())
         });
     }
-    if roster.body().signer == this {
-        let lacking: BTreeMap<DeviceId, Cert> = others
-            .iter()
-            .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
-            .map(|(device, cert)| (*device, cert.clone()))
-            .collect();
-        let packages = key_packages(follower, &lacking)?;
-        if !packages.is_empty() {
-            let certs: Vec<Cert> = lacking.into_values().collect();
-            return commit(follower, link, (space, channel), |device, _| {
-                device.add_devices(channel, &packages, &certs, now())
-            });
-        }
+    // The signer of the revision adds every device the group lacks; any other device, those it
+    // certified ("Group changes").
+    let signed = roster.body().signer == this;
+    let lacking: BTreeMap<DeviceId, Cert> = others
+        .iter()
+        .filter(|(device, _)| !members.iter().any(|member| member.device == **device))
+        .filter(|(_, cert)| signed || cert.body().issuer == Some(this))
+        .map(|(device, cert)| (*device, cert.clone()))
+        .collect();
+    let packages = key_packages(follower, &lacking)?;
+    if !packages.is_empty() {
+        let certs: Vec<Cert> = lacking.into_values().collect();
+        return commit(follower, link, (space, channel), |device, _| {
+            device.add_devices(channel, &packages, &certs, now())
+        });
     }
     let period = roster.body().policy.history;
     rotate_if_aged(follower, link, (space, channel), period)

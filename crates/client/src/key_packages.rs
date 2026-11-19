@@ -9,6 +9,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_crypto::{MlsDevice, SealedState, StateKey};
+use skald_proto::DeviceId;
 
 use crate::connection::{Connection, Method};
 use crate::device::{self, Keys};
@@ -59,6 +60,37 @@ pub fn state_key(secrets: &Secrets, sealed: &SealedState) -> Result<StateKey, St
     Ok(key)
 }
 
+/// Whether the server of `connection` holds an unused KeyPackage of `device`, a device of the
+/// account of the session `token`.
+pub fn held(connection: &mut Connection, token: &str, device: DeviceId) -> Result<bool, String> {
+    let path = format!("/devices/{device}/key-packages");
+    Ok(count(connection, token, &path)?.unused > 0)
+}
+
+/// The count of KeyPackages the server of `connection` gives at `path`, as the session `token`.
+fn count(connection: &mut Connection, token: &str, path: &str) -> Result<Count, String> {
+    let answer = connection.get_as(path, token).map_err(text)?;
+    serde_json::from_slice(&answer)
+        .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())
+}
+
+/// The count of KeyPackages the server of `connection` gives at `path` for an upload of none, as
+/// the service token `token`, which cannot `GET` it.
+fn counted_by_upload(
+    connection: &mut Connection,
+    token: &str,
+    path: &str,
+) -> Result<Count, String> {
+    let none = serde_json::to_vec(&Upload {
+        key_packages: Vec::new(),
+        last_resort: None,
+    })
+    .expect("an upload is JSON");
+    let answer = (connection.send_json_as(Method::Post, path, token, &none)).map_err(text)?;
+    serde_json::from_slice(&answer)
+        .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())
+}
+
 /// The device of `keys` keeps its KeyPackages on the server of `connection`, as the session
 /// `token`: it asks how many the server holds and, if it needs more, makes them in its MLS state in
 /// `state`, sealed under the state key in `secrets`, saves that state, then uploads them. A
@@ -71,19 +103,11 @@ pub fn keep(
     service: bool,
 ) -> Result<(), String> {
     let path = format!("/devices/{}/key-packages", keys.id());
-    let answer = if service {
-        let none = serde_json::to_vec(&Upload {
-            key_packages: Vec::new(),
-            last_resort: None,
-        })
-        .expect("an upload is JSON");
-        connection.send_json_as(Method::Post, &path, token, &none)
+    let count = if service {
+        counted_by_upload(connection, token, &path)?
     } else {
-        connection.get_as(&path, token)
-    }
-    .map_err(text)?;
-    let count: Count = serde_json::from_slice(&answer)
-        .map_err(|_| "the server's count of KeyPackages is malformed".to_owned())?;
+        count(connection, token, &path)?
+    };
     let (others, last) = wanted(&count);
     if others == 0 && !last {
         return Ok(());

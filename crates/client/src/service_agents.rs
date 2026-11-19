@@ -253,6 +253,11 @@ pub fn create(
     let device = keys.id();
     register(&mut follower, &keys, &cert_name(&owner, &agent))?;
     let cert = certify(&mut follower, &admin, &keys, &cert_name(&owner, &agent))?;
+    // This device made it, so its next device checks do not warn of it as new.
+    follower
+        .state
+        .device_statuses(&[(device, false)])
+        .map_err(text)?;
     let entry = ServiceAgent {
         device,
         owner: owner.clone(),

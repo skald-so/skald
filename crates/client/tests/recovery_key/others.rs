@@ -9,8 +9,8 @@ use crate::cloud::GIVE_MASTER;
 use crate::machine::{DEVICES, FIRST_DEVICE, Machine, NO, RUN_LIMIT, YES};
 use crate::terminal::{Shown, Terminal};
 use crate::{
-    approve, assert_quiet, backup, bytes_hold_key, first_at_terminal, held, holds_key, keys,
-    keys_in, opens_the_backup, quiet_sign_in, setup, sign_in, written_down,
+    LINK_CODE, approve, assert_quiet, backup, bytes_hold_key, first_at_terminal, held, holds_key,
+    keys, keys_in, opens_the_backup, setup, sign_in, until_link_code, written_down,
 };
 
 /// `bytes` in lowercase hex.
@@ -18,8 +18,8 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Lets `runs` finish, the person pressing Enter on each once it shows a recovery key; gives what
-/// each printed.
+/// Lets `runs` finish, the person pressing Enter on each once it shows a recovery key and ending
+/// each that waits for linking once it shows its link code; gives what each printed.
 fn settled(runs: Vec<Terminal>) -> Vec<Shown> {
     let mut runs: Vec<Option<Terminal>> = runs.into_iter().map(Some).collect();
     let mut entered = vec![false; runs.len()];
@@ -32,6 +32,8 @@ fn settled(runs: Vec<Terminal>) -> Vec<Shown> {
             };
             if run.exited() {
                 shown[at] = runs[at].take().map(Terminal::finish);
+            } else if run.shown().contains(LINK_CODE) {
+                shown[at] = runs[at].take().map(until_link_code);
             } else if !entered[at] && !keys_in(&run.shown()).is_empty() {
                 run.enter();
                 entered[at] = true;
@@ -99,7 +101,9 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
     }
 
     let mark = cloud.relay.mark();
-    quiet_sign_in(&cloud, loser_machine, &[]);
+    let args = sign_in(&cloud, &[FIRST_DEVICE, YES]);
+    let again = until_link_code(Terminal::start(loser_machine, &args));
+    assert_quiet(&cloud, "the refused machine's next sign-in", &again.text);
     let devices = loser_machine.start(&[DEVICES]).finish();
     assert_quiet(
         &cloud,
@@ -129,11 +133,14 @@ fn a_second_machine_of_the_account_gets_no_recovery_key() {
     let grants = cloud.grants().len();
     let mut run = Terminal::start(&second, &sign_in(&cloud, &[FIRST_DEVICE, NO]));
     approve(&cloud, &page, &ada, &mut run, grants);
-    let signed_in = run.finish();
+    let signed_in = until_link_code(run);
 
     assert_quiet(&cloud, "the second machine's sign-in", &signed_in.text);
     assert!(!holds_key(&signed_in.text, &key), "{signed_in:?}");
-    let again = Terminal::start(&second, &sign_in(&cloud, &[FIRST_DEVICE, NO])).finish();
+    let again = until_link_code(Terminal::start(
+        &second,
+        &sign_in(&cloud, &[FIRST_DEVICE, NO]),
+    ));
     assert_quiet(&cloud, "its next sign-in", &again.text);
     let text = second.start(&[DEVICES]).finish().shown();
     assert_quiet(&cloud, "its skald devices", &text);
@@ -171,7 +178,7 @@ fn on_an_account_made_before_recovery_keys_sign_in_says_it_has_no_recovery_key()
     ));
     assert_eq!(held(&cloud, &token).master, Some(master));
 
-    let again = Terminal::start(&old, &sign_in(&cloud, &[FIRST_DEVICE, NO])).finish();
+    let again = until_link_code(Terminal::start(&old, &sign_in(&cloud, &[FIRST_DEVICE, NO])));
 
     assert!(
         again.text.to_lowercase().contains("no recovery key"),
@@ -182,7 +189,7 @@ fn on_an_account_made_before_recovery_keys_sign_in_says_it_has_no_recovery_key()
     let grants = cloud.grants().len();
     let mut run = Terminal::start(&new, &sign_in(&cloud, &[FIRST_DEVICE, NO]));
     approve(&cloud, &page, &ada, &mut run, grants);
-    let fresh = run.finish();
+    let fresh = until_link_code(run);
     assert!(
         fresh.text.to_lowercase().contains("no recovery key"),
         "{fresh:?}"

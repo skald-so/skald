@@ -125,6 +125,16 @@ impl fmt::Debug for LinkCode {
     }
 }
 
+/// A fresh `session` for a run: 16 bytes from the cryptographically secure generator.
+///
+/// # Panics
+/// If the random generator fails.
+pub fn link_session() -> [u8; 16] {
+    let mut session = [0; 16];
+    getrandom::fill(&mut session).expect("the random generator failed");
+    session
+}
+
 /// The CI of a run on `account`: the encoded `["skald link code", account]`.
 fn ci(account: AccountId) -> Vec<u8> {
     signed_data(CI_LABEL, &[account.as_bytes()])
@@ -217,6 +227,12 @@ impl fmt::Debug for LinkKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn each_session_is_fresh() {
+        assert_ne!(link_session(), link_session());
+    }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]

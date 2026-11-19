@@ -20,7 +20,7 @@ use crate::follow::SpaceDevices;
 use crate::revocations;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
-use crate::state::{self, Link, State};
+use crate::state::{self, Link, State, StatusChange};
 
 /// What `skald devices` and `skald set-username` say when the machine has no session.
 const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
@@ -93,8 +93,8 @@ pub fn own(
 }
 
 /// Records in `state` whether each device `checked` holds with a certificate that passes checks 1
-/// and 2, of `account` if given, is revoked; gives the warning of each that is revoked, or valid
-/// again, since the device last checked it, as a device of `whose` ("Device checks").
+/// and 2, of `account` if given, is revoked; gives the warning of each that is revoked, valid again
+/// or new since the device last checked it, as a device of `whose` ("Device checks").
 pub fn statuses(
     state: &State,
     checked: &Checked,
@@ -110,18 +110,19 @@ pub fn statuses(
     let changed = state.device_statuses(&seen).map_err(text)?;
     Ok(changed
         .into_iter()
-        .map(|(device, revoked)| {
-            if revoked {
-                format!(
-                    "the device {device} of {whose} is revoked: this device no longer sends to it, \
-                     accepts content from it or admits it to a channel"
-                )
-            } else {
-                format!(
-                    "the device {device} of {whose} is valid again: a revocation by its account's \
-                     master key voided the revocation of it"
-                )
-            }
+        .map(|(device, change)| match change {
+            StatusChange::Revoked => format!(
+                "the device {device} of {whose} is revoked: this device no longer sends to it, \
+                 accepts content from it or admits it to a channel"
+            ),
+            StatusChange::Valid => format!(
+                "the device {device} of {whose} is valid again: a revocation by its account's \
+                 master key voided the revocation of it"
+            ),
+            StatusChange::Added => format!(
+                "the device {device} of {whose} is new: it was linked since this device last \
+                 checked"
+            ),
         })
         .collect())
 }
@@ -343,14 +344,19 @@ fn listing(checked: &Checked, this: DeviceId) -> String {
     out
 }
 
-/// The line of a device with its valid certificate `cert`, marked if it is `this` device.
-pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
-    let body = cert.body();
-    let kind = match body.kind {
+/// The name of `kind`, as the protocol names it.
+pub fn kind_name(kind: DeviceKind) -> &'static str {
+    match kind {
         DeviceKind::Client => "client",
         DeviceKind::Browser => "browser",
         DeviceKind::Service => "service",
-    };
+    }
+}
+
+/// The line of a device with its valid certificate `cert`, marked if it is `this` device.
+pub fn linked_line(cert: &Cert, this: DeviceId) -> String {
+    let body = cert.body();
+    let kind = kind_name(body.kind);
     let mut line = format!(
         "{}  {}  {kind}  issued {}",
         body.device,

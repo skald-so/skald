@@ -541,7 +541,7 @@ impl Follower {
                 .map_err(text)?;
             let name = anchor.body().name.as_str();
             state
-                .follow_space(key.space, name, &anchor.to_cbor())
+                .add_linked_space(key.space, name, &anchor.to_cbor(), false)
                 .map_err(text)?;
         }
         let device = state
