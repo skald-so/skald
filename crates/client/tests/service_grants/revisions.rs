@@ -1,7 +1,7 @@
 //! The checks of content from a `service` device by the latest revision and device certificates
 //! the client has: a revision it has not accepted yet that lists the agent, a revision that makes
-//! the grant's signer a member, the device's revocation, and a certificate of the device on an
-//! account outside the space.
+//! the grant's signer a member, the revocation of the signer's device, the device's revocation, and
+//! a certificate of the device on an account outside the space.
 
 use skald_crypto::issue;
 use skald_proto::{CertBody, DeviceKind, NonEmpty, Role, Unknown};
@@ -51,7 +51,46 @@ fn grant_fails_once_a_later_revision_makes_its_signer_a_member() {
         Role::Admin,
         true,
     );
-    let (ada, bob) = (&bot.talk.ada, &bot.talk.played[0].person);
+
+    bobs_grant_fails_after(&bot, || {
+        let (ada, bob) = (&bot.talk.ada, &bot.talk.played[0].person);
+        let previous = latest(bot.cloud(), &ada.token, bot.talk.space.id);
+        let demoted = next_with(&previous, (ada.device, &ada.key), |body| {
+            let mut members = body.members.clone().into_vec();
+            set_role(&mut members, bob.account, Role::Member);
+            body.members = NonEmpty::from_vec(members).expect("a member");
+        });
+        store(bot.cloud(), &ada.token, &demoted);
+    });
+}
+
+/// Bob, an admin, signs the agent's grant, and Ada's `skald recv` shows its message. Bob's device
+/// then revokes itself: the next message with Bob's grant is dropped with a warning naming the
+/// agent's device, while one with Ada's grant is shown.
+#[test]
+fn grant_fails_once_its_signers_device_is_revoked() {
+    let bot = Bot::new(
+        [4_235_035_001, 4_235_035_002],
+        [
+            "ada-sees-a-revoked-signer-standin",
+            "bob-revokes-his-box-standin",
+        ],
+        Role::Admin,
+        true,
+    );
+
+    bobs_grant_fails_after(&bot, || {
+        let bob = &bot.talk.played[0].person;
+        revoked_by(bot.cloud(), bob, bob.device);
+    });
+}
+
+/// Ada's `skald recv` shows the agent's message with the grant Bob's device signs; after `change`,
+/// its next message with that grant is dropped with a warning naming the agent's device, while one
+/// with Ada's grant is shown.
+#[track_caller]
+fn bobs_grant_fails_after(bot: &Bot, change: impl FnOnce()) {
+    let bob = &bot.talk.played[0].person;
     let expires = now() + GRANTED;
     let bobs = grant(
         (bob.device, &bob.key),
@@ -62,13 +101,7 @@ fn grant_fails_once_a_later_revision_makes_its_signer_a_member() {
     let by_bob = |text| Note::new(&bot.address, Some(bobs.clone()), text);
     let first = bot.ada_receives(vec![bot.sealed(&by_bob(BEFORE))]);
     bot.assert_shown(&first, BEFORE);
-    let previous = latest(bot.cloud(), &ada.token, bot.talk.space.id);
-    let demoted = next_with(&previous, (ada.device, &ada.key), |body| {
-        let mut members = body.members.clone().into_vec();
-        set_role(&mut members, bob.account, Role::Member);
-        body.members = NonEmpty::from_vec(members).expect("a member");
-    });
-    store(bot.cloud(), &ada.token, &demoted);
+    change();
 
     let after = by_bob(AFTER);
     let next = bot.ada_receives(vec![bot.sealed(&after), bot.sealed(&bot.note(STILL))]);
