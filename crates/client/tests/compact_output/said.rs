@@ -8,8 +8,8 @@ use crate::machine::Finished;
 use crate::talk::messages_sent;
 use crate::world::AGENT;
 
-/// Runs `skald --agent <agent> send <flags> <channel> <text>` in `~/work/acme` to the talk's
-/// channel; gives the run and the message envelopes the front saw it send.
+/// Runs `skald --agent <agent> send <flags> --all --channel <channel> <text>` in `~/work/acme` to
+/// the talk's channel; gives the run and the message envelopes the front saw it send.
 pub fn send_as(
     agents: &Agents,
     (agent, flags): (&str, &[&str]),

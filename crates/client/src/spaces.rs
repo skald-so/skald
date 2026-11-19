@@ -1042,6 +1042,12 @@ pub fn needs_default(roster: &Roster) -> bool {
     })
 }
 
+/// The default channel of `roster`, its first channel, unless it needs one ([`needs_default`]).
+pub fn default_of(roster: &Roster) -> Option<ChannelId> {
+    let first = roster.body().channels.first()?;
+    (!needs_default(roster)).then_some(first.id)
+}
+
 /// The default channel `id` of the revision `body`: every member of the space, with `history`
 /// true.
 fn default_channel(id: ChannelId, body: &RosterBody) -> Channel {
@@ -1215,6 +1221,41 @@ pub fn of_channel(
                            skald uses only its channels"
             .to_owned(),
     })
+}
+
+/// The working directory's space ([`folders::working_space`]) that the device of the machine whose
+/// state is in `dir`, its secrets in `storage`, follows, synced ([`Follower::sync`]), and its
+/// default channel; within `scope`, which for an agent is that space. Fails while the space has no
+/// default channel ([`needs_default`]).
+pub fn of_working_dir(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    scope: Scope,
+) -> Result<(Synced, ChannelId), String> {
+    let id = match scope {
+        Scope::Only(id) => id,
+        Scope::All => folders::working_space(dir)?.id,
+    };
+    let mut follower = following(dir, storage, speaks, timeout, scope)?;
+    let space = (follower.state.spaces().map_err(text)?.into_iter())
+        .find(|space| space.id == id)
+        .ok_or_else(|| "this device follows no space of the working directory".to_owned())?;
+    let (roster, devices) = follower.sync(&space)?;
+    let channel = default_of(&roster).ok_or_else(|| {
+        format!(
+            "the space {} has no default channel yet; nothing is sent",
+            space.name
+        )
+    })?;
+    let synced = Synced {
+        follower,
+        space,
+        roster,
+        devices,
+    };
+    Ok((synced, channel))
 }
 
 /// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose
@@ -1692,7 +1733,7 @@ pub(crate) mod tests {
 
     /// A space needs a default channel while it has no channel or its first channel lacks a
     /// member; a later channel with every member does not count. A default channel holds every
-    /// member with `history` true.
+    /// member with `history` true; once there, it is the space's default channel.
     #[test]
     fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
@@ -1701,6 +1742,7 @@ pub(crate) mod tests {
             skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
         };
         assert!(needs_default(&sign(&body)), "no channel");
+        assert_eq!(default_of(&sign(&body)), None, "no channel");
         body.channels = vec![default_channel(ChannelId::generate(), &body)];
         let ada_in = ChannelMember {
             account: ada,
@@ -1717,8 +1759,9 @@ pub(crate) mod tests {
             needs_default(&sign(&body)),
             "every member in a later channel"
         );
-        body.channels
-            .insert(0, default_channel(ChannelId::generate(), &body));
+        assert_eq!(default_of(&sign(&body)), None, "a later channel");
+        let default = ChannelId::generate();
+        body.channels.insert(0, default_channel(default, &body));
         let bob_in = ChannelMember {
             account: bob,
             history: true,
@@ -1726,6 +1769,7 @@ pub(crate) mod tests {
         assert_eq!(body.channels[0].members, [ada_in, bob_in]);
         assert!(body.channels[0].services.is_empty());
         assert!(!needs_default(&sign(&body)));
+        assert_eq!(default_of(&sign(&body)), Some(default));
     }
 
     #[test]

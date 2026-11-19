@@ -56,14 +56,15 @@ pub fn retrying_for_the_timeout(mut person: Person) -> Person {
     person
 }
 
-/// Runs `skald send <channel> <text>` on `machine`.
+/// Runs `skald send --all --channel <channel> <text>` on `machine`.
 pub fn send(machine: &Machine, channel: ChannelId, text: &str) -> Finished {
     machine.start(&strs(&send_args(channel, text))).finish()
 }
 
-/// The arguments of `skald send <channel> <text>`.
+/// The arguments of `skald send --all --channel <channel> <text>`.
 pub fn send_args(channel: ChannelId, text: &str) -> Vec<String> {
-    vec![SEND.to_owned(), channel.to_string(), text.to_owned()]
+    let args = [SEND, "--all", "--channel", &channel.to_string(), text];
+    args.map(str::to_owned).to_vec()
 }
 
 /// `args` as arguments.
