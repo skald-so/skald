@@ -230,7 +230,7 @@ impl IntoResponse for Refusal {
                 StatusCode::NOT_FOUND,
                 "no-service-token",
                 "No such service token",
-                "The space has no such service token, or it is revoked.",
+                "The space has no such service token, or it has ended.",
             ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }

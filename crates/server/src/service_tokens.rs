@@ -21,8 +21,9 @@ use sqlx::PgPool;
 
 use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, account, answer, parse};
-use crate::sign_in::{bearer, digest, from_this_server, random_token};
-use crate::spaces::{Found, Gotten, find};
+use crate::sessions::from_page;
+use crate::sign_in::{bearer, digest, random_token};
+use crate::spaces::{Found, Gotten, admin, find};
 use crate::{AppState, database_failed, mailboxes, problem, requests};
 
 /// The latest expiry a grant may have: the end of the year 9999, the last an RFC 3339 date-time
@@ -142,7 +143,7 @@ fn entry<'r>(roster: &'r Roster, device: &str) -> Option<&'r ServiceAgent> {
 }
 
 /// The latest revision of `space`, which an admin of it has.
-async fn latest(db: &PgPool, space: SpaceId) -> Result<Roster, Refusal> {
+async fn latest(db: impl sqlx::PgExecutor<'_>, space: SpaceId) -> Result<Roster, Refusal> {
     mailboxes::latest(db, space)
         .await
         .map_err(|err| Refusal::Database("read the latest revision", err))?
@@ -204,8 +205,22 @@ pub(crate) async fn create(
         if !found.gets {
             return Err(Refusal::NoSpace);
         }
-        admin_only(&found)?;
-        let roster = latest(db, found.id).await?;
+        let failed = |err| Refusal::Database("store a service token", err);
+        let mut tx = db.begin().await.map_err(failed)?;
+        // Storing a revision locks the space's row (`spaces::insert`): until the token is stored, the
+        // latest revision stays the one checked, so a revision that drops the entry ends it.
+        sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR SHARE")
+            .bind(found.id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(failed)?;
+        let roster = latest(&mut *tx, found.id).await?;
+        if !admin(&roster, account) {
+            return Err(Refusal::NotAllowed(
+                "only an admin in the space's latest revision creates its service tokens"
+                    .to_owned(),
+            ));
+        }
         service_device(db, &roster, device, account).await?;
         check_grant(db, &roster, &grant, device).await?;
 
@@ -232,9 +247,10 @@ pub(crate) async fn create(
         .bind(&channels)
         .bind(&sent)
         .bind(expires)
-        .fetch_one(db)
+        .fetch_one(&mut *tx)
         .await
-        .map_err(|err| Refusal::Database("store a service token", err))?;
+        .map_err(failed)?;
+        tx.commit().await.map_err(failed)?;
         let record = record(row, &roster).expect("the roster lists the device");
         Ok((
             StatusCode::CREATED,
@@ -261,12 +277,7 @@ async fn service_device(
                 .to_owned(),
         )
     };
-    let listed = roster
-        .body()
-        .service_agents
-        .iter()
-        .any(|agent| agent.device == device);
-    if !listed {
+    if entry(roster, &device.to_string()).is_none() {
         return Err(refused());
     }
     let found: Option<(i32,)> = sqlx::query_as(
@@ -377,24 +388,20 @@ pub(crate) async fn revoke(
 ) -> Response {
     answer(async {
         let account = account(&state.db, &headers).await?;
-        let from_page = state
-            .sign_in
-            .as_deref()
-            .is_some_and(|settings| from_this_server(settings, &headers));
         // Without an `Authorization` header, the session is the cookie's web session.
-        if bearer(&headers).is_none() && !from_page {
-            return Err(Refusal::NotAllowed(
-                "The request does not come from a page of this server.".to_owned(),
-            ));
+        if bearer(&headers).is_none() {
+            from_page(&state, &headers)?;
         }
         let found = find(&state.db, &space, &account).await?;
         if !found.gets {
             return Err(Refusal::NoSpace);
         }
         admin_only(&found)?;
-        // As text: an ID that is no UUID is no token.
+        // As text: an ID that is no UUID is no token. One that has ended stays as it is.
         let deleted = sqlx::query(
-            "DELETE FROM service_tokens WHERE space_id = $1::uuid AND id::text = lower($2)",
+            "DELETE FROM service_tokens t USING devices d
+             WHERE t.space_id = $1::uuid AND t.id::text = lower($2) AND d.id = t.device_id
+                 AND t.expires_at > now() AND NOT d.revoked",
         )
         .bind(found.id.to_string())
         .bind(&token)

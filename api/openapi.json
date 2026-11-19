@@ -4038,7 +4038,7 @@
       "get": {
         "operationId": "getServiceToken",
         "summary": "The service token's own record",
-        "description": "The record and grant of the request's service token. Records its use, to the minute. A token ends at its expiry, at its revocation, once its device is revoked and once the space's latest revision lists its device in no service agent entry.",
+        "description": "The record and grant of the request's service token, until it ends as `POST /spaces/{space}/service-tokens` says. Records its use, to the minute.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
