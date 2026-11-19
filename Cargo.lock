@@ -3067,6 +3067,7 @@ dependencies = [
  "gethostname",
  "hkdf 0.13.0",
  "hpke",
+ "jiff",
  "keyring-core",
  "libc",
  "mls-rs",

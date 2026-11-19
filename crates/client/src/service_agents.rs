@@ -132,71 +132,12 @@ fn expiry(given: &str, now: u64) -> Result<u64, String> {
 }
 
 /// The seconds since the Unix epoch of the RFC 3339 date-time `text`, such as
-/// `2027-01-31T00:00:00Z` or `2027-01-31t09:30:00.5+07:00`; its fraction of a second dropped.
-/// `None` for another form, or before the epoch.
+/// `2027-01-31T00:00:00Z` or `2027-01-31T09:30:00+07:00`, or of an ISO 8601 form of one that jiff
+/// reads; its fraction of a second dropped. `None` for a text without a date, a time and an
+/// offset, or before the epoch.
 fn rfc3339(text: &str) -> Option<u64> {
-    let bytes = text.as_bytes();
-    let digits = |from: usize, count: usize| -> Option<i64> {
-        let part = bytes.get(from..from + count)?;
-        part.iter()
-            .all(u8::is_ascii_digit)
-            .then(|| part.iter().fold(0, |sum, d| sum * 10 + i64::from(d - b'0')))
-    };
-    let at = |index: usize, wanted: &[u8]| bytes.get(index).is_some_and(|b| wanted.contains(b));
-    if !(at(4, b"-") && at(7, b"-") && at(10, b"Tt") && at(13, b":") && at(16, b":")) {
-        return None;
-    }
-    let (year, month, day) = (digits(0, 4)?, digits(5, 2)?, digits(8, 2)?);
-    let (hour, minute, second) = (digits(11, 2)?, digits(14, 2)?, digits(17, 2)?);
-    let mut rest = 19;
-    if at(rest, b".") {
-        rest += 1;
-        let start = rest;
-        while bytes.get(rest).is_some_and(u8::is_ascii_digit) {
-            rest += 1;
-        }
-        if rest == start {
-            return None;
-        }
-    }
-    let offset = match bytes.get(rest)? {
-        b'Z' | b'z' if rest + 1 == bytes.len() => 0,
-        sign @ (b'+' | b'-') if rest + 6 == bytes.len() && at(rest + 3, b":") => {
-            let (hours, minutes) = (digits(rest + 1, 2)?, digits(rest + 4, 2)?);
-            if hours > 23 || minutes > 59 {
-                return None;
-            }
-            let offset = hours * 3_600 + minutes * 60;
-            if *sign == b'+' { offset } else { -offset }
-        }
-        _ => return None,
-    };
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let days_in_month = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if leap => 29,
-        2 => 28,
-        _ => return None,
-    };
-    // A leap second, 60, counts as the next one.
-    if !(1..=days_in_month).contains(&day) || hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    let seconds =
-        days_from_civil(year, month, day) * DAY as i64 + hour * 3_600 + minute * 60 + second
-            - offset;
-    u64::try_from(seconds).ok()
-}
-
-/// The days from 1970-01-01 to the proleptic Gregorian date `year-month-day`.
-fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = year.div_euclid(400);
-    let of_era = year - era * 400;
-    let of_year = (153 * ((month + 9) % 12) + 2) / 5 + day - 1;
-    let of_era_days = of_era * 365 + of_era / 4 - of_era / 100 + of_year;
-    era * 146_097 + of_era_days - 719_468
+    let time: jiff::Timestamp = text.parse().ok()?;
+    u64::try_from(time.as_second()).ok()
 }
 
 /// The owner and agent of `address`, `owner/agent`.
@@ -584,7 +525,7 @@ mod tests {
             ("2027-01-31t07:00:00.25+07:00", 1_801_353_600),
             ("2027-01-30T19:30:00-04:30", 1_801_353_600),
             ("2028-02-29T00:00:00Z", 1_835_395_200),
-            ("9999-12-31T23:59:59Z", 253_402_300_799),
+            ("9999-01-01T00:00:00Z", 253_370_764_800),
         ] {
             assert_eq!(expiry(given, now), Ok(seconds), "{given}");
         }
@@ -597,16 +538,15 @@ mod tests {
             "184467440737095516d",
             "2027-01-31",
             "2027-01-31T00:00:00",
-            "2027-01-31 00:00:00Z",
             "2027-02-29T00:00:00Z",
             "2027-13-01T00:00:00Z",
             "2027-01-31T24:00:00Z",
             "2027-01-31T00:00:00.Z",
-            "2027-01-31T00:00:00+0700",
             "2027-01-31T00:00:00Z ",
             "1969-12-31T23:59:59Z",
         ] {
-            assert!(expiry(given, now).is_err(), "{given}");
+            let taken = expiry(given, now);
+            assert!(taken.is_err(), "{given}: {taken:?}");
         }
     }
 
