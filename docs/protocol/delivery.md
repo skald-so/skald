@@ -184,7 +184,7 @@ A member device's message with an `a2a` body also goes under [`hpke`](README.md#
 - The server deletes an expired entry and does not send it.
 - The server deletes an envelope once no mailbox entry refers to it.
 
-A stateless `service` device writes nothing: it acks an entry only once it has shown it, so a run that dies in between shows it again at the next one. It keeps no counters, so it does no [gap detection](#gap-detection) and drops a repeated `msg_id` only within a run.
+A stateless `service` device writes nothing: it acks an entry only once it has shown it, so a run that dies in between shows it again at the next one. It keeps no counters, so it does no [gap detection](#gap-detection) and drops a repeated `msg_id` only within a run. As a long-poll acks its cursor, such a run takes one long-poll answer.
 
 A recipient device drops, without a receipt:
 - an entry with a `seq` up to its cursor: a redelivery after a lost ack;

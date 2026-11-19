@@ -46,6 +46,7 @@
 
 mod exchange;
 mod refusals;
+mod runs;
 mod start;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`): the server, its

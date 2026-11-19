@@ -131,10 +131,27 @@ impl Wire for Queued {
     }
 }
 
-impl Queued {
+/// An envelope of a message whose run says what the server answered to it ([`report`]).
+pub trait Shown: Wire {
+    /// The channel it goes to.
+    fn channel(&self) -> ChannelId;
     /// Whether it goes with `report` true: it is no receipt.
-    pub fn reports(&self) -> bool {
+    fn reports(&self) -> bool;
+    /// Whether an outbox keeps it while the server has not answered it, so a later run sends it.
+    fn kept(&self) -> bool;
+}
+
+impl Shown for Queued {
+    fn channel(&self) -> ChannelId {
+        self.channel
+    }
+
+    fn reports(&self) -> bool {
         self.outgoing.report
+    }
+
+    fn kept(&self) -> bool {
+        true
     }
 }
 
@@ -833,28 +850,26 @@ pub enum Reported<'a> {
     Quiet,
 }
 
-/// A message of the outbox: its ID, its channel and its envelopes.
-type Queue<'q> = Vec<(MessageId, ChannelId, Vec<&'q Queued>)>;
+/// A message a run sent: its ID, its channel and its envelopes.
+type Queue<'q, W> = Vec<(MessageId, ChannelId, Vec<&'q W>)>;
 
 /// Says what the server answered to each message of `queued`, but receipts, as `reported` says,
 /// by the state `state` and the answers in `delivered`; fails unless every one is stored, saying
 /// which are not.
-pub fn report(
+pub fn report<W: Shown>(
     state: &State,
-    queued: &[Queued],
+    queued: &[W],
     delivered: &Delivered,
     timeout: Duration,
     reported: Reported,
 ) -> Result<(), String> {
-    let mut messages: Queue = Vec::new();
+    let mut messages: Queue<W> = Vec::new();
     // A receipt is no message of the device's user.
-    for queued in queued.iter().filter(|queued| queued.outgoing.report) {
-        match messages
-            .iter_mut()
-            .find(|(id, ..)| *id == queued.outgoing.msg_id)
-        {
+    for queued in queued.iter().filter(|queued| queued.reports()) {
+        let (msg_id, _) = queued.key();
+        match messages.iter_mut().find(|(id, ..)| *id == msg_id) {
             Some((.., envelopes)) => envelopes.push(queued),
-            None => messages.push((queued.outgoing.msg_id, queued.channel, vec![queued])),
+            None => messages.push((msg_id, queued.channel(), vec![queued])),
         }
     }
     let outcome = outcome(&messages, delivered, timeout);
@@ -882,7 +897,7 @@ pub fn report(
             for (id, channel, envelopes) in &messages {
                 let envelopes: Vec<Value> = (envelopes.iter())
                     .map(|queued| {
-                        let recipient = queued.outgoing.recipient.map(|device| device.to_string());
+                        let recipient = queued.key().1.map(|device| device.to_string());
                         match delivered.answers.get(&queued.key()) {
                             Some(Answer::Stored) => {
                                 json!({ "recipient": recipient, "answer": "stored" })
@@ -892,7 +907,10 @@ pub fn report(
                                 "answer": "refused",
                                 "problem": problem,
                             }),
-                            None => json!({ "recipient": recipient, "answer": "waiting" }),
+                            None if queued.kept() => {
+                                json!({ "recipient": recipient, "answer": "waiting" })
+                            }
+                            None => json!({ "recipient": recipient, "answer": "unanswered" }),
                         }
                     })
                     .collect();
@@ -912,18 +930,21 @@ pub fn report(
 
 /// Says, for each of `messages`, its ID and, per envelope, by its recipient device under `hpke`,
 /// whether the server stored it, refused it or has not answered it in `delivered`.
-fn in_full(messages: &Queue, delivered: &Delivered) {
+fn in_full<W: Shown>(messages: &Queue<W>, delivered: &Delivered) {
     for (id, channel, envelopes) in messages {
         println!("The message {id} to the channel {channel}:");
         for queued in envelopes {
-            let device = (queued.outgoing.recipient)
-                .map_or_else(|| "channel".to_owned(), |device| device.to_string());
+            let device =
+                (queued.key().1).map_or_else(|| "channel".to_owned(), |device| device.to_string());
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
                     println!("  {device}  refused: {}", explained(problem));
                 }
-                None => println!("  {device}  no answer yet: it waits in the outbox"),
+                None if queued.kept() => {
+                    println!("  {device}  no answer yet: it waits in the outbox");
+                }
+                None => println!("  {device}  no answer"),
             }
         }
     }
@@ -931,12 +952,17 @@ fn in_full(messages: &Queue, delivered: &Delivered) {
 
 /// Fails unless the server stored every envelope of `messages` in `delivered`, saying which it has
 /// not answered within `timeout`, and why the last attempt failed, or else which it refused.
-fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result<(), String> {
+fn outcome<W: Shown>(
+    messages: &Queue<W>,
+    delivered: &Delivered,
+    timeout: Duration,
+) -> Result<(), String> {
     let (mut left, mut refused) = (Vec::new(), Vec::new());
+    let mut kept = true;
     for (id, _, envelopes) in messages {
         let mut waiting = Vec::new();
         for queued in envelopes {
-            let recipient = queued.outgoing.recipient;
+            let recipient = queued.key().1;
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => {}
                 Some(Answer::Refused(problem)) => refused.push(format!(
@@ -944,7 +970,10 @@ fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result
                     to_device(recipient),
                     explained(problem)
                 )),
-                None => waiting.extend(recipient.map(|device| device.to_string())),
+                None => {
+                    kept &= queued.kept();
+                    waiting.extend(recipient.map(|device| device.to_string()));
+                }
             }
         }
         if !waiting.is_empty() {
@@ -961,9 +990,13 @@ fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result
             .failed
             .as_ref()
             .map_or_else(String::new, |err| format!(" ({err})"));
+        let then = if kept {
+            "the outbox keeps it, and the next skald send or skald recv sends it first"
+        } else {
+            "a stateless run keeps nothing, so nothing sends it later"
+        };
         return Err(format!(
-            "the server has not stored {} within {} s{why}; the outbox keeps it, and the next \
-             skald send or skald recv sends it first",
+            "the server has not stored {} within {} s{why}; {then}",
             left.join("; "),
             timeout.as_secs()
         ));

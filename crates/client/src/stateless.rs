@@ -10,11 +10,8 @@
 //! - It fails unless the server stores every envelope within the run: nothing waits for a later
 //!   one.
 
-use std::collections::BTreeMap;
 use std::num::NonZeroU64;
-use std::time::Duration;
 
-use serde_json::json;
 use skald_crypto::seal_message;
 use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Envelope, Frame, Header, MessageId, NonEmpty, RawEnvelope,
@@ -22,9 +19,8 @@ use skald_proto::{
 };
 
 use crate::follow::SpaceDevices;
-use crate::forms::{self, References};
 use crate::groups;
-use crate::send::{self, Answer, Draft, Key, Reported, Wire};
+use crate::send::{self, Answer, Draft, Key, Reported, Shown, Wire};
 use crate::service;
 use crate::spaces::Follower;
 use crate::state::State;
@@ -33,6 +29,7 @@ use crate::state::State;
 struct Sealed {
     recipient: DeviceId,
     msg_id: MessageId,
+    channel: ChannelId,
     frame: Vec<u8>,
 }
 
@@ -46,6 +43,20 @@ impl Wire for Sealed {
     }
 
     fn answered(&self, _: &State, _: &Answer) {}
+}
+
+impl Shown for Sealed {
+    fn channel(&self) -> ChannelId {
+        self.channel
+    }
+
+    fn reports(&self) -> bool {
+        true
+    }
+
+    fn kept(&self) -> bool {
+        false
+    }
 }
 
 /// Sends `draft` to `channel` of `roster`, the space's last accepted revision with `devices`, its
@@ -94,16 +105,13 @@ pub fn send(
         sealed.push(Sealed {
             recipient,
             msg_id,
+            channel,
             frame: frame.to_cbor(),
         });
     }
     let timeout = follower.timeout;
     let delivered = send::deliver(follower, &sealed, timeout, None);
-    let answers: BTreeMap<DeviceId, Option<&Answer>> = (sealed.iter())
-        .map(|one| (one.recipient, delivered.answer(&one.key())))
-        .collect();
-    show(msg_id, channel, &answers, reported);
-    outcome(msg_id, &answers, (timeout, delivered.failed()))
+    send::report(&follower.state, &sealed, &delivered, timeout, reported)
 }
 
 /// The member devices of the latest GroupInfo of `channel`, each with the HPKE key of its
@@ -139,89 +147,4 @@ fn recipients(
     Ok((view.members().iter())
         .map(|member| (member.device, admitted[&member.device].body().hpke))
         .collect())
-}
-
-/// Says what the server answered to each envelope of the message `msg_id` in `channel`, by its
-/// recipient device, as `reported` says.
-fn show(
-    msg_id: MessageId,
-    channel: ChannelId,
-    answers: &BTreeMap<DeviceId, Option<&Answer>>,
-    reported: Reported,
-) {
-    match reported {
-        Reported::Json(_) => {
-            let envelopes: Vec<serde_json::Value> = (answers.iter())
-                .map(|(device, answer)| match answer {
-                    Some(Answer::Stored) => {
-                        json!({ "recipient": device.to_string(), "answer": "stored" })
-                    }
-                    Some(Answer::Refused(problem)) => json!({
-                        "recipient": device.to_string(),
-                        "answer": "refused",
-                        "problem": problem,
-                    }),
-                    None => json!({ "recipient": device.to_string(), "answer": "unanswered" }),
-                })
-                .collect();
-            let fields = json!({
-                "msg_id": msg_id.to_string(),
-                "ref": References::new([msg_id]).of(msg_id),
-                "channel": channel.to_string(),
-                "envelopes": envelopes,
-            });
-            println!("{}", forms::object("sent", fields));
-        }
-        Reported::Quiet => {}
-        Reported::Full | Reported::Sent(_) => {
-            println!("The message {msg_id} to the channel {channel}:");
-            for (device, answer) in answers {
-                match answer {
-                    Some(Answer::Stored) => println!("  {device}  stored"),
-                    Some(Answer::Refused(problem)) => println!("  {device}  refused: {problem}"),
-                    None => println!("  {device}  no answer"),
-                }
-            }
-        }
-    }
-}
-
-/// Fails unless the server stored every envelope of the message `msg_id`, by `answers`, saying
-/// which it refused or has not answered within `timeout`, and why the last attempt failed, if
-/// `failed`.
-fn outcome(
-    msg_id: MessageId,
-    answers: &BTreeMap<DeviceId, Option<&Answer>>,
-    (timeout, failed): (Duration, Option<&str>),
-) -> Result<(), String> {
-    let mut problems = Vec::new();
-    let mut unanswered = Vec::new();
-    for (device, answer) in answers {
-        match answer {
-            Some(Answer::Stored) => {}
-            Some(Answer::Refused(problem)) => {
-                problems.push(format!(
-                    "to the device {device}: {}",
-                    crate::connection::printable(problem)
-                ));
-            }
-            None => unanswered.push(device.to_string()),
-        }
-    }
-    if !unanswered.is_empty() {
-        let why = failed.map_or_else(String::new, |err| format!(" ({err})"));
-        problems.push(format!(
-            "to {}: no answer within {} s{why}",
-            unanswered.join(", "),
-            timeout.as_secs()
-        ));
-    }
-    if problems.is_empty() {
-        return Ok(());
-    }
-    Err(format!(
-        "the server has not stored the message {msg_id} {}; a stateless run keeps nothing, so \
-         nothing sends it later",
-        problems.join("; ")
-    ))
 }

@@ -1100,7 +1100,7 @@ fn verdict(
     let held = match groups::members(follower, &checks.keys, header.channel)? {
         // A `service` device outside the channel's group takes its members from the latest
         // GroupInfo, as a recipient outside the group does ("Envelope").
-        None if follower.service.is_some() => group_info_members(follower, header),
+        None if follower.service.is_some() => group_info_members(follower, header)?,
         held => held,
     };
     judge(
@@ -1112,12 +1112,17 @@ fn verdict(
 }
 
 /// The member devices of the latest GroupInfo the server gives of the channel of `header`, once its
-/// signature verifies with a member leaf's key; none without one that does.
-fn group_info_members(follower: &mut Follower, header: &Header) -> Option<Vec<MemberDevice>> {
+/// signature verifies with a member leaf's key; none without one that does. Fails if the server does
+/// not give it, so the run acks nothing it has not judged.
+fn group_info_members(
+    follower: &mut Follower,
+    header: &Header,
+) -> Result<Option<Vec<MemberDevice>>, String> {
     let (space, channel) = (header.space, header.channel);
-    let (_, group_info) = groups::group_on_server(follower, space, channel).ok()?;
-    let view = groups::observe(channel, &group_info?).ok()?;
-    Some(view.members().to_vec())
+    let (_, group_info) = groups::group_on_server(follower, space, channel)?;
+    Ok(group_info
+        .and_then(|bytes| groups::observe(channel, &bytes).ok())
+        .map(|view| view.members().to_vec()))
 }
 
 /// What gives the content of `opened` with the sending device's certificate: it, once its
