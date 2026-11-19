@@ -2,8 +2,11 @@
 //! that opens with the agent's key, with its own counter: a message to the whole channel and one
 //! to the agent, but not one to another agent. The server holds only the copies' ciphertext.
 
+use skald_proto::ChannelId;
+
 use crate::fixtures::database;
 use crate::scene::Scene;
+use crate::world::{ACME, CREATE_CHANNEL, run};
 
 /// Two messages of Ada's to the whole channel, and one of Bob's agents.
 const FIRST: &str = "the nightly deploy starts at two";
@@ -50,4 +53,27 @@ fn a_message_to_the_service_agent_reaches_it_and_one_to_another_agent_does_not()
     let copies = scene.copies();
     let address = scene.address.clone();
     scene.assert_copies(&copies, channel, &[(TO_BOT, 1, Some(address.as_str()))]);
+}
+
+/// In a channel Ada creates, whose group holds only her device, her message still reaches
+/// `ci/deploy-bot` once a new token of it lists the channel: one copy, counter 1.
+#[test]
+fn a_lone_member_s_message_reaches_the_service_agent() {
+    let mut scene = Scene::new(
+        [3_155_510_021, 3_155_510_022],
+        ["ada-alone-standin", "bob-alone-standin"],
+    );
+    let created = run(&scene.talk.ada.machine, &[CREATE_CHANNEL, ACME]);
+    assert!(created.success, "{created:?}");
+    let shown = created.shown();
+    let channel = shown
+        .split(|char: char| char.is_whitespace() || char == ',' || char == ':')
+        .find_map(|word| word.parse::<ChannelId>().ok())
+        .unwrap_or_else(|| panic!("no channel ID shown: {shown:?}"));
+    let token = scene.new_token(&[channel], &[]);
+
+    scene.send_all(channel, "only the bot hears this");
+
+    let copies = scene.copies_with(&token);
+    scene.assert_copies(&copies, channel, &[("only the bot hears this", 1, None)]);
 }

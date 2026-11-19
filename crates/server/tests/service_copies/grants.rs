@@ -1,6 +1,6 @@
 //! The space's members get the grants of its live tokens that have the receive permission: those
-//! of tokens that only send or claim from queues, or that ended, are not given, and an account
-//! outside the space gets none.
+//! of tokens that only send or claim from queues, that ended or whose device is revoked, are not
+//! given, and an account outside the space and a service token get none.
 
 use crate::api::assert_refused;
 use crate::copies::{
@@ -73,4 +73,34 @@ fn an_account_outside_the_space_gets_no_grants() {
     assert_refused(&response, "eve");
     let response = grants_response(&stage, &[]);
     assert_refused(&response, "no session");
+}
+
+/// Once alice's master key revokes the bot, the members get none of its grants, though its token
+/// that receives has not been revoked or expired.
+#[test]
+fn members_get_no_grant_of_a_revoked_service_device() {
+    let stage = Stage::new(3_555_200_031);
+    let (alice, dave) = (&stage.f.team.alice, &stage.f.team.dave);
+    let grant = grant_for(&stage, &[stage.f.general], 0);
+    token_with(&stage, &grant, &[RECEIVE]);
+    let before = grants_of(&stage, dave);
+
+    alice.revoke(&alice.by_master(stage.bot.id, &[]));
+
+    let after = grants_of(&stage, dave);
+    assert_eq!((before, after), (sorted(&[&grant]), Vec::new()), "dave's");
+}
+
+/// The bot's own token, which receives, is refused the space's grants: only members' sessions get
+/// them.
+#[test]
+fn a_service_token_gets_no_grants() {
+    let stage = Stage::new(3_555_200_041);
+    let grant = grant_for(&stage, &[stage.f.general], 0);
+    let created = token_with(&stage, &grant, &[SEND, RECEIVE]);
+
+    let token = bearer(&created.token);
+    let response = grants_response(&stage, &[("authorization", &token)]);
+
+    assert_refused(&response, "the bot's token");
 }

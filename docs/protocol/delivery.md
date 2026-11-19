@@ -136,14 +136,13 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 
 ### Copies to service agents
 A member device's message with an `a2a` body also goes under [`hpke`](README.md#scheme-hpke), with the same `msg_id`, to each `service` device that:
-- has a `service-agent` entry in the latest revision the sending device accepted, but is not in the channel's `services` there;
+- has a `service-agent` entry in the latest revision the sending device accepted, but is not in the channel's `services` there, even one that has not joined the group yet;
 - has a valid certificate ([Device checks](membership.md#device-checks));
 - has a grant from the server that lists `channel` and passes the checks of [Service grant](README.md#service-grant);
 - and only when the content has no `to`, or `to` names that entry.
 
 - The server gives the space's members the grants of its service tokens that have not ended and have the `receive` permission: `listServiceGrants` in the [OpenAPI spec](../../api/openapi.json). This is its word; the device checks each grant itself.
 - Each copy's content has the `counter` the sending device keeps for that recipient device in the channel.
-- A `service` device in the channel's `services` gets no copy, also before it joins the group.
 - The sending device warns its user, naming the agent and the channel, when it starts sending a channel's copies to a `service` device it sent none of them before.
 - A refused copy is not retried; the device says so, and the message itself stays sent.
 

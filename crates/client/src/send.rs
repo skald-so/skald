@@ -7,8 +7,8 @@
 //! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
-//! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
-//! "Admitted devices"). The content is from the person address or the agent's, to the agent
+//! there waits for the server or no other device is in the group and no service agent gets a copy
+//! (`docs/protocol/membership.md`, "Admitted devices"). The content is from the person address or the agent's, to the agent
 //! `--to` names or, for `--all`, to no one in particular, with `hops` 0, the device's next
 //! `counter` in the channel and an A2A message with the text (`docs/protocol/README.md`,
 //! "Content"). With it go its copies under `hpke` to service agents outside the channel's group

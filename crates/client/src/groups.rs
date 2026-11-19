@@ -1576,7 +1576,8 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 /// device keeps for that reader in the channel ([`crate::copies`]). Gives the message ID and the
 /// readers that get their first copy of the channel's messages. Sends
 /// nothing, and says why, while a member device of the group is not admitted, while a Commit of
-/// this device in the channel waits for the server, or when no other device is in the group.
+/// this device in the channel waits for the server, or when no other device is in the group and
+/// no reader gets a copy.
 pub fn encrypt<'r>(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
@@ -1615,10 +1616,10 @@ pub fn encrypt<'r>(
                  nothing is sent there until the server stores it"
             ));
         }
-        if members.iter().all(|member| member.device == follower.this) {
+        if readers.is_empty() && members.iter().all(|member| member.device == follower.this) {
             return Err(format!(
                 "no device can receive the message: the group of the channel {channel} holds no \
-                 other device; nothing is sent"
+                 other device, and no service agent outside it gets a copy; nothing is sent"
             ));
         }
         let last = follower.state.channel_counter(channel).map_err(text)?;
@@ -1658,16 +1659,13 @@ pub fn encrypt<'r>(
                 (follower, &keys),
                 (space, channel, version),
                 reader,
-                msg_id,
+                (msg_id, agent),
                 &content,
             )?;
             if copy.counter == 1 {
                 first.push(reader);
             }
-            messages.push(Counted {
-                agent: agent.map(str::to_owned),
-                ..copy
-            });
+            messages.push(copy);
         }
         let changes = MlsChanges {
             messages,
@@ -1680,12 +1678,12 @@ pub fn encrypt<'r>(
 
 /// The copy under `hpke` to `reader` of the message `msg_id` in `channel` of `space`, sent with
 /// the protocol `version` by the device of `keys`, of the content `content` gives for the next
-/// counter the device keeps for `reader` in the channel; from no agent.
+/// counter the device keeps for `reader` in the channel; from `agent` if given.
 fn copy(
     (follower, keys): (&Follower, &Keys),
     (space, channel, version): (SpaceId, ChannelId, NonZeroU64),
     reader: &Reader,
-    msg_id: MessageId,
+    (msg_id, agent): (MessageId, Option<&str>),
     content: impl Fn(MessageId, NonZeroU64) -> Content,
 ) -> Result<Counted, String> {
     let last = (follower.state)
@@ -1726,7 +1724,7 @@ fn copy(
         },
         channel,
         counter: counter.get(),
-        agent: None,
+        agent: agent.map(str::to_owned),
     })
 }
 
