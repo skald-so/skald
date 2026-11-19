@@ -1,11 +1,12 @@
 //! `skald send` and `skald reply` between agents of one device, and between an agent and its
 //! person, in a channel whose group holds the device alone.
 
+use crate::client::{MCP, Session};
 use crate::kit::received_as_agent;
 use crate::lines::{agent_line_of, assert_says_sent};
 use crate::receipts::read_lines;
 use crate::replying::{REPLY, replied_lines};
-use crate::solo::{API, OWN, SEND, Solo, TO, WEB, assert_got, assert_not_shown, replies};
+use crate::solo::{API, CLIENT, OWN, SEND, Solo, TO, WEB, assert_got, assert_not_shown, replies};
 use crate::talk::{ADA_HOST, one_message_sent};
 use crate::world::AGENT;
 
@@ -78,4 +79,27 @@ fn reply_to_the_person_s_message_reaches_the_person_on_the_same_device() {
     let shown = replied_lines(&person, asked, &[WEB_ANSWERS]);
     assert_eq!(shown.len(), 1, "not replied once: {person}");
     assert_not_shown(&web.inbox(), WEB_ANSWERS, WEB);
+}
+
+/// What the person sends web, whose session opened with `server/discover`; it is nowhere else.
+const TO_DISCOVERED: &str = "local commands test: ada asks web, opened without initialize";
+
+/// A session web in `~/work/clientA/web` opens as Claude Code does, with `server/discover` and no
+/// `initialize`, and calls no tool. The person's `skald send --to ada/web` in `~/work/clientA`
+/// succeeds; web's one `inbox` shows it from the person's full address at `own`.
+#[test]
+fn person_s_send_reaches_a_session_that_only_opened_with_discover() {
+    let solo = Solo::new(4_657_010_011, "ada-asks-a-discovered-web");
+    let mut command = solo
+        .machine()
+        .command_in(&solo.dir(WEB), &[AGENT, WEB, MCP]);
+    let mut web = Session::discovered(&mut command, CLIENT);
+    let mark = solo.mark();
+
+    let sent = solo.person_runs(&[SEND, TO, &solo.short(WEB), TO_DISCOVERED]);
+
+    assert!(sent.success, "{sent:?}");
+    let asked = one_message_sent(&solo.talk.front, solo.default_channel(), mark);
+    let got = web.inbox();
+    assert_got(&got, TO_DISCOVERED, asked, (&solo.person(), ADA_HOST, OWN));
 }

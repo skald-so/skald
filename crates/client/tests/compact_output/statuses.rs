@@ -9,7 +9,7 @@ use skald_server::Settings;
 use crate::agents::{Agents, CLAUDE, CODEX};
 use crate::fixtures::assert_deleted;
 use crate::kit::{received, warnings_naming};
-use crate::lines::{agent_line, agent_notes, assert_no_uuid, lines_referring_to};
+use crate::lines::{agent_line, agent_line_of, agent_notes, assert_no_uuid, lines_referring_to};
 use crate::said::sent_as;
 use crate::talk::{BOB_HOST, DELIVERED, Line, Talk, status_lines};
 use crate::times::{DAY, MAILBOX, WEEK, moved_back};
@@ -56,7 +56,7 @@ fn assert_says_expired(shown: &str, msg_id: MessageId) {
 /// past the retention. claude then sends another message, and codex one; Bob's device reads both.
 /// claude's next `skald recv` says `expired` of its first message, by its reference, and no status
 /// of its second or of codex's message; codex's says no status of any of them; neither holds a
-/// UUID. Each shows the other's messages, as the device hands its own messages to its agents.
+/// UUID. As the device hands its own messages to its agents, claude's shows codex's message.
 /// The person's next `skald recv` then shows each of the three statuses once, in full: `expired`
 /// of claude's first message and `delivered` of the other two, each with Bob's device.
 #[test]
@@ -98,6 +98,7 @@ fn agent_sees_only_expired_of_its_own_messages_and_the_person_sees_every_status(
     }
     let lines = statuses_referring_to(&codex, expires);
     assert!(lines.is_empty(), "codex is told of claude's: {lines:?}");
+    agent_line_of(&claude, OF_CODEX);
 
     let person = received(&agents.talk.ada.machine).shown();
 

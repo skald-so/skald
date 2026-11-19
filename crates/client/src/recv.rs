@@ -715,12 +715,8 @@ pub fn own_message(
     // Every agent it has run as in the space: none ran as one after `seq`, past the cursor.
     let agents = (follower.state.agents(space, seq)).map_err(text)?;
     let gets = agent.is_some()
-        || agents.iter().any(|it| {
-            Some(it.as_str()) != agent
-                && to
-                    .as_ref()
-                    .is_none_or(|to| to.as_deref() == Some(it.as_str()))
-        });
+        || (agents.iter())
+            .any(|it| (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it.as_str())));
     let own = state::OwnMessage {
         seq,
         kept: Kept {

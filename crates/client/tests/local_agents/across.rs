@@ -69,3 +69,33 @@ fn api_and_bob_s_session_exchange_messages_labelled_peer_and_web_gets_api_s_at_o
     assert_labelled(&review.inbox(), TO_ALL, (&ada_api, ADA_HOST, PEER));
     assert_not_shown(&api.inbox(), TO_ALL, API);
 }
+
+/// What api sends Bob's web; it is nowhere else.
+const TO_BOBS_WEB: &str = "across devices test: api asks bob's web, not ada's";
+
+/// Bob joins `clienta` as above; his machine runs a session `--agent web` in its
+/// `~/work/clientA/web`, and Ada's runs api and web. api's send tool `to` `bob/web` reaches Bob's
+/// web's `inbox` from `ada/api` at `peer`, and not Ada's web's; Ada's person shows no `read` of it
+/// before Bob's web has it, and one after.
+#[test]
+fn message_to_another_account_s_agent_reaches_it_and_not_this_device_s_agent_of_that_name() {
+    let solo = Solo::new(4_657_008_011, "ada-asks-bob-s-web");
+    let (bob, _) = solo.with_bob(4_657_008_012, "bob-runs-a-web-agent");
+    let mut api = solo.session(API);
+    let mut web = solo.session(WEB);
+    let mut bob_web = session_in(&bob.machine, &dir_of(&bob.machine, "work/clientA/web"), WEB);
+
+    let asked = solo.sends(&mut api, &format!("{}/{WEB}", bob.handle), TO_BOBS_WEB);
+
+    assert_not_shown(&web.inbox(), TO_BOBS_WEB, WEB);
+    let person = solo.person_reads();
+    assert_eq!(
+        read_lines(&person, asked),
+        0,
+        "read on Ada's device: {person}"
+    );
+    let got = bob_web.inbox();
+    assert_labelled(&got, TO_BOBS_WEB, (&solo.short(API), ADA_HOST, PEER));
+    let person = shows_read(solo.machine(), asked) + &solo.person_reads();
+    assert_eq!(read_lines(&person, asked), 1, "not read once: {person}");
+}

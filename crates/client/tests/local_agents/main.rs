@@ -52,6 +52,7 @@ mod refusals;
 mod session;
 mod solo;
 mod waiting;
+mod waking;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices and the helpers of the tests of reading the

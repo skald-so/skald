@@ -623,8 +623,8 @@ enum Command {
         github_api_url: String,
     },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
-    /// its config; the session's folder is the working directory. Once the client initializes, the
-    /// session registers as its agent in the folder's space: the messages this device takes in from
+    /// its config; the session's folder is the working directory. Once the client initializes or
+    /// discovers the server, the session registers as its agent in the folder's space: the messages this device takes in from
     /// then on are kept for it. Without --agent, the agent's name joins with '-' the name the client
     /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
     /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on

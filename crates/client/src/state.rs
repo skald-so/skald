@@ -1899,6 +1899,25 @@ impl State {
             .ok_or_else(|| Error::Malformed(format!("the own seq after {last}")))
     }
 
+    /// The highest `seq` of the device's own messages kept for `agent`, or for the person with
+    /// none; 0 with none. A later own message kept for it has a higher one.
+    pub fn last_own_kept(&self, agent: Option<&str>) -> Result<u64, Error> {
+        let first = sql_seq(OWN_FIRST)?;
+        let last: i64 = match agent {
+            Some(agent) => self.db.query_row(
+                "SELECT coalesce(max(seq), 0) FROM handover WHERE agent = ?1 AND seq >= ?2",
+                params![agent, first],
+                |row| row.get(0),
+            )?,
+            None => self.db.query_row(
+                "SELECT coalesce(max(seq), 0) FROM kept WHERE person = 1 AND seq >= ?1",
+                params![first],
+                |row| row.get(0),
+            )?,
+        };
+        u64::try_from(last).map_err(|_| Error::Malformed("a kept seq".to_owned()))
+    }
+
     /// The device's mailbox cursor: the highest `seq` it wrote, 0 before the first.
     pub fn cursor(&self) -> Result<u64, Error> {
         let cursor: Option<i64> = self
