@@ -36,6 +36,7 @@
 #![allow(dead_code)]
 
 mod everything;
+mod forged;
 mod hidden;
 mod records;
 mod sealed;

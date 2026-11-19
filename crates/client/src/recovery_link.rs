@@ -123,7 +123,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
              account's recovery key, or someone changed the backup",
         )
     })?;
-    // The wraps to the recovery key open with its HPKE key pair, kept until the anchors are taken.
+    // The wraps to the recovery key open with its HPKE key pair, kept until the wraps are taken.
     let recovery = HpkeKey::from_recovery_key(&key.to_bytes());
     drop(key);
     let cert = new.own_cert(&signer)?;
