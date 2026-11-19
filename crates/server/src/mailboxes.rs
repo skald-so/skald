@@ -19,6 +19,7 @@ use sqlx::{PgConnection, PgPool};
 use crate::MAILBOX_LONGEST;
 use crate::delivery::Wakers;
 use crate::groups;
+use crate::service_tokens::Token;
 
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
@@ -26,6 +27,8 @@ pub(crate) struct Sender {
     pub(crate) account: AccountId,
     /// The protocol version of its connection.
     pub(crate) version: NonZeroU64,
+    /// The service token of its connection, for a `service` device.
+    pub(crate) token: Option<Token>,
 }
 
 /// The server's limits on sends; none without a setting.
@@ -194,7 +197,13 @@ async fn route(
                 m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
             })
     };
-    if !in_channel(sender.account, sender.device) {
+    // A `service` device sends with its token only where the token's send permission and channels
+    // let it.
+    let sends = match &sender.token {
+        Some(token) => token.sends_in(header.space, header.channel),
+        None => in_channel(sender.account, sender.device),
+    };
+    if !sends {
         return Ok(Err(Problem::NotAMember));
     }
     if header.scheme == Scheme::Mls {

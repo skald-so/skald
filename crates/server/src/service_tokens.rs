@@ -3,7 +3,8 @@
 //! grant"); any admin of the space lists and revokes them, and a token reads its own record. The
 //! value is given once and stored only as its SHA-256. A token ends at its expiry, at its
 //! revocation, once its device is revoked and once the space's latest revision lists its device in
-//! no service agent entry.
+//! no service agent entry; its connections close then, on every instance. What a token reaches,
+//! alone or with its device's proof: [`Token`].
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,7 +22,7 @@ use sqlx::{PgConnection, PgPool};
 
 use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, account, answer, parse};
-use crate::sessions::from_page;
+use crate::sessions::{close_ended, from_page, tell_ended};
 use crate::sign_in::{bearer, digest, random_token};
 use crate::spaces::{Found, Gotten, admin, find};
 use crate::{AppState, database_failed, mailboxes, problem, requests};
@@ -398,19 +399,28 @@ pub(crate) async fn revoke(
         }
         admin_only(&found)?;
         // As text: an ID that is no UUID is no token. One that has ended stays as it is.
-        let deleted = sqlx::query(
+        let failed = |err| Refusal::Database("revoke a service token", err);
+        let mut tx = state.db.begin().await.map_err(failed)?;
+        let deleted: Vec<(Vec<u8>,)> = sqlx::query_as(
             "DELETE FROM service_tokens t USING devices d
              WHERE t.space_id = $1::uuid AND t.id::text = lower($2) AND d.id = t.device_id
-                 AND t.expires_at > now() AND NOT d.revoked",
+                 AND t.expires_at > now() AND NOT d.revoked
+             RETURNING t.token_hash",
         )
         .bind(found.id.to_string())
         .bind(&token)
-        .execute(&state.db)
+        .fetch_all(&mut *tx)
         .await
-        .map_err(|err| Refusal::Database("revoke a service token", err))?;
-        if deleted.rows_affected() == 0 {
+        .map_err(failed)?;
+        if deleted.is_empty() {
             return Err(Refusal::NoServiceToken);
         }
+        // Its connections close on every instance, as a session's at its end.
+        tell_ended(&state, &mut tx, &deleted)
+            .await
+            .map_err(failed)?;
+        tx.commit().await.map_err(failed)?;
+        close_ended(&state, &deleted);
         Ok(StatusCode::NO_CONTENT.into_response())
     })
     .await
@@ -472,6 +482,86 @@ async fn own_record(db: &PgPool, hash: &[u8]) -> Result<Option<OwnToken>, sqlx::
         record,
         grant: base64(&grant),
     }))
+}
+
+/// A token that has not ended, as a request that carries it finds it: what it reaches.
+#[derive(Clone)]
+pub(crate) struct Token {
+    pub(crate) space: SpaceId,
+    /// Its `service` device, and that device's account.
+    pub(crate) device: DeviceId,
+    pub(crate) account: AccountId,
+    send: bool,
+    receive: bool,
+    channels: Vec<ChannelId>,
+    /// Seconds since the Unix epoch.
+    pub(crate) expires: u64,
+}
+
+impl Token {
+    /// Whether it lists `channel` of `space`.
+    pub(crate) fn lists(&self, space: SpaceId, channel: ChannelId) -> bool {
+        space == self.space && self.channels.contains(&channel)
+    }
+
+    /// Whether its device sends in `channel` of `space` with it.
+    pub(crate) fn sends_in(&self, space: SpaceId, channel: ChannelId) -> bool {
+        self.send && self.lists(space, channel)
+    }
+
+    /// Whether its device reads and acks its mailbox with it.
+    pub(crate) fn receives(&self) -> bool {
+        self.receive
+    }
+}
+
+/// The spaces of `spaces` whose notices a connection of `token`, if it has one, gets: its token's
+/// space only.
+pub(crate) fn seen(token: Option<&Token>, mut spaces: Vec<SpaceId>) -> Vec<SpaceId> {
+    if let Some(token) = token {
+        spaces.retain(|space| *space == token.space);
+    }
+    spaces
+}
+
+/// The token whose value has the SHA-256 `hash`, if it has not ended, with its use recorded, to
+/// the minute.
+pub(crate) async fn live(db: &PgPool, hash: &[u8]) -> Result<Option<Token>, sqlx::Error> {
+    type Found = (String, String, String, Vec<String>, Vec<String>, i64);
+    let found: Option<Found> = sqlx::query_as(
+        "WITH t AS (
+             SELECT t.token_hash, t.space_id, t.device_id, d.account_id, t.permissions,
+                 t.channels, t.expires_at, t.last_used_at
+             FROM service_tokens t JOIN devices d ON d.id = t.device_id
+             WHERE t.token_hash = $1 AND t.expires_at > now() AND NOT d.revoked
+         ), used AS (
+             UPDATE service_tokens u SET last_used_at = now() FROM t
+             WHERE u.token_hash = t.token_hash
+                 AND (t.last_used_at IS NULL OR t.last_used_at <= now() - interval '1 minute')
+         )
+         SELECT space_id::text, device_id::text, account_id::text, permissions,
+             channels::text[], floor(extract(epoch FROM expires_at))::bigint
+         FROM t",
+    )
+    .bind(hash)
+    .fetch_optional(db)
+    .await?;
+    Ok(found.map(
+        |(space, device, account, permissions, channels, expires)| Token {
+            space: space.parse().expect("a stored space ID"),
+            device: device.parse().expect("a stored device ID"),
+            account: account.parse().expect("a stored account ID"),
+            send: permissions.iter().any(|p| p == Permission::Send.as_str()),
+            receive: permissions
+                .iter()
+                .any(|p| p == Permission::Receive.as_str()),
+            channels: channels
+                .iter()
+                .map(|channel| channel.parse().expect("a stored channel ID"))
+                .collect(),
+            expires: u64::try_from(expires).expect("an expiry after 1970"),
+        },
+    ))
 }
 
 /// The answer to a request without a token that has not ended.

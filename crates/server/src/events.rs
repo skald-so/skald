@@ -23,8 +23,8 @@ use crate::connections::Proved;
 use crate::delivery::Reader;
 use crate::notices::Listening;
 use crate::protocol::Stated;
-use crate::requests::{ack_listening, invalid, listening, prove};
-use crate::{AppState, database_failed, error_reports};
+use crate::requests::{ack_listening, invalid, listening, prove, receiving};
+use crate::{AppState, database_failed, error_reports, service_tokens};
 
 /// The keep-alive interval of a stream without the server setting.
 pub const SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
@@ -43,6 +43,9 @@ pub(crate) async fn events(
         Ok(proved) => proved,
         Err(refused) => return refused,
     };
+    if let Err(refused) = receiving(&proved) {
+        return refused;
+    }
     let Some(cursor) = cursor(&headers) else {
         return invalid("Last-Event-ID is not a seq.");
     };
@@ -133,9 +136,11 @@ impl Pushing {
                 biased;
                 _ = &mut self.proved.ended => return None,
                 () = self.reader.woken() => self.reading = Some(i64::MAX),
-                spaces = self.notices.next() => self.queued.extend(
-                    spaces.into_iter().map(|space| Frame::Push(Push::SpaceNotice { space })),
-                ),
+                spaces = self.notices.next() => {
+                    let spaces = service_tokens::seen(self.proved.token.as_ref(), spaces);
+                    let notices = spaces.into_iter().map(|space| Push::SpaceNotice { space });
+                    self.queued.extend(notices.map(Frame::Push));
+                }
             }
         }
     }
