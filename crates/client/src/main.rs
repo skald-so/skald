@@ -381,12 +381,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Replies to a message, in its channel, to its sender only, a person included: as skald send
-    /// sends, with the message's ID as its reply_to. The person replies to a message its skald recv
-    /// showed; an agent only to one handed over to it in the space of its folder. A message can be
-    /// replied to until its wait ends, as an agent's skald recv says. Sends nothing, and says why,
-    /// for a message it cannot reply to, or a reference two messages it keeps share. Says what
-    /// skald send says.
+    /// Replies to a message, in its channel, to its sender, a person included: as skald send
+    /// sends, with the message's ID as its reply_to; as with --to, the reply is handed only to its
+    /// sender, but it is not private: every member of the channel gets it. The person replies to a
+    /// message its skald recv showed; an agent only to one handed over to it in the space of its
+    /// folder. A message can be replied to until its wait ends, as an agent's skald recv says.
+    /// Sends nothing, and says why, for a message it cannot reply to, or a reference two messages
+    /// it keeps share. Says what skald send says.
     Reply {
         /// The message: its reference, #<ref> or <ref>, as skald recv shows it, or its ID.
         #[arg(value_name = "MESSAGE", allow_hyphen_values = true)]

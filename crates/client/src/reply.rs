@@ -1,5 +1,6 @@
 //! `skald reply` and the MCP reply tool ([`crate::mcp`]): the device answers a message in its
-//! channel, to its author only (`docs/protocol/README.md`, "Content").
+//! channel, `to` its author; like any message, every member device of the channel gets it
+//! (`docs/protocol/README.md`, "Content").
 //!
 //! - The device keeps what a reply needs of each message its person's run showed or it handed to an
 //!   agent, for the message's wait: its envelope's `ttl`, at most [`recv::AGENT_WAIT`], after the
@@ -32,9 +33,6 @@ use crate::secrets;
 use crate::send::{self, Draft};
 use crate::spaces::Scope;
 use crate::state::{self, Replied, State, Target};
-
-/// The base32 alphabet of a reference ([`forms`]).
-const BASE32: &str = "abcdefghijklmnopqrstuvwxyz234567";
 
 /// What a reply needs of a message besides its `msg_id`, space and channel, as the device seals it.
 #[derive(Serialize, Deserialize)]
@@ -112,7 +110,7 @@ fn given(message: &str) -> Result<Given, String> {
         return Ok(Given::Id(msg_id));
     }
     let reference = trimmed.strip_prefix('#').unwrap_or(trimmed).to_lowercase();
-    if reference.len() >= SHORTEST && reference.chars().all(|char| BASE32.contains(char)) {
+    if reference.len() >= SHORTEST && reference.bytes().all(|byte| forms::BASE32.contains(&byte)) {
         return Ok(Given::Reference(reference));
     }
     Err(format!(
