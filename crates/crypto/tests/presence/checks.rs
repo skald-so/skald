@@ -350,7 +350,11 @@ fn a_value_holding_no_presence_plaintext_is_refused_without_a_panic() {
         ),
         ("a signed object that is no array", signed[1..].to_vec()),
     ];
+    // The padding's zeros complete a plaintext cut only before zeros, which is then the whole
+    // plaintext: each cut ends before the last nonzero byte.
+    let last_nonzero = signed.iter().rposition(|&byte| byte != 0).unwrap();
     for length in [1, signed.len() / 2, signed.len() - 1] {
+        let length = length.min(last_nonzero);
         cases.push(("a truncated plaintext", signed[..length].to_vec()));
     }
     for (what, plaintext) in cases {
