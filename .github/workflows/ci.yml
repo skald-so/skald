@@ -257,50 +257,7 @@ jobs:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
-          # TEMPORARY: sockets and memory every 2 s during the tests.
-          netsh int ipv4 show dynamicport tcp
-          netsh int ipv4 show excludedportrange tcp
-          cargo test -p skald-client --locked --no-run
-          $sampler = Start-Job -ScriptBlock {
-            while ($true) {
-              $c = @(Get-NetTCPConnection -ErrorAction SilentlyContinue)
-              $dyn = @($c | Where-Object { $_.LocalPort -ge 49152 } | Select-Object -ExpandProperty LocalPort -Unique).Count
-              $states = $c | Group-Object State | Sort-Object Count -Descending | ForEach-Object { "$($_.Name)=$($_.Count)" }
-              $owners = $c | Where-Object { $_.State -ne 'TimeWait' } | Group-Object OwningProcess | Sort-Object Count -Descending | Select-Object -First 4 | ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }
-              $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue).Count
-              $mem = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
-              $os = Get-CimInstance Win32_OperatingSystem
-              "SAMPLE $((Get-Date).ToUniversalTime().ToString('HH:mm:ss')) dyn=$dyn udp=$udp nonpaged=$([int]($mem.PoolNonpagedBytes / 1MB))MB free=$([int]($os.FreePhysicalMemory / 1KB))MB procs=$(@(Get-Process).Count) $($states -join ' ') :: $($owners -join ' ')"
-              Start-Sleep -Seconds 2
-            }
-          }
-          $env:SKALD_TEST_NETLOG = Join-Path $env:RUNNER_TEMP 'netlog'
-          New-Item -ItemType Directory -Path $env:SKALD_TEST_NETLOG | Out-Null
           cargo test -p skald-client --locked --no-fail-fast
-          $rc = $LASTEXITCODE
-          cargo test -p skald-client --locked --no-fail-fast
-          if ($LASTEXITCODE -ne 0) { $rc = 1 }
-          Stop-Job $sampler
-          Receive-Job $sampler
-          "netlogs: $(@(Get-ChildItem $env:SKALD_TEST_NETLOG).Count)"
-          Get-ChildItem $env:SKALD_TEST_NETLOG | ForEach-Object {
-            $hits = Select-String -Path $_.FullName -Pattern '"net_error":-55|"os_error":10055' -Context 6, 2
-            if ($hits) {
-              "NETLOG $($_.Name)"
-              $hits | ForEach-Object { $_.Context.PreContext; "> $($_.Line)"; $_.Context.PostContext; '--' }
-              New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'netlog-hits') | Out-Null
-              Copy-Item $_.FullName (Join-Path $env:RUNNER_TEMP 'netlog-hits')
-            }
-          }
-          exit $rc
-      # TEMPORARY: the net logs of Chrome that failed with ERR_NO_BUFFER_SPACE.
-      - name: Upload the net logs
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: netlog-hits
-          path: ${{ runner.temp }}/netlog-hits
-          if-no-files-found: ignore
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

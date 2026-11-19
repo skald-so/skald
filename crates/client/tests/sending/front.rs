@@ -30,7 +30,7 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
-use super::relay::{answered_in_full, reset, reset_on_close};
+use super::relay::{answered_in_full, reset};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -147,8 +147,6 @@ struct Link {
     held_end: Mutex<Option<Vec<u8>>>,
     /// What the machine sent and what the server answered on it, while it is no WebSocket.
     http: Mutex<(Vec<u8>, Vec<u8>)>,
-    /// Whether the machine has left it.
-    left: AtomicBool,
 }
 
 impl Link {
@@ -468,10 +466,8 @@ fn to_server(
     loop {
         let count = match machine.read(&mut buffer) {
             Ok(0) | Err(_) => {
-                // The machine left: its end of the connection ends with a reset, and so does the
-                // server's once the server has answered it in full.
-                link.left.store(true, Ordering::SeqCst);
-                reset_on_close(&machine);
+                // The machine left a connection the server has answered in full: it ends with a
+                // reset.
                 if frames.is_none() && link.answered_in_full() {
                     return reset(&server);
                 }
@@ -656,9 +652,7 @@ fn to_machine(
             }
         }
     }
-    if !link.left.load(Ordering::SeqCst) {
-        let _ = machine.shutdown(Shutdown::Write);
-    }
+    let _ = machine.shutdown(Shutdown::Write);
 }
 
 /// Forwards to `machine` each whole frame in `pending`, the server's, as the rules say; whether
