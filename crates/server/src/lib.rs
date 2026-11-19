@@ -190,10 +190,17 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
     let wakers = Arc::new(delivery::Wakers::new(instance.clone()));
     let connections = Arc::<connections::Connections>::default();
     let notices = Arc::<notices::Notices>::default();
+    let send_rate = settings
+        .send_rate_limit
+        .map(|messages| mailboxes::SendRate {
+            messages,
+            window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
+        });
     tokio::spawn(expiry::run(
         db.clone(),
         Arc::clone(&wakers),
         settings.mailbox_retention,
+        send_rate.map(|rate| rate.window),
     ));
     tokio::spawn(link_runs::sweep(db.clone()));
     if let Some(retention) = settings.history_retention {
@@ -444,12 +451,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,
-                send_rate: settings
-                    .send_rate_limit
-                    .map(|messages| mailboxes::SendRate {
-                        messages,
-                        window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
-                    }),
+                send_rate,
             },
             devices_limit: settings.devices_limit,
             service_agents_limit: settings.service_agents_limit,

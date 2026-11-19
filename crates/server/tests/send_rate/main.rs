@@ -62,5 +62,7 @@ mod rate;
 mod counting;
 mod devices;
 mod handshakes;
+mod parallel;
+mod retention;
 mod settings;
 mod window;
