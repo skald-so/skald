@@ -10,6 +10,7 @@ use skald_github_stand_in::User;
 use crate::browser::Browser;
 use crate::cloud::{Cloud, GIVE_MASTER, shown_grant};
 use crate::machine::{DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, YES};
+use crate::system;
 use crate::terminal::Terminal;
 use crate::{
     APPROVE, as_agent, assert_quiet, assert_waits, bytes_hold_key, first_at_terminal, held,
@@ -252,56 +253,4 @@ fn with_the_systems_key_storage_its_entry_holds_the_key_only_until_it_is_shown()
         !bytes_hold_key(after.as_bytes(), &key),
         "the entry holds the shown key"
     );
-}
-
-/// The system's key storage entry of a machine, as the client names it: the service `skald`, the
-/// user the machine's state directory, its absolute path. Deleted on drop.
-mod system {
-    use std::sync::Arc;
-
-    use keyring_core::api::CredentialStore;
-
-    use crate::machine::Machine;
-
-    pub struct Entry(keyring_core::Entry);
-
-    impl Entry {
-        pub fn of(machine: &Machine) -> Self {
-            let dir = machine
-                .state_dir()
-                .canonicalize()
-                .expect("the state directory");
-            let entry = store()
-                .build("skald", &dir.display().to_string(), None)
-                .expect("a key storage entry");
-            Entry(entry)
-        }
-
-        pub fn value(&self) -> Option<String> {
-            match self.0.get_password() {
-                Ok(value) => Some(value),
-                Err(keyring_core::Error::NoEntry) => None,
-                Err(err) => panic!("the system's key storage: {err}"),
-            }
-        }
-    }
-
-    impl Drop for Entry {
-        fn drop(&mut self) {
-            let _ = self.0.delete_credential();
-        }
-    }
-
-    fn store() -> Arc<CredentialStore> {
-        #[cfg(target_os = "macos")]
-        let store: Arc<CredentialStore> =
-            apple_native_keyring_store::keychain::Store::new().expect("the Keychain");
-        #[cfg(windows)]
-        let store: Arc<CredentialStore> =
-            windows_native_keyring_store::Store::new().expect("Credential Manager");
-        #[cfg(all(unix, not(target_os = "macos")))]
-        let store: Arc<CredentialStore> =
-            dbus_secret_service_keyring_store::Store::new().expect("the Secret Service");
-        store
-    }
 }

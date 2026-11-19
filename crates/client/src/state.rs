@@ -352,6 +352,14 @@ const MIGRATIONS: &[&str] = &[
         agent TEXT NOT NULL,
         PRIMARY KEY (seq, agent)
     ) STRICT;",
+    // A device waiting for linking that links with the recovery key: the master public key it
+    // pinned and the certificate it issued with the master key, in CBOR, until it is linked. At
+    // most one row.
+    "CREATE TABLE recovery_link (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        master BLOB NOT NULL CHECK (length(master) = 32),
+        cert BLOB NOT NULL
+    ) STRICT",
     // The device's own channel messages, which it keeps for its person and agents once the server
     // stored them (`docs/protocol/delivery.md`, "Device to agent"): the last `seq` it gave one, past
     // [`OWN_FIRST`]; each one whose envelope waits in the outbox, by `msg_id`, with its `seq`, space
@@ -470,6 +478,9 @@ pub enum Link {
         cert: Vec<u8>,
         link: Vec<u8>,
     },
+    /// Waiting, it links with the recovery key: it pinned the master public key `master` and
+    /// issued its certificate `cert` with the master key, in CBOR; it has not finished linking.
+    Recovering { master: [u8; 32], cert: Vec<u8> },
 }
 
 /// How a device of a list changed since the device last checked it ([`State::device_statuses`]).
@@ -884,7 +895,10 @@ impl State {
                 }
             }
             "certified" => pinned().map(|(master, cert)| Link::Certified { master, cert })?,
-            "waiting" => self.granted()?.unwrap_or(Link::Waiting),
+            "waiting" => match self.granted()? {
+                Some(granted) => granted,
+                None => self.recovering()?.unwrap_or(Link::Waiting),
+            },
             other => return Err(Error::Malformed(format!("the device's link {other:?}"))),
         };
         Ok(Some(Device {
@@ -941,6 +955,24 @@ impl State {
         .transpose()
     }
 
+    /// The master key and the certificate of a waiting device that links with the recovery key,
+    /// if it is one.
+    fn recovering(&self) -> Result<Option<Link>, Error> {
+        let row = self
+            .db
+            .query_row("SELECT master, cert FROM recovery_link", [], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+            })
+            .optional()?;
+        row.map(|(master, cert)| {
+            let master = master
+                .try_into()
+                .map_err(|_| Error::Malformed("the master key pinned to recover".to_owned()))?;
+            Ok(Link::Recovering { master, cert })
+        })
+        .transpose()
+    }
+
     /// Records how the device is linked.
     pub fn set_link(&self, link: &Link) -> Result<(), Error> {
         let (name, pinned, sealed) = match link {
@@ -952,7 +984,9 @@ impl State {
                 backup,
             } => ("sent", Some((master, cert)), Some((record, backup))),
             Link::Certified { master, cert } => ("certified", Some((master, cert)), None),
-            Link::Waiting | Link::Granted { .. } => ("waiting", None, None),
+            Link::Waiting | Link::Granted { .. } | Link::Recovering { .. } => {
+                ("waiting", None, None)
+            }
         };
         let (master, cert) = pinned.unzip();
         let (record, backup) = sealed.unzip();
@@ -963,6 +997,13 @@ impl State {
                 params![master.as_slice(), cert, link],
             )?,
             _ => tx.execute("DELETE FROM link_grant", [])?,
+        };
+        match link {
+            Link::Recovering { master, cert } => tx.execute(
+                "INSERT OR REPLACE INTO recovery_link (id, master, cert) VALUES (1, ?1, ?2)",
+                params![master.as_slice(), cert],
+            )?,
+            _ => tx.execute("DELETE FROM recovery_link", [])?,
         };
         tx.execute(
             "UPDATE device SET link = ?1, master = ?2, cert = ?3, record = ?4, backup = ?5",
@@ -2811,6 +2852,15 @@ pub(crate) mod tests {
                 master,
                 cert: cert.clone(),
                 link: vec![4, 5],
+            },
+            Link::Waiting,
+            Link::Recovering {
+                master,
+                cert: cert.clone(),
+            },
+            Link::Certified {
+                master,
+                cert: cert.clone(),
             },
             Link::Waiting,
             Link::New,
