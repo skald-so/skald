@@ -183,7 +183,6 @@ impl GitHub {
     /// Starts a stand-in for `app` with no users and no faults.
     pub fn start(app: App) -> Self {
         let listener = StdListener::bind("127.0.0.1:0").expect("bind a local port");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("github {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         listener
             .set_nonblocking(true)
             .expect("make the listener non-blocking");

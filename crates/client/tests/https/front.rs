@@ -43,7 +43,6 @@ impl Front {
     pub fn bind(tls: Vec<Arc<ServerConfig>>) -> Self {
         assert!(!tls.is_empty(), "a certificate to present");
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("tlsfront {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let port = listener
             .local_addr()
             .expect("the endpoint's address")

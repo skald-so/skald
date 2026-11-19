@@ -199,7 +199,6 @@ impl Relay {
     /// Forwards every connection to `target`, such as `127.0.0.1:41234`.
     pub fn start(target: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("relay {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let url = format!("http://{}", listener.local_addr().expect("local address"));
         let reads = Arc::new(Mutex::new(Vec::new()));
         let shared = Arc::new(Shared::default());
@@ -222,8 +221,9 @@ impl Relay {
                         continue;
                     }
                 };
-                pipe(&machine, &server, connection, true, &kept, &rules);
-                pipe(&server, &machine, connection, false, &kept, &rules);
+                let left = Arc::new(AtomicBool::new(false));
+                pipe(&machine, &server, connection, true, &kept, &rules, &left);
+                pipe(&server, &machine, connection, false, &kept, &rules, &left);
             }
         });
         Relay { url, reads, shared }
@@ -429,7 +429,8 @@ impl Drop for Relay {
 }
 
 /// Copies `from` to `to` on a thread of its own, keeping each read and applying `shared`'s rules;
-/// closes `to`'s writing half once `from` ends.
+/// closes `to`'s writing half once `from` ends, unless `to` is the machine's end and the machine
+/// has `left` the connection.
 fn pipe(
     from: &TcpStream,
     to: &TcpStream,
@@ -437,11 +438,13 @@ fn pipe(
     to_server: bool,
     reads: &Arc<Mutex<Vec<Chunk>>>,
     shared: &Arc<Shared>,
+    left: &Arc<AtomicBool>,
 ) {
     let mut from = from.try_clone().expect("clone a stream");
     let mut to = to.try_clone().expect("clone a stream");
     let reads = Arc::clone(reads);
     let shared = Arc::clone(shared);
+    let left = Arc::clone(left);
     let (source, sink) = if to_server {
         ("machine", "server")
     } else {
@@ -500,9 +503,16 @@ fn pipe(
                 break;
             }
         }
-        // The machine left a connection the server has answered in full: it ends with a reset.
-        if to_server && idle(&reads.lock().expect("the relay's reads"), connection) {
-            reset(&to);
+        if to_server {
+            // The machine left: its end of the connection ends with a reset, and so does the
+            // server's once the server has answered it in full.
+            left.store(true, Ordering::SeqCst);
+            reset_on_close(&from);
+            if idle(&reads.lock().expect("the relay's reads"), connection) {
+                reset(&to);
+                return;
+            }
+        } else if left.load(Ordering::SeqCst) {
             return;
         }
         let _ = to.shutdown(Shutdown::Write);
@@ -559,13 +569,20 @@ fn answers(mut bytes: &[u8]) -> Option<usize> {
     Some(count)
 }
 
-/// Ends `stream`'s connection with a reset once every copy of it is dropped: unlike a close, it
-/// leaves neither end in TIME_WAIT, which holds the closing end's port for 30 s on macOS and for
-/// minutes on Windows, where a whole run of the tests used up the ports. Ends reading too, so
-/// that a thread that reads the stream lets go of its copy.
+/// Ends `stream`'s connection with a reset once every copy of it is dropped, as
+/// [`reset_on_close`] does; ends reading too, so that a thread that reads the stream lets go of
+/// its copy.
 pub fn reset(stream: &TcpStream) {
-    let _ = SockRef::from(stream).set_linger(Some(Duration::ZERO));
+    reset_on_close(stream);
     let _ = stream.shutdown(Shutdown::Read);
+}
+
+/// Makes `stream`'s connection end with a reset once every copy of it is dropped. Unlike a close,
+/// a reset leaves neither end in TIME_WAIT, which holds the closing end's port for 30 s on macOS
+/// and for 2 minutes on Windows, where a whole run of the tests used up the ports. An end that has
+/// closed already, such as a machine's that left, goes from FIN_WAIT_2 to CLOSED at the reset.
+pub fn reset_on_close(stream: &TcpStream) {
+    let _ = SockRef::from(stream).set_linger(Some(Duration::ZERO));
 }
 
 /// The answer `answer` with its body rewritten by `rewrite` if its status is 200, and whatever came

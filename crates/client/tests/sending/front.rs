@@ -30,7 +30,7 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
-use super::relay::{answered_in_full, reset};
+use super::relay::{answered_in_full, reset, reset_on_close};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -147,6 +147,8 @@ struct Link {
     held_end: Mutex<Option<Vec<u8>>>,
     /// What the machine sent and what the server answered on it, while it is no WebSocket.
     http: Mutex<(Vec<u8>, Vec<u8>)>,
+    /// Whether the machine has left it.
+    left: AtomicBool,
 }
 
 impl Link {
@@ -222,7 +224,6 @@ impl Front {
     /// Listens on a free local port; connections wait until [`Front::forward_to`] names a target.
     pub fn bind() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("front {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let port = listener.local_addr().expect("the front's address").port();
         let shared = Arc::new(Shared {
             target: OnceLock::new(),
@@ -467,8 +468,10 @@ fn to_server(
     loop {
         let count = match machine.read(&mut buffer) {
             Ok(0) | Err(_) => {
-                // The machine left a connection the server has answered in full: it ends with a
-                // reset.
+                // The machine left: its end of the connection ends with a reset, and so does the
+                // server's once the server has answered it in full.
+                link.left.store(true, Ordering::SeqCst);
+                reset_on_close(&machine);
                 if frames.is_none() && link.answered_in_full() {
                     return reset(&server);
                 }
@@ -653,7 +656,9 @@ fn to_machine(
             }
         }
     }
-    let _ = machine.shutdown(Shutdown::Write);
+    if !link.left.load(Ordering::SeqCst) {
+        let _ = machine.shutdown(Shutdown::Write);
+    }
 }
 
 /// Forwards to `machine` each whole frame in `pending`, the server's, as the rules say; whether

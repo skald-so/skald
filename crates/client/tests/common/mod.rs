@@ -117,7 +117,6 @@ impl Server {
                 .expect("bind a local port")
         });
         let addr = listener.local_addr().expect("the server's address");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("server {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let settings = settings(addr);
         runtime.spawn(async move {
             axum::serve(listener, skald_server::app(pool, settings))
@@ -289,7 +288,6 @@ pub struct Stub {
 impl Stub {
     pub fn start(answer: fn(&str) -> String) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("stub {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let addr: SocketAddr = listener.local_addr().expect("the stub's address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);

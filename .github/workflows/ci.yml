@@ -257,35 +257,28 @@ jobs:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
-          # TEMPORARY: TIME_WAIT per test target.
+          # TEMPORARY: sockets and memory every 2 s during the tests.
           netsh int ipv4 show dynamicport tcp
-          Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -ErrorAction SilentlyContinue | Select-Object TcpTimedWaitDelay, MaxUserPort | Format-List
-          $probe = Join-Path $env:RUNNER_TEMP 'probe.txt'
-          $env:SKALD_PROBE = $probe
+          netsh int ipv4 show excludedportrange tcp
           cargo test -p skald-client --locked --no-run
-          $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
-          $tests = ($meta.packages | Where-Object name -eq 'skald-client').targets | Where-Object { $_.kind -contains 'test' } | ForEach-Object name | Sort-Object
-          function TimeWait { Get-NetTCPConnection -State TimeWait -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress)|$($_.LocalPort)|$($_.RemotePort)" } }
-          $failed = $false
-          foreach ($t in @('--lib') + $tests) {
-            $before = @{}
-            foreach ($k in @(TimeWait)) { $before[$k] = 1 }
-            Remove-Item $probe -ErrorAction SilentlyContinue
-            $start = Get-Date
-            if ($t -eq '--lib') { cargo test -p skald-client --locked --lib } else { cargo test -p skald-client --locked --test $t }
-            if ($LASTEXITCODE -ne 0) { $failed = $true }
-            $secs = [int]((Get-Date) - $start).TotalSeconds
-            $after = @(TimeWait)
-            $roles = @{ 5432 = 'pg' }
-            if (Test-Path $probe) { foreach ($line in Get-Content $probe) { $r, $p = $line -split ' '; $roles[[int]$p] = $r } }
-            $new = @($after | Where-Object { -not $before.ContainsKey($_) })
-            $counts = $new | ForEach-Object {
-              $a, $l, $r = $_ -split '\|'; $l = [int]$l; $r = [int]$r
-              if ($roles.ContainsKey($l)) { "server-closed:$($roles[$l])" } elseif ($roles.ContainsKey($r)) { "client-closed:$($roles[$r])" } elseif ($l -ge 49152) { 'unknown-ephemeral' } else { "unknown:$l" }
-            } | Group-Object | Sort-Object Count -Descending | ForEach-Object { "$($_.Count) $($_.Name)" }
-            "TIMEWAIT $t total=$($after.Count) new=$($new.Count) secs=$secs :: $($counts -join ', ')"
+          $sampler = Start-Job -ScriptBlock {
+            while ($true) {
+              $c = @(Get-NetTCPConnection -ErrorAction SilentlyContinue)
+              $dyn = @($c | Where-Object { $_.LocalPort -ge 49152 } | Select-Object -ExpandProperty LocalPort -Unique).Count
+              $states = $c | Group-Object State | Sort-Object Count -Descending | ForEach-Object { "$($_.Name)=$($_.Count)" }
+              $owners = $c | Where-Object { $_.State -ne 'TimeWait' } | Group-Object OwningProcess | Sort-Object Count -Descending | Select-Object -First 4 | ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }
+              $udp = @(Get-NetUDPEndpoint -ErrorAction SilentlyContinue).Count
+              $mem = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory
+              $os = Get-CimInstance Win32_OperatingSystem
+              "SAMPLE $((Get-Date).ToUniversalTime().ToString('HH:mm:ss')) dyn=$dyn udp=$udp nonpaged=$([int]($mem.PoolNonpagedBytes / 1MB))MB free=$([int]($os.FreePhysicalMemory / 1KB))MB procs=$(@(Get-Process).Count) $($states -join ' ') :: $($owners -join ' ')"
+              Start-Sleep -Seconds 2
+            }
           }
-          if ($failed) { exit 1 }
+          cargo test -p skald-client --locked --no-fail-fast
+          $rc = $LASTEXITCODE
+          Stop-Job $sampler
+          Receive-Job $sampler
+          exit $rc
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures
