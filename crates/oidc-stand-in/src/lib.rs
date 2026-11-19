@@ -526,6 +526,7 @@ impl Provider {
             .block_on(tokio::net::TcpListener::bind("127.0.0.1:0"))
             .expect("bind a local port");
         let address = listener.local_addr().expect("the stand-in's address");
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("oidc {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let issuer = format!("http://{address}{path}");
         Provider::serving(runtime, listener, issuer, path, keys)
     }
@@ -539,6 +540,7 @@ impl Provider {
         let path = authority.find('/').map_or("", |slash| &authority[slash..]);
         let runtime = runtime();
         let listener = runtime.block_on(tokio::net::TcpListener::bind(listen))?;
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("oidc {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         Ok(Provider::serving(
             runtime,
             listener,
@@ -682,6 +684,7 @@ impl Provider {
             .unwrap_or_else(|err| {
                 panic!("bind the stand-in's address {} again: {err}", self.address)
             });
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("oidc {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let app = router(&self.path, self.shared.clone());
         runtime.spawn(async move { axum::serve(listener, app).await });
         self.runtime = Some(runtime);

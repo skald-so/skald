@@ -199,6 +199,7 @@ impl Relay {
     /// Forwards every connection to `target`, such as `127.0.0.1:41234`.
     pub fn start(target: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("relay {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let url = format!("http://{}", listener.local_addr().expect("local address"));
         let reads = Arc::new(Mutex::new(Vec::new()));
         let shared = Arc::new(Shared::default());

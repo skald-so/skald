@@ -68,6 +68,7 @@ impl Proxy {
 
     fn start(refusal: Option<&'static str>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("proxy {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let port = listener.local_addr().expect("the proxy's address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);

@@ -257,7 +257,35 @@ jobs:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
-          cargo test -p skald-client --locked --no-fail-fast
+          # TEMPORARY: TIME_WAIT per test target.
+          netsh int ipv4 show dynamicport tcp
+          Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters' -ErrorAction SilentlyContinue | Select-Object TcpTimedWaitDelay, MaxUserPort | Format-List
+          $probe = Join-Path $env:RUNNER_TEMP 'probe.txt'
+          $env:SKALD_PROBE = $probe
+          cargo test -p skald-client --locked --no-run
+          $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $tests = ($meta.packages | Where-Object name -eq 'skald-client').targets | Where-Object { $_.kind -contains 'test' } | ForEach-Object name | Sort-Object
+          function TimeWait { Get-NetTCPConnection -State TimeWait -ErrorAction SilentlyContinue | ForEach-Object { "$($_.LocalAddress)|$($_.LocalPort)|$($_.RemotePort)" } }
+          $failed = $false
+          foreach ($t in @('--lib') + $tests) {
+            $before = @{}
+            foreach ($k in @(TimeWait)) { $before[$k] = 1 }
+            Remove-Item $probe -ErrorAction SilentlyContinue
+            $start = Get-Date
+            if ($t -eq '--lib') { cargo test -p skald-client --locked --lib } else { cargo test -p skald-client --locked --test $t }
+            if ($LASTEXITCODE -ne 0) { $failed = $true }
+            $secs = [int]((Get-Date) - $start).TotalSeconds
+            $after = @(TimeWait)
+            $roles = @{ 5432 = 'pg' }
+            if (Test-Path $probe) { foreach ($line in Get-Content $probe) { $r, $p = $line -split ' '; $roles[[int]$p] = $r } }
+            $new = @($after | Where-Object { -not $before.ContainsKey($_) })
+            $counts = $new | ForEach-Object {
+              $a, $l, $r = $_ -split '\|'; $l = [int]$l; $r = [int]$r
+              if ($roles.ContainsKey($l)) { "server-closed:$($roles[$l])" } elseif ($roles.ContainsKey($r)) { "client-closed:$($roles[$r])" } elseif ($l -ge 49152) { 'unknown-ephemeral' } else { "unknown:$l" }
+            } | Group-Object | Sort-Object Count -Descending | ForEach-Object { "$($_.Count) $($_.Name)" }
+            "TIMEWAIT $t total=$($after.Count) new=$($new.Count) secs=$secs :: $($counts -join ', ')"
+          }
+          if ($failed) { exit 1 }
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

@@ -272,6 +272,7 @@ impl Front {
     /// A front on a free local port, not yet forwarding.
     pub fn bind() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+{ if let Ok(p) = std::env::var("SKALD_PROBE") { use std::io::Write as _; let _ = std::fs::OpenOptions::new().create(true).append(true).open(p).unwrap().write_all(format!("checkfront {}\n", listener.local_addr().unwrap().port()).as_bytes()); } }
         let url = format!("http://{}", listener.local_addr().expect("local address"));
         Front {
             url,
