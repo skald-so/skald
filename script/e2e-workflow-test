@@ -1,0 +1,84 @@
+#!/usr/bin/env node
+// Tests .github/workflows/e2e.yml, which runs the client's e2e tests against the latest Claude Code:
+//   - it runs daily, by hand, and on a PR into dev that changes the adapter (hook.rs, mcp.rs,
+//     recv.rs of the client), its e2e or hook tests, or the workflow; a PR that changes none of
+//     them does not start it;
+//   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
+//     npm, then runs the ignored claude_code_e2e tests with SKALD_E2E_REQUIRED=1, so a skip fails,
+//     in a step without a condition;
+//   - it needs no secret: it reads none, its token reads contents at most, a checkout keeps no
+//     credentials, and every action is pinned to a commit.
+import path from 'node:path';
+import { reporter } from './lib/report.mjs';
+import { event, pathTriggers, permissions, readWorkflow, runsFor, triggers, writes } from './lib/workflows.mjs';
+import fs from 'node:fs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const file = '.github/workflows/e2e.yml';
+const { fail, done } = reporter('e2e-workflow-test');
+
+if (!fs.existsSync(path.join(root, file))) {
+  console.error(`e2e-workflow-test: ${file} is missing`);
+  process.exit(1);
+}
+const workflow = readWorkflow(path.join(root, file));
+const text = fs.readFileSync(path.join(root, file), 'utf8');
+const on = triggers(workflow);
+
+// The events that start it.
+if (!(on.schedule ?? []).some((entry) => typeof entry?.cron === 'string')) fail('it does not run on a schedule');
+if (!runsFor(workflow, event('workflow_dispatch', 'refs/heads/dev'))) fail('a manual run does not start it');
+if (!runsFor(workflow, event('pull_request', 'refs/pull/7/merge'))) fail('a PR into dev does not start it');
+for (const changed of [
+  'crates/client/src/hook.rs',
+  'crates/client/src/mcp.rs',
+  'crates/client/src/recv.rs',
+  'crates/client/tests/claude_code_e2e/claude.rs',
+  'crates/client/tests/claude_code_hooks/hooks.rs',
+  'crates/client/tests/claude_code_hooks/inputs/stop.json',
+  file,
+]) {
+  if (!pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} does not start it`);
+}
+for (const changed of ['crates/server/src/main.rs', 'docs/dev/infrastructure.md', '.github/workflows/ci.yml']) {
+  if (pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} starts it`);
+}
+
+// The job.
+const jobs = Object.entries(workflow.jobs ?? {});
+if (jobs.length !== 1) fail(`it has one job, not ${jobs.length}`);
+const [key, job] = jobs[0] ?? ['', {}];
+const oses = [].concat(job.strategy?.matrix?.os ?? job['runs-on'] ?? []).map(String);
+for (const [os, pattern] of [
+  ['Linux', /^ubuntu-/],
+  ['macOS', /^macos-/],
+  ['Windows', /^windows-/],
+]) {
+  if (!oses.some((runner) => pattern.test(runner))) fail(`job ${key} does not run on ${os}: ${oses.join(', ')}`);
+}
+if (job.strategy?.['fail-fast'] !== false) fail(`job ${key}: a failure on one OS cancels the others`);
+const steps = job.steps ?? [];
+const run = (step) => String(step.run ?? '');
+const install = steps.findIndex((step) => /\bnpm install --global @anthropic-ai\/claude-code@latest\b/.test(run(step)));
+const tests = steps.findIndex((step) => /^cargo test -p skald-client( --locked)? --test claude_code_e2e -- --ignored$/.test(run(step).trim()));
+if (install < 0) fail(`job ${key} does not install the latest Claude Code with npm`);
+if (tests < 0) fail(`job ${key} does not run the ignored claude_code_e2e tests alone in a step`);
+if (install >= 0 && tests >= 0 && install > tests) fail(`job ${key} installs Claude Code after the tests`);
+if (tests >= 0) {
+  const step = steps[tests];
+  if (String(step.env?.SKALD_E2E_REQUIRED) !== '1') fail(`job ${key}: a skipped e2e test does not fail it`);
+  if (step.if !== undefined || step['continue-on-error']) fail(`job ${key}: the tests may not run or not fail it`);
+}
+
+// No secret.
+if (/\bsecrets\./.test(text)) fail('it reads a secret');
+const own = permissions(workflow, job);
+if (own === null) fail(`job ${key}: its permissions are not set`);
+else if (own.all || writes(own).length > 0) fail(`job ${key}: its token writes`);
+for (const step of steps) {
+  const uses = String(step.uses ?? '');
+  if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`${uses} is not pinned to a commit`);
+  if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false) fail('a checkout keeps its credentials');
+}
+
+done();
