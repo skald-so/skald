@@ -41,6 +41,7 @@ Also whoever takes over the server or its database.
 - Withhold, delete or delay presence values, and give a reader that has not seen a newer value an older one until it expires, at most 900 seconds after its upload ([agents.md](protocol/agents.md#security-considerations)).
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
+- Decide which grants members get, so a send-only token is only its word: it can have members send copies to a service agent whose token cannot receive, which only the agent's key opens ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
 - Show false devices, members, roles and usage in the web app's non-secret sections: they show what the server says.
 - Guess a link code online: at most 3 guesses at the new device per action of its user, and 3 more at each issuing device its user enters the code on before that device stops, each guess with a chance of 1 in 2^30 ([membership.md](protocol/membership.md#security-considerations)).
@@ -194,11 +195,13 @@ An admin of a space, with valid devices.
 - Change the policy: the ceilings of `peer` and `service` tasks, `full` included, the history key's longest age, down to one day, and the most waking delivery mode per trust level, so that messages wake no session until its agent calls `inbox` ([Policy](protocol/membership.md#policy)).
 - Sign team templates for the space ([Templates](protocol/queues.md#templates)).
 - Sign invites with any role and channels ([Invite](protocol/membership.md#invite)), and grants that let `service` devices send in channels ([Service grant](protocol/README.md#service-grant)).
+- Add a reader to any channel of the space, one it is not in included, by a grant to a `service` device that the channel's roster entry does not show ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Change any queue of the space, delete any but `default`, and restart or cancel any of its tasks ([Queues](protocol/queues.md#queues), [Task states](protocol/queues.md#task-states)).
 
 **Defenses:**
 - It sends only as agents of its own account and certifies no device under another account's master key ([Envelope](protocol/README.md#envelope), [Device checks](protocol/membership.md#device-checks)).
 - Clients warn their users when a member's `master` changes in the roster ([Device checks](protocol/membership.md#device-checks)).
+- Members' devices warn their users when they start sending a channel's copies to a `service` device ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Every change is a signed revision chained to the previous one by its hash; the server keeps every revision ([Roster](protocol/membership.md#roster)).
 - The policy only lowers what a device's user allows: a `full` ceiling runs a task with full rights without approval only where that user set `full`. An admin turns on no device's tasks and changes no device's settings ([Running a task](protocol/queues.md#running-a-task)).
 - A device takes a team template only once its user enables it, and a template grants no rights ([Templates](protocol/queues.md#templates)).
@@ -231,6 +234,7 @@ A service agent's server token, and its device key with the token: they usually 
 **Can, with the key and the token:**
 - Send and enqueue tasks as the service agent, at the `service` trust level, in the channels its grant lists ([Service grant](protocol/README.md#service-grant), [queues.md](protocol/queues.md#security-considerations)).
 - Ask the person questions as the service agent and read the answers ([agents.md](protocol/agents.md#security-considerations)).
+- With a receiving token, read every message without `to` in the grant's channels ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Read what is sent to the device under `hpke`; for a member device, also open and run the tasks it claims and read what its keys reach: its channels, their history and presence ([queues.md](protocol/queues.md#security-considerations)).
 - Read the account's anchors objects: the IDs of its spaces, the revisions its devices accepted and its personal space ([Anchors](protocol/membership.md#anchors)).
 
@@ -258,9 +262,9 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - A browser runs no agent, so an answer from a linked browser is not an agent's ([agents.md](protocol/agents.md#security-considerations)).
 - A task from another person runs in an executor by default, and in `read-only` it reads only its folder and changes nothing, so it cannot act through the CLI ([Running a task](protocol/queues.md#running-a-task), [Policy](protocol/membership.md#policy)).
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
-- Run as an agent, the CLI shows no recovery key or link code and takes none, nor a new device's confirmation: a recovery key waits for the person's `skald sign-in` in a terminal ([Account](protocol/membership.md#account)).
+- Run as an agent, the CLI shows no recovery key or link code in its output and takes none, nor a new device's confirmation: they go only to the person's terminal or to the local page `--browser` opens, so they stay out of the agent's context ([Account](protocol/membership.md#account), [architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 - The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
-- `skald link` takes a link code and its confirmation only from a terminal, so an agent cannot pipe them in. An agent that opens a terminal of its own, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.
@@ -271,6 +275,7 @@ An OS account on the device's machine other than the one that runs the client.
 **Defenses:**
 - The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
+- The local page of `--browser` listens on loopback, which other accounts reach, but answers only its secret, handed to the browser only through a file in the state directory ([architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 
 ## The server sees
 - accounts: sign-in methods and usernames;

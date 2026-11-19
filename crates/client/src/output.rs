@@ -100,6 +100,11 @@ fn sent(stream: Stream, bytes: &[u8]) -> io::Result<()> {
     if let Some(result) = sunk {
         return result;
     }
+    direct(stream, bytes)
+}
+
+/// Writes `bytes` to this process's own standard output or standard error, as `stream` says.
+pub fn direct(stream: Stream, bytes: &[u8]) -> io::Result<()> {
     match stream {
         Stream::Out => {
             let mut out = io::stdout().lock();

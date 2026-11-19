@@ -3200,6 +3200,7 @@ dependencies = [
  "dbus-secret-service-keyring-store",
  "flate2",
  "gethostname",
+ "getrandom 0.4.3",
  "hkdf 0.13.0",
  "hpke",
  "jiff",

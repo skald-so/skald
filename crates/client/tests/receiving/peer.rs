@@ -32,7 +32,13 @@ impl Peer {
     /// Connects as `person`'s machine's device, whose signing key is `key`, on the machine's
     /// session.
     pub fn connect(cloud: &Cloud, person: &Person, key: &SigningKey) -> Self {
-        let (status, body) = post_as(cloud, &person.token, "/session/challenge", None);
+        Self::connect_on(cloud, &person.token, person.device, key)
+    }
+
+    /// Connects as `device`, whose signing key is `key`, on a challenge of the bearer token
+    /// `token`: a device session's, or a `service` device's token.
+    pub fn connect_on(cloud: &Cloud, token: &str, device: DeviceId, key: &SigningKey) -> Self {
+        let (status, body) = post_as(cloud, token, "/session/challenge", None);
         assert!(
             (200..300).contains(&status),
             "no challenge: {status} {body}"
@@ -56,7 +62,7 @@ impl Peer {
         let mut peer = Peer { socket };
         peer.write(&Frame::Auth {
             challenge,
-            device: person.device,
+            device,
             signature,
         });
         peer

@@ -167,13 +167,7 @@ pub fn route(
 
 /// Writes `bytes` to the standard output or standard error, as `stream` says.
 fn shown(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
-    match stream {
-        output::Stream::Out => {
-            let mut out = io::stdout().lock();
-            out.write_all(bytes).and_then(|()| out.flush())
-        }
-        output::Stream::Err => io::stderr().lock().write_all(bytes),
-    }
+    output::direct(stream, bytes)
 }
 
 /// As [`route`], what a helper's run of `operation` shows going to `sink`; through a helper newer

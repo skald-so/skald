@@ -139,13 +139,19 @@ pub fn holding_warnings<R>(dir: &Path, agent: bool, run: impl FnOnce() -> R) -> 
         return run();
     }
     let (ran, held) = output::holding_warnings(run);
+    keep(dir, &held);
+    ran
+}
+
+/// Keeps `held`, warnings an agent's run held back, in the state in `dir` for the person's run,
+/// or, if it cannot, shows them.
+pub fn keep(dir: &Path, held: &[String]) {
     if !held.is_empty() {
         keep_held(
-            State::open(dir).and_then(|state| state.keep_warnings(&held)),
-            &held,
+            State::open(dir).and_then(|state| state.keep_warnings(held)),
+            held,
         );
     }
-    ran
 }
 
 /// Shows `held`, warnings an agent's run held back, unless `kept`, keeping them for the person's
@@ -1252,7 +1258,7 @@ fn valid_cert<'c>(context: &Context<'c>, device: DeviceId) -> Option<&'c Cert> {
 
 /// [`valid_cert`] of `device` in `roster`, with the space's devices `devices` and the device's own
 /// account and pinned master key `own`.
-fn member_cert<'c>(
+pub fn member_cert<'c>(
     own: &Own,
     (roster, devices): (&'c Roster, &'c SpaceDevices),
     device: DeviceId,
@@ -1408,7 +1414,7 @@ fn check_service(
 }
 
 /// The service agent entry of `device` in `roster`, if it lists one.
-fn service_entry(roster: &Roster, device: DeviceId) -> Option<&ServiceAgent> {
+pub fn service_entry(roster: &Roster, device: DeviceId) -> Option<&ServiceAgent> {
     (roster.body().service_agents.iter()).find(|agent| agent.device == device)
 }
 

@@ -404,6 +404,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/service-grants",
+            get(service_tokens::grants).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/service-tokens",
             get(service_tokens::list)
                 .post(service_tokens::create)
