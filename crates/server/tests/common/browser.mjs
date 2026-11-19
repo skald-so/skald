@@ -65,6 +65,7 @@ try {
       "--host-resolver-rules=MAP *.test 127.0.0.1",
       // Plain HTTP stays plain: no upgrade of a navigation to HTTPS.
       "--disable-features=HttpsUpgrades",
+      ...(process.env.SKALD_TEST_NETLOG ? [`--log-net-log=${process.env.SKALD_TEST_NETLOG}/netlog-${process.pid}.json`] : []),
     ],
   });
 } catch (error) {

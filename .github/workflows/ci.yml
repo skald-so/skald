@@ -274,10 +274,19 @@ jobs:
               Start-Sleep -Seconds 2
             }
           }
+          $env:SKALD_TEST_NETLOG = Join-Path $env:RUNNER_TEMP 'netlog'
+          New-Item -ItemType Directory -Path $env:SKALD_TEST_NETLOG | Out-Null
           cargo test -p skald-client --locked --no-fail-fast
           $rc = $LASTEXITCODE
+          cargo test -p skald-client --locked --no-fail-fast
+          if ($LASTEXITCODE -ne 0) { $rc = 1 }
           Stop-Job $sampler
           Receive-Job $sampler
+          "netlogs: $(@(Get-ChildItem $env:SKALD_TEST_NETLOG).Count)"
+          Get-ChildItem $env:SKALD_TEST_NETLOG | ForEach-Object {
+            $hits = Select-String -Path $_.FullName -Pattern '"net_error":-55|"os_error":10055' -Context 6, 2
+            if ($hits) { "NETLOG $($_.Name)"; $hits | ForEach-Object { $_.Context.PreContext; "> $($_.Line)"; $_.Context.PostContext; '--' } }
+          }
           exit $rc
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
