@@ -545,18 +545,68 @@ pub enum Step {
     Answer { run: String, confirmed: bool },
 }
 
-/// A run of `skald link` between its steps `Open` and `Answer`: its name, session and ISK, and the
-/// new device's request.
+/// A run of `skald link` between its steps `Open` and `Answer`: its session and ISK, and the new
+/// device's request.
 struct Waiting {
-    run: String,
     session: [u8; 16],
     isk: Isk,
     request: LinkRequestBody,
 }
 
+/// The runs of `skald link` in this process: the one that waits for its person's answer, by its
+/// name, and the names of those a later run took the place of.
+struct Runs<T> {
+    waiting: Option<(String, T)>,
+    replaced: Vec<String>,
+}
+
+/// What an answer finds of the run it names.
+#[derive(Debug, PartialEq)]
+enum Found<T> {
+    /// The run, which no longer waits.
+    Run(T),
+    /// A later run took its place.
+    Replaced,
+    /// None.
+    Gone,
+}
+
+impl<T> Runs<T> {
+    const fn new() -> Self {
+        Runs {
+            waiting: None,
+            replaced: Vec::new(),
+        }
+    }
+
+    /// Has the run `run`, holding `held`, wait; gives what the run it takes the place of held.
+    fn wait(&mut self, run: String, held: T) -> Option<T> {
+        let (earlier, held) = self.waiting.replace((run, held))?;
+        self.replaced.push(earlier);
+        Some(held)
+    }
+
+    /// What the answer naming `run` finds; a run it does not name waits on.
+    fn take(&mut self, run: &str) -> Found<T> {
+        if self.waiting.as_ref().is_some_and(|(name, _)| name == run) {
+            return self
+                .waiting
+                .take()
+                .map_or(Found::Gone, |(_, held)| Found::Run(held));
+        }
+        match self.replaced.iter().position(|name| name == run) {
+            Some(at) => {
+                self.replaced.swap_remove(at);
+                Found::Replaced
+            }
+            None => Found::Gone,
+        }
+    }
+}
+
 thread_local! {
-    /// The run that waits for its person's answer.
-    static WAITING: RefCell<Option<Waiting>> = const { RefCell::new(None) };
+    /// The runs of `skald link` in this process.
+    static RUNS: RefCell<Runs<Waiting>> = const { RefCell::new(Runs::new()) };
 }
 
 /// `skald link` at its person's terminal, on the machine whose state is in `dir`: takes the
@@ -647,19 +697,22 @@ pub fn step(
             issuer.open(run, &code)
         }
         Step::Answer { run, confirmed } => {
-            let waiting = WAITING.with(|waiting| {
-                let mut waiting = waiting.borrow_mut();
-                match waiting.as_ref() {
-                    Some(held) if held.run == run => waiting.take(),
-                    _ => None,
+            let waiting = match RUNS.with(|runs| runs.borrow_mut().take(&run)) {
+                Found::Run(waiting) => waiting,
+                Found::Replaced => {
+                    return Err(
+                        "another skald link took the place of this one, so the run of \
+                         its code ended; nothing is linked"
+                            .to_owned(),
+                    );
                 }
-            });
-            let Some(waiting) = waiting else {
-                return Err(
-                    "the run of the code is gone, as the helper of the local state exited; \
-                     nothing is linked: run skald link again"
-                        .to_owned(),
-                );
+                Found::Gone => {
+                    return Err(
+                        "the run of the code is gone, as the helper of the local state exited; \
+                         nothing is linked: run skald link again"
+                            .to_owned(),
+                    );
+                }
             };
             issuer.answer(&waiting, confirmed)?;
             issuer.add(
@@ -727,7 +780,7 @@ impl Issuer {
     }
 
     /// Runs `code` once against the account's latest hello and shows the new device's request;
-    /// the run then waits as `run` for its person's answer.
+    /// the run then waits as `run` for its person's answer, and the run that waited, if any, ends.
     fn open(&mut self, run: String, code: &LinkCode) -> Result<(), String> {
         let answer = self
             .connection
@@ -754,12 +807,13 @@ impl Issuer {
             DeviceId::from_signing_key(&request.signing)
         );
         let waiting = Waiting {
-            run,
             session,
             isk,
             request,
         };
-        WAITING.with(|held| *held.borrow_mut() = Some(waiting));
+        if let Some(replaced) = RUNS.with(|runs| runs.borrow_mut().wait(run, waiting)) {
+            abort(&mut self.connection, &self.token, replaced.session);
+        }
         Ok(())
     }
 
@@ -952,10 +1006,14 @@ impl Issuer {
     /// channels, as a later run would; otherwise leaves that to a later run of this device or of
     /// the new one. Warns of what fails.
     fn add(&mut self, dir: &Path, storage: secrets::Storage, device: DeviceId) {
+        let not_added = "skald: warning: the new device is not added to this device's channels yet";
         let follower = spaces::following(dir, storage, self.speaks, self.timeout, Scope::All);
-        let Ok(mut follower) = follower else {
-            // It follows no space.
-            return;
+        let mut follower = match follower {
+            Ok(follower) => follower,
+            Err(err) => {
+                eprintln!("{not_added}: {err}");
+                return;
+            }
         };
         let ends = Instant::now() + self.timeout;
         loop {
@@ -970,10 +1028,7 @@ impl Issuer {
                     return;
                 }
                 Err(err) => {
-                    eprintln!(
-                        "skald: warning: the new device is not added to this device's channels \
-                         yet: {err}"
-                    );
+                    eprintln!("{not_added}: {err}");
                     return;
                 }
             }
@@ -1027,5 +1082,34 @@ fn ask(input: &mut impl BufRead, prompt: &str) -> Result<Option<bool>, String> {
             "no" | "n" => return Ok(Some(false)),
             _ => println!("Please answer yes or no."),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An answer that names another run finds nothing, so nothing is granted, and the waiting run
+    /// waits for its own answer.
+    #[test]
+    fn an_answer_takes_only_the_run_it_names() {
+        let mut runs = Runs::new();
+        assert_eq!(runs.take("first"), Found::Gone);
+        assert!(runs.wait("first".to_owned(), 1).is_none());
+        assert_eq!(runs.take("other"), Found::Gone);
+        assert_eq!(runs.take("first"), Found::Run(1));
+        assert_eq!(runs.take("first"), Found::Gone);
+    }
+
+    /// A run that takes the place of a waiting one gives it back to be ended; the answer of the
+    /// replaced run finds that it was replaced, once.
+    #[test]
+    fn a_later_run_takes_the_place_of_the_waiting_one() {
+        let mut runs = Runs::new();
+        assert!(runs.wait("first".to_owned(), 1).is_none());
+        assert_eq!(runs.wait("second".to_owned(), 2), Some(1));
+        assert_eq!(runs.take("first"), Found::Replaced);
+        assert_eq!(runs.take("first"), Found::Gone);
+        assert_eq!(runs.take("second"), Found::Run(2));
     }
 }
