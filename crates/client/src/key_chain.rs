@@ -21,7 +21,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{MemberDevice, MlsDevice};
-use skald_proto::{Cbor as _, Cert, ChannelId, DeviceId, Frame, HistoryItem, HistoryLink, SpaceId};
+use skald_proto::{
+    Cbor as _, Cert, Channel, ChannelId, DeviceId, Frame, HistoryItem, HistoryLink, SpaceId,
+};
 use tungstenite::Message;
 
 use crate::connection::Connection;
@@ -181,14 +183,19 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
 }
 
 /// The channels within `scope` of each space the run accepted the revisions of, those whose last
-/// accepted revision lists the device's account.
+/// accepted revision lists the device's account, or, for a `service` device, the device in their
+/// `services`.
 pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
     let account = follower.own.account;
+    let own = |channel: &Channel| match follower.service {
+        Some(_) => channel.services.contains(&follower.this),
+        None => channel.members.iter().any(|entry| entry.account == account),
+    };
     (follower.accepted.iter())
         .filter(|(space, _)| !scope.excludes(**space))
         .flat_map(|(space, (roster, _))| {
             (roster.body().channels.iter())
-                .filter(|channel| channel.members.iter().any(|entry| entry.account == account))
+                .filter(|channel| own(channel))
                 .map(|channel| (*space, channel.id))
         })
         .collect()

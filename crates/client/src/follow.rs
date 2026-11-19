@@ -16,14 +16,15 @@
 //! takes, without a warning, each earlier one the server gives whose hash is the `prev` of one it
 //! took, back to revision 1: the history checks senders against them ("History entry").
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use skald_crypto::{RosterError, accept_next, check_device, check_valid_device};
+use skald_crypto::{RosterError, accept_next, check_anchors, check_device, check_valid_device};
 use skald_proto::{
-    AccountId, AccountRecord, Cbor as _, Cert, DeviceId, Member, Revocation, Roster, SpaceId,
+    AccountId, AccountRecord, Anchors, Cbor as _, Cert, DeviceId, DeviceKind, Member, Revocation,
+    Roster, SpaceId,
 };
 
 use crate::connection::Connection;
@@ -87,15 +88,24 @@ impl SpaceDevices {
     }
 }
 
+/// What a `service` device starts its space's roster from: the hash of its key secret's anchor,
+/// and the anchors objects of its account's devices ([`roster_start`]).
+pub struct Start {
+    pub anchor: [u8; 32],
+    pub objects: Vec<Anchors>,
+}
+
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings:
-/// gives the space's last accepted revision, its devices and the revisions the server gives.
+/// gives the space's last accepted revision, its devices and the revisions the server gives. A
+/// `service` device accepts those up to its roster's `start` ([`roster_start`]) without the check
+/// that their signer is not revoked.
 pub fn sync(
     connection: &mut Connection,
-    state: &State,
-    token: &str,
+    (state, token): (&State, &str),
     space: &state::Space,
     own: &Own,
+    start: Option<&Start>,
 ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
     let mut warnings = Vec::new();
@@ -112,8 +122,16 @@ pub fn sync(
     }
     let devices = space_devices(connection, token, state, id)?;
 
+    let trusted = match start {
+        Some(start) => {
+            let (trusted, warning) = roster_start(start, &given, &devices, own);
+            warnings.extend(warning);
+            trusted
+        }
+        None => BTreeSet::new(),
+    };
     let held = read(state, id, name)?;
-    let (current, followed) = settle(state, (id, name), held, &given, &devices, own)?;
+    let (current, followed) = settle(state, (id, name), held, (&given, &trusted), (&devices, own))?;
     revocations::keep(state, &devices, |account| master_of(&current, own, account))?;
     let changed = device_changes(state, &current, &devices, own)?;
     let records = records::settle(state, (&current, &devices), own)?;
@@ -217,9 +235,8 @@ fn settle(
     state: &State,
     (id, name): (SpaceId, &str),
     mut held: state::Accepted,
-    given: &[Roster],
-    devices: &SpaceDevices,
-    own: &Own,
+    (given, trusted): (&[Roster], &BTreeSet<[u8; 32]>),
+    (devices, own): (&SpaceDevices, &Own),
 ) -> Result<(Roster, Vec<String>), String> {
     for _ in 0..ATTEMPTS {
         let last = decode(&held.last, name)?;
@@ -227,7 +244,7 @@ fn settle(
             accepted,
             earlier,
             warnings,
-        } = follow(&last, &held.hashes, given, devices, own);
+        } = follow_trusting(&last, &held.hashes, (given, trusted), devices, own);
         let mut recorded = earlier;
         // A run that takes nothing writes back the same revision, so it gives what the state
         // holds if another run accepted revisions first.
@@ -285,9 +302,24 @@ pub fn follow(
     devices: &SpaceDevices,
     own: &Own,
 ) -> Followed {
+    follow_trusting(last, hashes, (given, &BTreeSet::new()), devices, own)
+}
+
+/// As [`follow`], accepting the revisions whose hash `trusted` holds without the check that their
+/// signer is not revoked ([`roster_start`]).
+fn follow_trusting(
+    last: &Roster,
+    hashes: &BTreeMap<u64, [u8; 32]>,
+    (given, trusted): (&[Roster], &BTreeSet<[u8; 32]>),
+    devices: &SpaceDevices,
+    own: &Own,
+) -> Followed {
     let name = last.body().name.as_str();
     let accepts = |previous: &Roster, next: &Roster| {
         accept_next(previous, next, &devices.certs, own.account, &own.master)?;
+        if trusted.contains(&next.hash()) {
+            return Ok(());
+        }
         signer_unrevoked(previous, next.body().signer, devices, own)
     };
     let mut known = hashes.clone();
@@ -357,6 +389,92 @@ pub fn follow(
         }
     }
     followed
+}
+
+/// The revisions a `service` device accepts without the check that their signer is not revoked,
+/// by hash, of `given`, all those the server gives of its space, with `devices`, its accounts', and
+/// the master key `own` pinned (`docs/protocol/membership.md`, "Anchors"): those from its key
+/// secret's anchor, `start.anchor`, up to its roster's start. The start is the latest revision that
+/// the anchors object of a valid `client` device of its account names, of `start.objects`, when the
+/// revisions from the anchor up to it pass through every other one so named, numbered above the
+/// anchor; otherwise the anchor, with the warning it gives. An object counts only with a signature
+/// that verifies with its device's certificate; named revisions at or below the anchor do not
+/// count, and one above it whose `prev` chain does not reach the anchor is off that chain.
+pub fn roster_start(
+    start: &Start,
+    given: &[Roster],
+    devices: &SpaceDevices,
+    own: &Own,
+) -> (BTreeSet<[u8; 32]>, Option<String>) {
+    let by_hash: BTreeMap<[u8; 32], &Roster> =
+        given.iter().map(|roster| (roster.hash(), roster)).collect();
+    let none = (BTreeSet::new(), None);
+    let Some(anchor) = by_hash.get(&start.anchor) else {
+        return none;
+    };
+    let (space, from) = (anchor.body().space, anchor.body().revision);
+    // The hashes from `roster` back to the anchor, by `prev`; none if they do not reach it.
+    let chain = |roster: &Roster| {
+        let mut hashes = BTreeSet::new();
+        let mut at = roster;
+        while at.body().revision > from {
+            hashes.insert(at.hash());
+            match at.body().prev.and_then(|prev| by_hash.get(&prev)) {
+                Some(previous) if previous.body().revision + 1 == at.body().revision => {
+                    at = previous;
+                }
+                _ => return None,
+            }
+        }
+        (at.hash() == start.anchor).then_some(hashes)
+    };
+    // Each named revision above the anchor, with the hashes of its chain to the anchor, if any.
+    let mut named: Vec<(&Roster, Option<BTreeSet<[u8; 32]>>)> = Vec::new();
+    for object in &start.objects {
+        let body = object.body();
+        let valid = body.account == own.account
+            && check_valid_device(
+                &own.master,
+                &devices.certs,
+                &devices.revocations,
+                body.device,
+            )
+            .is_ok_and(|cert| {
+                cert.body().kind == DeviceKind::Client
+                    && check_anchors(object, &cert.body().signing).is_ok()
+            });
+        if !valid {
+            continue;
+        }
+        for (_, hash) in body.anchors.iter().filter(|(of, _)| *of == space) {
+            if let Some(roster) = by_hash.get(hash)
+                && roster.body().revision > from
+            {
+                named.push((roster, chain(roster)));
+            }
+        }
+    }
+    let Some((latest, hashes)) = named
+        .iter()
+        .max_by_key(|(roster, _)| roster.body().revision)
+    else {
+        return none;
+    };
+    if let Some(hashes) = hashes
+        && named
+            .iter()
+            .all(|(roster, _)| hashes.contains(&roster.hash()))
+    {
+        return (hashes.clone(), None);
+    }
+    let name = anchor.body().name.as_str();
+    let warning = format!(
+        "the anchors objects of this account's devices name revisions of the space {name} that \
+         are not on one chain, up to revision {}: this service device starts from its key \
+         secret's anchor, revision {from}",
+        latest.body().revision
+    );
+    (BTreeSet::new(), Some(warning))
 }
 
 /// The number and hash of each revision of `given` before the earliest of `known`, the revisions
@@ -661,7 +779,9 @@ mod tests {
     ) -> (Roster, Vec<String>) {
         let given: Vec<Roster> = given.iter().map(|roster| (*roster).clone()).collect();
         let id = (acme.first.body().space, "acme");
-        settle(state, id, held, &given, &acme.devices(), &acme.ada.own()).expect("settled")
+        let trusted = BTreeSet::new();
+        let own = acme.ada.own();
+        settle(state, id, held, (&given, &trusted), (&acme.devices(), &own)).expect("settled")
     }
 
     /// Sets the role of `account` in `members`.
@@ -1041,5 +1161,272 @@ mod tests {
             )
         );
         assert_eq!(race.held(), accepted(&other, &[&acme.first, &acme.second]));
+    }
+
+    /// The revocation of Bob's device, which Bob's device signs.
+    fn bob_revoked(acme: &Acme) -> Revocation {
+        let device = acme.bob.device();
+        let body = skald_proto::RevocationBody {
+            account: acme.bob.account,
+            device,
+            keep: None,
+            signer: Some(device),
+            timestamp: 1_800_000_000,
+            also: None,
+            unknown: skald_proto::Unknown::default(),
+        };
+        skald_crypto::sign_revocation(&body, &acme.bob.key).expect("a revocation")
+    }
+
+    /// The anchors object of `person`'s device, signed by `key`, naming `named` as its revision of
+    /// `acme`.
+    fn anchors_of(person: &Person, key: &SigningKey, named: &Roster) -> Anchors {
+        let body = skald_proto::AnchorsBody {
+            account: person.account,
+            device: person.device(),
+            anchors: vec![(named.body().space, named.hash())],
+            personal: None,
+            unknown: Unknown::default(),
+        };
+        skald_crypto::sign_anchors(&body, key).expect("an anchors object")
+    }
+
+    /// Ada's other `client` device, its key, certificate and person.
+    fn other_device(ada: &Person) -> Person {
+        let key = SigningKey::generate();
+        let mut body = ada.cert.body().clone();
+        body.device = DeviceId::from_signing_key(&key.public_key());
+        body.signing = key.public_key();
+        body.name = "ada-desktop".to_owned();
+        let cert = issue(&body, &ada.master, &key).expect("a certificate");
+        Person {
+            account: ada.account,
+            handle: ada.handle.clone(),
+            master: SigningKey::generate(),
+            key,
+            cert,
+        }
+    }
+
+    /// The hashes of `rosters`.
+    fn hashes(rosters: &[&Roster]) -> BTreeSet<[u8; 32]> {
+        rosters.iter().map(|roster| roster.hash()).collect()
+    }
+
+    /// Ada's `acme` with revisions 3 by Bob, 4 by Ada, and 5 by Bob, whose device is revoked; Ada's
+    /// other `client` device, her `service` device, and the service device's run, whose key
+    /// secret's anchor is revision 2.
+    struct Run {
+        acme: Acme,
+        desktop: Person,
+        service: Person,
+        third: Roster,
+        fourth: Roster,
+        given: Vec<Roster>,
+        devices: SpaceDevices,
+    }
+
+    impl Run {
+        fn new() -> Self {
+            let acme = Acme::new();
+            let desktop = other_device(&acme.ada);
+            let mut service = other_device(&acme.ada);
+            let mut body = service.cert.body().clone();
+            body.kind = DeviceKind::Service;
+            service.cert = issue(&body, &acme.ada.master, &service.key).expect("a certificate");
+            let third = acme.bob.signs(&acme.second, |_| {});
+            let fourth = acme.ada.signs(&third, |_| {});
+            let fifth = acme.bob.signs(&fourth, |_| {});
+            let given = [&acme.first, &acme.second, &third, &fourth, &fifth]
+                .map(Clone::clone)
+                .to_vec();
+            let mut devices = acme.devices_with(vec![bob_revoked(&acme)]);
+            for person in [&desktop, &service] {
+                devices.ids.push(person.device());
+                devices.certs.push(person.cert.clone());
+            }
+            Run {
+                acme,
+                desktop,
+                service,
+                third,
+                fourth,
+                given,
+                devices,
+            }
+        }
+
+        /// The revisions trusted with `objects`, and the warning.
+        fn start(&self, objects: Vec<Anchors>) -> (BTreeSet<[u8; 32]>, Option<String>) {
+            let start = Start {
+                anchor: self.acme.second.hash(),
+                objects,
+            };
+            roster_start(&start, &self.given, &self.devices, &self.acme.ada.own())
+        }
+    }
+
+    #[test]
+    fn service_device_trusts_the_revisions_up_to_the_latest_its_accounts_devices_anchored() {
+        let run = Run::new();
+        let (acme, desktop) = (&run.acme, &run.desktop);
+        let (trusted, warning) = run.start(vec![
+            anchors_of(desktop, &desktop.key, &run.third),
+            anchors_of(&acme.ada, &acme.ada.key, &run.fourth),
+            anchors_of(&acme.ada, &acme.ada.key, &acme.first),
+        ]);
+        assert_eq!(
+            (trusted.clone(), warning),
+            (hashes(&[&run.third, &run.fourth]), None)
+        );
+
+        // Bob's revoked device signed revisions 3 and 5: the third is trusted, the fifth fails.
+        let own = acme.ada.own();
+        let followed = |trusted: &BTreeSet<[u8; 32]>| {
+            follow_trusting(
+                &acme.second,
+                &BTreeMap::new(),
+                (&run.given, trusted),
+                &run.devices,
+                &own,
+            )
+        };
+        let trusting = followed(&trusted);
+        assert_eq!(
+            trusting.accepted,
+            vec![run.third.clone(), run.fourth.clone()]
+        );
+        assert_eq!(trusting.warnings.len(), 1, "{:?}", trusting.warnings);
+        assert!(
+            trusting.warnings[0].starts_with("revision 5 of the space acme fails"),
+            "{:?}",
+            trusting.warnings
+        );
+        assert_eq!(
+            followed(&BTreeSet::new()).accepted,
+            vec![],
+            "without the start"
+        );
+    }
+
+    #[test]
+    fn service_device_without_anchored_revisions_above_its_anchor_trusts_none() {
+        let run = Run::new();
+        let (acme, service) = (&run.acme, &run.service);
+        for (what, object) in [
+            ("forged", anchors_of(&acme.ada, &acme.bob.key, &run.fourth)),
+            (
+                "of another account",
+                anchors_of(&acme.bob, &acme.bob.key, &run.fourth),
+            ),
+            (
+                "at or below the anchor",
+                anchors_of(&acme.ada, &acme.ada.key, &acme.second),
+            ),
+            (
+                "of a service device",
+                anchors_of(service, &service.key, &run.fourth),
+            ),
+        ] {
+            assert_eq!(run.start(vec![object]), (BTreeSet::new(), None), "{what}");
+        }
+    }
+
+    #[test]
+    fn service_device_whose_accounts_devices_anchored_a_fork_starts_from_its_anchor() {
+        let mut run = Run::new();
+        let other = run.acme.ada.signs(&run.acme.second, |_| {});
+        run.given.push(other.clone());
+        let (acme, desktop) = (&run.acme, &run.desktop);
+        let (trusted, warning) = run.start(vec![
+            anchors_of(&acme.ada, &acme.ada.key, &run.fourth),
+            anchors_of(desktop, &desktop.key, &other),
+        ]);
+        assert_eq!(trusted, BTreeSet::new());
+        assert_eq!(
+            warning,
+            Some(
+                "the anchors objects of this account's devices name revisions of the space acme \
+                 that are not on one chain, up to revision 4: this service device starts from \
+                 its key secret's anchor, revision 2"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn service_device_counts_no_revoked_devices_anchors_and_warns_of_those_off_its_anchors_chain() {
+        let mut run = Run::new();
+        let acme = &run.acme;
+        let off_second = acme.ada.signs(&acme.first, |_| {});
+        let off_third = acme.ada.signs(&off_second, |_| {});
+        run.given.extend([off_second, off_third.clone()]);
+        let desktop = &run.desktop;
+        // The warning of named revisions up to `latest` that are off one chain.
+        let off = |latest: u64| {
+            let warning = format!(
+                "the anchors objects of this account's devices name revisions of the space acme \
+                 that are not on one chain, up to revision {latest}: this service device starts \
+                 from its key secret's anchor, revision 2"
+            );
+            (BTreeSet::new(), Some(warning))
+        };
+        let alone = run.start(vec![anchors_of(&acme.ada, &acme.ada.key, &off_third)]);
+        assert_eq!(alone, off(3), "off the anchor's chain");
+        let beside = run.start(vec![
+            anchors_of(&acme.ada, &acme.ada.key, &off_third),
+            anchors_of(desktop, &desktop.key, &run.fourth),
+        ]);
+        assert_eq!(beside, off(4), "beside an on-chain one");
+
+        let body = skald_proto::RevocationBody {
+            account: acme.ada.account,
+            device: desktop.device(),
+            keep: None,
+            signer: Some(acme.ada.device()),
+            timestamp: 1_800_000_000,
+            also: None,
+            unknown: skald_proto::Unknown::default(),
+        };
+        let revocation = skald_crypto::sign_revocation(&body, &acme.ada.key).expect("a revocation");
+        let mut devices = run.devices.clone();
+        devices.revocations.push(revocation);
+        let start = Start {
+            anchor: acme.second.hash(),
+            objects: vec![anchors_of(desktop, &desktop.key, &run.fourth)],
+        };
+        assert_eq!(
+            roster_start(&start, &run.given, &devices, &acme.ada.own()),
+            (BTreeSet::new(), None),
+            "of a revoked device"
+        );
+        assert_eq!(
+            roster_start(&start, &run.given, &run.devices, &acme.ada.own()).0,
+            hashes(&[&run.third, &run.fourth]),
+            "of the device before its revocation"
+        );
+    }
+
+    #[test]
+    fn service_device_accepts_a_trusted_revision_only_if_an_admin_signed_it() {
+        let acme = Acme::new();
+        let by_carol = acme.carol.signs(&acme.second, |_| {});
+        let given = [&acme.first, &acme.second, &by_carol].map(Clone::clone);
+        let start = Start {
+            anchor: acme.second.hash(),
+            objects: vec![anchors_of(&acme.ada, &acme.ada.key, &by_carol)],
+        };
+        let own = acme.ada.own();
+        let (trusted, _) = roster_start(&start, &given, &acme.devices(), &own);
+        assert_eq!(trusted, hashes(&[&by_carol]));
+        let followed = follow_trusting(
+            &acme.second,
+            &BTreeMap::new(),
+            (&given, &trusted),
+            &acme.devices(),
+            &own,
+        );
+        assert_eq!(followed.accepted, vec![]);
+        assert_eq!(followed.warnings.len(), 1, "{:?}", followed.warnings);
     }
 }

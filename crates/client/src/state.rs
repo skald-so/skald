@@ -1393,8 +1393,9 @@ impl State {
     }
 
     /// Records the space `id` named `name` at `revision`, in CBOR, the revision a link gave the
-    /// device, as its anchor and last accepted revision, with none pending; `personal`, pinned as
-    /// the device's personal space. A space the device holds stays as it is.
+    /// device or a `service` device's key secret pins, as its anchor and last accepted revision,
+    /// with none pending; `personal`, pinned as the device's personal space. A space the device
+    /// holds stays as it is.
     pub fn add_linked_space(
         &self,
         id: SpaceId,

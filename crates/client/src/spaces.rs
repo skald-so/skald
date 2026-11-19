@@ -23,8 +23,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Member, Name,
-    NonEmpty, Role, Roster, RosterBody, ServiceAgent, SpaceId, Unknown, VersionRange,
+    AccountId, Anchors, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, DeviceKind,
+    Member, Name, NonEmpty, Role, Roster, RosterBody, ServiceAgent, SpaceId, Unknown, VersionRange,
 };
 
 use crate::anchors;
@@ -38,6 +38,7 @@ use crate::key_packages;
 use crate::mailbox::{Mailbox, Transport};
 use crate::revocations;
 use crate::secrets;
+use crate::service;
 use crate::sign_in;
 use crate::state::{self, Link, State};
 
@@ -357,6 +358,8 @@ pub struct Follower {
     anchors_unsent: bool,
     /// The revisions the server last gave of each space the run followed or synced.
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
+    /// For a service agent's run ([`crate::service`]), its space and the key secret's anchor.
+    pub service: Option<service::Member>,
 }
 
 impl Follower {
@@ -402,8 +405,11 @@ impl Follower {
     }
 
     /// Keeps the device's anchors object of what the state holds on the server
-    /// ([`anchors::keep`]); warns of what fails.
+    /// ([`anchors::keep`]), unless it is a `service` device, which has none; warns of what fails.
     fn keep_anchors(&mut self) {
+        if self.service.is_some() {
+            return;
+        }
         match self.keys() {
             Ok(keys) => anchors::keep(
                 &mut self.connection,
@@ -452,7 +458,118 @@ impl Follower {
             kept: false,
             anchors_unsent: false,
             given: BTreeMap::new(),
+            service: None,
         }))
+    }
+
+    /// The follower of `agent`, a service agent's run, whose state is in `dir`, which it creates
+    /// if it is missing ([`crate::service`]): its keys and state key come from the key secret, its
+    /// token is its session, and it follows the key secret's space from the key secret's anchor.
+    /// Fails if the device's certificate is not valid against the pinned master key, if the state
+    /// is of another device, and, for a state the device has not run with yet, if the device has
+    /// been in a group ([`service::refuse_without_state`]), recording nothing.
+    fn service(
+        dir: &Path,
+        agent: &service::Agent,
+        speaks: VersionRange,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let key = &agent.key;
+        let unusable = |err: &dyn std::fmt::Display| {
+            format!("cannot use the state directory {}: {err}", dir.display())
+        };
+        state::create_dir(dir).map_err(|err| unusable(&err))?;
+        let dir = dir.canonicalize().map_err(|err| unusable(&err))?;
+        let state = State::open(&dir).map_err(text)?;
+        let keys = agent.keys();
+        let this = keys.id();
+        let held = state.device().map_err(text)?;
+        if held.as_ref().is_some_and(|held| held.id != this) {
+            return Err(format!(
+                "the state directory {} holds the state of another device than the key secret's: \
+                 give each service agent a state directory of its own",
+                dir.display()
+            ));
+        }
+        let mut connection = to_session(&key.server, speaks, timeout)?;
+        let token = agent.token.to_string();
+        let devices = follow::space_devices(&mut connection, &token, &state, key.space)?;
+        let cert = skald_crypto::check_valid_device(
+            &key.master,
+            &devices.certs,
+            &devices.revocations,
+            this,
+        )
+        .map_err(|err| {
+            format!(
+                "the service device {this} of the key secret has no valid certificate: {err}; \
+                 nothing is sent"
+            )
+        })?
+        .clone();
+        if cert.body().kind != DeviceKind::Service || cert.body().account != key.account {
+            return Err(format!(
+                "the device {this} of the key secret is no service device of its account; \
+                 nothing is sent"
+            ));
+        }
+        if held.is_none() {
+            let given = follow::given(&mut connection, &token, key.space)?;
+            let anchor = (given.iter())
+                .find(|roster| roster.hash() == key.anchor)
+                .ok_or_else(|| {
+                    format!(
+                        "the server gives no revision of the space {} that is the key secret's \
+                         anchor; nothing is sent",
+                        key.space
+                    )
+                })?;
+            if let Some(latest) = given.iter().max_by_key(|roster| roster.body().revision) {
+                service::refuse_without_state(&mut connection, &token, latest, this)?;
+            }
+            state.start_session(&key.server).map_err(text)?;
+            let account = key.account.to_string();
+            state
+                .add_device(this, &cert.body().name, &account)
+                .map_err(text)?;
+            state.set_registered().map_err(text)?;
+            state
+                .set_link(&Link::Certified {
+                    master: key.master,
+                    cert: cert.to_cbor(),
+                })
+                .map_err(text)?;
+            let name = anchor.body().name.as_str();
+            state
+                .add_linked_space(key.space, name, &anchor.to_cbor(), false)
+                .map_err(text)?;
+        }
+        let device = state
+            .device()
+            .map_err(text)?
+            .ok_or_else(|| "the local state holds no device".to_owned())?;
+        let (stored, secrets) = agent.secrets(&dir, &keys);
+        Ok(Follower {
+            state,
+            connection,
+            token,
+            stored,
+            secrets,
+            own: agent.own(),
+            this,
+            device,
+            cert,
+            timeout,
+            accepted: groups::Rosters::new(),
+            transport: Transport::default(),
+            kept: false,
+            anchors_unsent: false,
+            given: BTreeMap::new(),
+            service: Some(service::Member {
+                space: key.space,
+                anchor: key.anchor,
+            }),
+        })
     }
 
     /// A connection to the server as the device, proving its `keys` ([`Mailbox::open`]), once the
@@ -462,9 +579,9 @@ impl Follower {
             let kept = key_packages::keep(
                 &mut self.connection,
                 &self.token,
-                &self.state,
+                (&self.state, &self.secrets),
                 keys,
-                &self.secrets,
+                self.service.is_some(),
             );
             match kept {
                 Ok(()) => self.kept = true,
@@ -472,6 +589,19 @@ impl Follower {
             }
         }
         Mailbox::open(self, keys)
+    }
+
+    /// `GET /account/anchors` with the device's proof: the anchors objects of the account's
+    /// devices, as a service token reads them.
+    fn anchors_objects(&mut self) -> Result<Vec<Anchors>, String> {
+        let keys = self.keys()?;
+        let proof = (self.connection)
+            .request_proof(&self.token, keys.id(), keys.signing())
+            .map_err(text)?;
+        let body = (self.connection)
+            .get_proved(anchors::PATH, (&self.token, &proof))
+            .map_err(|err| format!("the account's anchors objects are not read: {}", text(err)))?;
+        anchors::objects(&body)
     }
 
     /// The device's keys.
@@ -660,12 +790,19 @@ impl Follower {
         &mut self,
         space: &state::Space,
     ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
+        let start = match self.service {
+            Some(member) if member.space == space.id => Some(follow::Start {
+                anchor: member.anchor,
+                objects: self.anchors_objects()?,
+            }),
+            _ => None,
+        };
         let followed = follow::sync(
             &mut self.connection,
-            &self.state,
-            &self.token,
+            (&self.state, &self.token),
             space,
             &self.own,
+            start.as_ref(),
         )?;
         self.given.insert(space.id, followed.2.clone());
         self.keep_anchors();
@@ -877,7 +1014,7 @@ impl Follower {
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
 /// devices it bars, the members it adds to and removes from channels, the policy's `history` it
-/// sets, and the service agents it adds.
+/// sets, the service agents it adds and the `service` devices it adds to channels.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -888,6 +1025,7 @@ struct Change {
     left: Vec<(ChannelId, AccountId)>,
     history: Option<u64>,
     agents: Vec<ServiceAgent>,
+    services: Vec<(ChannelId, DeviceId)>,
 }
 
 impl Change {
@@ -915,6 +1053,10 @@ impl Change {
                         .filter(|entry| !has(channel, entry.account))
                     {
                         change.left.push((channel.id, entry.account));
+                    }
+                    for device in (channel.services.iter()).filter(|it| !old.services.contains(it))
+                    {
+                        change.services.push((channel.id, *device));
                     }
                 }
             }
@@ -951,7 +1093,8 @@ impl Change {
     /// removes no member from the default channel, the first one, which keeps every member; and
     /// it puts its default channel first, with every member, only if `needs_default`; it sets the
     /// policy's `history`; it adds a service agent only while `body` has neither its device nor its
-    /// address, and its owner is no member's handle.
+    /// address, and its owner is no member's handle; and it adds a `service` device to a channel's
+    /// `services` only while `body` has the device's service agent entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
@@ -999,6 +1142,18 @@ impl Change {
                     .any(|old| old.device == agent.device)
             {
                 body.service_agents.push(agent.clone());
+            }
+        }
+        for (id, device) in &self.services {
+            let listed = body
+                .service_agents
+                .iter()
+                .any(|agent| agent.device == *device);
+            if let Some(channel) = body.channels.iter_mut().find(|channel| channel.id == *id)
+                && listed
+                && !channel.services.contains(device)
+            {
+                channel.services.push(*device);
             }
         }
     }
@@ -1150,6 +1305,9 @@ fn follower(
     timeout: Duration,
     scope: Scope,
 ) -> Result<Option<Follower>, String> {
+    if let Some(agent) = service::from_env()? {
+        return Follower::service(dir, &agent, speaks, timeout).map(Some);
+    }
     match scope {
         Scope::All => Follower::new(dir, storage, speaks, timeout),
         Scope::Only(_) => Follower::open(dir, storage, speaks, timeout),
@@ -1247,11 +1405,13 @@ pub fn of_working_dir(
     timeout: Duration,
     scope: Scope,
 ) -> Result<(Synced, ChannelId), String> {
-    let id = match scope {
-        Scope::Only(id) => id,
-        Scope::All => folders::working_space(dir)?.id,
-    };
     let mut follower = following(dir, storage, speaks, timeout, scope)?;
+    // A service agent's space is its key secret's, whatever the working directory.
+    let id = match (follower.service, scope) {
+        (Some(member), _) => member.space,
+        (None, Scope::Only(id)) => id,
+        (None, Scope::All) => folders::working_space(dir)?.id,
+    };
     let space = (follower.state.spaces().map_err(text)?.into_iter())
         .find(|space| space.id == id)
         .ok_or_else(|| "this device follows no space of the working directory".to_owned())?;
@@ -1862,9 +2022,10 @@ pub(crate) mod tests {
     }
 
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
-    /// channel, adds Dave to it, adds a channel, sets the history period and adds a service agent
-    /// changes the same in a later revision that added Eve, who stays in every channel she is in,
-    /// and another service agent; a service agent all of them list stays once.
+    /// channel, adds Dave to it, adds a channel, sets the history period and adds a service agent,
+    /// listed in a channel's `services`, changes the same in a later revision that added Eve, who
+    /// stays in every channel she is in, and another service agent; a service agent all of them
+    /// list stays once.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
@@ -1893,6 +2054,7 @@ pub(crate) mod tests {
         bar(&mut next, bob, barred);
         let (deploy, release) = (agent("ci", "deploy-bot", 7), agent("ci", "release-bot", 8));
         next.service_agents = vec![watch.clone(), deploy.clone()];
+        next.channels[1].services.push(deploy.device);
 
         let change = Change::between(&base, &next);
 
@@ -1911,6 +2073,7 @@ pub(crate) mod tests {
                 left: vec![(team, bob)],
                 history: Some(2 * HISTORY_MIN),
                 agents: vec![deploy.clone()],
+                services: vec![(team, deploy.device)],
             }
         );
         let mut latest = acme(
@@ -1932,6 +2095,7 @@ pub(crate) mod tests {
             ],
         );
         expected.channels[1].members.push(dave_in);
+        expected.channels[1].services.push(deploy.device);
         expected.policy.history = 2 * HISTORY_MIN;
         bar(&mut expected, bob, barred);
         expected.service_agents = vec![watch, release, deploy];
@@ -1942,8 +2106,9 @@ pub(crate) mod tests {
     /// Of a change, what no longer applies to a later revision is left out: a removed or barred
     /// member that is gone, a member added to a channel who left the space or is in it already, a
     /// member removed from the default channel, a default channel the revision does not need, and a
-    /// service agent whose device or address the revision has or whose owner is a member's handle.
-    /// One that needs it gets it first, with every member.
+    /// service agent whose device or address the revision has or whose owner is a member's handle,
+    /// and a `service` device in a channel the revision lacks, or without the device's entry. One
+    /// that needs it gets it first, with every member.
     #[test]
     fn change_leaves_out_what_no_longer_applies() {
         let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
@@ -1964,6 +2129,10 @@ pub(crate) mod tests {
                 agent("ci", "deploy-bot", 7),
                 agent("ops", "other-bot", 8),
                 agent("ada", "deploy-bot", 9),
+            ],
+            services: vec![
+                (ChannelId::generate(), agent("ops", "bot", 8).device),
+                (team, agent("ada", "deploy-bot", 9).device),
             ],
         };
         let mut latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
