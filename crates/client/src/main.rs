@@ -342,20 +342,36 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
-    /// Sends a text to a channel of a space this device follows; as an agent, only in the space of
-    /// the agent's folder. It first accepts the space's latest roster revisions and goes through the
-    /// mailbox as skald recv does, showing nothing, then encrypts the message in the channel's MLS
-    /// group and has the server store it as one envelope to the group. Sends nothing, and says why,
-    /// while the group holds a device the channel does not admit or no other device, or while this
-    /// device's Commit there waits for the server.
+    /// Sends a text, for one agent with --to or for every agent with --all, to a channel of a space
+    /// this device follows, by default the default channel of the working directory's space; as
+    /// an agent, only in the space of the agent's folder. It first accepts the space's latest
+    /// roster revisions and goes through the mailbox as skald recv does, showing nothing, then
+    /// encrypts the message in the channel's MLS group and has the server store it as one envelope
+    /// to the group. Sends nothing, and says why, while the group holds a device the channel does
+    /// not admit or no other device, or while this device's Commit there waits for the server.
     /// Says the message's ID and whether the server stored it; as an agent, only sent #<ref> once
     /// it is stored, by the message's reference as skald recv says. What the server has not stored
     /// within the request timeout waits in the local state, and the next skald send or skald recv
     /// sends it first.
+    #[command(group(
+        clap::ArgGroup::new("addressee")
+            .args(["to", "all"])
+            .required(true)
+    ))]
     Send {
-        /// The channel's ID, as skald channels shows it.
-        #[arg(value_name = "CHANNEL")]
-        channel: String,
+        /// The agent the message is for: its address, space/owner/agent@server, or owner/agent in
+        /// the channel's space on this server; not a person's, as only a reply goes to a person.
+        /// Every member device of the channel still gets the message, and the channel's history
+        /// keeps it: an addressee does not make a message private.
+        #[arg(long, value_name = "ADDRESS")]
+        to: Option<String>,
+        /// The message is for every agent in the channel.
+        #[arg(long)]
+        all: bool,
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
         /// The text.
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: String,
@@ -867,15 +883,17 @@ fn perform(operation: Operation) -> Result<(), String> {
         )
         .and_then(channels::list),
         Command::Send {
+            to,
             channel,
             text,
             json,
+            ..
         } => state::dir(state_dir).and_then(|dir| {
             send::run(
                 &dir,
                 key_storage,
                 (speaks, timeout),
-                (&channel, &text),
+                (to.as_deref(), channel.as_deref(), &text),
                 agent.as_ref(),
                 json,
             )

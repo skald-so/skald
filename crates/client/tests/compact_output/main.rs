@@ -30,12 +30,12 @@
 //! - the person's `skald recv` shows each status and warning once, in its full lines, whether or
 //!   not an agent's run showed it;
 //! - an agent's `skald send` of a stored message prints one line, `sent #<ref>`, and nothing else;
-//! - `skald recv --json`, `skald recv --wait --json` and `skald send --json <channel> <text>` print
-//!   one JSON object per line on standard output: each message with `msg_id`, `ref`, `channel`,
-//!   `from`, `device`, the sending device's ID, `device_name` and `text`; each status with
-//!   `msg_id`, `ref`, `channel`, `status` and `device`, the recipient device's ID; each message
-//!   `skald send` sent with `msg_id`, `ref`, `channel` and `stored` among its values once the server
-//!   has stored it.
+//! - `skald recv --json`, `skald recv --wait --json` and
+//!   `skald send --json --all --channel <channel> <text>` print one JSON object per line on
+//!   standard output: each message with `msg_id`, `ref`, `channel`, `from`, `device`, the sending
+//!   device's ID, `device_name` and `text`; each status with `msg_id`, `ref`, `channel`, `status`
+//!   and `device`, the recipient device's ID; each message `skald send` sent with `msg_id`, `ref`,
+//!   `channel` and `stored` among its values once the server has stored it.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
