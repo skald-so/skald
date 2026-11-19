@@ -249,6 +249,17 @@ struct Cli {
     )]
     devices_limit: Option<u32>,
 
+    /// The number of service agent entries a space's latest revision may list; a revision that
+    /// lists more than the setting and than the revision before it is not stored [default: no
+    /// limit].
+    #[arg(
+        long,
+        env = "SKALD_SERVICE_AGENTS_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    service_agents_limit: Option<u32>,
+
     /// The longest a long-poll waits for its device's mailbox, in seconds, at most a day; one that
     /// asks for longer ends at it [default: 30].
     #[arg(
@@ -500,6 +511,7 @@ impl Cli {
             message_size_limit: self.message_size_limit,
             monthly_messages_limit: self.monthly_messages_limit,
             devices_limit: self.devices_limit,
+            service_agents_limit: self.service_agents_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
             sse_keep_alive: self.sse_keep_alive.map(Duration::from_secs),
             link_code_lifetime: self.link_code_lifetime.map(Duration::from_secs),
@@ -709,6 +721,7 @@ mod tests {
                     cli.message_size_limit,
                     cli.monthly_messages_limit,
                     cli.devices_limit.map(u64::from),
+                    cli.service_agents_limit.map(u64::from),
                 ]
             })
             .ok()
@@ -717,14 +730,16 @@ mod tests {
             "--message-size-limit",
             "--monthly-messages-limit",
             "--devices-limit",
+            "--service-agents-limit",
         ];
         for (at, setting) in settings.into_iter().enumerate() {
-            let mut one = [None; 3];
+            let mut one = [None; 4];
             one[at] = Some(1);
             assert_eq!(parsed(setting, "1"), Some(one), "{setting}");
             assert_eq!(parsed(setting, "0"), None, "{setting}");
         }
         assert_eq!(parsed("--devices-limit", "4294967296"), None);
+        assert_eq!(parsed("--service-agents-limit", "4294967296"), None);
     }
 
     #[test]

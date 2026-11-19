@@ -7,11 +7,11 @@
 //! The web app, as these tests use it, beside `common/spa.rs`: the side menu's link "Usage" opens
 //! the section for the space the switcher chose. Each count with a limit has a bar, an element of
 //! role `progressbar` or `meter`, whose accessible name starts with what it counts, "Spaces",
-//! "Devices" or "Messages this month", and whose value is the count and maximum the limit; the
-//! section lists the spaces the account owns by name, and says the largest message, as "64 KB",
-//! and how long an undelivered message is kept, as "7 days". A count without a limit has no bar,
-//! and the section says "no limit" or "unlimited". The section is the page's main area, `main`.
-//! It gets them from `GET /account/usage` and `GET /spaces/{space}/usage`.
+//! "Devices", "Messages this month" or "Service agents", and whose value is the count and maximum
+//! the limit; the section lists the spaces the account owns by name, and says the largest message,
+//! as "64 KB", and how long an undelivered message is kept, as "7 days". A count without a limit
+//! has no bar, and the section says "no limit" or "unlimited". The section is the page's main area,
+//! `main`. It gets them from `GET /account/usage` and `GET /spaces/{space}/usage`.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -49,9 +49,11 @@ const HOST: &str = "localhost";
 const CODE_LIFETIME: u64 = 300;
 
 /// The cloud's values (`docs/dev/architecture.md`, "Cloud limits"): 2 owned spaces, 50 devices,
-/// about 10M messages a month, a message text of 64 KB and 7 days for an undelivered message.
+/// 10 service agents per space, about 10M messages a month, a message text of 64 KB and 7 days for
+/// an undelivered message.
 const OWNED_2: u32 = 2;
 const DEVICES_50: u32 = 50;
+const AGENTS_10: u32 = 10;
 const MESSAGES_10M: u64 = 10_000_000;
 const KB_64: u64 = 64 * 1024;
 const DAYS_7: Duration = Duration::from_secs(7 * 86_400);
@@ -60,6 +62,7 @@ const DAYS_7: Duration = Duration::from_secs(7 * 86_400);
 const SPACES: &str = "spaces";
 const DEVICES: &str = "devices";
 const MESSAGES: &str = "messages this month";
+const AGENTS: &str = "service agents";
 
 /// A bar of the page: its accessible name, in lower case, its value and its maximum.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -171,14 +174,15 @@ fn answered(page: &Page, paths: &[String]) -> bool {
 
 /// With the cloud's settings, Ida's new account with one machine sees her personal space's usage:
 /// she owns 1 of 2 spaces, her personal space listed; her laptop is 1 of 50 devices; the space has
-/// sent 0 of 10,000,000 messages this month; a message holds up to 64 KB, and an undelivered one
-/// is kept 7 days. The web app got them from the server, and no answer it got holds a secret.
+/// sent 0 of 10,000,000 messages this month and has 0 of 10 service agents; a message holds up to
+/// 64 KB, and an undelivered one is kept 7 days. The web app got them from the server, and no answer it got holds a secret.
 #[test]
 fn usage_shows_the_personal_spaces_counts_and_limits_and_1_of_2_owned_spaces() {
     let browser = Browser::launch();
     let (page, _spa, cloud, personal) = usage_of_first_machine(&browser, 4_226_100_001, |s| {
         s.owned_spaces_limit = Some(OWNED_2);
         s.devices_limit = Some(DEVICES_50);
+        s.service_agents_limit = Some(AGENTS_10);
         s.monthly_messages_limit = Some(MESSAGES_10M);
         s.message_size_limit = Some(KB_64);
         s.mailbox_retention = Some(DAYS_7);
@@ -187,6 +191,7 @@ fn usage_shows_the_personal_spaces_counts_and_limits_and_1_of_2_owned_spaces() {
         (SPACES, (1.0, f64::from(OWNED_2))),
         (DEVICES, (1.0, f64::from(DEVICES_50))),
         (MESSAGES, (0.0, MESSAGES_10M as f64)),
+        (AGENTS, (0.0, f64::from(AGENTS_10))),
     ];
     let paths = usage_paths(&cloud);
     let what = format!("Usage with the bars {expected:?}, from {paths:?}");

@@ -5985,7 +5985,7 @@
             }
           },
           "403": {
-            "description": "The session's account gets the space, but is not its creator for revision 1, or no admin in revision n for revision n+1.",
+            "description": "The session's account gets the space, but is not its creator for revision 1, or no admin in revision n for revision n+1. Or the problem `https://skald.so/problems/service-agents-limit`: the revision lists more service agent entries than the server setting `--service-agents-limit` allows and than revision n, or than none for revision 1; nothing is stored. A revision that keeps or lowers their number is stored, so a space over a lowered limit still removes agents and changes the rest. Without the setting there is no limit.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -6415,8 +6415,8 @@
     "/spaces/{space}/usage": {
       "get": {
         "operationId": "getSpaceUsage",
-        "summary": "The space's messages this month, with the limits on its messages",
-        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, and the server's limits on the space's messages and history while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
+        "summary": "The space's messages this month and service agents, with their limits",
+        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, its service agents, and the server's limits on the space's messages, history and service agents while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -8018,13 +8018,14 @@
         "additionalProperties": false
       },
       "SpaceUsage": {
-        "description": "A space's messages this month and the limits on its messages and history, each while one applies.",
+        "description": "A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.",
         "type": "object",
         "required": [
           "monthly_messages",
           "message_size",
           "mailbox_retention",
-          "history_retention"
+          "history_retention",
+          "service_agents"
         ],
         "properties": {
           "monthly_messages": {
@@ -8042,6 +8043,10 @@
           "history_retention": {
             "description": "How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`.",
             "$ref": "#/components/schemas/UsageLimit"
+          },
+          "service_agents": {
+            "description": "The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`.",
+            "$ref": "#/components/schemas/UsageCount"
           }
         },
         "additionalProperties": false
