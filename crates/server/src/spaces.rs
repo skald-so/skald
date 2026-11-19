@@ -594,7 +594,7 @@ async fn check(
 }
 
 /// Whether `roster` lists `account` as an admin.
-fn admin(roster: &Roster, account: AccountId) -> bool {
+pub(crate) fn admin(roster: &Roster, account: AccountId) -> bool {
     roster
         .body()
         .members
@@ -641,6 +641,13 @@ async fn insert(
     })?;
     let mut tx = db
         .begin()
+        .await
+        .map_err(|err| Refusal::Database("store a revision", err))?;
+    // A service token's creation waits for the revision, and the revision for the creation
+    // (`service_tokens::create`).
+    sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
+        .bind(space.to_string())
+        .execute(&mut *tx)
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.

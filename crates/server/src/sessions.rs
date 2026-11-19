@@ -88,6 +88,12 @@ pub(crate) async fn web_session_from_page(
     does: &str,
 ) -> Result<Session, Refusal> {
     let session = web_session(state, headers, does).await?;
+    from_page(state, headers)?;
+    Ok(session)
+}
+
+/// Refuses the request unless it comes from a page of this server, as its `Origin` says.
+pub(crate) fn from_page(state: &AppState, headers: &HeaderMap) -> Result<(), Refusal> {
     let from_page = state
         .sign_in
         .as_deref()
@@ -97,7 +103,7 @@ pub(crate) async fn web_session_from_page(
             "The request does not come from a page of this server.".to_owned(),
         ));
     }
-    Ok(session)
+    Ok(())
 }
 
 /// `GET /account/sessions`: every session of the web session's account that has not ended.

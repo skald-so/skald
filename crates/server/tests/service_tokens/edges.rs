@@ -1,14 +1,21 @@
 //! Past what the other tests of service tokens check: the grant's signer and expiry at their edges,
-//! a revoked `service` device, repeated permissions, a revocation through another space, an entry
-//! listed again, and a use recorded once a minute.
+//! a revoked `service` device, repeated permissions, a revocation through another space or of an
+//! ended token, an entry listed again, a creation while a revision drops the entry, and a use
+//! recorded once a minute.
+
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 use skald_proto::DeviceKind;
+use sqlx::Connection as _;
 
 use crate::api::assert_refused;
 use crate::common::device_flow::{json, text};
 use crate::common::devices::Device;
 use crate::fixture::exclude;
-use crate::rosters::service_agent;
+use crate::https::PROOF;
+use crate::rosters::{next, service_agent};
 use crate::tokens::{
     DAY, RECEIVE, SEND, Stage, bearer, call, creation, find, grant, seconds, sorted_strings,
     tokens_path,
@@ -172,4 +179,92 @@ fn a_tokens_use_is_recorded_once_a_minute() {
     let second = json(&stage.own(&created.token))["last_used_at"].clone();
     assert_eq!(second, first, "a second write within the minute");
     assert_eq!(find(&stage.list(alice), &created.id)["last_used_at"], first);
+}
+
+/// alice's session revokes the bot's token past its expiry, which the test moves back in the
+/// database, and another once alice's master key revokes the bot: `404` each time.
+#[test]
+fn an_ended_token_is_not_revoked() {
+    let stage = Stage::new(3_535_600_031);
+    let (expired, other) = (stage.create(), stage.create());
+    stage.db().execute(&format!(
+        "UPDATE service_tokens SET expires_at = now() - interval '1 second' WHERE id = '{}'",
+        expired.id
+    ));
+    let alice = &stage.f.team.alice;
+    let response = stage.revoke_as(alice, &expired.id);
+    assert_eq!(response.status, 404, "expired: {}", text(&response));
+
+    alice.revoke(&alice.by_master(stage.bot.id, &[]));
+    let response = stage.revoke_as(alice, &other.id);
+    assert_eq!(
+        response.status,
+        404,
+        "its device revoked: {}",
+        text(&response)
+    );
+}
+
+/// alice's session asks for the bot's token while a revision that drops the bot's entry is being
+/// stored, the space's row locked as storing a revision locks it: the request waits for the
+/// revision and gets no token. Once the next revision lists the bot again, still no token works.
+#[test]
+fn a_token_asked_for_while_a_revision_drops_its_entry_is_not_given() {
+    let mut stage = Stage::new(3_535_600_041);
+    let bot = stage.bot.id;
+    let alice = &stage.f.team.alice;
+    let mut body = next(stage.f.revisions.last().expect("a revision"), &alice.laptop);
+    body.service_agents.retain(|agent| agent.device != bot);
+    let revision = alice.sign(&body);
+    let number = i64::try_from(body.revision).expect("a revision number");
+
+    let proof = stage.proof(alice, &alice.laptop);
+    let request = creation(bot, &stage.bot_grant(), &[SEND]);
+    let (base, path) = (stage.base().to_owned(), tokens_path(stage.space()));
+    let auth = bearer(alice.session.token());
+    let (locked, wait) = mpsc::channel();
+    let asking = thread::spawn(move || {
+        wait.recv().expect("the space locked");
+        let headers = [("authorization", auth.as_str()), (PROOF, proof.as_str())];
+        call(&base, "post", &path, &headers, Some(&request))
+    });
+    let space = stage.space().to_string();
+    stage
+        .db()
+        .query(async |conn| {
+            let mut tx = conn.begin().await?;
+            sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
+                .bind(&space)
+                .execute(&mut *tx)
+                .await?;
+            locked.send(()).expect("the request");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            sqlx::query(
+                "INSERT INTO roster_revisions (space_id, revision, roster)
+                 VALUES ($1::uuid, $2, $3)",
+            )
+            .bind(&space)
+            .bind(number)
+            .bind(&revision)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO roster_members (space_id, revision, account_id, admin)
+                 SELECT space_id, $2, account_id, admin FROM roster_members
+                 WHERE space_id = $1::uuid AND revision = $2 - 1",
+            )
+            .bind(&space)
+            .bind(number)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await
+        })
+        .expect("store the revision");
+    let response = asking.join().expect("the request");
+    assert_refused(&response, "while its entry is dropped");
+
+    stage.f.revisions.push(revision);
+    let entry = service_agent(&stage.bot);
+    stage.f.revise(|body| body.service_agents.push(entry));
+    assert!(stage.list(&stage.f.team.alice).is_empty(), "a token given");
 }

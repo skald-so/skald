@@ -237,10 +237,13 @@ jobs:
       - name: Install Chrome Headless Shell
         working-directory: web
         run: node node_modules/playwright-core/cli.js install chromium-headless-shell
-      # The image's PostgreSQL, stopped and disabled until started.
+      # The image's PostgreSQL, stopped and disabled until started, set as script/lib/postgres.sh
+      # sets the tests' one: it flushes nothing to the disk, which the client's state shares, and
+      # takes the tests' connections.
       - name: Start PostgreSQL
         shell: pwsh
         run: |
+          Add-Content -Path "$env:PGDATA\postgresql.conf" -Value 'fsync = off', 'max_connections = 500'
           $service = Get-Service -Name 'postgresql*'
           Set-Service -InputObject $service -StartupType Manual
           Start-Service -InputObject $service
