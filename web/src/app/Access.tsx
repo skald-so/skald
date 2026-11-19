@@ -88,8 +88,10 @@ export interface AccessScreenProps {
    * they load or when it is an admin of no space, which hides them.
    */
   tokens?: readonly SpaceToken[];
-  /** The time the relative times count from, in milliseconds since the epoch. */
+  /** The time the sessions' relative times count from, in milliseconds since the epoch. */
   now: number;
+  /** The time the tokens' relative times count from, as `now`; `now` without it. */
+  tokensNow?: number;
   /** What failed, shown above the table. */
   failed?: string;
   /** Revoke on a session's row: ends it, without asking. */
@@ -112,6 +114,7 @@ export function AccessScreen({
   sessions,
   tokens,
   now,
+  tokensNow = now,
   failed,
   onRevoke,
   onEndOthers,
@@ -218,7 +221,9 @@ export function AccessScreen({
         empty={<EmptyState>No sessions.</EmptyState>}
         minWidth={720}
       />
-      {tokens && <Tokens tokens={tokens} now={now} onRevoke={onRevokeToken} />}
+      {tokens && (
+        <Tokens tokens={tokens} now={tokensNow} onRevoke={onRevokeToken} />
+      )}
       {asking && (
         <ConfirmDialog
           title="Sign out everywhere else?"
@@ -425,7 +430,10 @@ export function Access({
     sessions: ListedSession[];
     at: number;
   }>();
-  const [tokens, setTokens] = useState<SpaceToken[]>();
+  const [tokens, setTokens] = useState<{
+    tokens: SpaceToken[] | undefined;
+    at: number;
+  }>();
   const [failed, setFailed] = useState<string>();
   /** Counts the changes, each of which lists the sessions again. */
   const [changes, setChanges] = useState(0);
@@ -445,7 +453,10 @@ export function Access({
   useEffect(() => {
     const request = new AbortController();
     fetchTokens(spaces, request.signal).then(
-      (found) => (found === null ? onSignedOut() : setTokens(found)),
+      (found) =>
+        found === null
+          ? onSignedOut()
+          : setTokens({ tokens: found, at: Date.now() }),
       () => {
         if (!request.signal.aborted)
           setFailed("The service agent tokens did not load.");
@@ -474,8 +485,9 @@ export function Access({
   return (
     <AccessScreen
       sessions={listed?.sessions}
-      tokens={tokens}
+      tokens={tokens?.tokens}
       now={listed?.at ?? 0}
+      tokensNow={tokens?.at}
       failed={failed}
       onRevoke={(session) =>
         end("Revoking the session", () =>
