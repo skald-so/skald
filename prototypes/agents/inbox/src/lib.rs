@@ -568,6 +568,9 @@ mod tests {
             assert_eq!(call["arguments"], json!({ "n": i }));
             assert!(call["at_ms"].as_u64().unwrap() > 0, "{call}");
         }
+        // A task that cannot be read is an error, not "no task".
+        fs::create_dir(dir.path().join("task-4")).unwrap();
+        assert!(claim(dir.path(), &json!({})).is_err());
     }
 
     #[test]

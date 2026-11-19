@@ -91,6 +91,20 @@ async fn with_a_claim_directory_the_stub_claim_tool_records_its_calls() {
     client.cancel().await.unwrap();
 }
 
+#[test]
+fn takes_a_claim_directory_only_after_its_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-inbox"))
+        .arg(dir.path())
+        .args(["--other", "claims"])
+        .env_clear()
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("usage: agent-inbox "), "{stderr}");
+}
+
 #[tokio::test]
 async fn inbox_returns_each_waiting_message_once() {
     let (_dir, source, client) = started().await;
