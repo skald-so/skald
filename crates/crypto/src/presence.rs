@@ -353,18 +353,15 @@ mod tests {
         );
     }
 
-    #[cfg_attr(not(target_arch = "wasm32"), test)]
-    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    fn a_value_signed_by_another_key_than_its_devices_is_refused_whatever_key_is_given() {
-        // A body naming the device, signed by another key and sealed as the spec says.
-        let other = SigningKey::from_bytes(&[62; 32]);
-        let body = body(1);
+    /// `body` signed by `signer` and sealed as the spec says, without the crate's checks, in a value
+    /// of `device`, `body.channel` and `body.epoch`.
+    fn forged(body: &PresenceBody, device: DeviceId, signer: &SigningKey) -> Presence {
         let bytes = body.to_cbor();
-        let signature = other.sign(PRESENCE_LABEL, &[&bytes]);
+        let signature = signer.sign(PRESENCE_LABEL, &[&bytes]);
         let mut plaintext = PresencePlaintext::from_parts(bytes, signature)
             .unwrap()
             .to_cbor();
-        plaintext.resize(BLOCK, 0);
+        plaintext.resize(plaintext.len().div_ceil(BLOCK) * BLOCK, 0);
         let nonce = [7; 12];
         let ct = key()
             .cipher()
@@ -372,18 +369,77 @@ mod tests {
                 &Nonce::from(nonce),
                 Payload {
                     msg: &plaintext,
-                    aad: &Presence::associated_data(body.device, body.channel, body.epoch),
+                    aad: &Presence::associated_data(device, body.channel, body.epoch),
                 },
             )
             .unwrap();
-        let value = Presence {
-            device: body.device,
+        Presence {
+            device,
             channel: body.channel,
             epoch: body.epoch,
             nonce,
             ct,
             unknown: Default::default(),
+        }
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn past_expires_a_value_that_fails_another_check_gives_that_checks_error() {
+        let late = EXPIRES + 1;
+        let public = device().public_key();
+        let body = body(2);
+        assert_eq!(
+            key().open(&forged(&body, body.device, &device()), &public, late),
+            Err(PresenceError::Expired {
+                body: Box::new(body.clone())
+            }),
+            "only check 4 fails: the opened body"
+        );
+
+        let other = SigningKey::from_bytes(&[62; 32]);
+        assert_eq!(
+            key().open(&forged(&body, body.device, &other), &public, late),
+            Err(PresenceError::Signature)
+        );
+        let naming_other = PresenceBody {
+            device: DeviceId::from_signing_key(&other.public_key()),
+            ..body.clone()
         };
+        assert_eq!(
+            key().open(
+                &forged(&naming_other, body.device, &device()),
+                &public,
+                late
+            ),
+            Err(PresenceError::OtherValue)
+        );
+        let person: Address = "acme/alice/user@skald.example".parse().unwrap();
+        let mut with_person = body.clone();
+        with_person.agents.push(status(&person.to_string()));
+        assert_eq!(
+            key().open(&forged(&with_person, body.device, &device()), &public, late),
+            Err(PresenceError::Person(person))
+        );
+        let mut twice = body.clone();
+        twice.agents.push(twice.agents[0].clone());
+        assert_eq!(
+            key().open(&forged(&twice, body.device, &device()), &public, late),
+            Err(PresenceError::RepeatedAgent(body.agents[0].agent.clone()))
+        );
+        let other_key = HistoryKey::from_bytes(&[0x42; 16]).presence_key();
+        assert_eq!(
+            other_key.open(&forged(&body, body.device, &device()), &public, late),
+            Err(PresenceError::Open)
+        );
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_value_signed_by_another_key_than_its_devices_is_refused_whatever_key_is_given() {
+        let other = SigningKey::from_bytes(&[62; 32]);
+        let body = body(1);
+        let value = forged(&body, body.device, &other);
         assert_eq!(
             key().open(&value, &other.public_key(), EXPIRES),
             Err(PresenceError::NotDevice)
