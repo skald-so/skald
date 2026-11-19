@@ -331,6 +331,27 @@ const MIGRATIONS: &[&str] = &[
         agent TEXT NOT NULL,
         due INTEGER NOT NULL DEFAULT 0 CHECK (due IN (0, 1))
     ) STRICT;",
+    // Replies: each kept message's channel and what a reply to it needs, sealed under the state
+    // key; and each message the person's run showed or the device handed to an agent, by its
+    // entry's `seq`, with its `msg_id`, space and channel, what a reply needs, sealed, until when
+    // it can be replied to, in Unix seconds, whether the person's run showed it, and each agent it
+    // was handed to.
+    "ALTER TABLE kept ADD COLUMN channel TEXT;
+    ALTER TABLE kept ADD COLUMN target BLOB;
+    CREATE TABLE reply_target (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        msg_id TEXT NOT NULL,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        target BLOB NOT NULL,
+        expires INTEGER NOT NULL,
+        person INTEGER NOT NULL CHECK (person IN (0, 1))
+    ) STRICT;
+    CREATE TABLE reply_agent (
+        seq INTEGER NOT NULL,
+        agent TEXT NOT NULL,
+        PRIMARY KEY (seq, agent)
+    ) STRICT;",
 ];
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
@@ -511,14 +532,41 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Kept {
     pub space: SpaceId,
+    pub channel: ChannelId,
     pub msg_id: MessageId,
     /// The message as `forms::Message` encodes it in JSON, sealed under the state key.
     pub line: Vec<u8>,
-    /// How long it waits for an agent after the device wrote its entry, in seconds.
+    /// What a reply to it needs, sealed under the state key ([`crate::reply`]).
+    pub target: Vec<u8>,
+    /// How long it waits for an agent, and can be replied to, after the device wrote its entry, in
+    /// seconds.
     pub wait: u64,
     pub agents: Vec<String>,
+    /// The `replied` it gives a message the device sent, if it is such a reply.
+    pub replied: Option<Replied>,
     /// What its `read` receipt reports once it is handed over, if its `to` is one of `agents`.
     pub read: Option<ToRead>,
+}
+
+/// A `replied` of the device's message `msg_id` in `space`, as JSON (`forms::Status`), for the
+/// person and for `agent`, the agent that sent the message, if any.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Replied {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub status: String,
+    pub agent: Option<String>,
+}
+
+/// A message the device can reply to: its `msg_id`, space and channel, and what a reply needs,
+/// sealed under the state key, by its entry's `seq`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    pub seq: u64,
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub sealed: Vec<u8>,
 }
 
 /// What the `read` receipt of a kept message reports (`docs/protocol/delivery.md`, "Receipts").
@@ -1534,13 +1582,15 @@ impl State {
         Ok(())
     }
 
-    /// The `msg_id` of each message the device keeps: those it sent, and those that wait to be
-    /// shown, but for any an older client kept.
+    /// The `msg_id` of each message the device keeps: those it sent, those that wait to be shown,
+    /// but for any an older client kept, and those that can be replied to now.
     pub fn kept_ids(&self) -> Result<Vec<MessageId>, Error> {
+        let now = sql_u64(unix_now())?;
         let mut query = self.db.prepare(
-            "SELECT msg_id FROM sent UNION SELECT msg_id FROM kept WHERE msg_id IS NOT NULL",
+            "SELECT msg_id FROM sent UNION SELECT msg_id FROM kept WHERE msg_id IS NOT NULL
+             UNION SELECT msg_id FROM reply_target WHERE expires > ?1",
         )?;
-        let ids = query.query_map([], |row| row.get::<_, String>(0))?;
+        let ids = query.query_map(params![now], |row| row.get::<_, String>(0))?;
         ids.map(|msg_id| id("message ID", &msg_id?)).collect()
     }
 
@@ -1850,13 +1900,16 @@ impl State {
         )
     }
 
-    /// Records that the person's run showed the kept message `seq`.
+    /// Records that the person's run showed the kept message `seq`, which it can then reply to.
     pub fn shown_to_person(&self, seq: u64) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
+        add_target(&tx, seq)?;
         tx.execute(
-            "UPDATE kept SET person = 0 WHERE seq = ?1",
-            params![sql_seq(seq)?],
+            "UPDATE reply_target SET person = 1 WHERE seq = ?1",
+            params![seq],
         )?;
+        tx.execute("UPDATE kept SET person = 0 WHERE seq = ?1", params![seq])?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
@@ -1886,21 +1939,78 @@ impl State {
         )
     }
 
-    /// Records that the kept message `seq` was handed over to the agent `agent`, and that its
-    /// `read` receipt is due if `agent` is its `to`, at once.
+    /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
+    /// reply to it, and that its `read` receipt is due if `agent` is its `to`, at once.
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
+        let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
+        if add_target(&tx, seq)? {
+            tx.execute(
+                "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+                params![seq, agent],
+            )?;
+        }
         tx.execute(
             "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
-            params![sql_seq(seq)?, agent],
+            params![seq, agent],
         )?;
         tx.execute(
             "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
-            params![sql_seq(seq)?, agent],
+            params![seq, agent],
         )?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// The messages the person, or else the agent `agent` in the space `space`, can reply to by
+    /// `now`, in Unix seconds, in `seq` order, once those whose time ended are dropped.
+    pub fn targets(&self, agent: Option<(SpaceId, &str)>, now: u64) -> Result<Vec<Target>, Error> {
+        let now = sql_u64(now)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute("DELETE FROM reply_target WHERE expires <= ?1", params![now])?;
+        tx.execute(
+            "DELETE FROM reply_agent WHERE seq NOT IN (SELECT seq FROM reply_target)",
+            [],
+        )?;
+        tx.commit()?;
+        let columns = "SELECT seq, msg_id, space, channel, target FROM reply_target";
+        let mut query = match agent {
+            Some(_) => self.db.prepare(&format!(
+                "{columns} WHERE space = ?1
+                 AND seq IN (SELECT seq FROM reply_agent WHERE agent = ?2) ORDER BY seq"
+            ))?,
+            None => self
+                .db
+                .prepare(&format!("{columns} WHERE person = 1 ORDER BY seq"))?,
+        };
+        let row = |row: &rusqlite::Row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Vec<u8>>(4)?,
+            ))
+        };
+        let rows = match agent {
+            Some((space, agent)) => query
+                .query_map(params![space.to_string(), agent], row)?
+                .collect::<Result<Vec<_>, _>>()?,
+            None => query.query_map([], row)?.collect::<Result<Vec<_>, _>>()?,
+        };
+        rows.into_iter()
+            .map(|(seq, msg_id, space, channel, sealed)| {
+                let malformed = || Error::Malformed(format!("the message to reply to {msg_id}"));
+                Ok(Target {
+                    seq: u64::try_from(seq).map_err(|_| malformed())?,
+                    msg_id: msg_id.parse().map_err(|_| malformed())?,
+                    space: space.parse().map_err(|_| malformed())?,
+                    channel: channel.parse().map_err(|_| malformed())?,
+                    sealed,
+                })
+            })
+            .collect()
     }
 
     /// The `seq` and the value of each row `sql` selects with `params`, such as a kept message's
@@ -2156,8 +2266,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id)
-         SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target)
+         SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
+             ?7, ?8
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -2165,9 +2276,24 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             kept.line,
             now,
             wait,
-            kept.msg_id.to_string()
+            kept.msg_id.to_string(),
+            kept.channel.to_string(),
+            kept.target
         ],
     )?;
+    if let Some(replied) = &kept.replied {
+        tx.execute(
+            "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5) ON CONFLICT DO NOTHING",
+            params![
+                seq,
+                replied.msg_id.to_string(),
+                replied.space.to_string(),
+                replied.status,
+                replied.agent
+            ],
+        )?;
+    }
     for agent in &kept.agents {
         tx.execute(
             "INSERT INTO handover (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
@@ -2192,6 +2318,24 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
         )?;
     }
     Ok(())
+}
+
+/// Adds, in `tx`, the kept message `seq` to those the device can reply to, unless it is, or an
+/// older client kept it without what a reply needs; gives whether it is one now.
+fn add_target(tx: &Transaction, seq: i64) -> Result<bool, Error> {
+    tx.execute(
+        "INSERT INTO reply_target (seq, msg_id, space, channel, target, expires, person)
+         SELECT seq, msg_id, space, channel, target, expires, 0 FROM kept
+         WHERE seq = ?1 AND msg_id IS NOT NULL AND channel IS NOT NULL AND target IS NOT NULL
+         ON CONFLICT DO NOTHING",
+        params![seq],
+    )?;
+    let found: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM reply_target WHERE seq = ?1)",
+        params![seq],
+        |row| row.get(0),
+    )?;
+    Ok(found)
 }
 
 /// Records `counters` as those the device accepted from `source` with the entry `seq`, in `tx`.
@@ -3111,11 +3255,14 @@ pub(crate) mod tests {
     pub(crate) fn kept(agents: &[&str]) -> Kept {
         Kept {
             space: space_of_kept(),
+            channel: ChannelId::generate(),
             msg_id: MessageId::generate(),
             line: b"line".to_vec(),
+            target: b"target".to_vec(),
             wait: 86_400,
             agents: agents.iter().map(|&agent| agent.to_owned()).collect(),
             read: None,
+            replied: None,
         }
     }
 
@@ -3193,6 +3340,82 @@ pub(crate) mod tests {
             .query_row("SELECT count(*) FROM kept", [], |row| row.get(0))
             .unwrap();
         assert_eq!(kept, 0, "a message no one waits for is kept");
+    }
+
+    /// A message the person's run showed can be replied to by the person; one handed over to an
+    /// agent, by that agent in its space only; each until its wait ends, after which it is dropped.
+    /// A kept reply's `replied` is kept with it, for the person and the message's agent.
+    #[test]
+    fn shown_and_handed_over_messages_can_be_replied_to_until_their_wait_ends() {
+        let dir = TestDir::new("state-targets");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
+            .unwrap();
+        let space = space_of_kept();
+        state.add_agent(space, "claude").unwrap();
+        state.add_agent(space, "codex").unwrap();
+        let entries: Vec<(u64, Vec<u8>)> = (1..=4).map(|seq: u8| (seq.into(), vec![seq])).collect();
+        state.write_entries(&entries).unwrap();
+        let sender = DeviceId::from_signing_key(&[4; 32]);
+        let (shown, handed) = (kept(&[]), kept(&["claude", "codex"]));
+        let mut short = kept(&["claude"]);
+        short.wait = 10;
+        let mut reply = kept(&[]);
+        let original = MessageId::generate();
+        reply.replied = Some(Replied {
+            msg_id: original,
+            space,
+            status: "replied".to_owned(),
+            agent: Some("codex".to_owned()),
+        });
+        for (seq, kept) in [(1, &shown), (2, &handed), (3, &short)] {
+            state.keep(seq, (sender, kept.msg_id), kept).unwrap();
+        }
+        let now = unix_now();
+        let seqs = |agent: Option<(SpaceId, &str)>, now: u64| -> Vec<(u64, MessageId)> {
+            let targets = state.targets(agent, now).unwrap();
+            targets
+                .iter()
+                .map(|target| (target.seq, target.msg_id))
+                .collect()
+        };
+        assert!(seqs(None, now).is_empty(), "a message not shown yet");
+
+        state.shown_to_person(1).unwrap();
+        state.handed_over(2, "claude").unwrap();
+        state.handed_over(3, "claude").unwrap();
+        let target = &state.targets(None, now).unwrap()[0];
+        assert_eq!(
+            (target.space, target.channel, target.sealed.as_slice()),
+            (space, shown.channel, b"target".as_slice())
+        );
+        assert_eq!(seqs(None, now), [(1, shown.msg_id)]);
+        let claude = Some((space, "claude"));
+        assert_eq!(seqs(claude, now), [(2, handed.msg_id), (3, short.msg_id)]);
+        assert!(seqs(Some((space, "codex")), now).is_empty());
+        assert!(seqs(Some((SpaceId::generate(), "claude")), now).is_empty());
+        assert!(state.kept_ids().unwrap().contains(&shown.msg_id));
+        // The short wait ends.
+        assert_eq!(seqs(claude, now + 11), [(2, handed.msg_id)]);
+        assert_eq!(seqs(claude, now), [(2, handed.msg_id)]);
+
+        state.keep(4, (sender, reply.msg_id), &reply).unwrap();
+        assert_eq!(statuses(state.statuses_for_person()), ["replied"]);
+        assert_eq!(
+            statuses(state.statuses_for_agent(space, "codex")),
+            ["replied"]
+        );
+        assert!(statuses(state.statuses_for_agent(space, "claude")).is_empty());
+    }
+
+    /// The JSON of each of `statuses`.
+    fn statuses(statuses: Result<Vec<(u64, String)>, Error>) -> Vec<String> {
+        statuses
+            .unwrap()
+            .into_iter()
+            .map(|(_, status)| status)
+            .collect()
     }
 
     /// The state in `dir` of the device `laptop`, with an inbox entry of each of `seqs` that holds
