@@ -8,6 +8,8 @@
 //!   write, which returns once the tool's result is written to the client, and only then marks
 //!   them handed over ([`recv::inbox`]): a result not written, or a call that fails, leaves them
 //!   for the next call. [`Written`] says whether each result was written.
+//! - The send tool sends as the agent's `skald send` does and returns what it says: `to` is its
+//!   `--to`, or `*` its `--all`.
 //! - The reply tool replies as the agent's `skald reply` does and returns what it says.
 //! - The registration and each tool call are operations, as a command's: through the helper, or
 //!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
@@ -38,7 +40,7 @@ use crate::devices::text;
 use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
-use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, reply, secrets};
+use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, reply, secrets, send};
 
 /// The tool that returns the agent's messages.
 pub const INBOX: &str = "inbox";
@@ -46,14 +48,32 @@ pub const INBOX: &str = "inbox";
 const INBOX_DESCRIPTION: &str = "Returns the Skald messages that came for this session, each \
                                  once: a line per message, [<from> · <device>] #<ref>: <text>.";
 
-/// The tool that replies to a message as the agent, and its arguments.
+/// The tool that sends a message as the agent, and its arguments.
+pub const SEND: &str = "send";
+const TO: &str = "to";
+const TEXT: &str = "text";
+const CHANNEL: &str = "channel";
+
+/// What `to` takes for every agent in the channel.
+const EVERYONE: &str = "*";
+
+const SEND_DESCRIPTION: &str = "Sends a Skald message as this session: sent #<ref>.";
+const TO_DESCRIPTION: &str = "An agent's address, space/owner/agent@server or owner/agent, or * for \
+                              every agent in the channel. Every member device still gets the \
+                              message: an addressee does not make it private.";
+const CHANNEL_DESCRIPTION: &str = "The channel's ID; by default the space's default channel.";
+
+/// The tool that replies to a message as the agent, and its argument besides `text`.
 pub const REPLY: &str = "reply";
 const MESSAGE: &str = "message";
-const TEXT: &str = "text";
 
 const REPLY_DESCRIPTION: &str = "Replies to a Skald message, to its sender in its channel: sent \
                                  #<ref>.";
 const MESSAGE_DESCRIPTION: &str = "The message's #<ref>, as inbox shows it, or its msg_id.";
+
+/// What the send tool says without `to`.
+const NO_TO: &str = "name the addressee in `to`: an agent's address, or * for every agent in the \
+                     channel; nothing is sent";
 
 /// What `inbox` returns with nothing waiting.
 const NOTHING: &str = "No new messages.";
@@ -74,6 +94,13 @@ pub enum Call {
     Register,
     /// The `inbox` tool.
     Inbox,
+    /// The send tool: `skald send` with `--to` the agent `to` names, or `--all` without it, the
+    /// channel `channel` names, if any, and the text `text`.
+    Send {
+        to: Option<String>,
+        channel: Option<String>,
+        text: String,
+    },
     /// The reply tool: `skald reply` to the message `message` names with the text `text`.
     Reply { message: String, text: String },
 }
@@ -104,6 +131,19 @@ pub fn perform(
                 Ok(())
             }
         },
+        Call::Send { to, channel, text } => {
+            match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
+                Ok(_) => send::run(
+                    dir,
+                    storage,
+                    settings,
+                    (to.as_deref(), channel.as_deref(), &text),
+                    Some(agent),
+                    false,
+                ),
+                Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
+            }
+        }
         Call::Reply { message, text } => {
             match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
                 Ok(_) => reply::run(
@@ -118,6 +158,23 @@ pub fn perform(
             }
         }
     }
+}
+
+/// The call of the send tool with `arguments`; fails, saying why, without `to` or `text`, or with
+/// one of its fields not a string.
+fn send_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, String> {
+    let field = |name: &str| match arguments.and_then(|arguments| arguments.get(name)) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(given)) => Ok(Some(given.clone())),
+        Some(_) => Err(format!("`{name}` is not a string; nothing is sent")),
+    };
+    let to = field(TO)?.ok_or(NO_TO)?;
+    let text = field(TEXT)?.ok_or("give the text in `text`; nothing is sent")?;
+    Ok(Call::Send {
+        to: (to != EVERYONE).then_some(to),
+        channel: field(CHANNEL)?,
+        text,
+    })
 }
 
 /// The call of the reply tool with `arguments`; fails, saying why, without `message` or `text`,
@@ -365,8 +422,8 @@ impl Server {
         }
     }
 
-    /// Runs `call`, of the reply tool, as `agent`: gives what its run said.
-    async fn reply(&self, agent: Name, call: Call) -> CallToolResult {
+    /// Runs `call`, of the send or the reply tool, as `agent`: gives what its run said.
+    async fn sending(&self, agent: Name, call: Call) -> CallToolResult {
         let settings = self.settings.clone();
         let said = Said::default();
         let ran = tokio::task::spawn_blocking({
@@ -418,20 +475,31 @@ impl ServerHandler for Server {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        let mut schema = serde_json::Map::new();
-        schema.insert("type".to_owned(), json!("object"));
-        let Value::Object(reply) = json!({
+        let schema = |schema: Value| match schema {
+            Value::Object(schema) => schema,
+            _ => unreachable!("a schema is an object"),
+        };
+        let inbox = schema(json!({ "type": "object" }));
+        let send = schema(json!({
+            "type": "object",
+            "properties": {
+                TO: { "type": "string", "description": TO_DESCRIPTION },
+                TEXT: { "type": "string" },
+                CHANNEL: { "type": "string", "description": CHANNEL_DESCRIPTION },
+            },
+            "required": [TO, TEXT],
+        }));
+        let reply = schema(json!({
             "type": "object",
             "properties": {
                 MESSAGE: { "type": "string", "description": MESSAGE_DESCRIPTION },
                 TEXT: { "type": "string" },
             },
             "required": [MESSAGE, TEXT],
-        }) else {
-            unreachable!("a schema is an object")
-        };
+        }));
         Ok(ListToolsResult::with_all_items(vec![
-            Tool::new(INBOX, INBOX_DESCRIPTION, schema),
+            Tool::new(INBOX, INBOX_DESCRIPTION, inbox),
+            Tool::new(SEND, SEND_DESCRIPTION, send),
             Tool::new(REPLY, REPLY_DESCRIPTION, reply),
         ]))
     }
@@ -441,20 +509,23 @@ impl ServerHandler for Server {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
-        let reply = match request.name.as_ref() {
+        let arguments = request.arguments.as_ref();
+        let called = match request.name.as_ref() {
             INBOX => None,
-            REPLY => match reply_call(request.arguments.as_ref()) {
-                Ok(call) => Some(call),
-                Err(why) => {
-                    let why = format!("skald: {why}");
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(why)]).into());
-                }
-            },
+            SEND => Some(send_call(arguments)),
+            REPLY => Some(reply_call(arguments)),
             name => {
                 return Err(ErrorData::invalid_params(
                     format!("no tool named {name}"),
                     None,
                 ));
+            }
+        };
+        let called = match called.transpose() {
+            Ok(called) => called,
+            Err(why) => {
+                let why = format!("skald: {why}");
+                return Ok(CallToolResult::error(vec![ContentBlock::text(why)]).into());
             }
         };
         let client = (context.peer.peer_info())
@@ -463,8 +534,8 @@ impl ServerHandler for Server {
         let Some(agent) = self.agent(&client) else {
             return Ok(CallToolResult::error(vec![ContentBlock::text(NO_DEVICE)]).into());
         };
-        Ok(match reply {
-            Some(call) => self.reply(agent, call).await,
+        Ok(match called {
+            Some(call) => self.sending(agent, call).await,
             None => self.inbox(agent, context.id).await,
         }
         .into())
@@ -832,6 +903,39 @@ mod tests {
 
         assert!(info.capabilities.tools.is_some(), "no tools: {info:?}");
         assert_eq!(info.server_info.name, "skald");
+    }
+
+    /// The send tool's call: `*` is every agent, with no `to`; without `to` or `text`, or with a
+    /// field not a string, there is none, and the error says which field.
+    #[test]
+    fn send_call_takes_to_text_and_an_optional_channel() {
+        let call = |arguments: Value| send_call(arguments.as_object());
+        let send = |to: Option<&str>, channel: Option<&str>| Call::Send {
+            to: to.map(str::to_owned),
+            channel: channel.map(str::to_owned),
+            text: "hi".to_owned(),
+        };
+        assert_eq!(
+            call(json!({ TO: "bob/claude", TEXT: "hi", CHANNEL: "c1" })),
+            Ok(send(Some("bob/claude"), Some("c1")))
+        );
+        assert_eq!(call(json!({ TO: "*", TEXT: "hi" })), Ok(send(None, None)));
+        assert_eq!(
+            call(json!({ TO: " *", TEXT: "hi", CHANNEL: null })),
+            Ok(send(Some(" *"), None))
+        );
+        assert_eq!(call(json!({ TEXT: "hi" })), Err(NO_TO.to_owned()));
+        assert_eq!(send_call(None), Err(NO_TO.to_owned()));
+        assert_eq!(call(json!({ TO: null, TEXT: "hi" })), Err(NO_TO.to_owned()));
+        for (arguments, field) in [
+            (json!({ TO: "*" }), "`text`"),
+            (json!({ TO: 7, TEXT: "hi" }), "`to`"),
+            (json!({ TO: "*", TEXT: ["hi"] }), "`text`"),
+            (json!({ TO: "*", TEXT: "hi", CHANNEL: 1 }), "`channel`"),
+        ] {
+            let why = call(arguments.clone()).expect_err(&arguments.to_string());
+            assert!(why.contains(field), "{arguments}: {why}");
+        }
     }
 
     /// The reply tool's call takes `message` and `text`; without either, or with one not a string,
