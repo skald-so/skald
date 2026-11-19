@@ -642,6 +642,8 @@ enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
     Json(Method, &'a [u8]),
+    /// None, a `GET` with the device's proof `proof`.
+    ProvedGet { proof: &'a str },
     /// JSON, `POST`ed with the device's proof `proof`.
     ProvedJson { json: &'a [u8], proof: &'a str },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
@@ -836,6 +838,15 @@ impl Connection {
         self.http(path, Some(token), Body::Json(method, json))
     }
 
+    /// `GET <path>` as the device of `proof`, on the device session or service token `token`.
+    pub fn get_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::ProvedGet { proof })
+    }
+
     /// `POST <path>` of the JSON `json` as the device of `proof`, on the device session of `token`.
     pub fn post_json_proved(
         &mut self,
@@ -883,6 +894,9 @@ impl Connection {
                 }
                 .content_type("application/json")
                 .send(json),
+                Body::ProvedGet { proof } => with_headers(agent.get(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .call(),
                 Body::ProvedJson { json, proof } => {
                     with_headers(agent.post(&url), &version, bearer)
                         .header(PROOF_HEADER, proof)

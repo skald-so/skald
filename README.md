@@ -15,6 +15,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
 - Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, the `inbox`, `send` and `reply` tools of the MCP server.
+- Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
 

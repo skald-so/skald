@@ -8,6 +8,8 @@ use chacha20poly1305::{
     KeyInit as _, XChaCha20Poly1305, XNonce,
     aead::{Aead as _, Payload},
 };
+use hkdf::Hkdf;
+use sha2::Sha256;
 use skald_proto::{DeviceId, signed_data};
 use zeroize::Zeroizing;
 
@@ -15,6 +17,9 @@ use crate::sign::random_secret;
 
 /// The label of a sealed item's associated data.
 const LABEL: &str = "skald mls state";
+/// The `info` of the state key of a `service` device that keeps state, derived from its key
+/// secret.
+const SERVICE_INFO: &[u8] = b"skald service state key";
 /// The length of a nonce: XChaCha20-Poly1305's 24 bytes, safe to draw at random.
 const NONCE_LEN: usize = 24;
 
@@ -35,6 +40,20 @@ impl StateKey {
     /// The key of these bytes, as [`StateKey::to_bytes`] gives them.
     pub fn from_bytes(bytes: &[u8; 32]) -> Self {
         Self(Zeroizing::new(*bytes))
+    }
+
+    /// The state key of a `service` device that keeps state, derived from the two private keys of
+    /// its key secret, `signing` and `hpke`: `HKDF-SHA256(salt = "", IKM = signing || hpke, info =
+    /// "skald service state key", L = 32)`. So only the key secret opens what it seals.
+    pub fn of_service(signing: &[u8; 32], hpke: &[u8; 32]) -> Self {
+        let mut ikm = Zeroizing::new([0; 64]);
+        ikm[..32].copy_from_slice(signing);
+        ikm[32..].copy_from_slice(hpke);
+        let mut key = Zeroizing::new([0; 32]);
+        Hkdf::<Sha256>::new(Some(b""), ikm.as_ref())
+            .expand(SERVICE_INFO, key.as_mut())
+            .expect("32 bytes of HKDF-SHA256");
+        Self(key)
     }
 
     /// The 32 bytes, for the device's key storage.

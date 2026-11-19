@@ -7,23 +7,24 @@
 //! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
-//! there waits for the server or no other device is in the group and no service agent gets a copy
-//! (`docs/protocol/membership.md`, "Admitted devices"). The content is from the person address or
-//! the agent's, to the agent `--to` names or, for `--all`, to no one in particular, with `hops` 0,
-//! the device's next `counter` in the channel and an A2A message with the text
-//! (`docs/protocol/README.md`, "Content"). With it go its copies under `hpke` to service agents
-//! outside the channel's group ([`crate::copies`]), each with the counter the device keeps for that
-//! agent in the channel; the run warns when it sends an agent its first copy of the channel's
-//! messages.
+//! there waits for the server (`docs/protocol/membership.md`, "Admitted devices"), or no other
+//! device is in the group, nothing on this device gets the message and no service agent gets a
+//! copy. The content is from the person address or the agent's, to the agent `--to` names or, for
+//! `--all`, to no one in particular, with `hops` 0, the device's next `counter` in the channel and
+//! an A2A message with the text (`docs/protocol/README.md`, "Content"). With it go its copies under
+//! `hpke` to service agents outside the channel's group ([`crate::copies`]), each with the counter
+//! the device keeps for that agent in the channel; the run warns when it sends an agent its first
+//! copy of the channel's messages. A `service` device sends none: its token gets no grants.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
 //! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
 //! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). Over
 //! HTTPS it sends them one at a time, each after the previous one is answered, so a channel's
-//! envelopes are stored in `counter` order ("Gap detection"). What is left waits in the outbox for
-//! the next run. It then uploads the history entries of the messages the server stored
-//! ([`crate::history`]).
+//! envelopes are stored in `counter` order ("Gap detection"). With the `stored` of a message, the
+//! device keeps it for its person and its agents, as a recipient device does
+//! ([`recv::own_message`]). What is left waits in the outbox for the next run. It then uploads the
+//! history entries of the messages the server stored ([`crate::history`]).
 //!
 //! `skald reply` sends as it does ([`crate::reply`]).
 
@@ -56,6 +57,7 @@ use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
 use crate::recv;
 use crate::secrets;
+use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, Outgoing, State};
 use crate::wraps;
@@ -279,19 +281,32 @@ pub fn send_synced(
             .map_err(|err| err.to_string())?;
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    let from = sender(&follower, &roster, server.clone(), agent)?;
-    let readers = copies::readers(
-        &mut follower,
-        (&roster, &devices),
-        (channel, draft.to.as_ref()),
-        &server,
-    );
+    // A service agent's message carries its token's grant; only a member's has copies.
+    let (from, grant, readers) = match follower.service {
+        Some(_) => {
+            let grant = service::grant(&mut follower.connection, &follower.token)?;
+            let at = (follower.this, channel);
+            let from = service::sender(at, (&roster, &devices), &follower.own, server, &grant)?;
+            (from, Some(grant), Vec::new())
+        }
+        None => {
+            let from = sender(&follower, &roster, server.clone(), agent)?;
+            let to = draft.to.as_ref();
+            let readers =
+                copies::readers(&mut follower, (&roster, &devices), (channel, to), &server);
+            (from, None, readers)
+        }
+    };
     let (_, first) = groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
         &readers,
-        |msg_id, counter| content(&from, draft, msg_id, counter),
+        |msg_id, counter| {
+            let mut content = content(&from, draft, msg_id, counter);
+            content.grant = grant;
+            content
+        },
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
     for reader in first {
@@ -378,10 +393,12 @@ fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
     )
 }
 
-/// The admitted `client` devices of `channel` in `roster`, the space's latest revision, but `this`
-/// one, each with its valid certificate among `devices`: those of the accounts of the channel's
-/// members that their member's `excluded` does not list. The certificates of `own`'s account are
-/// checked against the master key it pinned, any other's against the revision's.
+/// The devices admitted to `channel` in `roster`, the space's latest revision, but `this` one,
+/// each with its valid certificate among `devices` ("Admitted devices"): the `client` devices of
+/// the accounts of the channel's members that their member's `excluded` does not list, and the
+/// `service` devices of the channel's `services`, of a member's account. The certificates of
+/// `own`'s account are checked against the master key it pinned, any other's against the
+/// revision's.
 pub fn admitted<'d>(
     own: &Own,
     this: DeviceId,
@@ -401,6 +418,17 @@ pub fn admitted<'d>(
         for cert in devices.of(roster, own, member) {
             let body = cert.body();
             if body.kind == DeviceKind::Client && body.device != this {
+                admitted.insert(body.device, cert);
+            }
+        }
+    }
+    for member in body.members.iter() {
+        for cert in devices.of(roster, own, member) {
+            let body = cert.body();
+            if body.kind == DeviceKind::Service
+                && body.device != this
+                && channel.services.contains(&body.device)
+            {
                 admitted.insert(body.device, cert);
             }
         }
@@ -1065,10 +1093,12 @@ pub(crate) mod tests {
     }
 
     /// Admitted: the `client` devices with a valid certificate of the channel's members' accounts,
-    /// this one, a browser, one the member's `excluded` lists, one with a certificate by another
-    /// key and one of a member outside the channel aside.
+    /// and the `service` devices of the channel's `services` with one of a member's account; this
+    /// one, a browser, one the member's `excluded` lists, one with a certificate by another key,
+    /// one of a member outside the channel, a `service` device the channel does not list and one
+    /// with a forged certificate aside.
     #[test]
-    fn admitted_devices_are_the_channels_valid_client_devices_but_this_one() {
+    fn admitted_devices_are_the_channels_valid_client_and_service_devices_but_this_one() {
         let (ada, bob, carol) = (Account::new(), Account::new(), Account::new());
         let id = |cert: &Cert| cert.body().device;
         let (this, _, this_key) = ada.client();
@@ -1078,7 +1108,12 @@ pub(crate) mod tests {
         let (barred, ..) = bob.client();
         let (forged, ..) = bob.device(DeviceKind::Client, &SigningKey::generate(), None);
         let (outside, ..) = carol.client();
-        let certs = vec![this, laptop, browser, phone, barred, forged, outside];
+        let (bot, bot_hpke, _) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (unlisted, ..) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (fake, ..) = ada.device(DeviceKind::Service, &SigningKey::generate(), None);
+        let certs = vec![
+            this, laptop, browser, phone, barred, forged, outside, bot, unlisted, fake,
+        ];
 
         let mut body = first(ada.id).body().clone();
         let mut bobs = member(bob.id, "bob", bob.master.public_key());
@@ -1088,6 +1123,7 @@ pub(crate) mod tests {
             .push(member(carol.id, "carol", carol.master.public_key()));
         let channel = ChannelId::generate();
         body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
+        body.channels[0].services = vec![id(&certs[7]), id(&certs[9])];
         let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
         let own = Own {
             account: ada.id,
@@ -1107,7 +1143,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             given,
-            BTreeMap::from([(id(&certs[1]), laptop_hpke), (id(&certs[3]), phone_hpke)])
+            BTreeMap::from([
+                (id(&certs[1]), laptop_hpke),
+                (id(&certs[3]), phone_hpke),
+                (id(&certs[7]), bot_hpke),
+            ])
         );
         let elsewhere = admitted(
             &own,

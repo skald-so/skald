@@ -61,7 +61,7 @@ use skald_proto::{
 };
 
 use crate::clock;
-use crate::connection::Method;
+use crate::connection::{Connection, Method};
 use crate::copies::Reader;
 use crate::device::Keys;
 use crate::devices::text;
@@ -70,6 +70,7 @@ use crate::history;
 use crate::key_chain;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
+use crate::recv;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
@@ -219,7 +220,13 @@ pub fn admitted(
     let excluded = own
         .and_then(|member| member.excluded.as_ref())
         .is_some_and(|excluded| excluded.contains(&follower.this));
-    if own.is_some() && listed && !excluded {
+    // A `service` device is admitted where the channel's `services` list it.
+    let this = match follower.service {
+        Some(_) => (body.channels.iter())
+            .any(|listed| listed.id == channel && listed.services.contains(&follower.this)),
+        None => own.is_some() && listed && !excluded,
+    };
+    if this {
         admitted.insert(follower.this, follower.cert.clone());
     }
     admitted
@@ -554,9 +561,33 @@ fn group_on_server(
     space: SpaceId,
     channel: ChannelId,
 ) -> Result<(bool, Option<Vec<u8>>), String> {
-    let body = follower
-        .connection
-        .get_as(&group_info_path(space, channel), &follower.token)
+    let token = follower.token.clone();
+    fetch_group(&mut follower.connection, &token, (space, channel))
+}
+
+/// Whether the GroupInfo of the current epoch of `channel` of `space` that the server gives the
+/// session or service token `token`, if it has one, lists `device`.
+pub fn group_info_lists(
+    connection: &mut Connection,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+    device: DeviceId,
+) -> Result<bool, String> {
+    let (_, group_info) = fetch_group(connection, token, (space, channel))?;
+    Ok(group_info.is_some_and(|bytes| {
+        ChannelView::observe(channel, &bytes)
+            .is_ok_and(|view| view.members().iter().any(|member| member.device == device))
+    }))
+}
+
+/// As [`group_on_server`], on `connection` as the session or service token `token`.
+fn fetch_group(
+    connection: &mut Connection,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+) -> Result<(bool, Option<Vec<u8>>), String> {
+    let body = connection
+        .get_as(&group_info_path(space, channel), token)
         .map_err(text)?;
     let unexpected = || "unexpected answer from the server: a channel's group".to_owned();
     let given: ChannelGroup = serde_json::from_slice(&body).map_err(|_| unexpected())?;
@@ -773,9 +804,9 @@ fn welcomes_waiting(follower: &Follower) -> Result<Vec<ChannelId>, String> {
 
 /// Brings this device, admitted to `channel` of `space` but outside its group, into it, with
 /// `others`, the other admitted devices by `roster` and `devices`: creates the group if the server
-/// has none; otherwise joins by itself from the GroupInfo of the current epoch, if the server has
-/// one, unless it lists this device, which another device added and whose Welcome comes, or
-/// `rejoining`.
+/// has none, unless it is a `service` device, which waits for a member's; otherwise joins by itself
+/// from the GroupInfo of the current epoch, if the server has one, unless it lists this device,
+/// which another device added and whose Welcome comes, or `rejoining`.
 fn outside(
     follower: &mut Follower,
     link: &mut Link,
@@ -784,7 +815,7 @@ fn outside(
     rejoining: bool,
 ) -> Result<(), String> {
     let (group, group_info) = group_on_server(follower, space, channel)?;
-    if !group {
+    if !group && follower.service.is_none() {
         return create(follower, link, (space, channel), others);
     }
     let Some(group_info) = group_info else {
@@ -1571,13 +1602,13 @@ pub fn opened(follower: &Follower, key: &StateKey, entry: &state::Entry) -> Opti
 /// Encrypts the content `content` gives for a new message ID and the device's next counter in
 /// `channel` of `roster`, the space's last accepted revision with `devices`, its accounts'
 /// devices, in the channel's group, and puts the `mls` envelope in the outbox, as from `agent` if
-/// given, with the state it leaves and the message's history entry ([`crate::history`]); after it,
-/// a copy under `hpke` to each of `readers`, of that content with the counter the device keeps for
-/// that reader in the channel ([`crate::copies`]). Gives the message ID and the readers that get
-/// their first copy of the channel's messages. Sends
-/// nothing, and says why, while a member device of the group is not admitted, while a Commit of
-/// this device in the channel waits for the server, or when no other device is in the group and
-/// no reader gets a copy.
+/// given, with the state it leaves, the message's history entry ([`crate::history`]) and what keeps
+/// it for this device once the server stores it ([`recv::own_message`]); after it, a copy under
+/// `hpke` to each of `readers`, of that content with the counter the device keeps for that reader
+/// in the channel ([`crate::copies`]). Gives the message ID and the readers that get their first
+/// copy of the channel's messages. Sends nothing, and says why, while a member device of the group
+/// is not admitted, while a Commit of this device in the channel waits for the server, or when no
+/// other device is in the group, nothing on this device gets the message and no reader gets a copy.
 pub fn encrypt<'r>(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
@@ -1667,16 +1698,6 @@ fn encrypted<'r>(
                  nothing is sent there until the server stores it"
             ));
         }
-        let (agent, readers, issued) = match sending {
-            Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None),
-            Sending::Receipt(issued) => (None, &[][..], Some(issued)),
-        };
-        if readers.is_empty() && members.iter().all(|member| member.device == follower.this) {
-            return unsent(format!(
-                "no device can receive the message: the group of the channel {channel} holds no \
-                 other device, and no service agent outside it gets a copy; nothing is sent"
-            ));
-        }
         let last = follower.state.channel_counter(channel).map_err(text)?;
         let counter = last
             .checked_add(1)
@@ -1684,6 +1705,28 @@ fn encrypted<'r>(
             .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
         let msg_id = MessageId::generate();
         let content = content(msg_id, counter);
+        let (own, gets) = match &sending {
+            Sending::Message(agent, _) => {
+                let key = key_packages::state_key(&follower.secrets, sealed)?;
+                let seq = follower.state.next_own_seq().map_err(text)?;
+                let at = ((space, channel, msg_id), seq);
+                let (own, gets) = recv::own_message(follower, &key, at, (&content, *agent))?;
+                (Some(own), gets)
+            }
+            Sending::Receipt(_) => (None, false),
+        };
+        let (agent, readers, issued) = match sending {
+            Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None),
+            Sending::Receipt(issued) => (None, &[][..], Some(issued)),
+        };
+        let alone = members.iter().all(|member| member.device == follower.this);
+        if alone && !gets && readers.is_empty() {
+            return unsent(format!(
+                "no device can receive the message: the group of the channel {channel} holds no \
+                 other device, no agent of this device in the space, nor its person, gets it, and \
+                 no service agent outside the group gets a copy; nothing is sent"
+            ));
+        }
         let epoch = device.epoch(channel).map_err(|err| failed(channel, err))?;
         let judgments = follower.state.judgments(channel).map_err(text)?;
         let entry = history::entry(
@@ -1722,6 +1765,7 @@ fn encrypted<'r>(
             messages,
             entries: entry.into_iter().collect(),
             issued: issued.unwrap_or_default(),
+            own: own.into_iter().collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), changes, Ok((msg_id, first))))

@@ -64,6 +64,7 @@ mod reply;
 mod revocations;
 mod secrets;
 mod send;
+mod service;
 mod service_agents;
 mod set_username;
 mod sign_in;
@@ -80,7 +81,7 @@ mod wait;
 mod wraps;
 
 use std::num::NonZeroU64;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -346,6 +347,10 @@ enum Command {
         address: String,
         #[command(flatten)]
         granted: service_agents::Granted,
+        /// Makes the agent a member of its channels: it runs with a state directory and is in
+        /// their MLS groups, so its token needs the receive permission.
+        #[arg(long)]
+        member: bool,
     },
     /// Creates a token of a service agent of a space this device follows, on a device of an admin
     /// of it, with a new grant; revokes the agent's earlier tokens. Writes the token to standard
@@ -447,8 +452,10 @@ enum Command {
     /// an agent, only in the space of the agent's folder. It first accepts the space's latest
     /// roster revisions and goes through the mailbox as skald recv does, showing nothing, then
     /// encrypts the message in the channel's MLS group and has the server store it as one envelope
-    /// to the group. Sends nothing, and says why, while the group holds a device the channel does
-    /// not admit or no other device, or while this device's Commit there waits for the server.
+    /// to the group; once stored, this device's other agents it is for get it, and its person,
+    /// unless the person sent it. Sends nothing, and says why, while the group holds a device the
+    /// channel does not admit, or no other device and nothing on this device gets the message, or
+    /// while this device's Commit there waits for the server.
     /// Says the message's ID and whether the server stored it; as an agent, only sent #<ref> once
     /// it is stored, by the message's reference as skald recv says. What the server has not stored
     /// within the request timeout waits in the local state, and the next skald send or skald recv
@@ -622,16 +629,17 @@ enum Command {
         github_api_url: String,
     },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
-    /// its config; the session's folder is the working directory. Once the client initializes, the
-    /// session registers as its agent in the folder's space: the messages this device takes in from
-    /// then on are kept for it. Without --agent, the agent's name joins with '-' the name the client
-    /// gives itself, the device's name and the device's reference, cut to 63 characters, so each
-    /// device gives one agent CLI its own address; two sessions of one agent CLI in one space on
-    /// this device share it unless --agent names them. Its inbox tool returns the agent's lines of
-    /// skald recv, each once; its send tool sends as the agent's skald send does, to an agent or,
-    /// with to *, to every agent in the channel. Each tool call goes through the helper or runs
-    /// one-shot, as a command does, and through a newer helper too; once the skald installed where
-    /// it was is newer, as when skald was updated while it runs, that skald runs each call.
+    /// its config; the session's folder is the working directory. Once the client initializes or
+    /// discovers the server, the session registers as its agent in the folder's space: the messages
+    /// this device takes in from then on are kept for it. Without --agent, the agent's name joins
+    /// with '-' the name the client gives itself, the device's name and the device's reference, cut
+    /// to 63 characters, so each device gives one agent CLI its own address; two sessions of one
+    /// agent CLI in one space on this device share it unless --agent names them. Its inbox tool
+    /// returns the agent's lines of skald recv, each once; its send tool sends as the agent's skald
+    /// send does, to an agent or, with to *, to every agent in the channel. Each tool call goes
+    /// through the helper or runs one-shot, as a command does, and through a newer helper too; once
+    /// the skald installed where it was is newer, as when skald was updated while it runs, that
+    /// skald runs each call.
     Mcp {
         /// Runs the call an older skald mcp relays to this one.
         #[arg(long, hide = true)]
@@ -878,6 +886,11 @@ fn main() -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
+    match service::from_env() {
+        Ok(Some(_)) => return as_service(operation),
+        Ok(None) => {}
+        Err(err) => return exit(Err(err)),
+    }
     if let Command::Mcp {
         relayed,
         call: None,
@@ -909,17 +922,49 @@ fn main() -> ExitCode {
     let starts = !one_shot && operation.command.starts_helper();
     match helper::route(&dir, &operation, create, starts) {
         Ok(helper::Route::Here(lock)) if operation.command.waits() => {
-            let waited = wait::here(&dir, &operation, lock);
-            mailbox::close_kept();
-            match waited {
-                Ok(Some(code)) => code,
-                Ok(None) => ExitCode::SUCCESS,
-                Err(err) => exit(Err(err)),
-            }
+            waits_here(&dir, &operation, lock)
         }
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
+        Err(err) => exit(Err(err)),
+    }
+}
+
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send` and `skald recv`, as
+/// no agent, in this process, without a helper, holding the lock of the state directory, which it
+/// creates if it is missing.
+fn as_service(operation: Operation) -> ExitCode {
+    if !matches!(
+        operation.command,
+        Command::Send { .. } | Command::Recv { .. }
+    ) || operation.agent.is_some()
+    {
+        return exit(Err(format!(
+            "with {} and {} set, skald runs as the service agent of the key secret, which only \
+             sends and receives: skald send and skald recv, without --agent",
+            service::KEY_VARIABLE,
+            service::TOKEN_VARIABLE
+        )));
+    }
+    let lock = state::dir(operation.state_dir.clone())
+        .and_then(|dir| lock::take(&dir, true, operation.timeout).map(|lock| (dir, lock)));
+    match lock {
+        Ok((dir, lock)) if operation.command.waits() => waits_here(&dir, &operation, lock),
+        // Held until the run exits.
+        Ok((_, _lock)) => exit(here(operation)),
+        Err(err) => exit(Err(err)),
+    }
+}
+
+/// Runs `operation`, a command that waits, in this process with `lock`, the lock of the state
+/// directory `dir` ([`wait::here`]), then closes the connection it kept.
+fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> ExitCode {
+    let waited = wait::here(dir, operation, lock);
+    mailbox::close_kept();
+    match waited {
+        Ok(Some(code)) => code,
+        Ok(None) => ExitCode::SUCCESS,
         Err(err) => exit(Err(err)),
     }
 }
@@ -1127,8 +1172,9 @@ fn perform(operation: Operation) -> Result<(), String> {
             space,
             address,
             granted,
+            member,
         } => synced(state_dir, key_storage, speaks, timeout, &space, false)
-            .and_then(|synced| service_agents::create(synced, &address, &granted)),
+            .and_then(|synced| service_agents::create(synced, &address, &granted, member)),
         Command::CreateServiceToken {
             space,
             address,

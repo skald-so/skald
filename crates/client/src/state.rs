@@ -360,6 +360,37 @@ const MIGRATIONS: &[&str] = &[
         master BLOB NOT NULL CHECK (length(master) = 32),
         cert BLOB NOT NULL
     ) STRICT",
+    // The device's own channel messages, which it keeps for its person and agents once the server
+    // stored them (`docs/protocol/delivery.md`, "Device to agent"): the last `seq` it gave one, past
+    // [`OWN_FIRST`]; each one whose envelope waits in the outbox, by `msg_id`, with its `seq`, space
+    // and channel, its line and what a reply needs, sealed, how long it waits for an agent, whether
+    // the person's run shows it, the agent that sent it, whether it has a `to` and the agent of
+    // this device that `to` names, and the `replied` it gives, if any; and each kept one whose
+    // `read` the device sets once it hands the message to the agent, with that status as JSON.
+    "ALTER TABLE device ADD COLUMN own_seq INTEGER NOT NULL DEFAULT 0 CHECK (own_seq >= 0);
+    CREATE TABLE own_message (
+        msg_id TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL UNIQUE CHECK (seq >= 1),
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        line BLOB NOT NULL,
+        target BLOB NOT NULL,
+        wait INTEGER NOT NULL CHECK (wait >= 0),
+        person INTEGER NOT NULL CHECK (person IN (0, 1)),
+        sender TEXT,
+        addressed INTEGER NOT NULL CHECK (addressed IN (0, 1)),
+        addressee TEXT,
+        read TEXT,
+        replied TEXT,
+        replied_status TEXT,
+        replied_agent TEXT
+    ) STRICT;
+    CREATE TABLE own_read (
+        seq INTEGER PRIMARY KEY CHECK (seq >= 1),
+        msg_id TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        status TEXT NOT NULL
+    ) STRICT;",
     // Copies of the device's channel messages under `hpke` to `service` devices outside the
     // channel's group: the last `counter` the device gave content to each such device in each
     // channel. The outbox holds a copy with its recipient device.
@@ -370,6 +401,10 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (channel, recipient)
     ) STRICT",
 ];
+
+/// The first `seq` the device gives its own messages it keeps, above any `seq` of its mailbox, so
+/// the kept messages of both have one key.
+pub const OWN_FIRST: u64 = 1 << 62;
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
 /// application state.
@@ -616,6 +651,25 @@ pub struct ReadDue {
     pub addressee: String,
 }
 
+/// A channel message of the device's own, as it waits for the server's `stored` to be kept for the
+/// person and the agents of this device it is for (`docs/protocol/delivery.md`, "Device to
+/// agent"), by the `seq` it takes from [`State::next_own_seq`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct OwnMessage {
+    pub seq: u64,
+    /// Its `msg_id`, space and channel, its line and what a reply needs, sealed, and its wait, as
+    /// [`Kept`] has them.
+    pub kept: Kept,
+    /// Whether the person's run shows it: an agent sent it.
+    pub person: bool,
+    /// The agent that sent it, none for the person.
+    pub sender: Option<String>,
+    /// Its `to`, if it has one: the agent of this device it names, none for any other.
+    pub to: Option<Option<String>>,
+    /// Its `read` status as JSON, which the device keeps once it hands it to the `to` agent.
+    pub read: Option<String>,
+}
+
 /// A Commit or Welcome of the device's own in the outbox.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MlsOutgoing {
@@ -671,6 +725,9 @@ pub struct MlsChanges {
     /// The `seq` of each `read` receipt the device owed that a receipt it puts in the outbox
     /// reports.
     pub issued: Vec<u64>,
+    /// The channel messages of [`MlsChanges::messages`] that the device keeps for itself once
+    /// the server stores them; each one's `seq` becomes the last it gave.
+    pub own: Vec<OwnMessage>,
 }
 
 impl MlsChanges {
@@ -688,6 +745,7 @@ impl MlsChanges {
             && self.judged.is_empty()
             && self.entries.is_empty()
             && self.issued.is_empty()
+            && self.own.is_empty()
     }
 }
 
@@ -1138,6 +1196,9 @@ impl State {
                     params![sql_seq(seq)?],
                 )?;
             }
+            for own in &changes.own {
+                add_own(&tx, own)?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -1349,8 +1410,9 @@ impl State {
     }
 
     /// Records the space `id` named `name` at `revision`, in CBOR, the revision a link gave the
-    /// device, as its anchor and last accepted revision, with none pending; `personal`, pinned as
-    /// the device's personal space. A space the device holds stays as it is.
+    /// device or a `service` device's key secret pins, as its anchor and last accepted revision,
+    /// with none pending; `personal`, pinned as the device's personal space. A space the device
+    /// holds stays as it is.
     pub fn add_linked_space(
         &self,
         id: SpaceId,
@@ -1846,6 +1908,40 @@ impl State {
         Ok(changed)
     }
 
+    /// The `seq` the device's next own message takes ([`OwnMessage`]).
+    pub fn next_own_seq(&self) -> Result<u64, Error> {
+        let last: Option<i64> = self
+            .db
+            .query_row("SELECT own_seq FROM device", [], |row| row.get(0))
+            .optional()?;
+        let last = u64::try_from(last.unwrap_or(0))
+            .map_err(|_| Error::Malformed("the last own seq".to_owned()))?;
+        OWN_FIRST
+            .checked_add(last)
+            .and_then(|seq| seq.checked_add(1))
+            .filter(|&seq| i64::try_from(seq).is_ok())
+            .ok_or_else(|| Error::Malformed(format!("the own seq after {last}")))
+    }
+
+    /// The highest `seq` of the device's own messages kept for `agent`, or for the person with
+    /// none; 0 with none. A later own message kept for it has a higher one.
+    pub fn last_own_kept(&self, agent: Option<&str>) -> Result<u64, Error> {
+        let first = sql_seq(OWN_FIRST)?;
+        let last: i64 = match agent {
+            Some(agent) => self.db.query_row(
+                "SELECT coalesce(max(seq), 0) FROM handover WHERE agent = ?1 AND seq >= ?2",
+                params![agent, first],
+                |row| row.get(0),
+            )?,
+            None => self.db.query_row(
+                "SELECT coalesce(max(seq), 0) FROM kept WHERE person = 1 AND seq >= ?1",
+                params![first],
+                |row| row.get(0),
+            )?,
+        };
+        u64::try_from(last).map_err(|_| Error::Malformed("a kept seq".to_owned()))
+    }
+
     /// The device's mailbox cursor: the highest `seq` it wrote, 0 before the first.
     pub fn cursor(&self) -> Result<u64, Error> {
         let cursor: Option<i64> = self
@@ -2004,7 +2100,8 @@ impl State {
     }
 
     /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
-    /// reply to it, and that its `read` receipt is due if `agent` is its `to`, at once.
+    /// reply to it, and that its `read` receipt is due if `agent` is its `to`, or, for an own
+    /// message of the device's, that it is `read`, at once.
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
@@ -2022,6 +2119,7 @@ impl State {
             "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
             params![seq, agent],
         )?;
+        read_own(&tx, seq, agent)?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
@@ -2249,9 +2347,11 @@ impl State {
     }
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
-    /// server answered it. If it refused the envelope, `refused` its refusal as a status, as JSON,
-    /// the message's history entry goes too unless the envelope is a copy to `recipient`, and the
-    /// refusal is kept for the agent that sent the message, if any, all at once.
+    /// server answered it. If it stored the envelope of an own message of the device's
+    /// ([`OwnMessage`]), the device keeps that message for itself. If it refused the envelope,
+    /// `refused` its refusal as a status, as JSON, the message's history entry and own message go
+    /// too unless the envelope is a copy to `recipient`, and the refusal is kept for the agent that
+    /// sent the message, if any, all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
@@ -2266,14 +2366,20 @@ impl State {
                 recipient.map(|device| device.to_string())
             ],
         )?;
-        if let Some(refused) = refused {
-            // A refused copy to a `service` device leaves the channel's message as it is.
-            if recipient.is_none() {
-                tx.execute(
-                    "DELETE FROM history_outbox WHERE msg_id = ?1",
-                    params![msg_id.to_string()],
-                )?;
+        // A copy to a `service` device leaves the channel's message as it is.
+        match (recipient, refused) {
+            (Some(_), _) => {}
+            (None, None) => keep_own(&tx, msg_id)?,
+            (None, Some(_)) => {
+                for table in ["own_message", "history_outbox"] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE msg_id = ?1"),
+                        params![msg_id.to_string()],
+                    )?;
+                }
             }
+        }
+        if let Some(refused) = refused {
             tx.execute(
                 "INSERT INTO kept_status (msg_id, space, status, person, agent)
                  SELECT msg_id, space, ?2, 0, agent FROM sent
@@ -2438,6 +2544,40 @@ fn drop_done(tx: &Transaction) -> Result<(), Error> {
         "DELETE FROM read_receipt WHERE due = 0 AND seq NOT IN (SELECT seq FROM handover)",
         [],
     )?;
+    tx.execute(
+        "DELETE FROM own_read WHERE seq NOT IN (SELECT seq FROM handover)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Keeps, in `tx`, the `read` of the device's own message of the kept entry `seq`, now handed to
+/// its `to` agent `agent`, as a status for the person and the agent that sent it, stamped now,
+/// unless the device has a `read` of it already.
+fn read_own(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
+    let read: Option<(String, String)> = tx
+        .query_row(
+            "SELECT msg_id, status FROM own_read WHERE seq = ?1 AND agent = ?2",
+            params![seq, agent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((msg_id, status)) = read else {
+        return Ok(());
+    };
+    let first = tx.execute(
+        "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0",
+        params![msg_id],
+    )?;
+    if first > 0 {
+        tx.execute(
+            "INSERT INTO kept_status (msg_id, space, status, person, agent)
+             SELECT msg_id, space, json_set(?2, '$.timestamp', ?3), 1, agent FROM sent
+             WHERE msg_id = ?1",
+            params![msg_id, status, sql_u64(unix_now())?],
+        )?;
+    }
+    tx.execute("DELETE FROM own_read WHERE seq = ?1", params![seq])?;
     Ok(())
 }
 
@@ -2509,6 +2649,93 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
 fn read_epoch(channel: ChannelId, epoch: i64) -> Result<u64, Error> {
     u64::try_from(epoch)
         .map_err(|_| Error::Malformed(format!("an epoch of the channel {channel}: {epoch}")))
+}
+
+/// Adds `own` to the device's own messages that wait for the server, in `tx`, its `seq` as the last
+/// it gave; fails unless that `seq` is the next.
+fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
+    let OwnMessage {
+        seq,
+        kept,
+        person,
+        sender,
+        to,
+        read,
+    } = own;
+    let seq = sql_seq(*seq)?;
+    let changed = tx.execute(
+        "UPDATE device SET own_seq = own_seq + 1 WHERE ?1 + own_seq + 1 = ?2",
+        params![sql_u64(OWN_FIRST)?, seq],
+    )?;
+    if changed == 0 {
+        return Err(Error::Malformed(format!(
+            "the own seq {seq} is not the next"
+        )));
+    }
+    let replied = kept.replied.as_ref();
+    tx.execute(
+        "INSERT INTO own_message (msg_id, seq, space, channel, line, target, wait, person, sender,
+             addressed, addressee, read, replied, replied_status, replied_agent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+        params![
+            kept.msg_id.to_string(),
+            seq,
+            kept.space.to_string(),
+            kept.channel.to_string(),
+            kept.line,
+            kept.target,
+            sql_u64(kept.wait)?,
+            person,
+            sender,
+            to.is_some(),
+            to.clone().flatten(),
+            read,
+            replied.map(|replied| replied.msg_id.to_string()),
+            replied.map(|replied| replied.status.clone()),
+            replied.and_then(|replied| replied.agent.clone()),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Keeps the device's own message `msg_id`, which the server stored, for the person if it is to
+/// show it and for each agent of this device it is for, in `tx`: each the device has run as in its
+/// space but its sender, with a `to` only the agent it names. Its `replied` of the message it
+/// answers, if any, is kept too, and its `read` is due once it is handed to its `to` agent.
+fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
+    let msg_id = msg_id.to_string();
+    let now = sql_u64(unix_now())?;
+    let kept = tx.execute(
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target)
+         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target FROM own_message
+         WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
+        params![msg_id, now],
+    )?;
+    if kept > 0 {
+        tx.execute(
+            "INSERT INTO handover (seq, agent)
+             SELECT own.seq, agent.name FROM own_message AS own JOIN agent ON agent.space = own.space
+             WHERE own.msg_id = ?1 AND agent.name IS NOT own.sender
+                 AND (own.addressed = 0 OR agent.name = own.addressee)
+             ON CONFLICT DO NOTHING",
+            params![msg_id],
+        )?;
+        tx.execute(
+            "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
+             SELECT seq, replied, space, replied_status, 1, replied_agent FROM own_message
+             WHERE msg_id = ?1 AND replied IS NOT NULL ON CONFLICT DO NOTHING",
+            params![msg_id],
+        )?;
+        tx.execute(
+            "INSERT INTO own_read (seq, msg_id, agent, status)
+             SELECT own.seq, own.msg_id, own.addressee, own.read FROM own_message AS own
+             JOIN handover ON handover.seq = own.seq AND handover.agent = own.addressee
+             WHERE own.msg_id = ?1 AND own.read IS NOT NULL ON CONFLICT DO NOTHING",
+            params![msg_id],
+        )?;
+    }
+    tx.execute("DELETE FROM own_message WHERE msg_id = ?1", params![msg_id])?;
+    drop_done(tx)
 }
 
 /// A row of an outbox: three IDs, as text, and an envelope's bytes.
@@ -3635,6 +3862,159 @@ pub(crate) mod tests {
             .query_row("SELECT count(*) FROM read_receipt", [], |row| row.get(0))
             .unwrap();
         assert_eq!(owed, 0, "a read is owed of a message its agent never had");
+    }
+
+    /// Puts in the outbox of `state` the device's own message in `channel` with `counter`, from
+    /// `sender`, the person for none, `to` as [`OwnMessage::to`] says, with `replied` if given, by
+    /// the next own `seq`; gives its `msg_id` and `seq`.
+    fn put_own(
+        state: &State,
+        (channel, counter): (ChannelId, u64),
+        (sender, to): (Option<&str>, Option<Option<&str>>),
+        replied: Option<Replied>,
+    ) -> (MessageId, u64) {
+        let seq = state.next_own_seq().unwrap();
+        let mut kept = kept(&[]);
+        kept.channel = channel;
+        kept.replied = replied;
+        let message = Counted {
+            outgoing: Outgoing {
+                msg_id: kept.msg_id,
+                recipient: None,
+                space: kept.space,
+                envelope: vec![1],
+                report: true,
+            },
+            channel,
+            counter,
+            agent: sender.map(str::to_owned),
+            addressee: None,
+        };
+        let own = OwnMessage {
+            seq,
+            kept: kept.clone(),
+            person: sender.is_some(),
+            sender: sender.map(str::to_owned),
+            to: to.map(|to| to.map(str::to_owned)),
+            read: matches!(to, Some(Some(_)))
+                .then(|| r#"{"status":"read","timestamp":0}"#.to_owned()),
+        };
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    messages: vec![message],
+                    own: vec![own],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+        (kept.msg_id, seq)
+    }
+
+    /// The device's own message is kept only with the server's `stored` of it, once, for the person
+    /// if an agent sent it and for each agent of its space but its sender, with a `to` only the
+    /// agent of this device it names; a refused one, for no one. Its `read` is kept for the person
+    /// and its sender once the `to` agent has it, once, and a reply's `replied` with its `stored`.
+    #[test]
+    fn own_messages_are_kept_with_their_stored_for_whom_they_are_for() {
+        let dir = TestDir::new("state-own");
+        let state = with_entries(&dir, &[]);
+        let space = space_of_kept();
+        for agent in ["api", "web", "docs"] {
+            state.add_agent(space, agent).unwrap();
+        }
+        state.add_agent(SpaceId::generate(), "elsewhere").unwrap();
+        let channel = ChannelId::generate();
+        let (to_web, to_web_seq) =
+            put_own(&state, (channel, 1), (Some("api"), Some(Some("web"))), None);
+        let (to_all, to_all_seq) = put_own(&state, (channel, 2), (None, None), None);
+        let (to_bob, to_bob_seq) = put_own(&state, (channel, 3), (Some("api"), Some(None)), None);
+        let (refused, refused_seq) = put_own(&state, (channel, 4), (Some("api"), None), None);
+        let replied = Replied {
+            msg_id: to_web,
+            space,
+            status: "replied".to_owned(),
+            agent: Some("api".to_owned()),
+        };
+        let reply = put_own(
+            &state,
+            (channel, 5),
+            (Some("web"), Some(Some("api"))),
+            Some(replied),
+        )
+        .0;
+        assert_eq!(to_web_seq, OWN_FIRST + 1);
+        assert_eq!(refused_seq, to_web_seq + 3);
+        let waiting = |agent| -> Vec<u64> {
+            let kept = state.for_agent(space, agent, unix_now()).unwrap();
+            kept.into_iter().map(|(seq, _)| seq).collect()
+        };
+        let person = || -> Vec<u64> {
+            state
+                .for_person()
+                .unwrap()
+                .into_iter()
+                .map(|(seq, _)| seq)
+                .collect()
+        };
+        assert!(
+            person().is_empty() && waiting("web").is_empty(),
+            "kept before stored"
+        );
+
+        for msg_id in [to_web, to_all, to_bob, to_web] {
+            state.remove_outgoing(msg_id, None, None).unwrap();
+        }
+        state
+            .remove_outgoing(refused, None, Some("refused"))
+            .unwrap();
+
+        assert_eq!(person(), [to_web_seq, to_bob_seq]);
+        assert_eq!(waiting("web"), [to_web_seq, to_all_seq]);
+        assert_eq!(waiting("api"), [to_all_seq]);
+        assert_eq!(waiting("docs"), [to_all_seq]);
+        assert!(
+            state
+                .for_agent(space, "elsewhere", unix_now())
+                .unwrap()
+                .is_empty()
+        );
+        let left: i64 = state
+            .db
+            .query_row("SELECT count(*) FROM own_message", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 1, "only the reply waits for the server");
+        state.handed_over(to_web_seq, "docs").unwrap();
+        assert!(
+            statuses(state.statuses_for_person()).is_empty(),
+            "read by another"
+        );
+        state.handed_over(to_web_seq, "web").unwrap();
+        state.handed_over(to_web_seq, "web").unwrap();
+        let read = statuses(state.statuses_for_person());
+        let [read] = read.as_slice() else {
+            panic!("not one read: {read:?}");
+        };
+        let read: serde_json::Value = serde_json::from_str(read).unwrap();
+        assert_eq!(read["status"], "read");
+        assert!(read["timestamp"].as_u64().unwrap() > 0, "{read}");
+        let api = statuses(state.statuses_for_agent(space, "api"));
+        assert_eq!(
+            api.iter().filter(|it| it.contains(r#""read""#)).count(),
+            1,
+            "{api:?}"
+        );
+
+        state.remove_outgoing(reply, None, None).unwrap();
+        let shown = statuses(state.statuses_for_person());
+        assert_eq!(shown.last().map(String::as_str), Some("replied"));
+        assert_eq!(
+            waiting("api"),
+            [to_all_seq, to_web_seq + 4],
+            "the reply to api only"
+        );
+        assert_eq!(waiting("web"), [to_all_seq]);
     }
 
     /// A receipt is taken out of the inbox with its counters, or as received without them, and
