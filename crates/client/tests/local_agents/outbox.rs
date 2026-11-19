@@ -4,11 +4,11 @@
 
 use serde_json::json;
 
-use crate::fixtures::kill_once;
+use crate::fixtures::{SEND, TO, kill_once};
 use crate::front::Answers;
 use crate::lines::assert_handed_line;
 use crate::solo::{
-    API, SEND, SEND_TOOL, Solo, TEXT_FIELD, TO, TO_FIELD, WEB, assert_not_sent, assert_not_shown,
+    API, SEND_TOOL, Solo, TEXT_FIELD, TO_FIELD, WEB, assert_not_sent, assert_not_shown,
 };
 use crate::talk::one_message_sent;
 use crate::world::AGENT;

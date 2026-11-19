@@ -1,9 +1,8 @@
 //! A send that names no channel: to the default channel of the working directory's space, for an
 //! agent and for the person; nothing from a folder in no space.
 
-use crate::clients::{
-    ADA_AGENT, ALL, BOB_CLAUDE, BOB_CODEX, Clients, TO, assert_one, assert_refused,
-};
+use crate::clients::{ADA_AGENT, BOB_CLAUDE, BOB_CODEX, Clients, assert_one, assert_refused};
+use crate::fixtures::{ALL, TO};
 use crate::talk::messages_sent;
 use crate::world::{CLIENT_A, CLIENT_B};
 

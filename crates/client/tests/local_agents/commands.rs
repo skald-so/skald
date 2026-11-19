@@ -2,11 +2,13 @@
 //! person, in a channel whose group holds the device alone.
 
 use crate::client::{MCP, Session};
+use crate::fixtures::{SEND, TO};
 use crate::kit::received_as_agent;
 use crate::lines::{agent_line_of, assert_says_sent};
 use crate::receipts::read_lines;
 use crate::replying::{REPLY, replied_lines};
-use crate::solo::{API, CLIENT, OWN, SEND, Solo, TO, WEB, assert_got, assert_not_shown, replies};
+use crate::senders::OWN;
+use crate::solo::{API, CLIENT, Solo, WEB, assert_got, assert_not_shown, replies};
 use crate::talk::{ADA_HOST, one_message_sent};
 use crate::world::AGENT;
 

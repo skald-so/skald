@@ -11,7 +11,7 @@ use skald_proto::{Body, Cbor as _, ChannelId, Content, DeviceId, MessageId, Rece
 
 use crate::agents::CLAUDE;
 use crate::cloud::WAIT;
-use crate::fixtures::{SEND, TIMEOUT, TIMEOUT_SETTING};
+use crate::fixtures::{CHANNEL, SEND, TIMEOUT, TIMEOUT_SETTING, TO};
 use crate::kit::{Change, RECV, latest, received, revise};
 use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::{Finished, Machine, Run};
@@ -19,11 +19,6 @@ use crate::played::Played;
 use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word};
 use crate::talk::one_message_sent;
 use crate::world::{ACME, AGENT, HOST};
-
-/// The flags of `skald send`.
-pub const TO: &str = "--to";
-pub const ALL: &str = "--all";
-pub const CHANNEL: &str = "--channel";
 
 /// The status the CLI shows once the `to` agent has the message.
 pub const READ: &str = "read";

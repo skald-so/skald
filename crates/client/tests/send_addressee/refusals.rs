@@ -1,7 +1,8 @@
 //! Sends that name no addressee, two, or one `--to` does not take: each fails, says why and sends
 //! nothing.
 
-use crate::clients::{ADA_AGENT, ALL, BOB_CLAUDE, CHANNEL, Clients, TO, assert_refused};
+use crate::clients::{ADA_AGENT, BOB_CLAUDE, Clients, assert_refused};
+use crate::fixtures::{ALL, CHANNEL, TO};
 use crate::world::{CLIENT_A, CLIENT_B, HOST};
 
 /// The text of every refused send; it is nowhere else.

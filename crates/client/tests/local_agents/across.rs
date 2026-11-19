@@ -7,9 +7,10 @@ use serde_json::json;
 use crate::receipts::{read_lines, shows_read};
 use crate::replying::replied_lines;
 use crate::senders::assert_labelled;
+use crate::senders::{OWN, PEER};
 use crate::solo::{
-    API, EVERYONE, OWN, PEER, SEND_TOOL, Solo, TEXT_FIELD, TO_FIELD, WEB, assert_got,
-    assert_not_shown, replies, session_in,
+    API, EVERYONE, SEND_TOOL, Solo, TEXT_FIELD, TO_FIELD, WEB, assert_got, assert_not_shown,
+    replies, session_in,
 };
 use crate::talk::{ADA_HOST, BOB_HOST};
 use crate::world::dir_of;

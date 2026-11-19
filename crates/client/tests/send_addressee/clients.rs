@@ -13,17 +13,15 @@ use crate::machine::{Finished, Machine};
 use crate::talk::{Talk, is_message};
 use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, HOST, dir_of, path, run};
 
-/// The flags of `skald send`.
-pub const TO: &str = "--to";
-pub const ALL: &str = "--all";
-pub const CHANNEL: &str = "--channel";
-
 /// The agent Ada's device runs as in `~/work/clientA`.
 pub const ADA_AGENT: &str = "claude-a9f3qe";
 
 /// Two agents of Bob's account, by name.
 pub const BOB_CLAUDE: &str = "claude-r4n8vz";
 pub const BOB_CODEX: &str = "codex-k2p7wd";
+
+/// What the refusal of an invalid address says.
+pub const INVALID: &[&str] = &["address"];
 
 /// A message Bob's device read in a channel: its `msg_id`, `from` and `to` in text form, and its
 /// text.
@@ -185,7 +183,6 @@ impl Clients {
     /// Addresses a send to an agent in `clienta` does not take, each with what it is and the words
     /// its refusal says: invalid ones, one of another space and one of another server.
     pub fn invalid_addresses(&self) -> Vec<(&'static str, String, &'static [&'static str])> {
-        const INVALID: &[&str] = &["address"];
         let bob = self.bob();
         let invalid = [
             BOB_CLAUDE.to_owned(),

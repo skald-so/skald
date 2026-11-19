@@ -1,9 +1,9 @@
 //! A message to everyone in a channel whose group holds the device alone reaches each of its agents
 //! in the space but its sender, and its person unless the person sent it.
 
-use crate::solo::{
-    ALL, API, EVERYONE, OWN, SEND, Solo, WEB, assert_got, assert_not_shown, session_in,
-};
+use crate::fixtures::{ALL, SEND};
+use crate::senders::OWN;
+use crate::solo::{API, EVERYONE, Solo, WEB, assert_got, assert_not_shown, session_in};
 use crate::talk::{ADA_HOST, one_message_sent};
 
 /// What api says to everyone, and what the person says to everyone; neither is anywhere else.

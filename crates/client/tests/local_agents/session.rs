@@ -21,7 +21,8 @@ use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
 
 use crate::client::MCP;
-use crate::solo::{SEND, Solo, TO};
+use crate::fixtures::{SEND, TO};
+use crate::solo::Solo;
 use crate::world::AGENT;
 
 /// The agent the session runs as, unless `SKALD_KIT_AGENT` names another.

@@ -4,7 +4,7 @@
 use serde_json::{Value, json};
 
 use crate::client::Session;
-use crate::clients::{BOB_CLAUDE, Clients};
+use crate::clients::{BOB_CLAUDE, Clients, INVALID};
 use crate::front::Answers;
 use crate::talk::one_message_sent;
 use crate::{
@@ -112,10 +112,9 @@ fn invalid_address_or_one_of_another_space_or_server_sends_nothing_and_says_why(
         ["ada-mcp-bad-addresses", "bob-mcp-badly-addressed"],
     );
     let channel = clients.talk.channel.to_string();
-    let invalid: &[&str] = &["address"];
     let more = [String::new(), format!("{EVERYONE}/{BOB_CLAUDE}")];
     let cases: Vec<(&str, Value, &[&str])> = (more.into_iter())
-        .map(|address| ("invalid", address, invalid))
+        .map(|address| ("invalid", address, INVALID))
         .chain(clients.invalid_addresses())
         .map(|(what, address, words)| (what, to(&address, &channel), words))
         .collect();

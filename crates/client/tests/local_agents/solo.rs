@@ -11,6 +11,7 @@ pub use crate::client::{
     CLIENT, EVERYONE, MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, TEXT_FIELD, TO_FIELD,
 };
 use crate::client::{Called, Session, session_in as session_of};
+use crate::fixtures::{SEND, TO};
 use crate::kit::{Change, bind_client_a, create_space, latest, received, revise};
 use crate::lines::{SENT, agent_line_of, assert_no_uuid, assert_says_sent, refers_to, says_sent};
 use crate::machine::{Finished, Machine};
@@ -22,17 +23,8 @@ use crate::world::{ADD_RULE, AGENT, CLIENT_A, CLIENT_B, Person, dir_of, path, ru
 pub const API: &str = "api";
 pub const WEB: &str = "web";
 
-/// The levels as an agent's line shows them.
-pub const OWN: &str = "own";
-pub const PEER: &str = "peer";
-
 /// The local state's database in a machine's state directory.
 const STATE_FILE: &str = "state.sqlite3";
-
-/// The flags of `skald send`, and its command.
-pub const SEND: &str = "send";
-pub const TO: &str = "--to";
-pub const ALL: &str = "--all";
 
 /// Ada's machine, alone in the groups of `clienta`, the talk's space, and `~/work/clientA` bound to
 /// it.

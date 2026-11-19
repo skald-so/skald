@@ -229,18 +229,19 @@ pub fn bracketed(name: &str) -> String {
         .collect()
 }
 
-/// A status of a message the device sent, the server's or its refusal, as the device keeps it
-/// until it is shown: each ID in its text form.
+/// A status of a message the device sent, the server's, its refusal, or the `read` or `replied` a
+/// device gives it, as the device keeps it until it is shown: each ID in its text form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub msg_id: String,
     /// The message's space and channel, if the device recorded them.
     pub space: Option<String>,
     pub channel: Option<String>,
-    /// `delivered`, `expired`, `refused` or `read`.
+    /// `delivered`, `expired`, `refused`, `read` or `replied`.
     pub status: String,
     /// The recipient device's ID, none for a refusal of an envelope to a channel, and its
-    /// certificate's `name` if the device knows it: for `read`, the device of the `to` agent.
+    /// certificate's `name` if the device knows it: for `read` and `replied`, the device of the `to`
+    /// agent.
     pub device: Option<String>,
     pub device_name: Option<String>,
     /// Why the server refused it.
