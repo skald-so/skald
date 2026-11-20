@@ -17,6 +17,8 @@
 //!   It accepts the revisions up to that start without the check that their signer is not revoked.
 //! - A run refuses, saying why, when the latest revision it accepted has no entry with its device,
 //!   or when its grant fails its checks against that revision; it then says a new token is needed.
+//! - No person sets the inbound mode of the run's agent, so it takes every message; a member's agent
+//!   in `refuse` takes the run's message only once its allowlist admits the agent.
 //!
 //! As the tests of channel messages (`channel_messages/main.rs`): Ada's machine runs the CLI and
 //! creates `acme`; Bob's device is played by the tests with an MLS state of its own. Ada's machine
@@ -45,6 +47,7 @@
 #![allow(dead_code)]
 
 mod exchange;
+mod inbound;
 mod refusals;
 mod runs;
 mod start;

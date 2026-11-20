@@ -6,8 +6,8 @@
 //!   devices of the channel's group at sending, and each service device outside the group that
 //!   gets a copy ([`crate::copies`]). Each is `stored` once the device takes the server's `stored`,
 //!   then `delivered` or `expired` as the server says, each with its time, no earlier than the
-//!   `stored`. Of its `to` agent, it keeps the times of `read` and `replied`; on one device, the
-//!   handover to that agent is its `read` ([`crate::state`]).
+//!   `stored`. Of its `to` agent, it keeps the times of `read`, `replied` and `refused`, with its
+//!   reason; on one device, the handover to that agent is its `read` ([`crate::state`]).
 //! - Of each message its person's run showed or it handed to an agent, it keeps, sealed with what
 //!   a reply needs ([`crate::reply`]), its sending device, the trust level it gave that device and
 //!   its time: the time its `msg_id` states as a UUIDv7, or else when the device took it in; and the
@@ -186,6 +186,9 @@ struct Sent {
     recipients: Vec<RecipientStatus>,
     read: Option<u64>,
     replied: Option<u64>,
+    /// Its `to` agent's `refused`, with its reason, if any.
+    refused: Option<u64>,
+    reason: Option<String>,
 }
 
 /// Where a message the device showed or handed over came from, and where it went.
@@ -269,6 +272,8 @@ fn gathered(
             recipients: sent.recipients,
             read: sent.read,
             replied: sent.replied,
+            refused: sent.refused,
+            reason: sent.reason,
         }),
         received,
     })
@@ -421,9 +426,14 @@ impl Status {
                 })
                 .collect::<Vec<Value>>()
         });
-        let agent = sent
-            .filter(|sent| sent.to_agent())
-            .map(|sent| json!({ "read": sent.read, "replied": sent.replied }));
+        let agent = sent.filter(|sent| sent.to_agent()).map(|sent| {
+            json!({
+                "read": sent.read,
+                "replied": sent.replied,
+                "refused": sent.refused,
+                "reason": sent.reason,
+            })
+        });
         forms::object(
             "message_status",
             json!({
@@ -447,10 +457,15 @@ impl Status {
 
 /// The statuses of the `to` agent of `sent`, each with `time` of its time.
 fn agent_statuses(sent: &Sent, time: impl Fn(u64) -> String) -> String {
-    let statuses: Vec<String> = [(forms::READ, sent.read), (forms::REPLIED, sent.replied)]
+    let mut statuses: Vec<String> = [(forms::READ, sent.read), (forms::REPLIED, sent.replied)]
         .into_iter()
         .filter_map(|(status, at)| at.map(|at| format!("{status}{}", time(at))))
         .collect();
+    if let Some(at) = sent.refused {
+        let reason = (sent.reason.as_deref())
+            .map_or_else(String::new, |reason| format!(": {}", printable(reason)));
+        statuses.push(format!("{}{}{reason}", forms::REFUSED, time(at)));
+    }
     if statuses.is_empty() {
         "not handed over yet".to_owned()
     } else {
@@ -513,6 +528,8 @@ mod tests {
             recipients: vec![recipient("bob\u{7}box ] #x", "delivered")],
             read: Some(1_800_000_120),
             replied: None,
+            refused: None,
+            reason: None,
         }
     }
 
@@ -541,7 +558,12 @@ mod tests {
         assert_eq!(json["ref"], "k2m4");
         assert_eq!(
             json["agent"],
-            json!({ "read": 1_800_000_120_u64, "replied": null })
+            json!({
+                "read": 1_800_000_120_u64,
+                "replied": null,
+                "refused": null,
+                "reason": null,
+            })
         );
         assert_eq!(json["recipients"][0]["status"], "delivered");
         assert_eq!(json["recipients"][0]["handle"], "bob");
@@ -567,6 +589,29 @@ mod tests {
             serde_json::from_str::<Value>(&everyone.json("k2m4")).unwrap()["agent"],
             Value::Null
         );
+
+        let mut refused = sent();
+        (refused.read, refused.refused) = (None, Some(1_800_000_180));
+        refused.reason = Some("off \u{7}list".to_owned());
+        let refused = status(Some(refused), None);
+        assert!(
+            refused.full().ends_with(
+                "to acme/bob/claude@skald.example: refused at 2027-01-15T08:03:00Z: off \\u{7}list"
+            ),
+            "{}",
+            refused.full()
+        );
+        assert!(
+            refused
+                .short("k2m4")
+                .ends_with("; to bob/claude: refused: off \\u{7}list"),
+            "{}",
+            refused.short("k2m4")
+        );
+        let json: Value = serde_json::from_str(&refused.json("k2m4")).unwrap();
+        assert_eq!(json["agent"]["refused"], 1_800_000_180_u64);
+        assert_eq!(json["agent"]["reason"], "off \u{7}list");
+        assert_eq!(json["agent"]["read"], Value::Null);
     }
 
     /// A message the device showed or handed over shows its sender, level and the agents it was

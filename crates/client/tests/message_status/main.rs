@@ -3,8 +3,9 @@
 //!
 //! - The sending device keeps, for each message it sends, the devices it went to: the other member
 //!   devices of the channel's group at sending; for each, `stored`, `delivered` or `expired` with
-//!   its time; for the `to` agent, `read` and `replied` with their times. On one device, a handover
-//!   to the `to` agent counts as `read`.
+//!   its time; for the `to` agent, `read` and `replied` with their times, or `refused` with its
+//!   time and reason. On one device, a handover to the `to` agent counts as `read`, and its
+//!   inbound mode's refusal as `refused`, with no receipt.
 //! - Of a message it showed or handed over, the device keeps its sending device, the sender's
 //!   trust level, its time and the agents it was handed to.
 //! - It keeps both for the message's wait: its envelope's `ttl`, at most 7 days.
@@ -32,8 +33,8 @@
 //!   it returns what the agent's `skald message-status` shows;
 //! - the person's form holds the full `msg_id`, the channel's ID, each recipient device's name and
 //!   its account's handle, and each status as its word: `stored`, `delivered`, `expired`, `read`,
-//!   `replied`; of a message the device got, the sending device's name and the agents it was handed
-//!   to;
+//!   `replied`, `refused` with its reason; of a message the device got, the sending device's name
+//!   and the agents it was handed to;
 //! - an agent's form refers to the message by `#<ref>` and holds each recipient device's name and
 //!   each status as its word;
 //! - `skald message-status --json <message>` prints one JSON object with the fields:
@@ -42,8 +43,8 @@
 //!   - of a message the device sent: `recipients`, an array with an object per recipient device,
 //!     with `device`, its ID, `device_name`, its certificate's `name`, `account`, its account,
 //!     `status`, `stored`, `delivered` or `expired`, and `timestamp`, that status's time; and
-//!     `agent`, for a message with `to`, an object whose `read` and `replied` are the times of
-//!     those statuses, `null` until they come;
+//!     `agent`, for a message with `to`, an object whose `read`, `replied` and `refused` are the
+//!     times of those statuses, `null` until they come, and `reason`, the `refused`'s reason;
 //!   - of a message the device showed or handed over: `level`, the sender's trust level, and
 //!     `handed_to`, the full addresses of the agents it was handed to.
 
@@ -54,6 +55,7 @@ mod across;
 mod expired;
 mod levels;
 mod received;
+mod refused;
 mod solo_device;
 mod spaces;
 mod statuses;

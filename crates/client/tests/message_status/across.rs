@@ -40,7 +40,7 @@ fn a_json(roles: &Roles, message: &str) -> Value {
 /// `msg_id`, every half second until `done` holds of the object, for up to [`WAIT`]; fails if
 /// none does. Gives that object.
 #[track_caller]
-fn a_json_once(
+pub fn a_json_once(
     roles: &Roles,
     msg_id: MessageId,
     what: &str,
