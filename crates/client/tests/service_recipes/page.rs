@@ -9,10 +9,10 @@ use serde_json::Value;
 
 use crate::kit::{RECV, received};
 use crate::machine::Finished;
-use crate::member::{JSON, messages};
-use crate::service_kit::{BOT, KEY_VARIABLE, Secrets, TOKEN_VARIABLE, create_agent, secrets_of};
+use crate::member::{JSON, bot_address, messages, talk_with_bot};
+use crate::service_kit::Secrets;
 use crate::talk::Talk;
-use crate::world::{ACME, HOST, run};
+use crate::world::run;
 
 /// The page, from the repository root.
 pub const PAGE: &str = "docs/service-agents.md";
@@ -315,23 +315,18 @@ impl Recipe {
     /// The talk of Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones; Ada's
     /// machine creates `ci/deploy-bot` with `extra`, which must succeed, and takes in its mailbox.
     pub fn new(ids: [u64; 2], logins: [&str; 2], extra: &[&str]) -> Self {
-        let talk = Talk::new(&ids, &logins, false);
-        let created = create_agent(&talk.ada.machine, ACME, BOT, &[talk.channel], extra);
-        let secrets = secrets_of(&created);
+        let (talk, secrets) = talk_with_bot(ids, logins, extra);
         received(&talk.ada.machine);
         Recipe {
             talk,
             secrets,
-            address: format!("{ACME}/{BOT}@{HOST}"),
+            address: bot_address(),
         }
     }
 
     /// The two secrets, by their variables' names.
     pub fn variables(&self) -> [(&'static str, String); 2] {
-        [
-            (KEY_VARIABLE, self.secrets.key.clone()),
-            (TOKEN_VARIABLE, self.secrets.token.clone()),
-        ]
+        (self.secrets.variables()).map(|(name, value)| (name, value.to_owned()))
     }
 
     /// The talk's channel's ID.

@@ -69,9 +69,7 @@ pub fn send(
     draft: &Draft,
     reported: Reported,
 ) -> Result<(), String> {
-    let grant = service::grant(&mut follower.connection, &follower.token)?;
-    let at = (follower.this, channel);
-    let from = service::sender(at, (roster, devices), &follower.own, server, &grant)?;
+    let (from, grant) = service::sender(follower, (roster, devices), (channel, server))?;
     let recipients = recipients(follower, (roster, devices), channel)?;
     let msg_id = MessageId::generate();
     let content = skald_proto::Content {

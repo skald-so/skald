@@ -2,14 +2,11 @@
 //! CLI creates, the agent's mailbox as the test client reads it, its tokens in the CLI, and the
 //! copies the front saw Ada's machine send and the server store.
 
-use serde_json::Value;
-use skald_proto::{
-    Body, Cert, ChannelId, Content, DeviceId, Frame, RawEnvelope, Role, Scheme, SpaceId,
-};
+use skald_proto::{Cert, ChannelId, Content, DeviceId, Frame, RawEnvelope, Role, Scheme, SpaceId};
 
 use crate::agents::{
-    BOT, CHANNEL, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, create_agent, id_of,
-    own_record, secrets_of, token_of,
+    BOT, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, create_agent, id_of, own_record,
+    run_for_channels, secrets_of, token_of,
 };
 use crate::cloud::Cloud;
 use crate::fixtures::{cert_of, send};
@@ -126,13 +123,13 @@ impl Scene {
     /// `channels` and the options `extra`; fails unless it succeeds.
     #[track_caller]
     pub fn new_token(&self, channels: &[ChannelId], extra: &[&str]) -> String {
-        let channels: Vec<String> = channels.iter().map(ToString::to_string).collect();
-        let mut args = vec![CREATE_SERVICE_TOKEN, ACME, BOT];
-        for channel in &channels {
-            args.extend([CHANNEL, channel.as_str()]);
-        }
-        args.extend_from_slice(extra);
-        token_of(&run(&self.talk.ada.machine, &args))
+        let command = (CREATE_SERVICE_TOKEN, ACME, BOT);
+        token_of(&run_for_channels(
+            &self.talk.ada.machine,
+            command,
+            channels,
+            extra,
+        ))
     }
 
     /// Revokes `token` in Ada's CLI, `skald revoke-service-token`; fails unless the server took it
@@ -244,15 +241,6 @@ impl Scene {
 /// The A2A `messageId` and the text of the A2A message in `content`, its text parts joined.
 #[track_caller]
 pub fn a2a(content: &Content) -> (String, String) {
-    let Some(Body::A2a(json)) = &content.body else {
-        panic!("not an a2a body: {content:?}");
-    };
-    let message: Value = serde_json::from_str(json).expect("an A2A message in JSON");
-    let text: String = message["parts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect();
-    (message["messageId"].as_str().unwrap_or("").to_owned(), text)
+    let (message_id, texts) = crate::talk::a2a(content);
+    (message_id, texts.concat())
 }
