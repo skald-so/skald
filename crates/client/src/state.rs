@@ -520,6 +520,28 @@ const MIGRATIONS: &[&str] = &[
         highest INTEGER NOT NULL CHECK (highest >= 0),
         PRIMARY KEY (space, agent)
     ) STRICT",
+    // Presence (`docs/protocol/agents.md`, "Presence"): of each agent of the device in each space,
+    // whether it set itself busy and its note, the state the device last gave it and since when,
+    // and the runtime of its last MCP session; and of each channel, the last `revision` the device
+    // gave a value there, and of the last value the server took, its epoch, `expires` and agents,
+    // as JSON.
+    "CREATE TABLE agent_status (
+        space TEXT NOT NULL,
+        name TEXT NOT NULL,
+        busy INTEGER NOT NULL DEFAULT 0 CHECK (busy IN (0, 1)),
+        note TEXT,
+        state INTEGER CHECK (state BETWEEN 1 AND 4),
+        since INTEGER CHECK (since >= 0),
+        runtime TEXT,
+        PRIMARY KEY (space, name)
+    ) STRICT;
+    CREATE TABLE presence (
+        channel TEXT PRIMARY KEY,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        epoch INTEGER CHECK (epoch >= 1),
+        expires INTEGER CHECK (expires >= 0),
+        agents TEXT
+    ) STRICT;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -650,6 +672,37 @@ impl Space {
     pub fn first_waits(&self) -> bool {
         self.pending.as_ref() == Some(&self.anchor)
     }
+}
+
+/// An agent of the device in a space, with what its presence holds of it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentRecord {
+    pub name: String,
+    /// Whether it set itself busy, and its note.
+    pub busy: bool,
+    pub note: Option<String>,
+    /// The state the device last gave it, 1 to 4 as in `agent-state`, and since when, in Unix
+    /// seconds; `None` before the first.
+    pub shown: Option<(u8, u64)>,
+    /// The agent CLI of its last MCP session, as a `name`.
+    pub runtime: Option<String>,
+}
+
+/// What the state holds of the device's presence in a channel.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelPresence {
+    /// The last `revision` the device gave a value there.
+    pub revision: u64,
+    /// The last value the server took, if any.
+    pub uploaded: Option<Uploaded>,
+}
+
+/// A value of the device's that the server took: its epoch, `expires` and agents, as JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Uploaded {
+    pub epoch: u64,
+    pub expires: u64,
+    pub agents: String,
 }
 
 /// What the state holds of the revisions the device accepted of a space.
@@ -2438,6 +2491,160 @@ impl State {
             .prepare("SELECT name FROM agent WHERE space = ?1 AND since < ?2 ORDER BY name")?;
         let names = query.query_map(params![space.to_string(), sql_seq(seq)?], |row| row.get(0))?;
         Ok(names.collect::<Result<_, _>>()?)
+    }
+
+    /// Each agent the device has run as in the space `space`, by name, with what its presence
+    /// holds of it.
+    pub fn agent_statuses(&self, space: SpaceId) -> Result<Vec<AgentRecord>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT agent.name, status.busy, status.note, status.state, status.since,
+                    status.runtime
+             FROM agent LEFT JOIN agent_status AS status
+                 ON status.space = agent.space AND status.name = agent.name
+             WHERE agent.space = ?1 ORDER BY agent.name",
+        )?;
+        let rows = query.query_map(params![space.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<bool>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (name, busy, note, state, since, runtime) = row?;
+            let shown = match (state, since) {
+                (Some(state), Some(since)) => Some((
+                    u8::try_from(state)
+                        .map_err(|_| Error::Malformed(format!("the agent state {state}")))?,
+                    u64::try_from(since)
+                        .map_err(|_| Error::Malformed(format!("the time {since}")))?,
+                )),
+                _ => None,
+            };
+            Ok(AgentRecord {
+                name,
+                busy: busy.unwrap_or(false),
+                note,
+                shown,
+                runtime,
+            })
+        })
+        .collect()
+    }
+
+    /// Records that the agent `name` in the space `space` set itself busy if `busy`, otherwise
+    /// available, with `note`.
+    pub fn set_agent_status(
+        &self,
+        space: SpaceId,
+        name: &str,
+        busy: bool,
+        note: Option<&str>,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO agent_status (space, name, busy, note) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (space, name) DO UPDATE SET busy = excluded.busy, note = excluded.note",
+            params![space.to_string(), name, busy, note],
+        )?;
+        Ok(())
+    }
+
+    /// Records that an MCP session of the agent `name` in the space `space` started, its agent CLI
+    /// `runtime`: the agent is available, with no note.
+    pub fn agent_session_started(
+        &self,
+        space: SpaceId,
+        name: &str,
+        runtime: Option<&str>,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO agent_status (space, name, runtime) VALUES (?1, ?2, ?3)
+             ON CONFLICT (space, name) DO UPDATE SET busy = 0, note = NULL, runtime = excluded.runtime",
+            params![space.to_string(), name, runtime],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the device gave the agent `name` in the space `space` the state `state`, 1 to
+    /// 4 as in `agent-state`, since `since`.
+    pub fn agent_shown(
+        &self,
+        space: SpaceId,
+        name: &str,
+        (state, since): (u8, u64),
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO agent_status (space, name, state, since) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (space, name) DO UPDATE SET state = excluded.state, since = excluded.since",
+            params![space.to_string(), name, state, sql_u64(since)?],
+        )?;
+        Ok(())
+    }
+
+    /// What the device holds of its presence in `channel`, if it gave a value there.
+    pub fn channel_presence(&self, channel: ChannelId) -> Result<Option<ChannelPresence>, Error> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT revision, epoch, expires, agents FROM presence WHERE channel = ?1",
+                params![channel.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((revision, epoch, expires, agents)) = row else {
+            return Ok(None);
+        };
+        let number =
+            |value: i64| u64::try_from(value).map_err(|_| Error::Malformed(format!("{value}")));
+        let uploaded = match (epoch, expires, agents) {
+            (Some(epoch), Some(expires), Some(agents)) => Some(Uploaded {
+                epoch: number(epoch)?,
+                expires: number(expires)?,
+                agents,
+            }),
+            _ => None,
+        };
+        Ok(Some(ChannelPresence {
+            revision: number(revision)?,
+            uploaded,
+        }))
+    }
+
+    /// The `revision` of the device's next value in `channel`, one more than the last it gave,
+    /// recorded before it returns, as a counter is.
+    pub fn next_presence_revision(&self, channel: ChannelId) -> Result<u64, Error> {
+        let revision: i64 = self.db.query_row(
+            "INSERT INTO presence (channel, revision) VALUES (?1, 1)
+             ON CONFLICT (channel) DO UPDATE SET revision = revision + 1
+             RETURNING revision",
+            params![channel.to_string()],
+            |row| row.get(0),
+        )?;
+        u64::try_from(revision).map_err(|_| Error::Malformed(format!("the revision {revision}")))
+    }
+
+    /// Records that the server took the device's value in `channel` of `uploaded`.
+    pub fn presence_uploaded(&self, channel: ChannelId, uploaded: &Uploaded) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE presence SET epoch = ?2, expires = ?3, agents = ?4 WHERE channel = ?1",
+            params![
+                channel.to_string(),
+                sql_u64(uploaded.epoch)?,
+                sql_u64(uploaded.expires)?,
+                uploaded.agents
+            ],
+        )?;
+        Ok(())
     }
 
     /// Sets the inbound mode of the agent `agent` in the space `space` to `mode`.
@@ -4753,6 +4960,79 @@ pub(crate) mod tests {
     /// The space of [`kept`].
     fn space_of_kept() -> SpaceId {
         "0190b6a2-1f3c-7d4e-8a5b-6c7d8e9f0a1b".parse().unwrap()
+    }
+
+    /// The state keeps each agent's status: what it set, what the device last gave it and its
+    /// runtime; a new session clears what it set. Each channel's presence counts its revisions
+    /// on, and keeps the last value the server took.
+    #[test]
+    fn agent_statuses_and_presence_revisions_are_kept() {
+        let dir = TestDir::new("state-presence");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let space = SpaceId::generate();
+        state.add_agent(space, "codex").unwrap();
+        state.add_agent(space, "claude").unwrap();
+        state
+            .set_agent_status(space, "claude", true, Some("migrating"))
+            .unwrap();
+        state.agent_shown(space, "claude", (2, 1_700)).unwrap();
+        let statuses = state.agent_statuses(space).unwrap();
+        assert_eq!(
+            statuses,
+            [
+                AgentRecord {
+                    name: "claude".to_owned(),
+                    busy: true,
+                    note: Some("migrating".to_owned()),
+                    shown: Some((2, 1_700)),
+                    runtime: None,
+                },
+                AgentRecord {
+                    name: "codex".to_owned(),
+                    busy: false,
+                    note: None,
+                    shown: None,
+                    runtime: None,
+                },
+            ]
+        );
+        state
+            .agent_session_started(space, "claude", Some("claude-code"))
+            .unwrap();
+        let claude = &state.agent_statuses(space).unwrap()[0];
+        assert_eq!((claude.busy, claude.note.as_deref()), (false, None));
+        assert_eq!(claude.shown, Some((2, 1_700)));
+        assert_eq!(claude.runtime.as_deref(), Some("claude-code"));
+        assert!(
+            state
+                .agent_statuses(SpaceId::generate())
+                .unwrap()
+                .is_empty()
+        );
+
+        let channel = ChannelId::generate();
+        assert_eq!(state.channel_presence(channel).unwrap(), None);
+        assert_eq!(state.next_presence_revision(channel).unwrap(), 1);
+        assert_eq!(state.next_presence_revision(channel).unwrap(), 2);
+        let uploaded = Uploaded {
+            epoch: 3,
+            expires: 2_600,
+            agents: "[]".to_owned(),
+        };
+        state.presence_uploaded(channel, &uploaded).unwrap();
+        drop(state);
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.channel_presence(channel).unwrap(),
+            Some(ChannelPresence {
+                revision: 2,
+                uploaded: Some(uploaded),
+            })
+        );
+        assert_eq!(state.next_presence_revision(channel).unwrap(), 3);
     }
 
     /// An agent the device has run as in a space gets each entry written after that, there only.
