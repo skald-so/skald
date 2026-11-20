@@ -279,6 +279,41 @@ fn directory(synced: Synced, scope: Scope, reading: Reading) -> Result<Vec<Liste
     Ok(sorted(latest(listed)))
 }
 
+/// The devices whose presence values in the channel `at` list `agent`, by the device's latest
+/// value that passes the reader checks and is before its `expires`: each one's ID and certificate
+/// `name`. Read as a listing reads them, against `roster`, the space's last accepted revision,
+/// and `devices`, its accounts' devices, on `server`, warning of each value it drops.
+pub fn listing(
+    follower: &mut Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    at: (SpaceId, ChannelId),
+    server: &ServerName,
+    agent: &Address,
+) -> Result<Vec<(DeviceId, String)>, String> {
+    let warn = |warning: String| eprintln!("skald: warning: {warning}");
+    let given = vec![(at.1, values(follower, at, &warn)?)];
+    let keys = opening_keys(follower, at.0, &given, &warn)?;
+    let reader = Reader {
+        follower,
+        roster,
+        devices,
+        server: Some(server),
+        keys: &keys,
+        now: state::unix_now(),
+    };
+    let mut listed = Vec::new();
+    for bytes in &given[0].1 {
+        match reader.read(at.1, bytes) {
+            Ok(agents) => listed.extend(agents),
+            Err(dropped) => warn(dropped),
+        }
+    }
+    Ok((latest(listed).into_iter())
+        .filter(|one| one.agent == *agent && one.last_seen.is_none())
+        .map(|one| (one.device, one.device_name))
+        .collect())
+}
+
 /// The values the server gives of the channel `at`, each as its bytes, to the device of
 /// `follower`; those that are no base64url are left out, given to `warn`.
 fn values(

@@ -8,9 +8,9 @@ use common::{
     server_device, to_hex,
 };
 use skald_proto::{
-    Body, Cbor, Claim, ClaimId, FieldProblem, Outcome, QUEUE_KEY_LABEL, QueueId, QueueKeyBody,
-    QueueMode, QueuedTask, Sched, SignedBody, TASK_LABEL, Task, TaskBody, TaskId, TaskResult,
-    Unknown,
+    Body, Cbor, Claim, ClaimId, Content, FieldProblem, Outcome, QUEUE_KEY_LABEL, QueueId,
+    QueueKeyBody, QueueMode, QueuedTask, Sched, SignedBody, TASK_LABEL, Task, TaskBody, TaskId,
+    TaskResult, Unknown,
 };
 
 const DEADLINE: u64 = 1_800_604_800;
@@ -240,6 +240,43 @@ fn a_task_is_its_request() {
     };
     assert_eq!(task.to_cbor(), hex("a1 01627b7d"));
     assert_eq!(Task::from_cbor(&hex("a1 01627b7d")), Ok(task));
+}
+
+#[test]
+fn task_content_holds_the_task_as_its_body_and_no_counter() {
+    let task = Task {
+        request: "{}".to_owned(),
+        unknown: Unknown::default(),
+    };
+
+    let content = task.content(alice(), None, 4);
+
+    assert_eq!(
+        (content.counter, &content.body, content.hops),
+        (None, &None, 4)
+    );
+    let bytes = content.to_cbor();
+    assert_eq!(
+        bytes,
+        hex(&format!(
+            "a3 01{} 0404 0ba1 01627b7d",
+            to_hex(&cbor_text(&alice().to_string()))
+        ))
+    );
+    let decoded = Content::from_cbor(&bytes).expect("task content decodes");
+    assert_eq!(decoded, content);
+    assert_eq!(decoded.unknown.get(11), Some(task.to_cbor().as_slice()));
+}
+
+/// `text` as a CBOR text string of under 256 bytes.
+fn cbor_text(text: &str) -> Vec<u8> {
+    let length = u8::try_from(text.len()).expect("under 256 bytes");
+    let mut out = match length {
+        0..24 => vec![0x60 + length],
+        _ => vec![0x78, length],
+    };
+    out.extend_from_slice(text.as_bytes());
+    out
 }
 
 #[test]
