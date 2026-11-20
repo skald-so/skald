@@ -59,6 +59,8 @@ mod machine;
 mod peer;
 #[path = "../channel_groups/played.rs"]
 mod played;
+mod rate;
+mod rate_said;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 #[path = "../channel_messages/talk.rs"]
