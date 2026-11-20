@@ -41,6 +41,7 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+mod rate;
 mod refusals;
 mod replied;
 mod replying;
@@ -68,14 +69,17 @@ mod cloud;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 
-// The server's tests' readers of the KeyPackages API's answers, the fixtures and the front of the
-// tests of sending, and the channel of the tests of channel messages.
+// The server's tests' readers of the KeyPackages API's answers, the fixtures, the front and what is
+// said of a refusal over the send rate of the tests of sending, and the channel of the tests of
+// channel messages.
 #[path = "../../../server/tests/key_packages/answers.rs"]
 mod answers;
 #[path = "../sending/fixtures.rs"]
 mod fixtures;
 #[path = "../sending/front.rs"]
 mod front;
+#[path = "../sending/rate_said.rs"]
+mod rate_said;
 #[path = "../channel_messages/talk.rs"]
 mod talk;
 
