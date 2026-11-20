@@ -30,22 +30,12 @@ use crate::subscription::user_codex_config;
 pub fn prepare(path: GuiPath, surface: Surface, busy: bool, bypass: bool) -> Result<bool> {
     let version = surface.version(&installed()?)?;
     let exe = std::env::current_exe()?;
-    let home = home()?;
-    let user_json = |file: PathBuf| -> serde_json::Value {
-        fs::read_to_string(file)
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
-    };
     let binaries = Binaries {
         inbox: binary(&exe, INBOX_BIN)?,
         channel: binary(&exe, CHANNEL_BIN)?,
         hook: binary(&exe, HOOK_BIN)?,
         user_mcp_servers: mcp_servers(&user_codex_config()),
-        user_claude: UserClaude::read(
-            &user_json(home.join(".claude/settings.json")),
-            &user_json(home.join(".claude.json")),
-        ),
+        user_claude: user_claude(&home()?),
     };
     let work = tempfile::Builder::new()
         .prefix("skald-live-")
@@ -100,8 +90,13 @@ pub fn result(work: &Path, token: &str) -> Result<bool> {
 /// Opens the deep link to the session of the GUI check prepared in `work`, as a click on an OS
 /// notification would, and prints it.
 pub fn link(work: &Path) -> Result<bool> {
-    let link = gui::link(work, &home()?)?;
-    let opened = std::process::Command::new("open").arg(&link).status()?;
+    open(&gui::link(work, &home()?)?)
+}
+
+/// Opens `link` with the app that takes it, as a click on an OS notification would, and prints it;
+/// whether `open` succeeded.
+pub(crate) fn open(link: &str) -> Result<bool> {
+    let opened = std::process::Command::new("open").arg(link).status()?;
     println!("opened: {link}");
     Ok(opened.success())
 }
@@ -216,8 +211,22 @@ fn session_thread(
     Ok((client, thread))
 }
 
+/// The names of the plugins and MCP servers of the user's Claude Code config in `home`.
+pub(crate) fn user_claude(home: &Path) -> UserClaude {
+    let user_json = |file: PathBuf| -> serde_json::Value {
+        fs::read_to_string(file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default()
+    };
+    UserClaude::read(
+        &user_json(home.join(".claude/settings.json")),
+        &user_json(home.join(".claude.json")),
+    )
+}
+
 /// Where the surfaces are installed.
-fn installed() -> Result<Installed> {
+pub(crate) fn installed() -> Result<Installed> {
     Ok(Installed {
         applications: PathBuf::from("/Applications"),
         home: home()?,
@@ -225,7 +234,7 @@ fn installed() -> Result<Installed> {
 }
 
 /// The user's home: VS Code's extensions and Claude Code's transcripts.
-fn home() -> Result<PathBuf> {
+pub(crate) fn home() -> Result<PathBuf> {
     Ok(std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("HOME is not set")?)
