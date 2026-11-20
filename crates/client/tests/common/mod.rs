@@ -176,10 +176,14 @@ impl Drop for Server {
 pub const SETUP_ATTEMPTS: u32 = 5;
 const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
+/// WSAENOBUFS: Windows had no buffer space or port for a new socket.
+pub const NO_BUFFER_SPACE: i32 = 10055;
+
 /// The result of `step`, `what`, tried again while PostgreSQL resets its connection or opens none
-/// in time, up to [`SETUP_ATTEMPTS`] times; any other error is returned at once. Under the load of
-/// the client's tests PostgreSQL on Windows now and then resets or delays a new connection and goes
-/// on serving the others.
+/// in time, or while Windows has no buffer space for it, up to [`SETUP_ATTEMPTS`] times; any other
+/// error is returned at once. Under the load of the client's tests PostgreSQL on Windows now and
+/// then resets or delays a new connection and goes on serving the others, and Windows now and then
+/// fails a connect with WSAENOBUFS for a cause still unknown.
 pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     mut step: impl FnMut() -> F,
@@ -189,12 +193,20 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     loop {
         match step().await {
             Err(sqlx::Error::Io(err))
-                if matches!(
+                if (matches!(
                     err.kind(),
                     io::ErrorKind::ConnectionReset | io::ErrorKind::TimedOut
-                ) && attempt < SETUP_ATTEMPTS =>
+                ) || err.raw_os_error() == Some(NO_BUFFER_SPACE))
+                    && attempt < SETUP_ATTEMPTS =>
             {
-                eprintln!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
+                let line = format!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
+                if err.raw_os_error() == Some(NO_BUFFER_SPACE) {
+                    // Past the test harness's capture, so a passing test's log keeps it too.
+                    let ports = last_sample(env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into));
+                    let _ = writeln!(io::stderr(), "{line}; ports: {ports}");
+                } else {
+                    eprintln!("{line}");
+                }
                 tokio::time::sleep(wait).await;
                 wait *= 2;
                 attempt += 1;
@@ -202,6 +214,19 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
             result => return result,
         }
     }
+}
+
+/// The last line of `samples`, the file where CI's sampler of the ports in use writes its state;
+/// `not sampled` without one.
+pub fn last_sample(samples: Option<std::path::PathBuf>) -> String {
+    samples
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| {
+            text.lines()
+                .rfind(|line| !line.trim().is_empty())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "not sampled".to_owned())
 }
 
 /// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only

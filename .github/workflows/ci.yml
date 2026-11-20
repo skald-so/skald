@@ -210,10 +210,6 @@ jobs:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.workspace == 'true'
     runs-on: windows-2025
-    env:
-      # The ephemeral ports: 10000-65534.
-      EPHEMERAL_START: 10000
-      EPHEMERAL_PORTS: 55535
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -253,22 +249,18 @@ jobs:
           Start-Service -InputObject $service
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      # Each connection a test's process, server or browser closes first holds its ephemeral port
-      # in TIME_WAIT for minutes; the client's tests close more than the 16,384 ports of Windows'
-      # range, and a connect then fails with WSAENOBUFS (10055). This runner gets a wider range. A
-      # process started here samples, every 10 s, how many of its ports TIME_WAIT holds.
-      - name: Widen the range of ephemeral ports
+      # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
+      # unknown. A process started here samples, about every 10 s, the ephemeral ports in use, by
+      # state and owner, and the non-paged pool; a retry of such a connect prints the last sample.
+      - name: Sample the ephemeral ports in use
         shell: pwsh
         run: |
-          netsh int ipv4 set dynamicport tcp start=$env:EPHEMERAL_START num=$env:EPHEMERAL_PORTS
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-          netsh int ipv6 set dynamicport tcp start=$env:EPHEMERAL_START num=$env:EPHEMERAL_PORTS
-          if ($LASTEXITCODE -ne 0) { exit 1 }
           $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
           Set-Content -Path $sampler -Value @'
+          $start = (Get-NetTCPSetting -SettingName Internet).DynamicPortRangeStartPort
           while ($true) {
             $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
-              Where-Object { $_.LocalPort -ge $env:EPHEMERAL_START -and $_.State -ne 'Listen' })
+              Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
             $ports = @($used | Sort-Object -Property LocalPort -Unique).Count
             $pool = [int]((Get-Counter '\Memory\Pool Nonpaged Bytes').CounterSamples[0].CookedValue / 1MB)
             $states = ($used | Group-Object State | Sort-Object Count -Descending |
@@ -276,7 +268,7 @@ jobs:
             $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
               Sort-Object Count -Descending | Select-Object -First 3 |
               ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }) -join ' '
-            "$ports $pool $(Get-Date -Format HH:mm:ss) $states $owners" |
+            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners" |
               Add-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt')
             Start-Sleep -Seconds 10
           }
@@ -290,15 +282,17 @@ jobs:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
+          $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
           cargo test -p skald-client --locked --no-fail-fast
       - name: Show the most ephemeral ports in use
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
           $samples = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
-          "$($samples.Count) samples: ports in use, non-paged pool MB, time, states, top owners"
-          $samples | Sort-Object { [int]($_ -split ' ')[0] } | Select-Object -Last 3
-          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 1
+          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool:"
+          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
+          $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
+            Select-Object -Last 1
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

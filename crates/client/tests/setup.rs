@@ -1,5 +1,6 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
-//! connection, or by opening none in time, is tried again, a few times; any other error is not;
+//! connection, or by opening none in time, or that Windows fails with WSAENOBUFS, is tried again, a
+//! few times, the last with the sampled ports in use; any other error is not;
 //! a server that fails to start drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
@@ -11,7 +12,10 @@ use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
-use common::{SETUP_ATTEMPTS, Server, close, connect, retried_on_reset, server, test_databases};
+use common::{
+    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Server, close, connect, last_sample, retried_on_reset, server,
+    test_databases,
+};
 
 /// An I/O error of `kind`, as sqlx gives it.
 fn io_error(kind: io::ErrorKind) -> sqlx::Error {
@@ -26,29 +30,35 @@ fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, 
 }
 
 #[test]
-fn only_a_reset_or_a_timeout_is_retried_and_only_a_few_times() {
-    for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::TimedOut] {
+fn only_a_reset_a_timeout_or_no_buffer_space_is_retried_and_only_a_few_times() {
+    let errors: [fn() -> io::Error; 3] = [
+        || io::Error::from(io::ErrorKind::ConnectionReset),
+        || io::Error::from(io::ErrorKind::TimedOut),
+        || io::Error::from_raw_os_error(NO_BUFFER_SPACE),
+    ];
+    for error in errors {
+        let want = error().to_string();
         // Failures, then success.
         let calls = Cell::new(0);
         let result = retried(|| {
             calls.set(calls.get() + 1);
             ready(if calls.get() < 3 {
-                Err(io_error(kind))
+                Err(sqlx::Error::Io(error()))
             } else {
                 Ok(calls.get())
             })
         });
-        assert_eq!(result.ok(), Some(3), "{kind:?}");
+        assert_eq!(result.ok(), Some(3), "{want}");
 
         // Failures only: the last one is the error.
         let calls = Cell::new(0);
         let result: Result<(), _> = retried(|| {
             calls.set(calls.get() + 1);
-            ready(Err(io_error(kind)))
+            ready(Err(sqlx::Error::Io(error())))
         });
-        assert_eq!(calls.get(), SETUP_ATTEMPTS, "{kind:?}");
+        assert_eq!(calls.get(), SETUP_ATTEMPTS, "{want}");
         assert!(
-            matches!(&result, Err(sqlx::Error::Io(err)) if err.kind() == kind),
+            matches!(&result, Err(sqlx::Error::Io(err)) if err.to_string() == want),
             "{result:?}"
         );
     }
@@ -89,6 +99,24 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     assert!(result.is_err());
     let at = [0, 100, 300, 700, 1500].map(Duration::from_millis);
     assert_eq!(attempts.into_inner(), at);
+}
+
+#[test]
+fn a_retry_for_no_buffer_space_names_the_last_sample_of_the_ports() {
+    let dir = std::env::temp_dir().join(format!("skald-client-samples-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("make a directory");
+    let samples = dir.join("ports.txt");
+    std::fs::write(
+        &samples,
+        "10:00:00: 900 ports in use\n10:00:10: 950 ports in use\n\n",
+    )
+    .expect("write the samples");
+    let last = last_sample(Some(samples));
+    let gone = last_sample(Some(dir.join("none.txt")));
+    std::fs::remove_dir_all(&dir).expect("remove the directory");
+    assert_eq!(last, "10:00:10: 950 ports in use");
+    assert_eq!(gone, "not sampled");
+    assert_eq!(last_sample(None), "not sampled");
 }
 
 /// The only test of this binary that makes databases: no other test's are listed.
