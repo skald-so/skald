@@ -5,8 +5,8 @@
 # docs/ links to.
 # With --since, the changes from where HEAD branched off the base to the working tree count.
 # The self-host stack's part: the paths of the server image, the browser's packages, the web app's
-# build, the compose file, Caddy's config and the self-host guide, the one path in docs/ that marks
-# another part than site.
+# build, the compose file, Caddy's config and the self-host guide. The service agents page also
+# marks the workspace, whose client tests run its recipes.
 # Also tests that script/test rejects an unknown part instead of skipping it, and that with
 # SKALD_TEST_SINCE it checks the parts the changes since that base touch, on a copy that runs no
 # check (script/lib/test-stand-ins.sh): every part when none or when that cannot be told; a change
@@ -201,8 +201,7 @@ expect site site/config.mjs
 expect site -docs/dev/roadmap.md
 expect none
 
-# The self-host stack: its guide, the one path in docs/ that marks another part than site; the
-# compose file, Caddy's config and the part's tests.
+# The self-host stack: its guide, the compose file, Caddy's config and the part's tests.
 expect 'self-host site' docs/self-host.md
 expect 'self-host site' docs/self-host.md docs/dev/infrastructure.md README.md
 expect 'workspace self-host web site' docs/self-host.md web/src/App.tsx
@@ -215,6 +214,11 @@ marks self-host docker-compose.yml
 marks self-host Caddyfile
 marks self-host script/self-host-test
 marks self-host script/lib/self-host/machine.Dockerfile
+
+# The service agents page: the client's tests run its recipes.
+expect 'workspace site' docs/service-agents.md
+expect 'workspace site' docs/service-agents.md docs/dev/infrastructure.md README.md
+expect site docs/service-agents/notes.md
 
 # A moved file counts in both places.
 expect "$crates site" 'crates/server/src/lib.rs->docs/lib.rs'
