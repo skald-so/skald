@@ -572,7 +572,7 @@ pub fn holds(operation: &Operation) -> bool {
 
 /// The helper's run for the session an MCP server holds of it, its `operation`: in the working
 /// directory's space, it takes in what waits for the session's agent, handing nothing over
-/// ([`recv::held`]), and waits on; in no space, it ends. On the session's start, `others` gives
+/// ([`recv::hold_run`]), and waits on; in no space, it ends. On the session's start, `others` gives
 /// the agents of the other sessions: unless one of them is its agent in that space, its agent's
 /// session starts ([`State::agent_session_started`]). A failure to take in leaves the session be
 /// for [`REST`].
@@ -611,7 +611,7 @@ fn hold(
         }
     }
     let settings = (operation.speaks, operation.timeout);
-    let held = recv::held(&dir, operation.key_storage, settings, &agent);
+    let held = recv::hold_run(&dir, operation.key_storage, settings, &agent);
     HOLD_FAILED.with(|failed| failed.set(held.is_err()));
     Ok(false)
 }

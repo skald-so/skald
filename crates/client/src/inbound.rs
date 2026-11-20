@@ -1,11 +1,12 @@
 //! `skald set-inbound-mode`, `skald allow-sender` and `skald inbound-modes`: each agent of the
-//! device in a space has an inbound mode, `accept` by default or `refuse`, and an allowlist of
+//! device in a space has an inbound mode, `accept` by default, `hold` or `refuse`, and an allowlist of
 //! senders it takes messages from whatever the mode (`docs/protocol/delivery.md`, "Device to
 //! agent"). The person sets and lists them in the space of the working directory; they are kept in
 //! the local state. An agent cannot run the commands ([`crate::agents::person_only`]).
 //!
-//! The mode decides when the device takes a message in ([`refusing`]); a message taken in keeps
-//! that decision when the mode changes.
+//! The mode decides when the device takes a message in ([`refusing_and_holding`]); a message taken
+//! in keeps that decision when the mode changes. The person decides a held message with
+//! `skald held` ([`crate::held`]).
 
 use std::path::Path;
 
@@ -26,6 +27,9 @@ pub const REASON: &str = "the agent takes messages only from the senders on its 
 pub enum Mode {
     /// Hand every message over.
     Accept,
+    /// Hand over the messages of the senders on the allowlist; keep the others for the person's
+    /// decision, issuing `held` of each.
+    Hold,
     /// Hand over only the messages of the senders on the allowlist; issue `refused` of the others.
     Refuse,
 }
@@ -35,6 +39,7 @@ impl Mode {
     fn name(self) -> &'static str {
         match self {
             Mode::Accept => "accept",
+            Mode::Hold => "hold",
             Mode::Refuse => "refuse",
         }
     }
@@ -134,24 +139,32 @@ fn admits(entry: &str, from: &Address) -> bool {
 }
 
 /// The agents of `agents`, the device's agents in the space `space` a message from `from` is for,
-/// whose inbound mode refuses it: those in `refuse` without a sender on their allowlist that admits
-/// `from`, by the state `state`.
-pub fn refusing(
+/// whose inbound mode refuses it, and those whose mode holds it for the person's decision: those in
+/// `refuse`, and in `hold`, without a sender on their allowlist that admits `from`, by the state
+/// `state`.
+pub fn refusing_and_holding(
     state: &State,
     space: skald_proto::SpaceId,
     agents: &[String],
     from: &Address,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let (mut refusing, mut holding) = (Vec::new(), Vec::new());
     if agents.is_empty() {
-        return Ok(Vec::new());
+        return Ok((refusing, holding));
     }
-    let inbound = state.inbound(space).map_err(text)?;
-    Ok((inbound.into_iter())
-        .filter(|inbound| agents.contains(&inbound.agent))
-        .filter(|inbound| inbound.mode == Mode::Refuse.name())
-        .filter(|inbound| !inbound.allowed.iter().any(|entry| admits(entry, from)))
-        .map(|inbound| inbound.agent)
-        .collect())
+    for inbound in state.inbound(space).map_err(text)? {
+        if !agents.contains(&inbound.agent)
+            || inbound.allowed.iter().any(|entry| admits(entry, from))
+        {
+            continue;
+        }
+        if inbound.mode == Mode::Refuse.name() {
+            refusing.push(inbound.agent);
+        } else if inbound.mode == Mode::Hold.name() {
+            holding.push(inbound.agent);
+        }
+    }
+    Ok((refusing, holding))
 }
 
 #[cfg(test)]
