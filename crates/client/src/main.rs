@@ -42,6 +42,7 @@ mod follow;
 mod forms;
 mod gaps;
 mod groups;
+mod held;
 mod helper;
 mod history;
 mod history_reading;
@@ -605,9 +606,11 @@ enum Command {
     /// Lists the rules: each one's folder and space.
     Rules,
     /// Sets the inbound mode of an agent of this device in the space of the working directory:
-    /// accept hands it every message; refuse hands it only those of the senders on its allowlist,
-    /// and tells the sender of each other message to it that it was refused. A message keeps the
-    /// mode it came under.
+    /// accept hands it every message; hold hands it those of the senders on its allowlist and
+    /// keeps each other until you accept or refuse it with skald held, telling the sender of each
+    /// such message to it that it is held; refuse hands it only those of the senders on its
+    /// allowlist, and tells the sender of each other message to it that it was refused. A message
+    /// keeps the mode it came under.
     SetInboundMode {
         /// The agent's name, as --agent takes it.
         #[arg(value_name = "AGENT")]
@@ -629,6 +632,13 @@ enum Command {
     /// Lists each agent of this device in the space of the working directory with its inbound mode
     /// and the senders on its allowlist.
     InboundModes,
+    /// Shows each message an agent in hold keeps for your decision, one at a time, and takes your
+    /// decision at the terminal: accept hands it to the agent; refuse, then a reason or an empty
+    /// line, tells its sender it was refused. Only as the person at a terminal.
+    Held,
+    /// A step of skald held after its person's answers, which skald held hands to the helper.
+    #[command(skip)]
+    HeldStep { step: held::Step },
     /// Removes a folder's rule.
     RemoveRule {
         /// The folder, such as ~/work/acme.
@@ -730,6 +740,7 @@ impl Command {
             Command::SetInboundMode { .. } => Some("set-inbound-mode"),
             Command::AllowSender { .. } => Some("allow-sender"),
             Command::InboundModes => Some("inbound-modes"),
+            Command::Held | Command::HeldStep { .. } => Some("held"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -813,8 +824,8 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
-            // It takes its person's answers here and its steps lock ([`link`]).
-            Command::Link { .. } => None,
+            // It takes its person's answers here and its steps lock ([`link`], [`held`]).
+            Command::Link { .. } | Command::Held => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -961,6 +972,9 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
+    if let Command::Held = operation.command {
+        return held(operation, !one_shot);
+    }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
@@ -1086,6 +1100,37 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     })
 }
 
+/// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
+/// or one it starts if `starts`; otherwise it runs here, holding the lock for the step.
+fn held(operation: Operation, starts: bool) -> ExitCode {
+    if let Err(err) = operation.agent() {
+        return exit(Err(err));
+    }
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let mut starts = starts;
+    held::run(&dir, |step| {
+        let operation = Operation {
+            speaks: operation.speaks,
+            timeout: operation.timeout,
+            clock_offset: operation.clock_offset,
+            state_dir: operation.state_dir.clone(),
+            key_storage: operation.key_storage,
+            agent: None,
+            command: Command::HeldStep { step },
+            said: link_prompt::Said::default(),
+        };
+        match helper::route(&dir, &operation, false, std::mem::take(&mut starts)) {
+            // Held until the step ends.
+            Ok(helper::Route::Here(_lock)) => exit(here(operation)),
+            Ok(helper::Route::Helped(code)) => code,
+            Err(err) => exit(Err(err)),
+        }
+    })
+}
+
 /// Runs `operation` in this process, then closes the connection it kept.
 fn here(operation: Operation) -> Result<(), String> {
     let result = perform(operation);
@@ -1164,6 +1209,7 @@ fn perform(operation: Operation) -> Result<(), String> {
             Command::SignIn { .. }
                 | Command::Helper { .. }
                 | Command::LinkStep { .. }
+                | Command::HeldStep { .. }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -1247,6 +1293,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
             .and_then(|dir| link_code::step(&dir, key_storage, speaks, timeout, step)),
+        // It runs through `held`.
+        Command::Held => Err("skald held runs only through its own process".to_owned()),
+        Command::HeldStep { step } => state::dir(state_dir)
+            .and_then(|dir| held::step(&dir, key_storage, (speaks, timeout), step)),
         Command::RevokeDevice { device, keep } => state::dir(state_dir)
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
