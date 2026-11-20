@@ -2,8 +2,7 @@
 //! receipt, and on one device with no receipt message.
 
 use crate::across::a_json_once;
-use crate::agents::CLAUDE;
-use crate::inbound::{REFUSE, REFUSED, SET_MODE};
+use crate::inbound::{REFUSE, REFUSED, claude_set_to, set_mode};
 use crate::kit::received;
 use crate::receipts::{READ, Roles};
 use crate::senders::LAPTOP_AGENT;
@@ -33,12 +32,7 @@ fn refused_receipt_gives_refused_with_its_reason() {
         [4_380_011_001, 4_380_011_002],
         ["ada-is-turned-away", "bob-watches-the-refusal"],
     );
-    let b_folder = roles.senders.agents.folder.clone();
-    let set = roles
-        .b()
-        .start_in(&b_folder, &[SET_MODE, CLAUDE, REFUSE])
-        .finish();
-    assert!(set.success, "{set:?}");
+    claude_set_to(&roles, REFUSE);
     let sent = now();
 
     let msg_id = roles.a_sends_to_claude(TO_CLAUDE);
@@ -72,8 +66,7 @@ fn refused_receipt_gives_refused_with_its_reason() {
 fn on_one_device_refused_comes_with_its_reason_and_no_receipt() {
     let solo = Solo::new(4_380_010_001, "ada-web-refuses-api");
     solo.session(WEB).inbox();
-    let set = solo.person_runs(&[SET_MODE, WEB, REFUSE]);
-    assert!(set.success, "{set:?}");
+    set_mode(solo.machine(), &solo.folder, WEB, REFUSE);
     let mark = solo.mark();
 
     let msg_id = solo.api_sends_web(TO_WEB);

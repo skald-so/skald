@@ -164,13 +164,19 @@ fn target(dir: &Path, named: &Given, reader: Reader, message: &str) -> Result<Ta
         ),
     };
     kept_target(dir, named, reader).map_err(|why| match why {
-        Unnamed::Shared => format!(
-            "{shown} is the reference of more than one message this device keeps: give more of \
-             it, or the msg_id; nothing is sent"
-        ),
+        Unnamed::Shared => format!("{}; nothing is sent", shared(&shown)),
         Unnamed::Unknown => unknown(),
         Unnamed::Failed(err) => err,
     })
+}
+
+/// Why a run names no message by `shown`, as it names it: a reference more than one message the
+/// device keeps shares.
+pub fn shared(shown: &str) -> String {
+    format!(
+        "{shown} is the reference of more than one message this device keeps: give more of it, or \
+         the msg_id"
+    )
 }
 
 /// Why no message is the one a run names.

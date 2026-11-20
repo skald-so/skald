@@ -3,7 +3,8 @@
 use skald_proto::{Body, NonEmpty, Receipt, ReceiptStatus, Unknown};
 
 use crate::fixtures::TO;
-use crate::held::{HELD, shows_not, shows_once};
+use crate::held::{HELD, shows_once};
+use crate::inbound::shows_not;
 use crate::receipts::Roles;
 use crate::senders::{BOB_AGENT, LAPTOP_AGENT};
 use crate::talk::Line;

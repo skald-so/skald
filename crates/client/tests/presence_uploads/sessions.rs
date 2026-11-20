@@ -11,9 +11,10 @@ use skald_proto::{AgentState, ChannelId, SpaceId};
 use crate::agents::{Agents, CLAUDE, CODEX};
 use crate::cloud::WAIT;
 use crate::helped::{Helped, with_client_b};
+use crate::presence::assert_between;
 use crate::talk::Talk;
 use crate::values::{
-    EXPIRES_IN, acme_channels, ada_s_body, ada_s_value, assert_between, await_in_each, await_value,
+    EXPIRES_IN, acme_channels, ada_s_body, ada_s_value, await_in_each, await_value,
     claude_code_session, helped_session, listed, shows, uploads,
 };
 use crate::world::now;
