@@ -344,22 +344,24 @@ impl Served {
 
     /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
     /// ends those whose socket is gone; records the receipts that came and what the session files
-    /// confirm; then, for each agent that has a confirmation, whose space `came` concerns, or for
-    /// each after a command ran, runs as the agent ([`recv::to_sessions`]). Gives whether it ran;
-    /// `None` once a run panicked.
+    /// confirm; then, for each agent that has a confirmation or a session that ended, whose space
+    /// `came` concerns, or for each after a command ran, runs as the agent
+    /// ([`recv::to_sessions`]). Gives whether it ran; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         let due = std::mem::take(&mut self.due);
+        // A run for the agent of each session that ended issues what its file confirmed.
+        let mut runs = BTreeMap::new();
         if due || std::mem::take(&mut self.reload) {
-            self.load(dir);
+            runs.extend(self.load(dir));
         }
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
-        let mut runs = BTreeMap::new();
         let mut gone = Vec::new();
         let mut state = None;
         for (id, live) in &mut self.live {
             let session = &live.session;
             if !session.socket.exists() {
                 gone.push(id.clone());
+                runs.insert(session.agent.clone(), session.folder.clone());
                 continue;
             }
             let failed = live.receipts();
@@ -396,10 +398,11 @@ impl Served {
         Some(!runs.is_empty())
     }
 
-    /// Takes the registrations from the state in `dir`, keeping what it has of each it served.
-    fn load(&mut self, dir: &Path) {
+    /// Takes the registrations from the state in `dir`, keeping what it has of each it served;
+    /// gives the agent and folder of each it served that ended.
+    fn load(&mut self, dir: &Path) -> Vec<(String, PathBuf)> {
         let Ok(registered) = State::open(dir).and_then(|state| state.claude_sessions()) else {
-            return;
+            return Vec::new();
         };
         let mut live = std::mem::take(&mut self.live);
         for session in registered {
@@ -410,6 +413,9 @@ impl Served {
             self.live
                 .insert(id, kept.unwrap_or_else(|| Live::new(session)));
         }
+        (live.into_values())
+            .map(|ended| (ended.session.agent, ended.session.folder))
+            .collect()
     }
 
     /// Runs as `agent` in its `folder`, its output dropped, then goes back to `dir`: whether the
