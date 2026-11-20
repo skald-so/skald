@@ -10,12 +10,16 @@
 //! there waits for the server (`docs/protocol/membership.md`, "Admitted devices"), or no other
 //! device is in the group, nothing on this device gets the message and no service agent gets a
 //! copy. The content is from the person address or the agent's, to the agent `--to` names or, for
-//! `--all`, to no one in particular, with `hops` 0, the device's next `counter` in the channel and
-//! an A2A message with the text (`docs/protocol/README.md`, "Content"). With it go its copies under
-//! `hpke` to service agents outside the channel's group ([`crate::copies`]), each with the counter
-//! the device keeps for that agent in the channel; the run warns when it sends an agent its first
-//! copy of the channel's messages. A `service` device sends none: its token gets no grants. A
-//! stateless service agent's run sends as [`crate::stateless`] says.
+//! `--all`, to no one in particular, with `hops` 0 from the person and, from an agent, one more than
+//! the highest `hops` of the messages handed over to it in the space since the device last sent a
+//! message as it, or 0 when none was, the device's next `counter` in the channel and an A2A message
+//! with the text (`docs/protocol/README.md`, "Content"); a member service agent counts as an agent
+//! here. An agent's message with `hops` over [`MOST_HOPS`] is not sent: the run says why and warns
+//! of it, which an agent's run holds for the person's next run. With it go its copies under `hpke`
+//! to service agents outside the channel's group ([`crate::copies`]), each with the counter the
+//! device keeps for that agent in the channel; the run warns when it sends an agent its first copy
+//! of the channel's messages. A `service` device sends none: its token gets no grants. A stateless
+//! service agent's run sends as [`crate::stateless`] says.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
@@ -63,6 +67,10 @@ use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, Outgoing, State};
 use crate::stateless;
 use crate::wraps;
+
+/// The highest `hops` an agent's message carries: the limit on replies without a human
+/// (`docs/protocol/README.md`, "Content").
+pub const MOST_HOPS: u64 = 10;
 
 /// The first pause between attempts, and the longest.
 const FIRST_PAUSE: Duration = Duration::from_millis(500);
@@ -242,11 +250,18 @@ fn sent(
     };
     let server = server_of(&mut synced.follower)?;
     let to = (to.map(|to| to.in_space(&synced.roster.body().name, &server))).transpose()?;
+    let hops = match counted(&synced.follower, agent) {
+        Some(counted) => (synced.follower.state)
+            .handed_hops(synced.space.id, counted)
+            .map_err(|err| err.to_string())?
+            .map_or(0, |highest| highest.saturating_add(1)),
+        None => 0,
+    };
     let draft = Draft {
         to,
         text,
         reply_to: None,
-        hops: 0,
+        hops,
     };
     send_synced(
         dir,
@@ -256,6 +271,16 @@ fn sent(
         agent,
         reported,
     )
+}
+
+/// Under which name the device of `follower` counts the `hops` of what a run as `agent`, if any,
+/// takes in: the agent's, a member service agent's ([`state::SERVICE_AGENT`]), or none for the
+/// person, whose messages keep 0.
+fn counted<'a>(follower: &Follower, agent: Option<&'a Name>) -> Option<&'a str> {
+    match agent {
+        Some(agent) => Some(agent.as_str()),
+        None => follower.service.map(|_| state::SERVICE_AGENT),
+    }
 }
 
 /// The space of the channel `channel` within `scope`, synced ([`spaces::of_channel`]), by the
@@ -278,7 +303,8 @@ pub fn server_of(follower: &mut Follower) -> Result<ServerName, String> {
 }
 
 /// Sends `draft` to `channel` of the space `synced` holds, within `scope`, from the person or
-/// `agent` on `server`, by the state in `dir`, and reports as `reported` says.
+/// `agent` on `server`, by the state in `dir`, and reports as `reported` says. Sends nothing for
+/// an agent's draft with `hops` over [`MOST_HOPS`] ([`over_the_limit`]).
 pub fn send_synced(
     dir: &Path,
     (synced, channel): (Synced, ChannelId),
@@ -287,6 +313,9 @@ pub fn send_synced(
     agent: Option<&Name>,
     reported: Reported,
 ) -> Result<(), String> {
+    if counted(&synced.follower, agent).is_some() && draft.hops > MOST_HOPS {
+        return Err(over_the_limit(agent, channel, draft.to.as_ref()));
+    }
     let Synced {
         mut follower,
         space,
@@ -309,9 +338,8 @@ pub fn send_synced(
     // A service agent's message carries its token's grant; only a member's has copies.
     let (from, grant, readers) = match follower.service {
         Some(_) => {
-            let grant = service::grant(&mut follower.connection, &follower.token)?;
-            let at = (follower.this, channel);
-            let from = service::sender(at, (&roster, &devices), &follower.own, server, &grant)?;
+            let (from, grant) =
+                service::sender(&mut follower, (&roster, &devices), (channel, server))?;
             (from, Some(grant), Vec::new())
         }
         None => {
@@ -358,6 +386,26 @@ pub fn send_synced(
     reported
 }
 
+/// Why the message of `agent`, none for a member service agent, to `to`, none for everyone, in
+/// `channel` is not sent: it is past the limit on replies without a human. Warns of it, which an
+/// agent's run holds for its person.
+fn over_the_limit(agent: Option<&Name>, channel: ChannelId, to: Option<&Address>) -> String {
+    let to = to.map_or_else(|| "every agent".to_owned(), Address::to_string);
+    let agent = agent.map_or_else(
+        || "this service agent".to_owned(),
+        |it| format!("the agent {it}"),
+    );
+    eprintln!(
+        "skald: warning: {agent} sent nothing to {to} in the channel {channel}: the \
+         agents answered each other {MOST_HOPS} times without a person; a person's message to one \
+         of them starts the count again"
+    );
+    format!(
+        "the agents answered each other {MOST_HOPS} times without a person; a person's message \
+         starts the count again; nothing is sent"
+    )
+}
+
 /// The channel ID `given` names, as a command takes it.
 pub fn channel_id(given: &str) -> Result<ChannelId, String> {
     given
@@ -371,7 +419,7 @@ pub fn channel_id(given: &str) -> Result<ChannelId, String> {
 /// the revisions of and uploads the links of their key chains and the wraps of their current
 /// epochs the server lacks. Gives the last accepted revision of `space` and its accounts' devices,
 /// `synced` as the run synced them first, as they are then. Warns of what fails.
-fn through_mailbox(
+pub fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
     space: SpaceId,

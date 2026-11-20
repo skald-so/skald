@@ -252,6 +252,49 @@ fn the_tests_http_client_keeps_its_connection_and_sends_again_when_the_server_cl
     assert_eq!(connections.try_iter().count(), 1, "new connections");
 }
 
+/// The server refuses a `POST /key-packages` that states no protocol version before reading its
+/// body, whose rest has not come: the answer says `Connection: close` and the server closes the
+/// connection after it. The answer to a `GET /health`, a request without a body, keeps it.
+#[test]
+fn answer_to_a_request_whose_body_is_left_unread_closes_the_connection() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let db = TestDb::create();
+    let server = Server::start(&db);
+    let address = server.base().trim_start_matches("http://").to_owned();
+    // The head of the answer to `request` on a new connection, in lowercase, and the connection.
+    let answer = |request: &str| -> (String, TcpStream) {
+        let mut stream = TcpStream::connect(&address).expect("reach the server");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(30)))
+            .expect("a read timeout");
+        stream.write_all(request.as_bytes()).expect("send");
+        let mut head = Vec::new();
+        let mut byte = [0; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).expect("an answer");
+            head.push(byte[0]);
+        }
+        (String::from_utf8_lossy(&head).to_lowercase(), stream)
+    };
+
+    let (head, mut stream) = answer(&format!(
+        "POST /key-packages HTTP/1.1\r\nhost: {address}\r\ncontent-type: application/json\r\n\
+         content-length: 64\r\n\r\n{{"
+    ));
+    assert!(head.starts_with("http/1.1 400"), "{head}");
+    assert!(head.contains("\r\nconnection: close\r\n"), "{head}");
+    let mut rest = Vec::new();
+    stream
+        .read_to_end(&mut rest)
+        .expect("the connection closed");
+
+    let (head, _) = answer(&format!("GET /health HTTP/1.1\r\nhost: {address}\r\n\r\n"));
+    assert!(head.starts_with("http/1.1 200"), "{head}");
+    assert!(!head.contains("connection: close"), "{head}");
+}
+
 #[test]
 fn version_prints_package_version() {
     let output = Command::new(SERVER)

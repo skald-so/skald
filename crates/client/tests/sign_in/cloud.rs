@@ -3,7 +3,9 @@
 //! relay; and the person who approves or denies a machine's code on its verification page in
 //! headless Chrome, signing in there with GitHub or Google.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -88,6 +90,83 @@ pub fn unb64(text: &str) -> Vec<u8> {
         .unwrap_or_else(|err| panic!("{text:?} is not base64url without padding: {err}"))
 }
 
+/// What the clouds of a test target share and a test that times the client takes alone
+/// ([`alone`]). Under `cargo test`, the tests of a target are threads of one process: no cloud of
+/// another test then runs beside the timed one. Under nextest, each test is a process of its own.
+static BESIDE: RwLock<()> = RwLock::new(());
+
+thread_local! {
+    /// What this test's thread holds of [`BESIDE`].
+    static HELD: RefCell<Held> = const { RefCell::new(Held::Nothing) };
+}
+
+/// What a test's thread holds of [`BESIDE`]: nothing; all of it; or a share, for this many of its
+/// clouds, taken once so that a test waiting to be alone holds back no cloud of its thread.
+enum Held {
+    Nothing,
+    Alone(RwLockWriteGuard<'static, ()>),
+    Shared(RwLockReadGuard<'static, ()>, usize),
+}
+
+/// Waits until no cloud of another test of the target runs, and keeps any from starting until
+/// dropped; the test's own clouds start as before.
+pub fn alone() -> Alone {
+    let guard = BESIDE.write().unwrap_or_else(PoisonError::into_inner);
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        assert!(
+            matches!(*held, Held::Nothing),
+            "a cloud runs, or the test is alone already"
+        );
+        *held = Held::Alone(guard);
+    });
+    Alone
+}
+
+/// A test alone among the target's clouds ([`alone`]) until dropped.
+pub struct Alone;
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        HELD.with(|held| *held.borrow_mut() = Held::Nothing);
+    }
+}
+
+/// A cloud's share of [`BESIDE`], held by its thread until dropped.
+struct Share;
+
+impl Share {
+    /// Waits while a test is alone, unless it is this thread's.
+    fn take() -> Self {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            match &mut *held {
+                Held::Nothing => {
+                    let guard = BESIDE.read().unwrap_or_else(PoisonError::into_inner);
+                    *held = Held::Shared(guard, 1);
+                }
+                Held::Shared(_, clouds) => *clouds += 1,
+                Held::Alone(_) => {}
+            }
+        });
+        Share
+    }
+}
+
+impl Drop for Share {
+    fn drop(&mut self) {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if let Held::Shared(_, clouds) = &mut *held {
+                *clouds -= 1;
+                if *clouds == 0 {
+                    *held = Held::Nothing;
+                }
+            }
+        });
+    }
+}
+
 pub struct Cloud {
     /// Where machines reach the server, and the tests' own requests too: the relay, or the plain
     /// HTTP front before it. Behind a TLS front, the relay; machines reach the server at
@@ -101,6 +180,8 @@ pub struct Cloud {
     /// The server's public address, e.g. `http://skald.test:41234`.
     pub public: String,
     server: Server,
+    /// Dropped last, once the server has stopped.
+    _share: Share,
 }
 
 impl Cloud {
@@ -189,6 +270,7 @@ impl Cloud {
         (lifetime, interval): (u64, u64),
         change: impl FnOnce(&mut Settings),
     ) -> Self {
+        let share = Share::take();
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
@@ -250,6 +332,7 @@ impl Cloud {
             google,
             public: public_url,
             server,
+            _share: share,
         }
     }
 

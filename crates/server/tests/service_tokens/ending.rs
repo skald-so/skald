@@ -95,10 +95,7 @@ fn a_token_ends_once_the_latest_revision_drops_its_entry() {
     );
     let staying = stage.create_as(&stage.f.team.alice, other.id, &other_grant, &["send"]);
 
-    let bot = stage.bot.id;
-    stage
-        .f
-        .revise(|body| body.service_agents.retain(|agent| agent.device != bot));
+    stage.drop_entry();
     assert_ended(&stage, &dropped.token, &dropped.id, "its entry dropped");
     assert!(stage.works(&staying.token), "a token whose entry stays");
 }

@@ -142,6 +142,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 A [stateless](membership.md#service-device) `service` device keeps no outbox and is in no MLS group:
 - It takes the channel's latest GroupInfo from the server and checks it as a linked browser does before it writes ([Wraps](membership.md#wraps)); every member it lists must be admitted, or nothing is sent.
 - It seals one `hpke` envelope to each member device the GroupInfo lists, with the same `msg_id`. The content carries the token's grant and no `counter`.
+- Its content has `hops` 0: it keeps no messages handed over in earlier runs, so the [limit on replies without a human](README.md#content) does not stop its loops.
 - The run fails unless the server answers `stored` to every envelope within it; nothing retries later.
 
 ### Copies to service agents
@@ -200,12 +201,13 @@ A recipient device drops, without a receipt:
 - The agent's inbound mode decides first, when the device takes the message in, except for an [`ask_user` answer](agents.md#ask_user). The message keeps that decision when the mode changes.
   - The agent's allowlist admits a sender whatever the mode: an agent's or a person's address, or a member's handle for all of that member's agents and its person. The device hands its messages over.
   - `accept`: the device hands the message over;
-  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
+  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`. A held message whose wait ends undecided gets `refused`, with a reason saying no one decided;
   - `refuse`: the device hands the message to no agent and, for a message `to` the agent, issues `refused`.
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
   - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
 - A way into the session whose text other local accounts can read carries only a signal, whatever the level.
+- What the device puts into a session at once stays within the agent CLI's limit, such as Claude Code's hook output limit of 10,000 characters. Messages that do not fit wait for the next handover; one longer than the limit is cut and ends with how to read it whole: `inbox` with its reference.
 - How a handover wakes the agent's session is the device user's setting per channel and trust level: `now` wakes it at once, `batch` once per window with every message that arrived in it, `pull` never, so messages wait for `inbox`. The default is `now`.
   - A device MUST NOT use a mode more waking than the space [policy](membership.md#policy)'s `wakes` for the level, in the order `now`, `batch`, `pull`; under `batch`, it uses `batch` with a window at least as long as the policy's, or `pull`.
   - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.

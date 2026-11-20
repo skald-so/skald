@@ -267,6 +267,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - Invites never reach the agent's context ([architecture.md, "Security"](dev/architecture.md#security)).
 - Run as an agent, the CLI shows no recovery key or link code in its output and takes none, nor a new device's confirmation: they go only to the person's terminal or to the local page `--browser` opens, so they stay out of the agent's context ([Account](protocol/membership.md#account), [architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 - The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
+- `skald held` decides a `hold` only at a terminal, as the person, so an agent cannot pipe a decision in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device to agent](protocol/delivery.md#device-to-agent)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine
@@ -336,5 +337,5 @@ The sender, not the kind of text, sets how text reaches an agent ([Device to age
 
 Loops:
 - **Hop counter** ([Content](protocol/README.md#content)). Honest clients add one per reaction; a malicious sending device sets `hops` itself.
-- **Limit on replies without a human,** enforced by the client. It stops loops among honest clients; a modified client ignores it.
+- **[Limit on replies without a human](protocol/README.md#content),** enforced by the client. It stops loops among honest clients; a modified client ignores it, and a stateless service agent cannot apply it ([From a stateless service agent](protocol/delivery.md#from-a-stateless-service-agent)).
 - **Rate limit,** enforced by the server: `--send-rate-limit` ([Cloud limits](dev/architecture.md#cloud-limits)). It bounds any loop or flood of one device, a malicious one included; presence uploads have none yet ([A member acting against others](#a-member-acting-against-others)).

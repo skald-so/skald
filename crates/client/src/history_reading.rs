@@ -138,7 +138,7 @@ enum Opened {
 
 /// The keys of the epochs of `channel` before those `device` holds that `links`, the channel's,
 /// reach back from them, following every link it can open.
-fn reach(
+pub fn reach(
     device: &MlsDevice,
     channel: ChannelId,
     links: &[HistoryLink],
@@ -286,7 +286,7 @@ impl Checks<'_> {
             "its signature does not verify with the sending device's certificate".to_owned()
         })?;
         let from = &body.content.from;
-        if !(admitting.iter()).any(|roster| self.sends_as(roster, cert, from)) {
+        if !(admitting.iter()).any(|roster| sends_as(roster, cert, from, self.server)) {
             return Err(
                 "its from is no address of the sending device's account in the space".to_owned(),
             );
@@ -342,27 +342,27 @@ impl Checks<'_> {
         }
         found
     }
+}
 
-    /// Whether `from` is an address the device of `cert` sends as by `roster`: a `service`
-    /// device's own, as the space's service agents give it; any other's, one of its account.
-    fn sends_as(&self, roster: &Roster, cert: &Cert, from: &Address) -> bool {
-        let body = roster.body();
-        if cert.body().kind != DeviceKind::Service {
-            return of_account(from, body, cert.body().account, self.server);
-        }
-        body.service_agents.iter().any(|agent| {
-            agent.device == cert.body().device
-                && from.space() == &body.name
-                && from.owner() == &agent.owner
-                && from.agent() == &agent.agent
-                && Some(from.server()) == self.server
-        })
+/// Whether `from` is an address the device of `cert` sends as by `roster`, on `server`: a
+/// `service` device's own, as the space's service agents give it; any other's, one of its account.
+pub fn sends_as(roster: &Roster, cert: &Cert, from: &Address, server: Option<&ServerName>) -> bool {
+    let body = roster.body();
+    if cert.body().kind != DeviceKind::Service {
+        return of_account(from, body, cert.body().account, server);
     }
+    body.service_agents.iter().any(|agent| {
+        agent.device == cert.body().device
+            && from.space() == &body.name
+            && from.owner() == &agent.owner
+            && from.agent() == &agent.agent
+            && Some(from.server()) == server
+    })
 }
 
 /// `seconds` since the Unix epoch in UTC as RFC 3339 to the second, such as
 /// `2026-11-17T08:43:03Z`.
-fn rfc3339(seconds: u64) -> String {
+pub fn rfc3339(seconds: u64) -> String {
     let of_day = seconds % 86_400;
     format!(
         "{}T{:02}:{:02}:{:02}Z",

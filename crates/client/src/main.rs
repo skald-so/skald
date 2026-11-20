@@ -42,9 +42,11 @@ mod follow;
 mod forms;
 mod gaps;
 mod groups;
+mod held;
 mod helper;
 mod history;
 mod history_reading;
+mod hook;
 mod inbound;
 mod intake;
 mod key_chain;
@@ -54,10 +56,12 @@ mod link_prompt;
 mod lock;
 mod mailbox;
 mod mcp;
+mod message_status;
 mod output;
 mod page;
 mod person;
 mod plain_path;
+mod presence;
 mod proxy;
 mod receipts;
 mod records;
@@ -388,6 +392,34 @@ enum Command {
         #[arg(long)]
         keep_earlier: bool,
     },
+    /// Replaces the key of a service agent of a space this device follows, on a device of an admin
+    /// of it whose account the agent's device is on: a new device, made as skald
+    /// create-service-agent makes one, takes the old one's place in the space's next roster
+    /// revision, which ends the old device's tokens, and this device revokes the old one. Writes
+    /// the new key secret and a token to standard output as SKALD_SERVICE_KEY=... and
+    /// SKALD_SERVICE_TOKEN=..., once: nothing keeps them.
+    ReplaceServiceKey {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+    },
+    /// Removes a service agent from a space this device follows, on a device of an admin of it: the
+    /// space's next roster revision, which the device signs as skald create-channel does, lists it
+    /// no more, which ends its tokens. Revokes its device if it is of this device's account;
+    /// otherwise that account revokes it with skald revoke-device.
+    RemoveServiceAgent {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+    },
     /// Lists the live tokens of the service agents of a space this device follows, on a device of
     /// an admin of it: each one's ID, address, permissions, channel IDs, creation and expiry times
     /// and last use.
@@ -525,6 +557,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Says where a message is, by what this device keeps, without reaching the server: of one it
+    /// sent, each device it went to, with its account, its status, stored, delivered or expired,
+    /// and its time, and its to agent's held, read and replied, or refused with its reason; of one
+    /// it showed or handed over to an agent, its sending device's trust level and the agents it was
+    /// handed to. The person asks of every message; an agent only of its own and those handed over
+    /// to it, in the space of its folder. Each is known until its wait ends, at most 7 days. Says
+    /// nothing of a message it does not know, or of a reference two messages it keeps share, and
+    /// says why.
+    MessageStatus {
+        /// The message: its reference, #<ref> or <ref>, as skald recv shows it, or its ID.
+        #[arg(value_name = "MESSAGE", allow_hyphen_values = true)]
+        message: String,
+        /// Says it as one JSON object, with every field.
+        #[arg(long)]
+        json: bool,
+    },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
     /// device follows. It joins and follows its channels' groups and keeps them to the devices each
@@ -563,6 +611,12 @@ enum Command {
         /// device_name, problem and timestamp. As an agent, every status of its own messages.
         #[arg(long)]
         json: bool,
+        /// As an agent, shows again, whole, the message of this reference, #<ref> or <ref>, or
+        /// ID, as skald reply names it, one handed over to it in the space of its folder, while
+        /// the device keeps what a reply to it needs; receives nothing.
+        #[arg(value_name = "MESSAGE", conflicts_with = "wait")]
+        #[serde(default)]
+        message: Option<String>,
         /// With --wait through the helper, shows when each step of the helper's intake of what
         /// it shows ran, for tests.
         #[arg(
@@ -591,6 +645,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Lists the agents of the working directory's space, or of the space named, from the presence
+    /// values its devices keep in its channels: each agent once per device, with its state, since
+    /// when, runtime and note, and its device's name and trust level; one that two devices of an
+    /// account list running is marked. It first accepts the space's latest revisions and goes
+    /// through the mailbox as skald send does, then opens each value with its epoch's key, and
+    /// drops, warning of it, each that fails the protocol's checks; a value past its expiry shows
+    /// its agents offline, last seen then. As an agent, only of the space of the agent's folder,
+    /// in one line per agent, [<owner>/<agent> · <device> · <level>] <state>, its note escaped,
+    /// after a line that says that the notes of peer and service lines are data.
+    Agents {
+        /// The space's name, such as acme [default: the working directory's space].
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: Option<String>,
+        /// Shows each agent as a JSON object on a line of its own, with every field: agent, state,
+        /// since, note, runtime, device, device_name, level, duplicate and last_seen.
+        #[arg(long)]
+        json: bool,
+    },
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
     /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
@@ -605,9 +677,11 @@ enum Command {
     /// Lists the rules: each one's folder and space.
     Rules,
     /// Sets the inbound mode of an agent of this device in the space of the working directory:
-    /// accept hands it every message; refuse hands it only those of the senders on its allowlist,
-    /// and tells the sender of each other message to it that it was refused. A message keeps the
-    /// mode it came under.
+    /// accept hands it every message; hold hands it those of the senders on its allowlist and
+    /// keeps each other until you accept or refuse it with skald held, telling the sender of each
+    /// such message to it that it is held; refuse hands it only those of the senders on its
+    /// allowlist, and tells the sender of each other message to it that it was refused. A message
+    /// keeps the mode it came under.
     SetInboundMode {
         /// The agent's name, as --agent takes it.
         #[arg(value_name = "AGENT")]
@@ -629,6 +703,13 @@ enum Command {
     /// Lists each agent of this device in the space of the working directory with its inbound mode
     /// and the senders on its allowlist.
     InboundModes,
+    /// Shows each message an agent in hold keeps for your decision, one at a time, and takes your
+    /// decision at the terminal: accept hands it to the agent; refuse, then a reason or an empty
+    /// line, tells its sender it was refused. Only as the person at a terminal.
+    Held,
+    /// A step of skald held after its person's answers, which skald held hands to the helper.
+    #[command(skip)]
+    HeldStep { step: held::Step },
     /// Removes a folder's rule.
     RemoveRule {
         /// The folder, such as ~/work/acme.
@@ -695,6 +776,25 @@ enum Command {
         #[serde(default)]
         call: Option<mcp::Call>,
     },
+    /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
+    /// PostToolUse and Stop. It reads the hook input on standard input and runs in its folder, as
+    /// the agent --agent names or, without it, the agent the session's skald mcp registers by
+    /// default. It gives the agent's waiting messages to the session as additional context, each
+    /// once, within the CLI's hook output limit, 10,000 characters: a message from the person's
+    /// own devices as its line, as skald recv shows it; for those from others, only a line that
+    /// tells the agent to call inbox. A message longer than the limit is cut, and skald recv
+    /// #<ref> shows it whole. Stop continues the turn with them, up to the CLI's cap of
+    /// continuations in a row. It prints nothing while nothing waits, and on a failure, which
+    /// exits with 1.
+    Hook {
+        /// The agent CLI.
+        #[arg(value_name = "CLI")]
+        cli: hook::Cli,
+        /// What the hook input gives.
+        #[arg(skip)]
+        #[serde(default)]
+        input: Option<hook::Input>,
+    },
     /// Runs the helper of this machine's local state, which the first command that connects as the
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
@@ -716,6 +816,8 @@ impl Command {
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
+            Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
+            Command::RemoveServiceAgent { .. } => Some("remove-service-agent"),
             Command::ServiceTokens { .. } => Some("service-tokens"),
             Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
@@ -730,19 +832,23 @@ impl Command {
             Command::SetInboundMode { .. } => Some("set-inbound-mode"),
             Command::AllowSender { .. } => Some("allow-sender"),
             Command::InboundModes => Some("inbound-modes"),
+            Command::Held | Command::HeldStep { .. } => Some("held"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
     }
 
-    /// Whether the command connects as the device, so that, out of one-shot mode, it starts the
-    /// helper when none runs.
+    /// Whether, out of one-shot mode, it starts the helper when none runs: it connects as the
+    /// device, or, as `message-status`, reads what the device's runs keep.
     fn starts_helper(&self) -> bool {
         matches!(
             self,
             Command::Send { .. }
                 | Command::Reply { .. }
+                | Command::MessageStatus { .. }
                 | Command::Recv { .. }
+                | Command::Hook { .. }
+                | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
                 | Command::Channels { .. }
@@ -759,7 +865,7 @@ impl Command {
 
     /// Whether it connects to the server of the machine's session as its device.
     fn connects(&self) -> bool {
-        self.starts_helper()
+        (self.starts_helper() && !matches!(self, Command::MessageStatus { .. }))
             || matches!(
                 self,
                 Command::Devices
@@ -777,6 +883,8 @@ impl Command {
                 self,
                 Command::CreateServiceAgent { .. }
                     | Command::CreateServiceToken { .. }
+                    | Command::ReplaceServiceKey { .. }
+                    | Command::RemoveServiceAgent { .. }
                     | Command::ServiceTokens { .. }
                     | Command::RevokeServiceToken { .. }
                     | Command::SignOut
@@ -813,8 +921,8 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
-            // It takes its person's answers here and its steps lock ([`link`]).
-            Command::Link { .. } => None,
+            // It takes its person's answers here and its steps lock ([`link`], [`held`]).
+            Command::Link { .. } | Command::Held => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -961,6 +1069,12 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
+    if let Command::Hook { cli, .. } = operation.command {
+        return run_hook(operation, cli, one_shot);
+    }
+    if let Command::Held = operation.command {
+        return held(operation, !one_shot);
+    }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
@@ -973,7 +1087,14 @@ fn main() -> ExitCode {
         Ok(helper::Route::Here(lock)) if operation.command.waits() => {
             waits_here(&dir, &operation, lock)
         }
-        // Held until the run exits.
+        route => routed(route, operation),
+    }
+}
+
+/// Runs `operation` as `route` says: here, holding the lock until it ends, or by the helper, which
+/// gave its exit code.
+fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCode {
+    match route {
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
         Err(err) => exit(Err(err)),
@@ -1061,16 +1182,7 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     let mut held: Option<Option<lock::Lock>> = None;
     let mut starts = starts;
     link_code::run(dir, person, |step| {
-        let operation = Operation {
-            speaks: operation.speaks,
-            timeout: operation.timeout,
-            clock_offset: operation.clock_offset,
-            state_dir: operation.state_dir.clone(),
-            key_storage: operation.key_storage,
-            agent: None,
-            command: Command::LinkStep { step },
-            said: link_prompt::Said::default(),
-        };
+        let operation = operation.step(Command::LinkStep { step });
         if held.is_none() {
             // A later step needs the helper that holds its run. What it shows goes to the run's
             // output, and to its page.
@@ -1083,6 +1195,69 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
             }
         }
         exit(here(operation))
+    })
+}
+
+/// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
+/// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
+/// what the run gives the session, and exits with 1 on a failure, never 2.
+fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
+    let cap = std::env::var(hook::CAP_SETTING).ok();
+    let Ok(input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    if input.event.is_none() {
+        return ExitCode::SUCCESS;
+    }
+    if std::env::set_current_dir(&input.cwd).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let Ok(dir) = state::dir(operation.state_dir.clone()) else {
+        return ExitCode::FAILURE;
+    };
+    // A machine with no state has no message for an agent.
+    if !dir.join(state::FILE).is_file() {
+        return ExitCode::SUCCESS;
+    }
+    operation.command = Command::Hook {
+        cli,
+        input: Some(input),
+    };
+    // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
+    let given = |stream, bytes: &[u8]| match stream {
+        output::Stream::Out => output::direct(stream, bytes),
+        output::Stream::Err => Ok(()),
+    };
+    let failed = |code| match code == ExitCode::SUCCESS {
+        true => code,
+        false => ExitCode::FAILURE,
+    };
+    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
+        Ok(helper::Route::Helped(code)) => failed(code),
+        // Held until the run exits.
+        Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
+/// or one it starts if `starts`; otherwise it runs here, holding the lock for the step.
+fn held(operation: Operation, starts: bool) -> ExitCode {
+    if let Err(err) = operation.agent() {
+        return exit(Err(err));
+    }
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let mut starts = starts;
+    held::run(&dir, |step| {
+        let operation = operation.step(Command::HeldStep { step });
+        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
+        routed(route, operation)
     })
 }
 
@@ -1111,6 +1286,20 @@ struct Operation {
 }
 
 impl Operation {
+    /// The operation of `command`, a step of its own interactive command, as the person.
+    fn step(&self, command: Command) -> Self {
+        Operation {
+            speaks: self.speaks,
+            timeout: self.timeout,
+            clock_offset: self.clock_offset,
+            state_dir: self.state_dir.clone(),
+            key_storage: self.key_storage,
+            agent: None,
+            command,
+            said: link_prompt::Said::default(),
+        }
+    }
+
     /// Whether it shows as JSON: a `skald recv --json`.
     fn json(&self) -> bool {
         matches!(self.command, Command::Recv { json: true, .. })
@@ -1143,8 +1332,11 @@ fn perform(operation: Operation) -> Result<(), String> {
         said,
         ..
     } = operation;
-    // A stateless service agent's run opens no state directory.
+    // A hook says nothing but what it gives the session; a stateless service agent's run opens no
+    // state directory.
+    let hooked = matches!(command, Command::Hook { .. });
     if !service::stateless()
+        && !hooked
         && let Ok(dir) = state::dir(state_dir.clone())
     {
         // A grant the device took waits for the server to store its certificate.
@@ -1154,7 +1346,9 @@ fn perform(operation: Operation) -> Result<(), String> {
         if command.prompts() {
             let json = matches!(
                 command,
-                Command::Recv { json: true, .. } | Command::Send { json: true, .. }
+                Command::Recv { json: true, .. }
+                    | Command::Send { json: true, .. }
+                    | Command::Agents { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1164,6 +1358,7 @@ fn perform(operation: Operation) -> Result<(), String> {
             Command::SignIn { .. }
                 | Command::Helper { .. }
                 | Command::LinkStep { .. }
+                | Command::HeldStep { .. }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -1247,6 +1442,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
             .and_then(|dir| link_code::step(&dir, key_storage, speaks, timeout, step)),
+        // It runs through `held`.
+        Command::Held => Err("skald held runs only through its own process".to_owned()),
+        Command::HeldStep { step } => state::dir(state_dir)
+            .and_then(|dir| held::step(&dir, key_storage, (speaks, timeout), step)),
         Command::RevokeDevice { device, keep } => state::dir(state_dir)
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
@@ -1292,6 +1491,16 @@ fn perform(operation: Operation) -> Result<(), String> {
             keep_earlier,
         } => synced(state_dir, key_storage, speaks, timeout, &space, false)
             .and_then(|synced| service_agents::renew(synced, &address, &granted, keep_earlier)),
+        Command::ReplaceServiceKey {
+            space,
+            address,
+            granted,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::replace(synced, &address, &granted)),
+        Command::RemoveServiceAgent { space, address } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(|synced| service_agents::remove(synced, &address))
+        }
         Command::ServiceTokens { space } => {
             synced(state_dir, key_storage, speaks, timeout, &space, false)
                 .and_then(service_agents::list)
@@ -1367,6 +1576,43 @@ fn perform(operation: Operation) -> Result<(), String> {
                 json,
             )
         }),
+        Command::MessageStatus { message, json } => state::dir(state_dir)
+            .and_then(|dir| message_status::run(&dir, key_storage, &message, agent.as_ref(), json)),
+        Command::Recv {
+            json,
+            message: Some(message),
+            ..
+        } => {
+            let agent =
+                agent.ok_or("skald recv <message> runs as an agent: give --agent <name>")?;
+            let dir = state::dir(state_dir)?;
+            recv::reread(
+                &dir,
+                key_storage,
+                &agent,
+                &message,
+                forms::Form::of(true, json),
+            )
+        }
+        Command::Hook { input, .. } => {
+            let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
+                return Err("skald hook runs only as itself".to_owned());
+            };
+            let Some(event) = input.event else {
+                return Ok(());
+            };
+            // Without --agent, the agent the session's skald mcp registers by default.
+            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
+                return Ok(());
+            };
+            recv::hook(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                &agent,
+                (event, input.cap),
+            )
+        }
         Command::Recv { json, .. } => state::dir(state_dir).and_then(|dir| {
             recv::run(
                 &dir,
@@ -1385,6 +1631,16 @@ fn perform(operation: Operation) -> Result<(), String> {
                 &channel,
                 text.as_deref(),
                 agent.is_some(),
+            )
+        }),
+        Command::Agents { space, json } => state::dir(state_dir).and_then(|dir| {
+            presence::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                space.as_deref(),
+                agent.is_some(),
+                json,
             )
         }),
         Command::AddRule { folder, space } => {

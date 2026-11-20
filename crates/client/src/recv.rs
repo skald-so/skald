@@ -68,11 +68,14 @@ use crate::follow::{Own, SpaceDevices};
 use crate::forms::{self, Form, References};
 use crate::gaps::{self, Accepted, Source};
 use crate::groups::{self, Link, Opened, Rosters};
+use crate::held;
 use crate::history;
+use crate::hook;
 use crate::inbound;
 use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
+use crate::message_status;
 use crate::output::{self, Stream};
 use crate::receipts;
 use crate::reply;
@@ -110,7 +113,7 @@ pub fn run(
 ) -> Result<bool, String> {
     holding_warnings(dir, agent.is_some(), || {
         let form = Form::of(agent.is_some(), json);
-        received(dir, storage, (speaks, timeout), agent, (waits, form, false))
+        received(dir, storage, (speaks, timeout), agent, (waits, form, None))
     })
 }
 
@@ -129,9 +132,104 @@ pub fn inbox(
             storage,
             settings,
             Some(agent),
-            (false, Form::Short, true),
+            (
+                false,
+                Form::Short,
+                Some(&|follower, ran_as| hand_over_whole(follower, ran_as, Form::Short)),
+            ),
         )
         .map(drop)
+    })
+}
+
+/// A run of `agent`'s hook ([`crate::hook`]) on `event`, with Claude Code's cap `cap` of `Stop`
+/// continuations in a row: in a folder in no space, nothing; at the cap, nothing, leaving every
+/// message waiting; otherwise [`run`] as the agent, which hands over what [`hook::compose`] gives,
+/// in one write, and only if the run did not fail.
+pub fn hook(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    agent: &Name,
+    (event, cap): (hook::Event, u64),
+) -> Result<(), String> {
+    holding_warnings(dir, true, || {
+        let Ok(space) = crate::folders::working_space(dir) else {
+            return Ok(());
+        };
+        let state = State::open(dir).map_err(text)?;
+        state.add_agent(space.id, agent.as_str()).map_err(text)?;
+        let stops = match event {
+            hook::Event::Stop { continued: true } => {
+                state.count_stops(space.id, agent.as_str(), None)
+            }
+            _ => state.count_stops(space.id, agent.as_str(), Some(0)),
+        }
+        .map_err(text)?;
+        if matches!(event, hook::Event::Stop { .. }) && stops >= cap {
+            return Ok(());
+        }
+        drop(state);
+        received(
+            dir,
+            storage,
+            settings,
+            Some(agent),
+            (
+                false,
+                Form::Short,
+                Some(&|follower, ran_as| hand_over_hook(follower, ran_as, event)),
+            ),
+        )
+        .map(drop)
+    })
+}
+
+/// Shows the message `message` names, by `#<ref>`, `<ref>` or its `msg_id`, whole, in `form`, as
+/// `agent`'s run, by the state in `dir`, its secrets in `storage`: one handed over to the agent in
+/// its folder's space, while the device keeps what a reply to it needs ([`crate::reply`]). A short
+/// line of a message below `own` follows [`forms::DATA_WARNING`].
+pub fn reread(
+    dir: &Path,
+    storage: secrets::Storage,
+    agent: &Name,
+    message: &str,
+    form: Form,
+) -> Result<(), String> {
+    holding_warnings(dir, true, || {
+        let shown = printable(message.trim());
+        let named = reply::given(message)?;
+        let (_, reader) = reply::reader(dir, Some(agent))?;
+        let target = reply::kept_target(dir, &named, reader).map_err(|why| match why {
+            reply::Unnamed::Unknown => format!(
+                "{shown} is no message handed over to this agent in its folder's space, or this \
+                 device no longer keeps it"
+            ),
+            reply::Unnamed::Shared => format!(
+                "{shown} is the reference of more than one message this device keeps: give more \
+                 of it, or the msg_id"
+            ),
+            reply::Unnamed::Failed(err) => err,
+        })?;
+        let sealed = (target.line).ok_or_else(|| format!("this device kept no line of {shown}"))?;
+        let (state, _, _, _, secrets) = crate::devices::signed_in_with_secrets(dir, storage)?;
+        let this = (state.device().map_err(text)?)
+            .ok_or("this machine has no device yet: sign in with skald sign-in")?
+            .id;
+        let key = state.mls_step(|sealed| {
+            let key = crate::key_packages::state_key(&secrets, sealed)?;
+            Ok((None, key))
+        })?;
+        let opened = (key.open(this, &kept_item(target.seq), &sealed))
+            .ok_or("what this device kept of the message does not open")?;
+        let references = References::new(state.kept_ids().map_err(text)?);
+        let (line, level) = kept_line(&opened, form, &references);
+        let line = match form == Form::Short && level < TrustLevel::Own {
+            true => format!("{}\n{line}\n", forms::DATA_WARNING),
+            false => format!("{line}\n"),
+        };
+        output::write(Stream::Out, line.as_bytes())
+            .map_err(|err| format!("cannot write the message to the output: {err}"))
     })
 }
 
@@ -168,13 +266,17 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
     }
 }
 
-/// [`run`], showing in `form`; as [`inbox`] if `whole`.
+/// How a run that fails hands nothing over, such as [`inbox`]'s, hands over to an agent in a
+/// space: gives how many messages it handed over.
+type Whole<'w> = &'w dyn Fn(&Follower, (SpaceId, &Name)) -> Result<usize, String>;
+
+/// [`run`], showing in `form`; handing over with `whole`, if given, as [`inbox`] does.
 fn received(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
-    (waits, form, whole): (bool, Form, bool),
+    (waits, form, whole): (bool, Form, Option<Whole>),
 ) -> Result<bool, String> {
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
@@ -221,17 +323,25 @@ fn received(
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
         Err(err) => Err(err.clone()),
     };
-    let handed = match ran_as {
+    let handed = match (ran_as, whole) {
         // A failed run hands nothing over.
-        Some((space, agent)) if whole => match (&received, &aligned, &shown) {
-            (Ok(()), Ok(()), Ok(())) => hand_over_whole(&follower, (space, agent), form),
+        (Some((space, agent)), Some(whole)) => match (&received, &aligned, &shown) {
+            (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)),
             _ => Ok(0),
         },
-        Some((space, agent)) => hand_over(&follower, (space, agent), form),
-        None => show_to_person(&follower, form),
+        (Some((space, agent)), None) => hand_over(&follower, (space, agent), form),
+        (None, _) => show_to_person(&follower, form),
     };
     if let Ok(checks) = &checks {
         receipts::send(&mut follower, &checks.synced, scope);
+    }
+    // What waits for the person's decision is no news a wait ends for.
+    let person_shown = output::written() > written;
+    if ran_as.is_none()
+        && !follower.stateless()
+        && let Err(err) = held::say_waiting(&follower.state, form)
+    {
+        eprintln!("skald: warning: {err}");
     }
     if follower.stateless()
         && received.is_ok()
@@ -254,7 +364,7 @@ fn received(
     let handed = handed?;
     Ok(match ran_as {
         Some(_) => handed > 0,
-        None => output::written() > written,
+        None => person_shown,
     })
 }
 
@@ -508,8 +618,13 @@ pub fn show(
                                 reads(follower, checks, (header, sender), &message.from, receipt)?;
                             let counted = (counted.as_ref())
                                 .map(|(source, accepted)| (source, &accepted.counters));
+                            let (held, reads) = &reads;
                             (follower.state)
-                                .take_receipt(seq, (counted, (sender, header.msg_id)), &reads)
+                                .take_receipt(
+                                    seq,
+                                    (counted, (sender, header.msg_id)),
+                                    (*held, reads),
+                                )
                                 .map_err(text)?;
                             continue;
                         }
@@ -579,23 +694,18 @@ pub fn show(
     Ok(())
 }
 
-/// The `read` or `refused` statuses, as JSON by `msg_id`, that `receipt`, from `from` in the
-/// envelope with `header` from the device `sender`, gives of messages this device sent: of a
-/// message it sent in the receipt's channel whose `to` is `from`, `refused` with the receipt's
-/// reason, if any. It ignores any other, as every device but its messages' sender ignores a receipt
-/// (`docs/protocol/delivery.md`, "Receipts").
+/// The `read`, `refused` or `held` statuses, as JSON by `msg_id`, that `receipt`, from `from` in
+/// the envelope with `header` from the device `sender`, gives of messages this device sent, and
+/// whether they are `held`: of a message it sent in the receipt's channel whose `to` is `from`,
+/// `refused` with the receipt's reason, if any. It ignores any other, as every device but its
+/// messages' sender ignores a receipt (`docs/protocol/delivery.md`, "Receipts").
 fn reads(
     follower: &Follower,
     checks: &Checks,
     (header, sender): (&Header, DeviceId),
     from: &Address,
     receipt: &Receipt,
-) -> Result<Vec<(MessageId, String)>, String> {
-    let refused = match receipt.status {
-        ReceiptStatus::Read => false,
-        ReceiptStatus::Refused => true,
-        ReceiptStatus::Held => return Ok(Vec::new()),
-    };
+) -> Result<(bool, Vec<(MessageId, String)>), String> {
     let from = from.to_string();
     let mut reads = Vec::new();
     for &msg_id in receipt.messages.iter() {
@@ -607,21 +717,28 @@ fn reads(
         }
         let name = device_name(checks, sent.space, sender);
         let at = (sent.space, header.channel);
-        let json = if refused {
-            let reason = receipt.reason.as_deref();
-            forms::Status::refused_by_device(msg_id, at, (sender, name), reason)
-        } else {
-            forms::Status::from_device(forms::READ, msg_id, at, (sender, name))
+        let json = match receipt.status {
+            ReceiptStatus::Refused => {
+                let reason = receipt.reason.as_deref();
+                forms::Status::refused_by_device(msg_id, at, (sender, name), reason)
+            }
+            ReceiptStatus::Held => {
+                forms::Status::from_device(forms::HELD, msg_id, at, (sender, name))
+            }
+            ReceiptStatus::Read => {
+                forms::Status::from_device(forms::READ, msg_id, at, (sender, name))
+            }
         };
         reads.push((msg_id, json));
     }
-    Ok(reads)
+    Ok((receipt.status == ReceiptStatus::Held, reads))
 }
 
 /// How the message of the entry `seq` with `header` from the device `sender`, which passed the
 /// checks, is kept: its line, sealed, and the agents it is for whose inbound mode takes it, with
-/// those that refuse it marked in its line; `gap`, the counters it makes missing, if any. A message
-/// whose `to` agent refuses it owes its `refused` at once ([`inbound`]).
+/// those that refuse it marked in its line, and those that hold it for the person's decision;
+/// `gap`, the counters it makes missing, if any. A message whose `to` agent refuses it owes its
+/// `refused` at once, and one whose `to` agent holds it its `held` ([`inbound`]).
 fn kept(
     follower: &Follower,
     checks: &mut Checks,
@@ -630,7 +747,8 @@ fn kept(
     gap: Option<(u64, u64)>,
 ) -> Result<Kept, String> {
     let mut agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
-    let refusing = inbound::refusing(&follower.state, header.space, &agents, &message.from)?;
+    let (refusing, held) =
+        inbound::refusing_and_holding(&follower.state, header.space, &agents, &message.from)?;
     // With `to`, the agents are none or the one it names.
     let read = match (&message.to, agents.first()) {
         (Some(to), Some(agent)) => Some(ToRead {
@@ -640,10 +758,11 @@ fn kept(
             addressee: to.to_string(),
             agent: agent.clone(),
             reason: refusing.contains(agent).then(|| inbound::REASON.to_owned()),
+            held: held.contains(agent),
         }),
         _ => None,
     };
-    agents.retain(|agent| !refusing.contains(agent));
+    agents.retain(|agent| !refusing.contains(agent) && !held.contains(agent));
     let record = forms::Message {
         msg_id: header.msg_id.to_string(),
         space: header.space.to_string(),
@@ -670,9 +789,17 @@ fn kept(
         channel: header.channel,
         msg_id: header.msg_id,
         line: key.seal(follower.this, &kept_item(seq), &record),
-        target: reply::seal_target(key, follower.this, seq, (&message.from, message.hops)),
+        target: reply::seal_target(
+            key,
+            follower.this,
+            seq,
+            (&message.from, message.hops),
+            message_status::origin(header.msg_id, (sender, &message.device), message.level),
+        ),
         wait: agent_wait(header.ttl),
+        hops: message.hops,
         agents,
+        held,
         read,
         replied,
     })
@@ -682,10 +809,11 @@ fn kept(
 /// `space`, from `agent` if given, by `seq`, once the server stores it, sealed with `key`, as a
 /// recipient device keeps it (`docs/protocol/delivery.md`, "Device to agent"): at the level `own`,
 /// for its person unless the person sent it and for the agents of this device it is for but its
-/// sender and those whose inbound mode refuses it, marked in its line, with the `replied` it gives
-/// a message the device sent and its own `read`, or `refused` if its `to` agent refuses it. Gives
-/// it, and whether anything on the device gets it: the person, or an agent the device has run as in
-/// the space that takes it.
+/// sender and those whose inbound mode refuses it, marked in its line, or holds it, for the
+/// person's decision, with the `replied` it gives a message the device sent and its own `read`, or
+/// `refused` if its `to` agent refuses it, or `held` and then `read` or `refused` if that agent
+/// holds it. Gives it, and whether anything on the device gets it: the person, or an agent the
+/// device has run as in the space that takes or holds it.
 pub fn own_message(
     follower: &Follower,
     key: &StateKey,
@@ -711,21 +839,31 @@ pub fn own_message(
     agents.retain(|it| {
         Some(it.as_str()) != agent && (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it))
     });
-    let refusing = inbound::refusing(&follower.state, space, &agents, from)?;
+    let (refusing, holding) = inbound::refusing_and_holding(&follower.state, space, &agents, from)?;
     let gets = agent.is_some() || agents.iter().any(|it| !refusing.contains(it));
     let device = (follower.this, Some(name.clone()));
     let (read, refused) = match &to {
         Some(Some(to)) if refusing.contains(to) => {
             let reason = Some(inbound::REASON);
             let refused =
-                forms::Status::refused_by_device(msg_id, (space, channel), device, reason);
+                forms::Status::refused_by_device(msg_id, (space, channel), device.clone(), reason);
             (None, Some(refused))
         }
         Some(Some(_)) => {
-            let read = forms::Status::from_device(forms::READ, msg_id, (space, channel), device);
+            let read =
+                forms::Status::from_device(forms::READ, msg_id, (space, channel), device.clone());
             (Some(read), None)
         }
         _ => (None, None),
+    };
+    let held = match &to {
+        Some(Some(to)) if holding.contains(to) => Some(forms::Status::from_device(
+            forms::HELD,
+            msg_id,
+            (space, channel),
+            device,
+        )),
+        _ => None,
     };
     let record = forms::Message {
         msg_id: msg_id.to_string(),
@@ -750,9 +888,17 @@ pub fn own_message(
             channel,
             msg_id,
             line: key.seal(follower.this, &kept_item(seq), &record),
-            target: reply::seal_target(key, follower.this, seq, (from, content.hops)),
+            target: reply::seal_target(
+                key,
+                follower.this,
+                seq,
+                (from, content.hops),
+                message_status::origin(msg_id, (follower.this, &name), TrustLevel::Own),
+            ),
             wait: agent_wait(None),
+            hops: content.hops,
             agents: Vec::new(),
+            held: Vec::new(),
             replied,
             read: None,
         },
@@ -762,6 +908,8 @@ pub fn own_message(
         read,
         refusing,
         refused,
+        holding,
+        held,
     };
     Ok((own, gets))
 }
@@ -806,7 +954,7 @@ fn agents_of(
 }
 
 /// The name the state key seals the line of the kept message of the entry `seq` under.
-fn kept_item(seq: u64) -> Vec<u8> {
+pub fn kept_item(seq: u64) -> Vec<u8> {
     [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
@@ -838,7 +986,7 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
             kept,
             (form, &references),
             (&mut written("a message"), &mut |seq| {
-                state.shown_to_person(seq)
+                state.shown_to_person(seq, follower.service.is_some())
             }),
         )?)
 }
@@ -905,6 +1053,70 @@ fn hand_over_whole(
     Ok(shown)
 }
 
+/// Hands over to `agent` in `space` what its hook gives on `event` ([`hook::compose`]) of the
+/// kept statuses of its messages and the kept messages that wait for it, in one write, after which
+/// it marks each status it gave taken, each message it gave handed over and each signal it gave
+/// given; a failed write marks none. A message that does not open is warned of and handed over.
+/// Gives how many messages it handed over.
+fn hand_over_hook(
+    follower: &Follower,
+    (space, agent): (SpaceId, &Name),
+    event: hook::Event,
+) -> Result<usize, String> {
+    let state = &follower.state;
+    let references = References::new(state.kept_ids().map_err(text)?);
+    let mut waiting = Vec::new();
+    for (position, json) in (state.statuses_for_agent(space, agent.as_str())).map_err(text)? {
+        let line = status_line(&json, Form::Short, &references);
+        waiting.push(hook::Waiting::Status { position, line });
+    }
+    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
+    let mut unopened = Vec::new();
+    if !kept.is_empty() {
+        let key = groups::inbox_key(follower)?;
+        let signalled = state.signalled(agent.as_str()).map_err(text)?;
+        for (seq, sealed) in kept {
+            let Some(opened) = key.open(follower.this, &kept_item(seq), &sealed) else {
+                eprintln!(
+                    "skald: warning: a message this device kept does not open, so it is not shown"
+                );
+                unopened.push(seq);
+                continue;
+            };
+            let (line, level) = kept_line(&opened, Form::Short, &references);
+            let msg_id = (serde_json::from_slice::<forms::Message>(&opened).ok())
+                .and_then(|record| record.msg_id.parse::<MessageId>().ok());
+            waiting.push(match msg_id {
+                Some(msg_id) if level >= TrustLevel::Own => hook::Waiting::Own {
+                    seq,
+                    line,
+                    reference: references.of(msg_id),
+                },
+                _ => hook::Waiting::Below {
+                    seq,
+                    signalled: signalled.contains(&seq),
+                },
+            });
+        }
+    }
+    let given = hook::compose(event, &waiting);
+    if let Some(given) = &given {
+        output::write(Stream::Out, given.output.as_bytes())
+            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+        for position in &given.statuses {
+            state.status_taken_by_agent(*position).map_err(text)?;
+        }
+        for seq in &given.signalled {
+            state.signal_given(*seq, agent.as_str()).map_err(text)?;
+        }
+    }
+    let handed = given.map(|given| given.handed).unwrap_or_default();
+    for seq in handed.iter().chain(&unopened) {
+        state.handed_over(*seq, agent.as_str()).map_err(text)?;
+    }
+    Ok(handed.len())
+}
+
 /// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits
 /// for it there, in `form`, in `seq` order, with `put`, which takes what it is, such as a status,
 /// and its line; then marks it with `status` or `message`. Gives how many messages it put.
@@ -956,22 +1168,29 @@ fn shown_statuses(
 ) -> Result<usize, String> {
     let mut shown = 0;
     for (seq, json) in kept {
-        let status = serde_json::from_str::<forms::Status>(&json).ok();
-        let msg_id = (status.as_ref()).and_then(|status| status.msg_id.parse().ok());
-        match (status, msg_id) {
-            (Some(status), Some(msg_id)) => {
-                if let Some(line) = status.shown(form, &references.of(msg_id)) {
-                    put(format!("{line}\n"))?;
-                    shown += 1;
-                }
-            }
-            _ => eprintln!(
-                "skald: warning: a status this device kept does not decode, so it is not shown"
-            ),
+        if let Some(line) = status_line(&json, form, references) {
+            put(format!("{line}\n"))?;
+            shown += 1;
         }
         mark(seq).map_err(text)?;
     }
     Ok(shown)
+}
+
+/// The line of a kept status, `json`, in `form` with `references`, unless the form leaves it out;
+/// one that does not decode is warned of and has none.
+fn status_line(json: &str, form: Form, references: &References) -> Option<String> {
+    let status = serde_json::from_str::<forms::Status>(json).ok();
+    let msg_id = (status.as_ref()).and_then(|status| status.msg_id.parse().ok());
+    match (status, msg_id) {
+        (Some(status), Some(msg_id)) => status.shown(form, &references.of(msg_id)),
+        _ => {
+            eprintln!(
+                "skald: warning: a status this device kept does not decode, so it is not shown"
+            );
+            None
+        }
+    }
 }
 
 /// Puts each of `kept`, kept messages by `seq` with their sealed lines, in `form` with

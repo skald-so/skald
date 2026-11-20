@@ -552,8 +552,9 @@ fn within_agents_limit(
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
 /// `previous`, or revision 1 if `None`: its space and name, its signer and signature, checks 2 to 4
-/// of "Roster" with the certificates the server holds, a revoked service agent having none
-/// (revision 1: checks 3 and 4, and its creator an admin), and its channels.
+/// of "Roster" with the certificates the server holds (revision 1: checks 3 and 4, and its creator
+/// an admin), its `service` devices, in entries and in `services`, none revoked and each on a
+/// member's account, and its channels.
 async fn check(
     db: &PgPool,
     found: &Found,
@@ -622,23 +623,39 @@ async fn check(
     };
     checked.map_err(|err| Refusal::Roster(err.to_string()))?;
     // Check 4 took revoked devices' certificates, which the chains of the devices they keep need;
-    // a revoked service agent has none.
-    let agents: Vec<String> = body
-        .service_agents
-        .iter()
-        .map(|agent| agent.device.to_string())
+    // a new revision lists, in an entry or in a channel's `services`, only `service` devices that
+    // are not revoked, on a member's account.
+    let mut listed: Vec<String> = (body.service_agents.iter())
+        .map(|agent| agent.device)
+        .chain(
+            body.channels
+                .iter()
+                .flat_map(|it| it.services.iter().copied()),
+        )
+        .map(|device| device.to_string())
         .collect();
-    let revoked: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked LIMIT 1",
+    listed.sort();
+    listed.dedup();
+    let members: Vec<String> = (body.members.iter())
+        .map(|member| member.account.to_string())
+        .collect();
+    let refused_device: Option<(String, bool)> = sqlx::query_as(
+        "SELECT listed, coalesce(d.revoked, false) FROM unnest($1::text[]) AS listed
+         LEFT JOIN devices d ON d.id = listed::uuid AND d.kind = 'service' AND d.cert IS NOT NULL
+         WHERE d.id IS NULL OR d.revoked OR d.account_id <> ALL($2::text[]::uuid[])
+         ORDER BY listed LIMIT 1",
     )
-    .bind(&agents)
+    .bind(&listed)
+    .bind(&members)
     .fetch_optional(db)
     .await
-    .map_err(|err| Refusal::Database("read the service agents", err))?;
-    if let Some((device,)) = revoked {
-        return Err(Refusal::Roster(format!(
-            "the service agent {device} is revoked"
-        )));
+    .map_err(|err| Refusal::Database("read the service devices", err))?;
+    if let Some((device, revoked)) = refused_device {
+        return Err(Refusal::Roster(if revoked {
+            format!("the service device {device} is revoked")
+        } else {
+            format!("{device} is no certified service device on a member's account")
+        }));
     }
 
     let channels: Vec<String> = body.channels.iter().map(|c| c.id.to_string()).collect();

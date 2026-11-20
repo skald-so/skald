@@ -183,13 +183,17 @@ function page(id) {
 /**
  * Runs `navigate`, which navigates `tab` and resolves to the last response, if any; gives the final
  * URL, the status of that response, the URLs the main frame requested on the way, redirects
- * included, and the navigation error, if any.
+ * included, and the navigation error, if any. Whether each of those requests was a `GET` is the
+ * visit's `gets`, which the driver's answer leaves out.
  */
 async function navigation(tab, navigate) {
   const navigations = [];
+  let gets = true;
   const record = (request) => {
-    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame()) {
       navigations.push(request.url());
+      gets &&= request.method() === "GET";
+    }
   };
   const failures = [];
   const fail = (request) => {
@@ -209,7 +213,10 @@ async function navigation(tab, navigate) {
     tab.off("request", record);
     tab.off("requestfailed", fail);
   }
-  return { url: tab.url(), status, navigations, error };
+  const visit = { url: tab.url(), status, navigations, error };
+  // Not enumerable: JSON leaves it out.
+  Object.defineProperty(visit, "gets", { value: gets });
+  return visit;
 }
 
 /**
@@ -486,7 +493,18 @@ const ops = {
    * load; with `settle`, as `goto` does. Gives what `goto` gives.
    */
   async click({ page: id, selector, settle = false }) {
-    return click(page(id).page, selector, settle);
+    const tab = page(id).page;
+    const from = tab.url();
+    const visit = await click(tab, selector, settle);
+    // A navigation by a link to the clicked page's own origin, every request of it a GET, that
+    // fails with NO_BUFFER_SPACE goes again from the link's URL, as `goto` goes, which tries it
+    // again too. A typed URL sends the cookies a click from another site does not, so a link to
+    // another origin is not tried again.
+    const [link] = visit.navigations;
+    const own = link && URL.canParse(from) && new URL(link).origin === new URL(from).origin;
+    if (!visit.error?.includes(NO_BUFFER_SPACE) || !visit.gets || !own) return visit;
+    console.error(`browser: ${link}: ${NO_BUFFER_SPACE}; navigating to it again`);
+    return ops.goto({ page: id, url: link, settle });
   },
 
   /** Clicks each `{page, selector}` of `clicks` at once, as `click` does; gives their visits. */

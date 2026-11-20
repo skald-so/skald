@@ -36,7 +36,7 @@ use crate::follow::{Own, SpaceDevices};
 use crate::groups;
 use crate::secrets::{self, Keyring, KeyringError, Secrets};
 pub use crate::service_agents::{KEY_VARIABLE, TOKEN_VARIABLE};
-use crate::spaces::now;
+use crate::spaces::{Follower, now};
 
 /// The token's own record, `GET`.
 const OWN_RECORD: &str = "/service-token";
@@ -172,7 +172,7 @@ struct OwnRecord {
 }
 
 /// The grant of the token `token`, as its own record gives it.
-pub fn grant(connection: &mut Connection, token: &str) -> Result<Grant, String> {
+fn grant(connection: &mut Connection, token: &str) -> Result<Grant, String> {
     let body = connection.get_as(OWN_RECORD, token).map_err(text)?;
     let unexpected = || "unexpected answer from the server: a token's record without its grant";
     let record: OwnRecord = serde_json::from_slice(&body).map_err(|_| unexpected())?;
@@ -182,17 +182,18 @@ pub fn grant(connection: &mut Connection, token: &str) -> Result<Grant, String> 
     Grant::from_cbor(&bytes).map_err(|_| unexpected().to_owned())
 }
 
-/// The address of the service agent of the device `this` in `roster`, its space's last accepted
-/// revision, on `server`, and `grant`, its token's, which passes the checks of "Service grant"
-/// against `roster` and `devices`, its accounts' devices, for `channel`. Fails, saying a new token
-/// is needed, if the grant fails them, and if `roster` lists no entry of the device.
+/// The address of the service agent of `follower`'s device in `roster`, its space's last accepted
+/// revision, on `server`, and the grant of its token, as the token's own record gives it, which
+/// passes the checks of "Service grant" against `roster` and `devices`, its accounts' devices, for
+/// `channel`. Fails, saying a new token is needed, if the grant fails them, and if `roster` lists
+/// no entry of the device.
 pub fn sender(
-    (this, channel): (DeviceId, ChannelId),
+    follower: &mut Follower,
     (roster, devices): (&Roster, &SpaceDevices),
-    own: &Own,
-    server: ServerName,
-    grant: &Grant,
-) -> Result<Address, String> {
+    (channel, server): (ChannelId, ServerName),
+) -> Result<(Address, Grant), String> {
+    let grant = grant(&mut follower.connection, &follower.token)?;
+    let (this, own) = (follower.this, &follower.own);
     let body = roster.body();
     let name = body.name.as_str();
     let entry = (body.service_agents.iter())
@@ -205,7 +206,7 @@ pub fn sender(
             )
         })?;
     check_grant(
-        grant,
+        &grant,
         (this, channel),
         roster,
         &devices.certs,
@@ -220,12 +221,13 @@ pub fn sender(
             printable(&err.to_string())
         )
     })?;
-    Ok(Address::new(
+    let from = Address::new(
         body.name.clone(),
         entry.owner.clone(),
         entry.agent.clone(),
         server,
-    ))
+    );
+    Ok((from, grant))
 }
 
 /// What a service agent's run follows: its space and the hash of the key secret's anchor; and

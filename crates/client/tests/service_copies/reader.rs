@@ -3,9 +3,10 @@
 //! `hpke` envelope with the key secret's HPKE key.
 
 use skald_crypto::{HpkeKey, SigningKey, open_message};
-use skald_proto::{Cbor as _, Cert, Content, DeviceId, Header, Push, RawEnvelope, ServiceKey};
+use skald_proto::{Cert, Content, DeviceId, Header, Push, RawEnvelope};
 
-use crate::cloud::{Cloud, unb64};
+use crate::agents::key_of;
+use crate::cloud::Cloud;
 use crate::peer::{Peer, last_seq};
 
 /// A copy the service agent took from its mailbox, opened and its signature checked.
@@ -30,8 +31,7 @@ impl Reader {
     /// The device whose keys `key`, a key secret as the CLI printed it, holds.
     #[track_caller]
     pub fn of(key: &str) -> Self {
-        let secret = ServiceKey::from_cbor(&unb64(key))
-            .unwrap_or_else(|err| panic!("a key secret that does not decode: {err}"));
+        let secret = key_of(key);
         let signing = SigningKey::from_bytes(&secret.signing);
         let device = DeviceId::from_signing_key(&signing.public_key());
         Reader {
