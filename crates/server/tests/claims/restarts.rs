@@ -77,7 +77,7 @@ fn the_uploaders_other_device_and_an_admin_restart_and_cancel_its_tasks() {
     bob.gets_none(default, &takes(&ALL));
 }
 
-/// carol's laptop enqueues a task that bob's laptop fails without retry. bob's laptop, of a member
+/// bob's laptop enqueues a task that carol's laptop fails without retry. carol's laptop, of a member
 /// who is no admin, and the bot, a `service` device of alice's account, get `not-allowed` for a
 /// restart and a cancel; reads show the task still `dead` with `failed`.
 #[test]
@@ -86,11 +86,11 @@ fn a_member_who_is_neither_and_a_service_device_may_not_restart_or_cancel() {
     let [alice, bob, carol, ..] = w.laptops();
     let default = alice.queue(DEFAULT).id;
     let task = w.task(default);
-    carol.stores(&task);
-    dies(&bob, default, &task);
+    bob.stores(&task);
+    dies(&carol, default, &task);
     let bot = w.bot(&[SEND, RECEIVE, QUEUES]);
 
-    for client in [&bob, &bot] {
+    for client in [&carol, &bot] {
         let restart = client.restart(default, task.task);
         assert_problem(&restart, NOT_ALLOWED, &format!("{}'s restart", client.who));
         let cancel = client.cancel(default, task.task);

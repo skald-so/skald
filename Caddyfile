@@ -18,7 +18,9 @@
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
 		path /spaces/*/channels/*/history/wraps /spaces/*/channels/*/presence /spaces/*/devices
 		path /spaces/*/channels/*/queues /spaces/*/channels/*/queues/*
-		path /spaces/*/channels/*/queues/*/tasks /spaces/*/channels/*/queues/*/tasks/* /spaces/*/members
+		path /spaces/*/channels/*/queues/*/claims /spaces/*/channels/*/queues/*/tasks
+		path /spaces/*/channels/*/queues/*/tasks/* /spaces/*/channels/*/queues/*/tasks/*/*
+		path /spaces/*/members
 		path /spaces/*/revisions /spaces/*/service-grants /spaces/*/service-tokens
 		path /spaces/*/service-tokens/* /spaces/*/usage
 		path /ws
