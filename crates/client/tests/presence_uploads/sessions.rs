@@ -9,10 +9,11 @@ use std::time::{Duration, Instant};
 use skald_proto::{AgentState, ChannelId, SpaceId};
 
 use crate::agents::{Agents, CLAUDE, CODEX};
+use crate::cloud::WAIT;
 use crate::helped::{Helped, with_client_b};
 use crate::talk::Talk;
 use crate::values::{
-    EXPIRES_IN, acme_channels, ada_s_body, assert_between, await_in_each, await_value,
+    EXPIRES_IN, acme_channels, ada_s_body, ada_s_value, assert_between, await_in_each, await_value,
     claude_code_session, helped_session, listed, shows, uploads,
 };
 use crate::world::now;
@@ -41,6 +42,34 @@ fn await_together(talk: &Talk, ats: &[(SpaceId, ChannelId)], since: Instant) -> 
     }
 }
 
+/// Runs the person's `skald recv` on Ada's machine until her value in each channel of `ats` is of
+/// an epoch Bob's device holds: her device has added his to those channels' groups, a Commit that
+/// changes their epochs and so uploads in them alone, and uploaded there since. Fails unless it has
+/// within [`WAIT`].
+#[track_caller]
+fn settled(helped: &Helped, talk: &mut Talk, ats: &[(SpaceId, ChannelId)]) {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        helped.received();
+        talk.played[0].take_in(&talk.world.cloud);
+        let held = |at: &(SpaceId, ChannelId)| {
+            ada_s_value(talk, *at).is_some_and(|value| {
+                (talk.played[0].mls)
+                    .history_key(value.channel, value.epoch)
+                    .is_some()
+            })
+        };
+        if ats.iter().all(held) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Ada's device has not added Bob's to every group"
+        );
+        thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// Ada's machine follows `acme` and `clientb`; `~/work/acme` is bound to `acme`. Through one
 /// helper, claude runs an MCP session of `claude-code` and codex one of `Codex CLI`, both in
 /// `~/work/acme`. Ada's value in each channel of `acme`, the default one and the talk's, lists each
@@ -55,6 +84,9 @@ fn running_sessions_show_their_agents_available_with_runtimes_in_each_channel_of
     );
     let (clientb, elsewhere) = with_client_b(&mut agents.talk);
     let helped = Helped::new(&agents.talk.ada.machine);
+    let acme = acme_channels(&agents);
+    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
+    settled(&helped, &mut agents.talk, &all);
     let since = agents.talk.cloud().relay.mark();
     let started = now();
 
@@ -62,7 +94,6 @@ fn running_sessions_show_their_agents_available_with_runtimes_in_each_channel_of
     let _codex = helped_session(&helped, &agents.folder, &[], (CODEX, CODEX_CLIENT));
 
     let (claude, codex) = (agents.address(CLAUDE), agents.address(CODEX));
-    let acme = acme_channels(&agents);
     let bodies = await_in_each(&mut agents.talk, &acme, "with both available", |body| {
         shows(body, &claude, AgentState::Available) && shows(body, &codex, AgentState::Available)
     });
@@ -81,7 +112,6 @@ fn running_sessions_show_their_agents_available_with_runtimes_in_each_channel_of
             "expires",
         );
     }
-    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
     await_together(&agents.talk, &all, since);
     let (_, other) = await_value(
         &mut agents.talk,
@@ -107,15 +137,16 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
     );
     let (clientb, elsewhere) = with_client_b(&mut agents.talk);
     let helped = Helped::new(&agents.talk.ada.machine);
+    let acme = acme_channels(&agents);
+    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
+    settled(&helped, &mut agents.talk, &all);
     let start = agents.talk.cloud().relay.mark();
     let claude_session = claude_code_session(&helped, &agents, CLAUDE);
     let _codex = claude_code_session(&helped, &agents, CODEX);
     let (claude, codex) = (agents.address(CLAUDE), agents.address(CODEX));
-    let acme = acme_channels(&agents);
     let before = await_in_each(&mut agents.talk, &acme, "with both available", |body| {
         shows(body, &claude, AgentState::Available) && shows(body, &codex, AgentState::Available)
     });
-    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
     // Until the uploads that showed both are done in clientb's channel too.
     await_together(&agents.talk, &all, start);
     let since = agents.talk.cloud().relay.mark();
