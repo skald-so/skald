@@ -497,7 +497,11 @@ mod tests {
 
     /// A session file of `entries`, read in one scan, then in another after `more`.
     fn scanned(entries: &[&str], more: &[&str]) -> (Vec<String>, Vec<String>) {
-        let dir = crate::test_dir::TestDir::new("claude-scan");
+        // `cargo test` runs the tests in threads of one process: each scan has a directory of its
+        // own.
+        static SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let scan = SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = crate::test_dir::TestDir::new(&format!("claude-scan-{scan}"));
         let file = dir.join("session.jsonl");
         let lines = |entries: &[&str]| {
             (entries.iter())
