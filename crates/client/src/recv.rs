@@ -1096,11 +1096,9 @@ fn hand_over_hook(
                 unopened.push(seq);
                 continue;
             };
-            let (line, level) = kept_line(&opened, Form::Short, &references);
-            let msg_id = (serde_json::from_slice::<forms::Message>(&opened).ok())
-                .and_then(|record| record.msg_id.parse::<MessageId>().ok());
-            waiting.push(match msg_id {
-                Some(msg_id) if level >= TrustLevel::Own => hook::Waiting::Own {
+            let (line, own) = own_line(&opened, &references);
+            waiting.push(match own {
+                Some(msg_id) => hook::Waiting::Own {
                     seq,
                     line,
                     reference: references.of(msg_id),
@@ -1128,6 +1126,16 @@ fn hand_over_hook(
         state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(handed.len())
+}
+
+/// The short line of the kept message `opened`, and its `msg_id` if it is at `own`, the level whose
+/// text goes into a session.
+fn own_line(opened: &[u8], references: &References) -> (String, Option<MessageId>) {
+    let (line, level) = kept_line(opened, Form::Short, references);
+    let msg_id = (serde_json::from_slice::<forms::Message>(opened).ok())
+        .and_then(|record| record.msg_id.parse::<MessageId>().ok())
+        .filter(|_| level >= TrustLevel::Own);
+    (line, msg_id)
 }
 
 /// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
@@ -1170,11 +1178,8 @@ fn hand_over_socket(
         let Some(opened) = key.open(follower.this, &kept_item(seq), &sealed) else {
             continue;
         };
-        let (line, level) = kept_line(&opened, Form::Short, &references);
-        let msg_id = (serde_json::from_slice::<forms::Message>(&opened).ok())
-            .and_then(|record| record.msg_id.parse::<MessageId>().ok());
-        match msg_id {
-            Some(msg_id) if level >= TrustLevel::Own => {
+        match own_line(&opened, &references) {
+            (line, Some(msg_id)) => {
                 lines.push((
                     msg_id.to_string(),
                     hook::fitted(&line, &references.of(msg_id)),

@@ -2534,18 +2534,16 @@ impl State {
              FROM claude_session ORDER BY position",
         )?;
         let rows = query.query_map([], |row| {
+            let text = |at| row.get::<_, String>(at);
+            let texts = [text(1)?, text(2)?, text(3)?, text(4)?, text(5)?, text(7)?];
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                (row.get::<_, String>(4)?, row.get::<_, String>(5)?),
+                texts,
                 row.get::<_, Option<String>>(6)?,
-                row.get::<_, String>(7)?,
             ))
         })?;
         rows.map(|row| {
-            let (position, session, space, agent, (folder, socket), token, file) = row?;
+            let (position, [session, space, agent, folder, socket, file], token) = row?;
             let malformed = || Error::Malformed(format!("the Claude Code session {session}"));
             Ok(ClaudeSession {
                 position: u64::try_from(position).map_err(|_| malformed())?,
