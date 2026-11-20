@@ -41,6 +41,8 @@ Also whoever takes over the server or its database.
 - Withhold, delete or delay presence values, and give a reader that has not seen a newer value an older one until it expires, at most 900 seconds after its upload ([agents.md](protocol/agents.md#security-considerations)).
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
+- Give a stateless service agent again an `hpke` envelope it acked, which it then acts on again ([delivery.md](protocol/delivery.md#security-considerations)).
+- Withhold later revisions and anchors objects from a stateless service agent and give it an older GroupInfo, back to its key secret's anchor, so it seals its messages to devices of a member removed since ([membership.md](protocol/membership.md#security-considerations)).
 - Decide which grants members get, so a send-only token is only its word: it can have members send copies to a service agent whose token cannot receive, which only the agent's key opens ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
 - Show false devices, members, roles and usage in the web app's non-secret sections: they show what the server says.
@@ -55,6 +57,7 @@ Also whoever takes over the server or its database.
 - Certificates, revocations, revisions, invites and grants are signed by devices or a master key, so the server cannot forge them ([Signed objects](protocol/membership.md#signed-objects), [Service grant](protocol/README.md#service-grant)).
 - A new device takes its certificate, the master key and its link object only from a CPace run keyed by the link code its user enters on the issuing device, and that device takes the new device's keys only from the run. Unless one of its guesses at the code succeeds, the server cannot join the run, so it cannot certify a new device itself, give it another master key or have its own keys certified ([Link code](protocol/membership.md#link-code)).
 - The master backup is sealed in HPKE PSK mode with a key derived from the recovery key, so the server cannot give a device linked with the recovery key another master key ([Account](protocol/membership.md#account)).
+- Member devices wrap history keys only to the recovery key of an account record that verifies with the account's pinned or roster `master`, and warn when its `recovery` changes, so the server cannot have them wrapped to a key of its own ([Account](protocol/membership.md#account), [Device checks](protocol/membership.md#device-checks)).
 - A new `client` device whose user says it is not the account's first creates no master key: told there is none, it warns its user and stops ([Linking a device](protocol/membership.md#linking-a-device)). A second master key gives the server no signing power, and devices and members that pinned the first reject certificates chained to the second ([Device checks](protocol/membership.md#device-checks)).
 - Two valid revisions with the same number show a forked roster; the client keeps the one it accepted and warns its user ([Roster](protocol/membership.md#roster)).
 - A device the server joins to a channel is not admitted: members commit its Remove and send nothing until it is gone, and its epoch is not clean, so member devices upload no link, wrap or entry of it ([Admitted devices](protocol/membership.md#admitted-devices), [Clean epochs](protocol/membership.md#clean-epochs)).
@@ -154,6 +157,7 @@ An account an admin removed from a space, with its devices.
 **Can:**
 - Read and send in the space's channels until a member device that accepted the removal commits the Remove of its devices; the server delays this by withholding the revision ([Group changes](protocol/membership.md#group-changes), [membership.md](protocol/membership.md#security-considerations)).
 - Keep the keys of the epochs its devices held, as [a revoked device](#a-revoked-device) does.
+- With the server's help, keep reading a stateless service agent's messages: the server gives the agent's run an older GroupInfo that lists its devices ([membership.md](protocol/membership.md#security-considerations)).
 - Add history entries that readers accept, if the server takes them: readers check the sender against any accepted revision, and only the server keeps a removed member out ([History entry](protocol/membership.md#history-entry), [membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
@@ -304,6 +308,7 @@ Message texts, agent and session names other than service agents, threads, files
 
 ## Trade-offs
 - HPKE messages (ephemeral agents, browser actions, the person's messages from a browser, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+- a stateless service agent keeps nothing between runs: it does no gap detection, a run that dies between its output and its ack shows the message again at the next one, and the server can give it acked messages again ([Mailbox](protocol/delivery.md#mailbox));
 - a leaked recovery key exposes the history;
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;

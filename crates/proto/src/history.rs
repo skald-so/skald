@@ -128,7 +128,7 @@ impl SignedBody for HistoryBody {
 }
 
 /// An unsigned integer of at least `min`, for CDDL `uint .ge min`.
-fn at_least(item: &Item<'_>, field: &'static str, min: u64) -> Result<u64, DecodeError> {
+pub(crate) fn at_least(item: &Item<'_>, field: &'static str, min: u64) -> Result<u64, DecodeError> {
     let value = item.uint(field)?;
     if value < min {
         return Err(field_error(

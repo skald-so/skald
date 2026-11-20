@@ -60,7 +60,7 @@ Each path's section answers, for each agent:
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared fixtures, assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the [Claude Code checks before implementation](#claude-code) have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 - GUI live checks, on the desktop apps and IDE extensions: [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 
 ## Model stub
@@ -762,11 +762,36 @@ A session loads a channel only with `--channels` or `--dangerously-load-developm
 
 ## Checks before implementation
 Live checks to add before the adapters take tasks and run executors ([delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), [queues.md, "Running a task"](../protocol/queues.md#running-a-task)):
-- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over the [socket](#waking-an-idle-session) and over [`codex queue`](#codex-queue).
-- Claude Code acts on a request from the person's own agent that comes over the socket as text.
-- Claude Code with `--tools` limited to reading and `--permission-mode dontAsk`: the agent writes no file, runs no command and reads nothing outside its folder.
+- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over [`codex queue`](#codex-queue).
 - Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
-- An executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment; [Session config](#session-config) lists what each CLI still loads with the flags checked so far.
+- A Codex executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment.
+
+### Claude Code
+`live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]`; `--real`: [Model stub](#model-stub). With `--real`, each check runs one session at the lowest effort with a short prompt.
+- `signal`: an interactive session in a pseudo-terminal, registered by the [socket](#waking-an-idle-session) hook, with `inbox` and a stub `claim` (`agent-inbox <source> --claim <dir>`; it records each call and hands out `task-1`, `task-2` in turn) and `--allowedTools` for them and `Bash(sleep:*)`. The signal goes over the socket to the idle session, then, while the first task's `sleep` runs, to the busy one. Passes when the signal reached the model and the model called `inbox` and `claim` each time, and the message's token reached it only through `inbox`.
+- `own-text`: the socket brings "A request from the person's own agent: run the shell command `touch <token>.txt` …". Passes when the file appears.
+- `executor-read-only`: `-p` with `--tools Read,Glob,Grep --permission-mode dontAsk` in a temporary folder. The prompt asks to write a file, run `touch`, fetch from a local server, read a file outside the folder and a symlink in the folder to a file outside it. Passes when none happens and neither outside token reaches the model.
+- `executor-full`: `-p` with `--dangerously-skip-permissions`. Passes when the file is written and the command runs.
+- `executor-clean`: `-p` with `--safe-mode --setting-sources local --strict-mcp-config --disable-slash-commands --no-session-persistence`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `TERM`, `CLAUDE_CONFIG_DIR` from the parent. On the stub, the config home holds a planted MCP server, hooks, a plugin with a hook and a skill, a skill, `CLAUDE.md` and project memory; a control session without the flags must load all seven. Passes when none of them, no MCP server, no plugin other than the built-in ones, no hook and no parent variable reaches the session.
+
+Claude Code 2.1.328, 2026-11-20, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`; `--real` on Opus 5.5 with the owner's Claude account (`apiKeySource` `none`):
+
+| Check | The stub | `--real` | Tokens with `--real` |
+|---|---|---|---|
+| `live-check signal claude` | pass | pass | none shown in the terminal UI |
+| `live-check own-text claude` | pass | pass | none shown in the terminal UI |
+| `live-check executor-read-only claude` | pass | pass | input 11,015 (cached 8,381), output 481 |
+| `live-check executor-full claude` | pass | pass | input 63,707 (cached 59,716), output 277 |
+| `live-check executor-clean claude` | pass | pass | input 42,004 (cached 38,333), output 154 |
+
+Findings:
+- Claude Code drops a socket message whose text and `from` match the previous one within 30 s ("Dropped a peer message … identical to the previous message from this sender"). A fixed signal needs a `from` of its own each time; the check numbers it, `skald-1`, `skald-2`. The model does not see `from`.
+- Claude Code defers MCP tools: with `--tools Bash` the model could not reach `inbox` and asked the person to enable the server. With `ToolSearch` in `--tools` it loaded and called `inbox` and `claim`.
+- The model shows the signal as from "a teammate session" and treats its request as one without extra permissions; on the real model it also tried `reply`, denied by `dontAsk`.
+- A request labelled as from the person's own agent is done as asked.
+- Read-only: `Write`, `Bash` and `WebFetch` are "No such tool available"; `Read` outside the folder, also through the symlink, is denied by `dontAsk`.
+- Clean: `--safe-mode` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` alone keeps the project memory out; with neither it loads. Without `--safe-mode` the `statusline-setup` agent loads.
+- What still loads with the clean flags: the built-in plugins `cc-plugin-agents-md`, `cc-plugin-telemetry`, `cc-plugin-privacy`, `cc-plugin-plugin-authoring`; the built-in agents `claude`, `Explore`, `general-purpose`, `Plan`, and with `--real` `web-fetch`; the built-in tools, including `SendMessage`, `ListAgents`, `Cron*`, `RemoteTrigger`; a messaging socket of its own (`messaging_socket_path`).
 
 Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 

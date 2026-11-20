@@ -23,7 +23,7 @@ use skald_proto::{
 
 use crate::devices::text;
 use crate::groups::{self, Rosters};
-use crate::send;
+use crate::send::{self, Shown as _};
 use crate::spaces::{Follower, Scope};
 use crate::state::ReadDue;
 

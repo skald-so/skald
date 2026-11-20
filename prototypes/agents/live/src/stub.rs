@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
-use agent_inbox::INBOX;
+use agent_inbox::{CLAIM, INBOX};
 use serde_json::{Value, json};
 
 use crate::SERVER;
@@ -65,6 +65,29 @@ pub enum Call {
     /// refuses the request does: the model never gets it. A script that starts with it plays
     /// nothing else.
     Fail,
+    /// Calls the server's stub `claim` tool.
+    Claim,
+    /// Calls the CLI's tool `name` with the JSON object `input`, such as Claude Code's `Write`.
+    Tool {
+        name: &'static str,
+        input: &'static str,
+    },
+}
+
+impl Call {
+    /// A call of the CLI's tool `name` with `input`, made for a script built at run time: the
+    /// stub's scripts live as long as the check.
+    pub fn tool(name: &str, input: &Value) -> Self {
+        Self::Tool {
+            name: Box::leak(name.into()),
+            input: Box::leak(input.to_string().into()),
+        }
+    }
+
+    /// `calls` as a script, made at run time ([`Call::tool`]).
+    pub fn script(calls: Vec<Self>) -> &'static [Self] {
+        Box::leak(calls.into_boxed_slice())
+    }
 }
 
 /// The prompt a [`Call::Cron`] schedules.
@@ -95,7 +118,9 @@ impl Call {
             | Self::InboxSeen
             | Self::Reply
             | Self::Cron
-            | Self::Fail => None,
+            | Self::Fail
+            | Self::Claim
+            | Self::Tool { .. } => None,
         }
     }
 
@@ -110,10 +135,15 @@ impl Call {
                 .collect()
         };
         match self {
-            Self::Shell | Self::Quick | Self::Pause | Self::Prompted | Self::Cron | Self::Fail => {
-                None
-            }
+            Self::Shell
+            | Self::Quick
+            | Self::Pause
+            | Self::Prompted
+            | Self::Cron
+            | Self::Fail
+            | Self::Tool { .. } => None,
             Self::Inbox => Some((INBOX, json!({}))),
+            Self::Claim => Some((CLAIM, json!({}))),
             Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
             Self::Ack(with) => {
                 let acks: Vec<Value> = held
@@ -477,6 +507,10 @@ fn messages(script: &[Call], body: &Value) -> Response {
                     "CronCreate".to_owned(),
                     json!({ "cron": "* * * * *", "prompt": LOOP_PROMPT, "recurring": true }),
                 ),
+                (Call::Tool { name, input }, ..) => (
+                    (*name).to_owned(),
+                    serde_json::from_str(input).unwrap_or_default(),
+                ),
                 (_, Some(command), _) => ("Bash".to_owned(), json!({ "command": command })),
                 (_, None, Some((tool, input))) => (format!("mcp__{SERVER}__{tool}"), input),
                 (_, None, None) => unreachable!("a call runs a command or a tool"),
@@ -556,18 +590,22 @@ fn responses(script: &[Call], body: &Value) -> Response {
         Some(call) => {
             let call_id = format!("call_stub_{step}");
             let id = format!("fc_stub_{step}");
-            match (call.command(), call.server_tool(body)) {
+            match (call, call.command(), call.server_tool(body)) {
+                (Call::Tool { name, input }, ..) => json!({
+                    "type": "function_call", "id": id, "call_id": call_id, "name": name,
+                    "arguments": input,
+                }),
                 // Codex waits for the command up to `yield_time_ms`, 10 s by default.
-                (Some(command), _) => json!({
+                (_, Some(command), _) => json!({
                     "type": "function_call", "id": id, "call_id": call_id, "name": "exec_command",
                     "arguments": json!({ "cmd": command, "yield_time_ms": 30_000 }).to_string(),
                 }),
-                (None, Some((tool, input))) => json!({
+                (_, None, Some((tool, input))) => json!({
                     "type": "function_call", "id": id, "call_id": call_id,
                     "namespace": format!("mcp__{SERVER}"), "name": tool,
                     "arguments": input.to_string(),
                 }),
-                (None, None) => unreachable!("a call runs a command or a tool"),
+                (_, None, None) => unreachable!("a call runs a command or a tool"),
             }
         }
         None => json!({
@@ -711,6 +749,26 @@ mod tests {
         assert_eq!(stop, "end_turn");
         assert_eq!(log.requests.len(), 3);
         assert!(log.credentials.is_empty());
+    }
+
+    #[test]
+    fn calls_the_claim_tool_and_a_tool_made_at_run_time() {
+        let script = Call::script(vec![
+            Call::Claim,
+            Call::tool("Write", &json!({ "file_path": "/w/a", "content": "x" })),
+        ]);
+        let mut log = StubLog::default();
+        let (block, _) = streamed_block(&answer(script, &messages_request(0, true), &mut log));
+        assert_eq!(block["name"], "mcp__skald__claim");
+        assert_eq!(block["input"], json!({}));
+        let (block, stop) = streamed_block(&answer(script, &messages_request(1, true), &mut log));
+        assert_eq!(
+            block,
+            json!({ "type": "tool_use", "id": "toolu_stub_1", "name": "Write", "input": { "file_path": "/w/a", "content": "x" } })
+        );
+        assert_eq!(stop, "tool_use");
+        let (block, _) = streamed_block(&answer(script, &messages_request(2, true), &mut log));
+        assert_eq!(block["text"], DONE);
     }
 
     #[test]

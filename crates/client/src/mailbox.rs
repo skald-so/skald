@@ -8,6 +8,10 @@
 //! A one-shot run's long-poll asks with a wait of 0 until an answer is empty: the end of its
 //! catch-up. `history` frames go over a WebSocket only.
 //!
+//! A stateless service agent's run acks nothing during catch-up: it acks what it wrote only once
+//! it has shown it ([`Mailbox::ack`]), so a run that dies in between shows it again at the next
+//! one. As each long-poll acks what its cursor covers, such a run takes one long-poll answer.
+//!
 //! A WebSocket or an event stream a run is done with is kept for its next connection as the same
 //! device, and the helper's for its next operations ([`crate::helper`]). Catch-up on a WebSocket
 //! after its first takes the entries it pushed since, which the client reads as they come; on an
@@ -434,7 +438,10 @@ impl Mailbox {
                     frames.push(frame);
                 }
             }
-            Some(Link::Https(None)) if follower.transport == Transport::LongPoll => {
+            // A long-poll acks its cursor, which a stateless run states only once it has shown it.
+            Some(Link::Https(None))
+                if follower.transport == Transport::LongPoll && !follower.stateless() =>
+            {
                 if let Ok(cursor) = follower.state.cursor()
                     && let Ok(frame) = poll(follower, keys, cursor)
                 {
@@ -460,6 +467,24 @@ impl Mailbox {
             }
         }
         spaces
+    }
+
+    /// Acks every entry up to the device's cursor, as a stateless run does once it has shown them:
+    /// on a WebSocket in an `ack`, otherwise in an HTTPS request.
+    pub fn ack(&mut self, follower: &mut Follower, keys: &Keys) -> Result<(), String> {
+        let cursor = follower.state.cursor().map_err(text)?;
+        let Some(seq) = std::num::NonZeroU64::new(cursor) else {
+            return Ok(());
+        };
+        let ack = Frame::Ack { seq }.to_cbor();
+        match self.link.as_mut() {
+            Some(Link::WebSocket(socket)) => socket
+                .send(Message::Binary(ack.into()))
+                .map_err(|err| format!("the ack of what this run showed is not sent: {err}")),
+            _ => request(follower, keys, ACK, &ack, Duration::ZERO)
+                .map(drop)
+                .map_err(|err| failed(&err)),
+        }
     }
 }
 
@@ -609,7 +634,9 @@ fn over_websocket(
             Err(_) => return Err(Stop::Next),
         };
         let written = write(follower, entries, cursor).map_err(Stop::Failed)?;
-        if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| written > cursor) {
+        if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| written > cursor)
+            && !follower.stateless()
+        {
             send(socket, &Frame::Ack { seq })?;
         }
         cursor = written;
@@ -655,6 +682,9 @@ fn over_sse(
     let Some(seq) = std::num::NonZeroU64::new(cursor).filter(|_| cursor > opened) else {
         return Ok(());
     };
+    if follower.stateless() {
+        return Ok(());
+    }
     let ack = Frame::Ack { seq }.to_cbor();
     request(follower, keys, ACK, &ack, Duration::ZERO)
         .map(drop)
@@ -673,14 +703,15 @@ fn from_pushed(
     write: Write<'_>,
 ) -> Result<(), Stop> {
     let written = write(follower, pushed, cursor).map_err(Stop::Failed)?;
-    if let Some(seq) = std::num::NonZeroU64::new(written) {
+    if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| !follower.stateless()) {
         let _ = socket.send(Message::Binary(Frame::Ack { seq }.to_cbor().into()));
     }
     Ok(())
 }
 
 /// Catch-up over long-poll: asks with a wait of 0 after the cursor, which acks what it covers, and
-/// writes each answer's entries with `write`, until an answer is empty.
+/// writes each answer's entries with `write`, until an answer is empty; a stateless run, after its
+/// first answer.
 fn over_long_poll(
     follower: &mut Follower,
     keys: &Keys,
@@ -693,6 +724,9 @@ fn over_long_poll(
             Ok(Frame::Batch(entries)) if entries.is_empty() => return Ok(()),
             Ok(Frame::Batch(entries)) => {
                 cursor = write(follower, entries, cursor).map_err(Stop::Failed)?;
+                if follower.stateless() {
+                    return Ok(());
+                }
             }
             _ => {
                 return Err(Stop::Failed(

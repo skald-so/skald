@@ -220,8 +220,10 @@ pub fn admitted(
     let excluded = own
         .and_then(|member| member.excluded.as_ref())
         .is_some_and(|excluded| excluded.contains(&follower.this));
-    // A `service` device is admitted where the channel's `services` list it.
+    // A `service` device is admitted where the channel's `services` list it, unless its run is
+    // stateless: such a device is no member.
     let this = match follower.service {
+        Some(member) if member.stateless => false,
         Some(_) => (body.channels.iter())
             .any(|listed| listed.id == channel && listed.services.contains(&follower.this)),
         None => own.is_some() && listed && !excluded,
@@ -556,7 +558,7 @@ fn group_info_path(space: SpaceId, channel: ChannelId) -> String {
 
 /// Whether `channel` of `space` has a group on the server, and its GroupInfo of the current epoch,
 /// if the server has one.
-fn group_on_server(
+pub fn group_on_server(
     follower: &mut Follower,
     space: SpaceId,
     channel: ChannelId,
@@ -879,7 +881,7 @@ fn held_epoch(follower: &Follower, link: &Link, channel: ChannelId) -> Result<u6
 }
 
 /// `channel`'s GroupInfo `group_info`, the server's, as seen from outside the group.
-fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, String> {
+pub fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, String> {
     ChannelView::observe_joinable(channel, group_info).map_err(|err| {
         format!("the server gave a GroupInfo of the channel {channel} that does not check: {err}")
     })

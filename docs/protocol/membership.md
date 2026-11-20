@@ -246,6 +246,7 @@ service-key = {
 - A `service` device pins `master` as its account's master key ([Device checks](#device-checks)) and starts its roster as [Anchors](#anchors) says.
 - One that keeps state is a member of the MLS groups of the channels whose `services` list it ([MLS profile](#mls-profile)). Its token then needs the `receive` permission: it reads its Commits and Welcomes from its mailbox.
 - Once such a device has been in a group, a run without its earlier state MUST refuse, so its counters do not restart.
+- One that keeps no state is in no group: it sends and receives under `hpke` only ([From a stateless service agent](delivery.md#from-a-stateless-service-agent), [Mailbox](delivery.md#mailbox)).
 - In the CLI, the key secret is base64url without padding [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §5]: [Service agents](../service-agents.md).
 
 ## Revocation
@@ -651,4 +652,5 @@ A reader MUST drop an entry unless:
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
 - A member can make a channel unusable with a Commit the others cannot process; the channel is then replaced by a new one.
 - A `service` device's run is as current as its account's devices: it starts from the revisions they anchored. A stolen `client` device of the account with the server can make it start from a revision that a revoked admin device signed after its revocation, but only while the stolen device is not revoked: a revoked device's anchors objects do not count. A revision that none of the account's devices accepted before its signer's revocation fails for the run as it does for them.
+- A stateless `service` device's run keeps nothing, so the server can withhold later revisions and anchors objects and give an older GroupInfo, back to the key secret's `anchor`. The run then seals to devices of a member removed since: with the server's help, a removed member keeps reading the agent's messages.
 - Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).

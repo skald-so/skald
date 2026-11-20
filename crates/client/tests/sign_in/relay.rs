@@ -2,7 +2,8 @@
 //! them, so a test sees what the machine sent and what the server answered, as on the wire. It can
 //! also lose the server's answer to a request, or hold requests until several have come, as a
 //! network or a race would, rewrite the body of an answer, as a compromised server would, and answer
-//! a request itself, never letting it reach the server, as an older server would.
+//! a request itself, never letting it reach the server, as an older server or a proxy that blocks it
+//! would.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{self, Read, Write};
@@ -289,8 +290,21 @@ impl Relay {
 
     /// As [`Relay::refuse`], with the problem details object `body`.
     pub fn refuse_with(&self, request: &str, status: &str, body: &str) {
+        self.answer_itself(request, status, ("application/problem+json", body));
+    }
+
+    /// From now on, answers each request whose line starts with `request` itself with
+    /// `403 Forbidden` and no problem details, as a proxy that blocks it would, closing the
+    /// connection; the server never gets the request.
+    pub fn block(&self, request: &str) {
+        self.answer_itself(request, "403 Forbidden", ("text/plain", ""));
+    }
+
+    /// From now on, answers each request whose line starts with `request` itself with `status` and
+    /// a body `body` of the media type `media`, closing the connection.
+    fn answer_itself(&self, request: &str, status: &str, (media, body): (&str, &str)) {
         let answer = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\nconnection: close\r\n\
+            "HTTP/1.1 {status}\r\ncontent-type: {media}\r\nconnection: close\r\n\
              content-length: {}\r\n\r\n{body}",
             body.len()
         );
