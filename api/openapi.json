@@ -4034,7 +4034,7 @@
       "post": {
         "operationId": "sendEnvelope",
         "summary": "Send an envelope",
-        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`. An `hpke` envelope to a `service` device is stored only while a token of that device that has not ended and has the `receive` permission lists the channel: otherwise `send-refused` with `unknown-recipient`.",
+        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`. An `hpke` envelope to a `service` device is stored only while a token of that device that has not ended and has the `receive` permission lists the channel: otherwise `send-refused` with `unknown-recipient`. With the server's send rate limit, a message past its device's rate, over a WebSocket or here, gets `send-refused` with `rate-limited`; a handshake message never does.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
