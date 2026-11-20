@@ -25,6 +25,7 @@
     - `inbox` returns the agent's lines of `skald recv`, written in one write, and marks them handed over once the result is written.
     - `reply` replies as the agent's `skald reply` does and returns what it says.
     - `set_status` sets the agent's state and note as its `skald set-status` does. A new session starts `available`, with no note.
+    - `message_status` returns what the agent's `skald message-status` says.
     - Out of one-shot mode, the server holds a session of the helper for its whole run, starting it again if it exits: the helper knows the agent runs, takes in arrivals for it and does not exit idle under it.
     - Each tool call goes through the helper or runs one-shot, as a command does, and through a newer helper too. Once the `skald` installed where the server's binary was is newer, as after an update while the server runs, the server starts it from there for each call, which it hands over as to a helper.
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.

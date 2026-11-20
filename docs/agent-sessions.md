@@ -28,6 +28,7 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
 - Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
+- Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
 - Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 
