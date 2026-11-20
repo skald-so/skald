@@ -493,11 +493,16 @@ const ops = {
    * load; with `settle`, as `goto` does. Gives what `goto` gives.
    */
   async click({ page: id, selector, settle = false }) {
-    const visit = await click(page(id).page, selector, settle);
-    // A link's navigation, every request of it a GET, that fails with NO_BUFFER_SPACE goes again
-    // from the link's URL, as `goto` goes, which tries it again too.
+    const tab = page(id).page;
+    const from = tab.url();
+    const visit = await click(tab, selector, settle);
+    // A navigation by a link to the clicked page's own origin, every request of it a GET, that
+    // fails with NO_BUFFER_SPACE goes again from the link's URL, as `goto` goes, which tries it
+    // again too. A typed URL sends the cookies a click from another site does not, so a link to
+    // another origin is not tried again.
     const [link] = visit.navigations;
-    if (!visit.error?.includes(NO_BUFFER_SPACE) || !visit.gets || !link) return visit;
+    const own = link && URL.canParse(from) && new URL(link).origin === new URL(from).origin;
+    if (!visit.error?.includes(NO_BUFFER_SPACE) || !visit.gets || !own) return visit;
     console.error(`browser: ${link}: ${NO_BUFFER_SPACE}; navigating to it again`);
     return ops.goto({ page: id, url: link, settle });
   },
