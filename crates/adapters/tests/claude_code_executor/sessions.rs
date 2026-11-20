@@ -199,9 +199,9 @@ fn forward(path: &Path) -> String {
 fn read_only_applies_none_of_the_folder_s_own_settings() {
     let Some(claude) = claude_code() else { return };
     let world = World::new();
-    let (folder, outside) = (&world.folder, world.scratch.dir("outside"));
-    let secret = token("secret");
-    fs::write(outside.join("secret.txt"), &secret).expect("write a file outside");
+    let outside = world.scratch.dir("outside");
+    let (secret, secret_file) = (token("secret"), outside.join("secret.txt"));
+    fs::write(&secret_file, &secret).expect("write a file outside");
     let helper = outside.join("helper.txt");
     let settings = json!({
         "permissions": {
@@ -209,14 +209,11 @@ fn read_only_applies_none_of_the_folder_s_own_settings() {
         },
         "apiKeyHelper": format!("echo ran > \"{}\" && echo {PLACEHOLDER}", forward(&helper)),
     });
-    let local = folder.join(".claude").join("settings.local.json");
+    let local = world.folder.join(".claude").join("settings.local.json");
     fs::create_dir_all(local.parent().expect("its directory")).expect("make .claude");
     let text = serde_json::to_string_pretty(&settings).expect("JSON encodes");
     fs::write(&local, text).expect("write the folder's settings");
-    let script = vec![Step::Tool(
-        "Read",
-        json!({ "file_path": outside.join("secret.txt") }),
-    )];
+    let script = vec![Step::Tool("Read", json!({ "file_path": secret_file }))];
 
     let (stub, outcome) = world.execute(&claude, Mode::ReadOnly, script);
 
