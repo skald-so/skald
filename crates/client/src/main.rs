@@ -562,10 +562,9 @@ enum Command {
         /// device_name, problem and timestamp. As an agent, every status of its own messages.
         #[arg(long)]
         json: bool,
-        /// Shows again, whole, the message of this reference, #<ref> or <ref>, or ID, as skald
-        /// reply names it, and receives nothing: as an agent, one handed over to it in the space
-        /// of its folder; as the person, one its skald recv showed; while the device keeps what a
-        /// reply to it needs.
+        /// As an agent, shows again, whole, the message of this reference, #<ref> or <ref>, or
+        /// ID, as skald reply names it, one handed over to it in the space of its folder, while
+        /// the device keeps what a reply to it needs; receives nothing.
         #[arg(value_name = "MESSAGE", conflicts_with = "wait")]
         #[serde(default)]
         message: Option<String>,
@@ -1405,10 +1404,18 @@ fn perform(operation: Operation) -> Result<(), String> {
             json,
             message: Some(message),
             ..
-        } => state::dir(state_dir).and_then(|dir| {
-            let form = forms::Form::of(agent.is_some(), json);
-            recv::reread(&dir, key_storage, agent.as_ref(), &message, form)
-        }),
+        } => {
+            let agent =
+                agent.ok_or("skald recv <message> runs as an agent: give --agent <name>")?;
+            let dir = state::dir(state_dir)?;
+            recv::reread(
+                &dir,
+                key_storage,
+                &agent,
+                &message,
+                forms::Form::of(true, json),
+            )
+        }
         Command::Hook { input, .. } => {
             let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
                 return Err("skald hook runs only as itself".to_owned());

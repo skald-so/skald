@@ -319,3 +319,57 @@ fn turn(shared: &Shared, body: Value) -> String {
         })
         .collect()
 }
+
+/// Sends `stub` a request of a turn with the header `name: value`; gives its status line.
+fn status_of(stub: &Stub, (name, value): (&str, &str)) -> String {
+    let body = json!({ "model": "stub", "messages": [] }).to_string();
+    let mut stream = TcpStream::connect(stub.url().trim_start_matches("http://")).expect("connect");
+    let head = format!(
+        "POST /v1/messages HTTP/1.1\r\nHost: stub\r\n{name}: {value}\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    (stream.write_all(head.as_bytes())).expect("send the head");
+    (stream.write_all(body.as_bytes())).expect("send the body");
+    let mut status = String::new();
+    (BufReader::new(stream).read_line(&mut status)).expect("read the status");
+    status
+}
+
+/// The stub answers a request with its placeholder as the credential, in `x-api-key` or as a bearer
+/// token; one with another credential in either header gets 401, and the stub keeps the header's
+/// name, never its value, so the test then fails.
+#[test]
+fn stub_refuses_a_credential_other_than_its_placeholder() {
+    let stub = Stub::start(Vec::new(), None);
+    let other = "sk-ant-not-the-placeholder";
+    let bearer = |key: &str| format!("Bearer {key}");
+
+    let placeholder = [
+        status_of(&stub, ("x-api-key", PLACEHOLDER)),
+        status_of(&stub, ("Authorization", &bearer(PLACEHOLDER))),
+    ];
+    let foreign = [
+        status_of(&stub, ("x-api-key", other)),
+        status_of(&stub, ("Authorization", &bearer(other))),
+    ];
+
+    assert!(
+        placeholder.iter().all(|status| status.contains(" 200 ")),
+        "{placeholder:?}"
+    );
+    assert!(
+        foreign.iter().all(|status| status.contains(" 401 ")),
+        "{foreign:?}"
+    );
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        stub.assert_no_foreign_credential()
+    }));
+    let said = (failed
+        .expect_err("a foreign credential passes")
+        .downcast::<String>())
+    .expect("the failure says why");
+    assert!(
+        said.contains("x-api-key") && said.contains("authorization") && !said.contains(other),
+        "{said}"
+    );
+}

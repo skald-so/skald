@@ -2,7 +2,11 @@
 //! lines; `Stop` continues the turn with them; the handover gives `read` as `inbox` does.
 
 use crate::hooks::{Event, Web, assert_own_line};
+use crate::kit::RECV;
+use crate::lines::{JSON_FLAG, json_objects, objects_of};
 use crate::receipts::read_lines;
+use crate::solo::{API, WEB};
+use crate::world::AGENT;
 
 /// What api says to web; neither is anywhere else.
 const FIRST: &str = "hook test: api asks web to rebuild the docs";
@@ -67,4 +71,45 @@ fn message_to_everyone_in_the_channel_reaches_the_hook() {
     let context = web.hook(Event::PostToolUse).context(Event::PostToolUse);
 
     assert_own_line(&context, TO_ALL, msg_id, &web.api());
+}
+
+/// What web asks api, and api's reply; neither is anywhere else.
+const TO_API: &str = "hook test: web asks api for the changelog";
+const REPLY_TEXT: &str = "hook test: api sends web the changelog";
+
+/// api has run once; web's session sends api a message; api takes it with `skald --agent api recv`
+/// and replies to it with `skald --agent api reply`. web's `PostToolUse` hook gives the reply; web's `skald recv
+/// --json` then shows no status of web's message.
+#[test]
+fn hook_takes_the_statuses_of_the_agent_s_messages() {
+    let mut web = Web::new(4_913_019_001, "ada-hooks-a-reply");
+    let api_dir = web.solo.dir(API);
+    let api_recv = |web: &Web| {
+        (web.machine())
+            .start_in(&api_dir, &[AGENT, API, RECV])
+            .finish()
+    };
+    // api's first run makes it an agent of the space, which a message to it needs.
+    assert!(api_recv(&web).success);
+    let to_api = web.api();
+    let asked = web.solo.sends(&mut web.session, &to_api, TO_API);
+    let taken = api_recv(&web);
+    assert!(taken.success && taken.stdout.contains(TO_API), "{taken:?}");
+    let asked_id = asked.to_string();
+    let args = [AGENT, API, "reply", asked_id.as_str(), REPLY_TEXT];
+    let replied = web.machine().start_in(&api_dir, &args).finish();
+    assert!(replied.success, "{replied:?}");
+
+    let context = web.hook(Event::PostToolUse).context(Event::PostToolUse);
+
+    assert!(context.contains(REPLY_TEXT), "no reply: {context}");
+    let args = [AGENT, WEB, RECV, JSON_FLAG];
+    let after = web.machine().start_in(&web.dir(), &args).finish();
+    assert!(after.success, "{after:?}");
+    let objects = json_objects(&after.stdout);
+    let statuses = objects_of(&objects, asked, "status");
+    assert!(
+        statuses.is_empty(),
+        "statuses after the hook: {statuses:#?}"
+    );
 }

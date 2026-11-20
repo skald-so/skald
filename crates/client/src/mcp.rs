@@ -144,7 +144,7 @@ pub fn perform(
                 Ok(())
             }
         },
-        Call::Again { message } => recv::reread(dir, storage, Some(agent), &message, Form::Short),
+        Call::Again { message } => recv::reread(dir, storage, agent, &message, Form::Short),
         Call::Send { to, channel, text } => sending(&|| {
             let named = (to.as_deref(), channel.as_deref(), text.as_str());
             send::run(dir, storage, settings, named, Some(agent), false)

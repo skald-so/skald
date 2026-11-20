@@ -181,30 +181,26 @@ pub fn hook(
 }
 
 /// Shows the message `message` names, by `#<ref>`, `<ref>` or its `msg_id`, whole, in `form`, as
-/// `agent`'s run if given, by the state in `dir`, its secrets in `storage`: one handed over to the
-/// agent in its folder's space, or else one the person's run showed, while the device keeps what a
-/// reply to it needs ([`crate::reply`]). An agent's short line of a message below `own` follows
-/// [`forms::DATA_WARNING`].
+/// `agent`'s run, by the state in `dir`, its secrets in `storage`: one handed over to the agent in
+/// its folder's space, while the device keeps what a reply to it needs ([`crate::reply`]). A short
+/// line of a message below `own` follows [`forms::DATA_WARNING`].
 pub fn reread(
     dir: &Path,
     storage: secrets::Storage,
-    agent: Option<&Name>,
+    agent: &Name,
     message: &str,
     form: Form,
 ) -> Result<(), String> {
-    holding_warnings(dir, agent.is_some(), || {
+    holding_warnings(dir, true, || {
         let shown = printable(message.trim());
         let named = reply::named(message).ok_or_else(|| {
             format!("\"{shown}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id")
         })?;
-        let (_, reader) = reply::reader(dir, agent)?;
+        let (_, reader) = reply::reader(dir, Some(agent))?;
         let target = reply::kept_target(dir, &named, reader).map_err(|why| match why {
-            reply::Unnamed::Unknown if reader.is_some() => format!(
+            reply::Unnamed::Unknown => format!(
                 "{shown} is no message handed over to this agent in its folder's space, or this \
                  device no longer keeps it"
-            ),
-            reply::Unnamed::Unknown => format!(
-                "{shown} is no message skald recv showed, or this device no longer keeps it"
             ),
             reply::Unnamed::Shared => format!(
                 "{shown} is the reference of more than one message this device keeps: give more \

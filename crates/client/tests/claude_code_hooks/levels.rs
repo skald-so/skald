@@ -3,11 +3,20 @@
 //! labelled as data from its sender, and `read` follows only then. `own` text goes in beside the
 //! signal.
 
-use crate::hooks::{Event, INBOX_WORD, Web, assert_own_line, assert_signal, others};
+use serde_json::json;
+use skald_proto::MessageId;
+
+use crate::client::INBOX;
+use crate::hooks::{
+    Bob, Event, INBOX_WORD, MESSAGE_ARG, Web, assert_own_line, assert_signal, others,
+};
+use crate::kit::RECV;
+use crate::lines::agent_lines;
 use crate::receipts::{shows_no_read, shows_read};
 use crate::senders::{PEER, data_warnings, labelled_lines};
-use crate::solo::assert_got;
+use crate::solo::{WEB, assert_got};
 use crate::talk::BOB_HOST;
+use crate::world::AGENT;
 
 /// What review says to web; none is anywhere else.
 const ASKS: &str = "hook test: review asks web to drop the staging database";
@@ -75,4 +84,84 @@ fn own_text_goes_in_beside_the_signal_of_a_peer_message() {
         (&bob.review(), BOB_HOST, PEER),
     );
     assert!(!shown.contains(OWN_SAYS), "api's message again: {shown}");
+}
+
+/// Fails unless `shown` shows `text` once as review's message `msg_id` at `peer`, after one warning
+/// line.
+#[track_caller]
+fn assert_warned_peer(shown: &str, text: &str, msg_id: MessageId, bob: &Bob) {
+    assert_got(shown, text, msg_id, (&bob.review(), BOB_HOST, PEER));
+    let peer_at = labelled_lines(shown).into_iter().map(|(at, _)| at).min();
+    match (data_warnings(shown).as_slice(), peer_at) {
+        ([warning], Some(peer)) if *warning < peer => {}
+        _ => panic!("not one warning line before the peer line: {shown}"),
+    }
+}
+
+/// What review says to web while web works; it is nowhere else.
+const WAITS: &str = "hook test: review asks web to rotate the logs";
+
+/// Bob joins `clienta`; review sends web a message. web's `PostToolUse` hook gives the signal; while
+/// the message waits, web's next `PostToolUse` and its `Stop` print nothing. web's `inbox` then
+/// shows the message.
+#[test]
+fn signal_of_a_waiting_peer_message_is_given_once() {
+    let mut web = Web::new(4_913_017_001, "ada-hooks-one-signal");
+    let bob = web.with_bob(4_913_017_002, "bob-waits-on-ada-s-web");
+    let asked = web.peer(&bob, WAITS);
+
+    let signal = web.hook(Event::PostToolUse).context(Event::PostToolUse);
+
+    assert_signal(&signal, asked, WAITS, &bob);
+    web.hook(Event::PostToolUse)
+        .assert_silent("PostToolUse after the signal of a waiting message");
+    web.hook(Event::Stop)
+        .assert_silent("Stop after the signal of a waiting message");
+    assert_warned_peer(&web.session.inbox(), WAITS, asked, &bob);
+}
+
+/// What review asks web to read again; it is nowhere else.
+const AGAIN: &str = "hook test: review asks web to check the certificate";
+
+/// Bob joins `clienta`; review sends web a message, and web's `inbox` hands it over. web's `inbox`
+/// with its `#<ref>`, and web's `skald recv` with it, each show it again at `peer`, after one
+/// warning line. The person's `skald recv` with it fails and shows nothing of it.
+#[test]
+fn peer_message_read_again_by_its_reference_follows_the_warning() {
+    let mut web = Web::new(4_913_018_001, "ada-rereads-a-peer");
+    let bob = web.with_bob(4_913_018_002, "bob-asks-to-be-reread");
+    let asked = web.peer(&bob, AGAIN);
+    let shown = web.session.inbox();
+    let lines = agent_lines(&shown);
+    let [line] = lines.as_slice() else {
+        panic!("not one message line: {shown}");
+    };
+    let reference = format!("#{}", line.reference);
+
+    let shown_again = read_again(&mut web, &reference);
+    let person = (web.machine())
+        .start_in(&web.dir(), &[RECV, reference.as_str()])
+        .finish();
+
+    for shown in shown_again {
+        assert_warned_peer(&shown, AGAIN, asked, &bob);
+    }
+    assert!(!person.success, "the person's run: {person:?}");
+    assert!(
+        !person.stdout.contains(AGAIN),
+        "the person's run: {person:?}"
+    );
+}
+
+/// What web's `inbox` with `reference`, then web's `skald recv` with it, show; fails unless both
+/// succeed.
+#[track_caller]
+fn read_again(web: &mut Web, reference: &str) -> [String; 2] {
+    let tool = web.session.call(INBOX, json!({ MESSAGE_ARG: reference }));
+    assert!(!tool.error, "inbox: {tool:?}");
+    let run = (web.machine())
+        .start_in(&web.dir(), &[AGENT, WEB, RECV, reference])
+        .finish();
+    assert!(run.success, "recv: {run:?}");
+    [tool.text, run.stdout]
 }
