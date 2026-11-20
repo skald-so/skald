@@ -210,6 +210,10 @@ jobs:
     needs: changes
     if: github.event_name == 'push' || needs.changes.outputs.workspace == 'true'
     runs-on: windows-2025
+    env:
+      # The ephemeral ports: 10000-65534.
+      EPHEMERAL_START: 10000
+      EPHEMERAL_PORTS: 55535
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -249,6 +253,28 @@ jobs:
           Start-Service -InputObject $service
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Each connection a test's process, server or browser closes first holds its ephemeral port
+      # in TIME_WAIT for minutes; the client's tests close more than the 16,384 ports of Windows'
+      # range, and a connect then fails with WSAENOBUFS (10055). This runner gets a wider range. A
+      # process started here samples, every 10 s, how many of its ports TIME_WAIT holds.
+      - name: Widen the range of ephemeral ports
+        shell: pwsh
+        run: |
+          netsh int ipv4 set dynamicport tcp start=$env:EPHEMERAL_START num=$env:EPHEMERAL_PORTS
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          netsh int ipv6 set dynamicport tcp start=$env:EPHEMERAL_START num=$env:EPHEMERAL_PORTS
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $sampler = Join-Path $env:RUNNER_TEMP 'time-wait.ps1'
+          Set-Content -Path $sampler -Value @'
+          while ($true) {
+            @(Get-NetTCPConnection -State TimeWait -ErrorAction SilentlyContinue |
+              Where-Object LocalPort -ge $env:EPHEMERAL_START |
+              Sort-Object -Property LocalPort -Unique).Count |
+              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'time-wait.txt')
+            Start-Sleep -Seconds 10
+          }
+          '@
+          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test target shows. A
       # fresh runner's Credential Manager is the one key storage a test may use.
       - name: Test the client
@@ -258,6 +284,13 @@ jobs:
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           cargo test -p skald-client --locked --no-fail-fast
+      - name: Show the most ephemeral ports TIME_WAIT held
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $held = (Get-Content -Path (Join-Path $env:RUNNER_TEMP 'time-wait.txt') | ForEach-Object { [int]$_ } |
+            Measure-Object -Maximum).Maximum
+          "TIME_WAIT held at most $held of $env:EPHEMERAL_PORTS ephemeral ports"
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

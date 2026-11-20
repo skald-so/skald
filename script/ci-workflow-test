@@ -40,6 +40,10 @@
 //     the Actions cache before its tests, from where playwright-core keeps them on the runner's OS;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
+//   - before the tests, it widens Windows' range of ephemeral TCP ports, 16,384 by default, for IPv4
+//     and IPv6, with netsh, within 1025-65535;
+//   - a step after the tests, also when they fail, prints the most of those ports that TIME_WAIT
+//     held, which a process started before them samples;
 //   - a step after the tests, when they fail, prints the failures in PostgreSQL's log;
 //   - a step after the tests, also when they fail, fails the job when they left a skald-update-* or
 //     skald-client-* directory in the temporary directory.
@@ -497,6 +501,30 @@ for (const [k, until] of browserJobs) {
   if (!expanded(until).some((step) => String(step.uses ?? '').startsWith('actions/cache@') && step.with?.path === want)) {
     fail(`job ${k} does not restore ${want} from the Actions cache before its tests: they drive Chrome Headless Shell`);
   }
+}
+
+// A wider range of ephemeral ports before the tests, and the most of them TIME_WAIT held after them.
+const resolved = (value, step) => String(value).replace(/^\$env:(\w+)$/, (_, name) => String(step.env?.[name] ?? job.env?.[name] ?? ci.env?.[name] ?? ''));
+for (const ip of ['ipv4', 'ipv6']) {
+  const ranges = before.flatMap((step) =>
+    commands(step.run).flatMap((line) => {
+      const w = words(line);
+      if (w.slice(0, 6).join(' ') !== `netsh int ${ip} set dynamicport tcp`) return [];
+      const arg = (name) => Number(resolved(w.find((word) => word.startsWith(`${name}=`))?.slice(name.length + 1) ?? '', step));
+      return [[arg('start'), arg('num')]];
+    }),
+  );
+  if (!ranges.some(([start, num]) => start >= 1025 && num > 16384 && start + num - 1 <= 65535)) {
+    fail(`job ${key} does not widen the ${ip} range of ephemeral TCP ports past 16,384 within 1025-65535 before its tests`);
+  }
+}
+const sampled = before.some((step) => /\bStart-Process\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes("'time-wait.txt'"));
+const heldStep = steps.slice(testIndex + 1).find((step) => commands(step.run).join('\n').includes("'time-wait.txt'"));
+if (!sampled || !heldStep) {
+  fail(`job ${key} does not sample, from before its tests, the ephemeral ports TIME_WAIT holds, and print the most after them`);
+} else {
+  const scope = { ...states[key].scope, status: { success: false, always: true, failure: true, cancelled: false } };
+  if (truth(condition(heldStep.if ?? 'success()', scope)) !== true) fail(`the step of job ${key} that prints the most ports TIME_WAIT held does not run when the tests fail`);
 }
 
 // PostgreSQL's failures, printed after the tests when they fail.
