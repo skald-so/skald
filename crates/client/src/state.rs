@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
-use skald_proto::{ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
+use skald_proto::{AccountId, ChannelId, DeviceId, MessageId, Scheme, SpaceId, WrapRecipient};
 
 use crate::gaps::{Counters, Source};
 
@@ -400,6 +400,18 @@ const MIGRATIONS: &[&str] = &[
         last INTEGER NOT NULL CHECK (last >= 1),
         PRIMARY KEY (channel, recipient)
     ) STRICT",
+    // The history through the recovery key: the account record the device took of each member
+    // account of its spaces ([`crate::records`]), in CBOR; and, on a device linked with the
+    // recovery key, each epoch of a channel whose key a wrap to it gave the device.
+    "CREATE TABLE account_record (
+        account TEXT PRIMARY KEY,
+        record BLOB NOT NULL
+    ) STRICT;
+    CREATE TABLE recovered_epoch (
+        channel TEXT NOT NULL,
+        epoch INTEGER NOT NULL CHECK (epoch >= 1),
+        PRIMARY KEY (channel, epoch)
+    ) STRICT;",
     // Where the device's messages are (`skald message-status`): for each channel message it sent,
     // how long it keeps their statuses after the server stored it, in seconds, when the device took
     // the server's `stored`, none before, and when its `to` agent's `read` and `replied` came; and
@@ -431,10 +443,14 @@ const MIGRATIONS: &[&str] = &[
 pub const OWN_FIRST: u64 = 1 << 62;
 
 /// The state directory: `dir` if given, otherwise the platform's directory for the user's
-/// application state.
+/// application state; an empty path, which it never opens, for a stateless service agent's run,
+/// which may have no such directory, as on Windows without `LOCALAPPDATA`.
 pub fn dir(given: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(dir) = given {
         return Ok(dir);
+    }
+    if crate::service::stateless() {
+        return Ok(PathBuf::new());
     }
     let var = |name| std::env::var_os(name).filter(|value| !value.is_empty());
     #[cfg(windows)]
@@ -752,6 +768,8 @@ pub struct MlsChanges {
     /// The channel messages of [`MlsChanges::messages`] that the device keeps for itself once
     /// the server stores them; each one's `seq` becomes the last it gave.
     pub own: Vec<OwnMessage>,
+    /// Each epoch of a channel whose key a wrap to the recovery key gave the device.
+    pub recovered: Vec<(ChannelId, u64)>,
     /// Where the channel messages of [`MlsChanges::messages`] go, which the device keeps until
     /// their wait ends.
     pub tracked: Vec<Tracked>,
@@ -822,6 +840,7 @@ impl MlsChanges {
             && self.entries.is_empty()
             && self.issued.is_empty()
             && self.own.is_empty()
+            && self.recovered.is_empty()
             && self.tracked.is_empty()
     }
 }
@@ -879,6 +898,14 @@ impl State {
                 "the journal mode stays {mode:?}, not WAL"
             )));
         }
+        migrate(&mut db)?;
+        Ok(State { db })
+    }
+
+    /// A new state in memory only, with the latest schema: no file, temporary ones included.
+    pub fn in_memory() -> Result<Self, Error> {
+        let mut db = Connection::open_in_memory()?;
+        db.pragma_update(None, "temp_store", "memory")?;
         migrate(&mut db)?;
         Ok(State { db })
     }
@@ -1276,6 +1303,13 @@ impl State {
             for own in &changes.own {
                 add_own(&tx, own)?;
             }
+            for (channel, epoch) in &changes.recovered {
+                tx.execute(
+                    "INSERT INTO recovered_epoch (channel, epoch) VALUES (?1, ?2)
+                     ON CONFLICT DO NOTHING",
+                    params![channel.to_string(), sql_u64(*epoch)?],
+                )?;
+            }
             for tracked in &changes.tracked {
                 add_tracked(&tx, tracked)?;
             }
@@ -1327,6 +1361,38 @@ impl State {
         (rows.into_iter())
             .map(|(epoch, clean)| Ok((read_epoch(channel, epoch)?, clean)))
             .collect()
+    }
+
+    /// The epochs of `channel` whose key a wrap to the recovery key gave the device
+    /// ([`MlsChanges::recovered`]).
+    pub fn recovered_epochs(&self, channel: ChannelId) -> Result<BTreeSet<u64>, Error> {
+        let sql = "SELECT epoch FROM recovered_epoch WHERE channel = ?1";
+        let rows = self.of_channel(sql, channel, |row| row.get::<_, i64>(0))?;
+        (rows.into_iter())
+            .map(|epoch| read_epoch(channel, epoch))
+            .collect()
+    }
+
+    /// The account record the device took of `account` ([`crate::records`]), in CBOR.
+    pub fn account_record(&self, account: AccountId) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT record FROM account_record WHERE account = ?1",
+                params![account.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Keeps `record`, in CBOR, as the account record the device took of `account`.
+    pub fn set_account_record(&self, account: AccountId, record: &[u8]) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO account_record (account, record) VALUES (?1, ?2)
+             ON CONFLICT (account) DO UPDATE SET record = excluded.record",
+            params![account.to_string(), record],
+        )?;
+        Ok(())
     }
 
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
@@ -3130,16 +3196,33 @@ pub(crate) mod tests {
         })
     }
 
+    /// The value of the pragma `name` in `state`, its column `column`.
+    fn pragma<T: rusqlite::types::FromSql>(state: &State, name: &str, column: usize) -> T {
+        (state.db)
+            .query_row(&format!("PRAGMA {name}"), [], |row| row.get(column))
+            .unwrap()
+    }
+
     #[test]
     fn new_state_has_the_latest_schema_and_no_session() {
         let dir = TestDir::new("state-new");
         let state = State::open(&dir).expect("open");
-        let version: u32 = state
-            .db
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .unwrap();
+        let version: u32 = pragma(&state, "user_version", 0);
         assert_eq!(version as usize, MIGRATIONS.len());
         assert_eq!(state.session().unwrap(), None);
+    }
+
+    #[test]
+    fn state_in_memory_has_the_latest_schema_and_keeps_temporaries_in_memory() {
+        let state = State::in_memory().expect("open");
+        let version: u32 = pragma(&state, "user_version", 0);
+        assert_eq!(version as usize, MIGRATIONS.len());
+        let file: String = pragma(&state, "database_list", 2);
+        assert_eq!(file, "", "an in-memory database has no file");
+        let temp_store: u32 = pragma(&state, "temp_store", 0);
+        assert_eq!(temp_store, 2, "temporary tables and indices stay in memory");
+        state.start_session("http://one.test").unwrap();
+        assert!(state.session().unwrap().is_some());
     }
 
     #[test]

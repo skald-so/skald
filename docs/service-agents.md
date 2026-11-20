@@ -42,9 +42,25 @@ skald revoke-service-token acme <token ID>
 - A revoked or expired token is refused at once.
 - A member agent's token needs `receive`; a token without it is refused.
 
-## Running a member agent
+## Running an agent
 
-With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`; other commands are refused. The space is the key secret's, whatever the working directory.
+With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
+
+### Running without a disk
+
+```sh
+skald recv
+skald send --all --channel <channel> "rollout started"
+```
+
+- A run keeps its state in memory only: nothing goes to the disk, temporary files, the key store or a helper.
+- It is a member of no MLS group. It seals each message under `hpke` to every member device of the channel ([Send](protocol/delivery.md#send)) and fails unless the server stores each copy within the run.
+- `skald recv` shows each message before it acks it. A run that dies in between shows the message again at the next one. Without counters, it does no gap detection.
+- Over long-poll, when a proxy blocks WebSocket and streaming, a `skald recv` run takes one long-poll answer: up to the server's limit per answer. Run it again for the rest.
+- `skald recv --wait` needs a state directory and is refused.
+- It starts the space's roster from the latest revision its account's devices accepted ([Anchors](protocol/membership.md#anchors)).
+
+### Running a member agent
 
 ```sh
 export SKALD_STATE_DIR=/var/lib/deploy-bot   # the agent's state; skald creates it

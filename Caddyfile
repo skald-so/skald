@@ -16,7 +16,8 @@
 		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
-		path /spaces/*/channels/*/history/wraps /spaces/*/devices /spaces/*/members
+		path /spaces/*/channels/*/history/wraps /spaces/*/channels/*/presence /spaces/*/devices
+		path /spaces/*/members
 		path /spaces/*/revisions /spaces/*/service-grants /spaces/*/service-tokens
 		path /spaces/*/service-tokens/* /spaces/*/usage
 		path /ws

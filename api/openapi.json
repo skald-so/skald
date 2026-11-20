@@ -4034,7 +4034,7 @@
       "post": {
         "operationId": "sendEnvelope",
         "summary": "Send an envelope",
-        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`. An `hpke` envelope to a `service` device is stored only while a token of that device that has not ended and has the `receive` permission lists the channel: otherwise `send-refused` with `unknown-recipient`.",
+        "description": "A device that keeps no WebSocket sends an envelope, as `send` on a WebSocket does (docs/protocol/delivery.md, \"Send\"): the same answers, idempotency and order. A service token's device sends only with the `send` permission, in a channel of the token: otherwise `send-refused` with `not-a-member`. An `hpke` envelope to a `service` device is stored only while a token of that device that has not ended and has the `receive` permission lists the channel: otherwise `send-refused` with `unknown-recipient`. With the server's send rate limit, a message past its device's rate, over a WebSocket or here, gets `send-refused` with `rate-limited`; a handshake message never does.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -5596,6 +5596,294 @@
         }
       }
     },
+    "/spaces/{space}/channels/{channel}/presence": {
+      "get": {
+        "operationId": "getPresence",
+        "summary": "The channel's presence values",
+        "description": "The presence value of each device in the channel, the latest the server took, as its device uploaded it (docs/protocol/agents.md, \"Presence\"). Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a member device of the channel's current epoch, in the channel in the space's latest revision, or, for a service token's device, with the token's `send` permission for the channel.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's presence values, in no particular order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PresenceValues"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "uploadPresence",
+        "summary": "Upload the device's presence value",
+        "description": "Keeps the device's presence value in the channel in place of its previous one (docs/protocol/agents.md, \"Presence\", \"Uploads\"): only from a member device of the channel's current epoch, with `device` itself, `channel` the path's and `epoch` the current one. A service token's device uploads only in a channel of the token. The server keeps the value until the device uploads another, a Commit removes the device from the group, or the device is revoked.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An encoded `presence` value.",
+          "content": {
+            "application/cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/PresenceValue"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Kept as the device's value in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a body that is not a `presence` value of the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the value names another device, the device is not a member of the channel's current epoch, or the service token does not list the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`epoch-mismatch`: the value is not of the channel's current epoch.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`too-large`: the value's `ct` is over 65552 bytes, 16 blocks of 4096 and the tag.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/devices": {
       "get": {
         "operationId": "getSpaceDevices",
@@ -5621,7 +5909,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none, and those accounts' revocations.",
+            "description": "The devices of the accounts the space's revisions list, each with its certificate as the device sent it, or `null` while it has none, those accounts' revocations and their account records.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5630,7 +5918,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Devices"
+                  "$ref": "#/components/schemas/SpaceDevices"
                 }
               }
             }
@@ -7716,6 +8004,26 @@
         },
         "additionalProperties": false
       },
+      "PresenceValue": {
+        "description": "An encoded `presence` value (docs/protocol/agents.md, \"Presence\").",
+        "type": "string",
+        "format": "binary"
+      },
+      "PresenceValues": {
+        "type": "object",
+        "required": ["values"],
+        "properties": {
+          "values": {
+            "type": "array",
+            "items": {
+              "description": "An encoded `presence` value (docs/protocol/agents.md, \"Presence\"), in base64url without padding (RFC 4648, §5).",
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Problem": {
         "description": "A problem details object (RFC 9457).",
         "type": "object",
@@ -8121,6 +8429,33 @@
           },
           "name": {
             "$ref": "#/components/schemas/SpaceName"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpaceDevices": {
+        "type": "object",
+        "required": ["devices", "revocations", "records"],
+        "properties": {
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          },
+          "revocations": {
+            "description": "The stored revocations of the listed devices' accounts, each as the server got it, once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revocation"
+            }
+          },
+          "records": {
+            "description": "The account record of each of those accounts that has one, as its first device sent it, once; an account whose master key came before account records has none.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountRecord"
+            }
           }
         },
         "additionalProperties": false

@@ -334,7 +334,7 @@ pub(crate) async fn revisions(State(state): State<AppState>, Readable(space): Re
 }
 
 /// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
-/// accounts' revocations.
+/// accounts' revocations and account records.
 pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Readable) -> Answer {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
@@ -346,7 +346,17 @@ pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Read
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
     let revocations = revocations::of_space(&state.db, space).await?;
-    Ok(Json(Devices::of(listed, &revocations)).into_response())
+    let records: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT record FROM accounts
+         WHERE record IS NOT NULL
+           AND id IN (SELECT account_id FROM roster_members WHERE space_id = $1::uuid)
+         ORDER BY id",
+    )
+    .bind(space.to_string())
+    .fetch_all(&state.db)
+    .await
+    .map_err(|err| Refusal::Database("read the space's account records", err))?;
+    Ok(Json(Devices::of(listed, &revocations).with_records(&records)).into_response())
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app

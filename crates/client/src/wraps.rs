@@ -1,66 +1,85 @@
-//! The wraps of the history keys of each channel on this device to the linked browsers of its
-//! members (`docs/protocol/membership.md`, "Wraps" and "Uploads").
+//! The wraps of the history keys of each channel on this device to the recovery keys and the linked
+//! browsers of its members (`docs/protocol/membership.md`, "Wraps" and "Uploads").
 //!
-//! - The device wraps the key of each epoch it judged clean ([`crate::key_chain`]) to each
-//!   `browser` device with a valid certificate of an account among the channel's members, unless
-//!   that member's `excluded` in the space's last revision the device accepted lists it: sealed to
-//!   the browser's `hpke` key and signed by the device.
+//! - The device wraps the key of each epoch it judged clean ([`crate::key_chain`]) to the recovery
+//!   key of each account among the channel's members in the space's last revision the device
+//!   accepted, sealed to the recovery HPKE key of the account record it took ([`crate::records`]),
+//!   none for an account without one; and to each `browser` device with a valid certificate of
+//!   those accounts, unless that member's `excluded` there lists it, sealed to the browser's `hpke`
+//!   key. The device signs each wrap.
 //! - Once its Commit is stored, the device uploads the new epoch's wraps. After its catch-up, it
 //!   uploads the wraps of the current epoch that the server lacks, of the channels whose last
 //!   accepted revision lists its account, so a browser linked later gets them.
-//! - It does not upload again a wrap the server took from it, listed to it or refused.
+//! - It does not upload again a wrap the server took from it, listed to it or refused. Off
+//!   WebSocket, which alone carries them, the wraps wait for a later run on one, with no warning.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use skald_crypto::{MlsDevice, SigningKey};
 use skald_proto::{
-    Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, HistoryItem, HistoryWrap, SpaceId,
-    WrapRecipient,
+    Cbor as _, Cert, ChannelId, DeviceKind, HistoryItem, HistoryWrap, SpaceId, WrapRecipient,
 };
 
 use crate::connection::printable;
 use crate::devices::text;
 use crate::groups::{self, Link};
-use crate::key_chain;
+use crate::key_chain::{self, Left};
+use crate::records;
 use crate::spaces::{Follower, Scope};
 use crate::state::State;
 
-/// A wrap of an epoch's key the device may upload: of `epoch` of `channel` in `space`, to the
-/// browser `browser` with its certificate's `hpke` key.
+/// A wrap of an epoch's key the device may upload: of `epoch` of `channel` in `space`, to
+/// `recipient`, sealed to its HPKE public key `hpke`.
 struct Due {
     space: SpaceId,
     channel: ChannelId,
     epoch: u64,
-    browser: DeviceId,
+    recipient: WrapRecipient,
     hpke: [u8; 32],
 }
 
 /// A wrap by its epoch and recipient.
 type Held = (u64, WrapRecipient);
 
-/// The browsers that get wraps of `channel` in `space`, each with its certificate's `hpke` key, by
-/// the space's last revision the run accepted: those with a valid certificate of the accounts of
-/// the channel's members that their member's `excluded` does not list. None if the run accepted
-/// no revision of the space.
-fn browsers(follower: &Follower, space: SpaceId, channel: ChannelId) -> Vec<(DeviceId, [u8; 32])> {
+/// The recipients of the wraps of `channel` in `space`, each with its HPKE public key, by the
+/// space's last revision the run accepted: of each account among the channel's members, its
+/// recovery key, by the record the device takes of it, and its browsers with a valid certificate
+/// that its member's `excluded` does not list. None if the run accepted no revision of the space;
+/// warns of a record the state fails to give.
+fn recipients(
+    follower: &Follower,
+    space: SpaceId,
+    channel: ChannelId,
+) -> BTreeMap<WrapRecipient, [u8; 32]> {
+    let mut recipients = BTreeMap::new();
     let Some((roster, devices)) = follower.accepted.get(&space) else {
-        return Vec::new();
+        return recipients;
     };
     let body = roster.body();
     let Some(listed) = body.channels.iter().find(|listed| listed.id == channel) else {
-        return Vec::new();
+        return recipients;
     };
-    (listed.members.iter())
-        .filter_map(|entry| body.member(entry.account))
-        .flat_map(|member| devices.of(roster, &follower.own, member))
-        .map(Cert::body)
-        .filter(|cert| cert.kind == DeviceKind::Browser)
-        .map(|cert| (cert.device, cert.hpke))
-        .collect()
+    for member in (listed.members.iter()).filter_map(|entry| body.member(entry.account)) {
+        let account = member.account;
+        match records::of(&follower.state, (roster, devices), &follower.own, account) {
+            Ok(Some(record)) => {
+                recipients.insert(WrapRecipient::Recovery(account), record.body().recovery);
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("skald: warning: {err}"),
+        }
+        let browsers = (devices.of(roster, &follower.own, member).into_iter())
+            .map(Cert::body)
+            .filter(|cert| cert.kind == DeviceKind::Browser);
+        for cert in browsers {
+            recipients.insert(WrapRecipient::Browser(cert.device), cert.hpke);
+        }
+    }
+    recipients
 }
 
-/// The wraps of `epoch` of `channel` in `space` the device may upload: to each of [`browsers`] if
-/// the device judged the epoch clean, unless settled.
+/// The wraps of `epoch` of `channel` in `space` the device may upload: to each of [`recipients`]
+/// if the device judged the epoch clean, unless settled.
 fn due(follower: &Follower, (space, channel): (SpaceId, ChannelId), epoch: u64) -> Vec<Due> {
     let Some((judgments, settled)) = key_chain::judged(follower, channel, State::settled_wraps)
     else {
@@ -69,13 +88,13 @@ fn due(follower: &Follower, (space, channel): (SpaceId, ChannelId), epoch: u64) 
     if judgments.get(&epoch) != Some(&true) {
         return Vec::new();
     }
-    (browsers(follower, space, channel).into_iter())
-        .filter(|(browser, _)| !settled.contains(&(epoch, WrapRecipient::Browser(*browser))))
-        .map(|(browser, hpke)| Due {
+    (recipients(follower, space, channel).into_iter())
+        .filter(|(recipient, _)| !settled.contains(&(epoch, *recipient)))
+        .map(|(recipient, hpke)| Due {
             space,
             channel,
             epoch,
-            browser,
+            recipient,
             hpke,
         })
         .collect()
@@ -87,7 +106,7 @@ fn seal(device: &MlsDevice, signer: &SigningKey, due: &[Due]) -> Vec<(SpaceId, H
     (due.iter())
         .filter_map(|due| {
             let key = device.history_key(due.channel, due.epoch)?;
-            let recipient = WrapRecipient::Browser(due.browser);
+            let recipient = due.recipient;
             match key.wrap(due.channel, due.epoch, recipient, &due.hpke, signer) {
                 Ok(wrap) => Some((due.space, wrap)),
                 Err(err) => {
@@ -140,11 +159,9 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
             continue;
         }
         match held_wraps(follower, at) {
-            Ok(held) => {
-                missing.extend(due.into_iter().filter(|due| {
-                    !held.contains(&(due.epoch, WrapRecipient::Browser(due.browser)))
-                }))
-            }
+            Ok(held) => missing.extend(
+                (due.into_iter()).filter(|due| !held.contains(&(due.epoch, due.recipient))),
+            ),
             Err(err) => eprintln!(
                 "skald: warning: the wraps of the channel {} the server holds are not checked: \
                  {err}; the next run checks them",
@@ -202,7 +219,7 @@ fn upload(follower: &mut Follower, link: &mut Link, wraps: Vec<(SpaceId, History
             )
         })
         .collect();
-    let unanswered = key_chain::upload_items(
+    let left = key_chain::upload_items(
         follower,
         link,
         items,
@@ -220,6 +237,11 @@ fn upload(follower: &mut Follower, link: &mut Link, wraps: Vec<(SpaceId, History
                 .map_err(text)
         },
     );
+    // Off WebSocket they wait for a run on one unsaid: each run of the person's would say it, and
+    // what a run says ends the person's `skald recv --wait`.
+    let Left::Unanswered(unanswered) = left else {
+        return;
+    };
     let unanswered: BTreeSet<(ChannelId, u64)> = (unanswered.into_iter())
         .map(|(channel, (epoch, _))| (channel, epoch))
         .collect();

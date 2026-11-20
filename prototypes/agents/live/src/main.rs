@@ -3,6 +3,7 @@
 //! `script/test` does not run them.
 
 mod app;
+mod before_run;
 mod gui_run;
 mod pty;
 mod read_run;
@@ -14,6 +15,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
+use agent_live::before::Before;
 use agent_live::gui::{GuiPath, Surface};
 use agent_live::hook::{self, Hook};
 use agent_live::wake::Wake;
@@ -45,6 +47,15 @@ fn main() -> ExitCode {
                 return usage();
             };
             ended(wake_run::wake(wake, &options))
+        }
+        [name, "claude", options @ ..] if Before::parse(name).is_some() => {
+            let (Some(check), Some(options)) = (
+                Before::parse(name),
+                Options::parse(options).filter(|options| !options.all),
+            ) else {
+                return usage();
+            };
+            ended(before_run::run(check, &options))
         }
         ["ack", agent, options @ ..] => agent_check(agent, options, read_run::ack),
         ["transcript", agent, options @ ..] => agent_check(agent, options, read_run::transcript),
@@ -191,6 +202,7 @@ fn usage() -> ExitCode {
          live-check <socket|rewake|mod|loop> claude [--all] [--real] [--model <model>] [--keep]\n       \
          live-check <ack|transcript> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check resend claude [--all] [--model <model>] [--keep]\n       \
+         live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]\n       \
          live-check limits <claude|codex> [--keep]\n       \
          live-check status-line claude [--model <model>] [--keep]\n       \
          live-check gui <inbox|post-tool-use|stop> <claude-desktop|claude-vscode> [--busy]\n       \
