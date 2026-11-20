@@ -6,16 +6,20 @@
 //! acks its cursor and answers a `batch` of the entries after it and the notices since the device's
 //! previous long-poll answer, at once or with the first to come within its wait.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use axum::Extension;
 use axum::body::{Body, Bytes};
-use axum::extract::{RawQuery, State};
+use axum::extract::{FromRequestParts, Path, RawQuery, State};
+use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use skald_proto::{Cbor as _, DeviceId, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof};
+use skald_proto::{
+    Cbor as _, ChannelId, DeviceId, Frame, PROOF_HEADER, Push, REQUEST_LABEL, RequestProof, SpaceId,
+};
 use sqlx::PgPool;
 
 use crate::connections::{self, Closing, LISTEN_WAIT, NOT_LISTENING, Proof, Proved, Unproved};
@@ -269,6 +273,71 @@ pub(crate) async fn prove(state: &AppState, headers: &HeaderMap) -> Result<Prove
             Unproved::Refused(closing) => refusal(closing),
             Unproved::Failed(doing, err) => database_failed(doing, err),
         })
+}
+
+/// A request of a channel's, at `/spaces/{space}/channels/{channel}/...`, with its device proved as
+/// [`prove`] proves it; refused if the server does not prove it, or the path names no space or
+/// channel ID.
+pub(crate) struct InChannel {
+    pub(crate) proved: Proved,
+    pub(crate) space: SpaceId,
+    pub(crate) channel: ChannelId,
+}
+
+impl FromRequestParts<AppState> for InChannel {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        let proved = prove(state, &parts.headers).await?;
+        let Path(params) = Path::<HashMap<String, String>>::from_request_parts(parts, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        let id = |name: &str| params.get(name).map(String::as_str).unwrap_or_default();
+        match (id("space").parse(), id("channel").parse()) {
+            (Ok(space), Ok(channel)) => Ok(InChannel {
+                proved,
+                space,
+                channel,
+            }),
+            _ => Err(problem(
+                StatusCode::NOT_FOUND,
+                "no-channel",
+                "No such channel",
+                "The path names no space or channel ID.",
+            )),
+        }
+    }
+}
+
+impl InChannel {
+    /// Whether its device may send in its channel ("Send"): with its token's send permission for
+    /// the channel, or, without a token, in the channel in the space's latest revision.
+    pub(crate) async fn sends(&self, db: &PgPool) -> Result<bool, sqlx::Error> {
+        let proved = &self.proved;
+        Ok(match &proved.token {
+            Some(token) => token.sends_in(self.space, self.channel),
+            None => (mailboxes::latest(db, self.space).await?).is_some_and(|roster| {
+                let body = roster.body();
+                (body
+                    .channels
+                    .iter()
+                    .find(|listed| listed.id == self.channel))
+                .is_some_and(|listed| {
+                    mailboxes::in_channel(body, listed, proved.account, proved.device)
+                })
+            }),
+        })
+    }
+}
+
+/// `not-a-member`, for the reason `detail`.
+pub(crate) fn not_a_member(detail: &str) -> Response {
+    problem(
+        StatusCode::FORBIDDEN,
+        "not-a-member",
+        "Not a member",
+        detail,
+    )
 }
 
 /// Whether the token of a device session, or a service token that has not ended, has the SHA-256

@@ -529,6 +529,7 @@ pub(crate) struct Token {
     pub(crate) account: AccountId,
     send: bool,
     receive: bool,
+    queues: bool,
     channels: Vec<ChannelId>,
     /// Seconds since the Unix epoch.
     pub(crate) expires: u64,
@@ -543,6 +544,12 @@ impl Token {
     /// Whether its device sends in `channel` of `space` with it.
     pub(crate) fn sends_in(&self, space: SpaceId, channel: ChannelId) -> bool {
         self.send && self.lists(space, channel)
+    }
+
+    /// Whether its device enqueues in `channel` of `space` with it: it sends there and works on its
+    /// queues.
+    pub(crate) fn enqueues_in(&self, space: SpaceId, channel: ChannelId) -> bool {
+        self.queues && self.sends_in(space, channel)
     }
 
     /// Whether its device reads and acks its mailbox with it.
@@ -592,6 +599,7 @@ pub(crate) async fn live(db: &PgPool, hash: &[u8]) -> Result<Option<Token>, sqlx
             receive: permissions
                 .iter()
                 .any(|p| p == Permission::Receive.as_str()),
+            queues: permissions.iter().any(|p| p == Permission::Queues.as_str()),
             channels: channels
                 .iter()
                 .map(|channel| channel.parse().expect("a stored channel ID"))

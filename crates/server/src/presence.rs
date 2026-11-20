@@ -8,16 +8,15 @@
 
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use skald_proto::{Cbor as _, ChannelId, DeviceId, Presence, SpaceId};
 use sqlx::{PgConnection, PgPool};
 
-use crate::connections::Proved;
 use crate::devices::base64;
-use crate::mailboxes::{in_channel, latest, receiving};
-use crate::requests::{invalid, prove};
+use crate::mailboxes::receiving;
+use crate::requests::{self, InChannel, invalid};
 use crate::{AppState, database_failed, problem};
 
 /// The longest `ct` the server takes: 16 blocks of 4096 bytes and the tag.
@@ -30,22 +29,15 @@ type Refused = Box<Response>;
 
 /// `PUT /spaces/<space>/channels/<channel>/presence`: keeps the body, a `presence` value, as the
 /// proving device's latest in the channel, in place of the one before.
-pub(crate) async fn upload(
-    State(state): State<AppState>,
-    Path(path): Path<(String, String)>,
-    headers: HeaderMap,
-    body: Body,
-) -> Response {
-    let proved = match prove(&state, &headers).await {
-        Ok(proved) => proved,
-        Err(refused) => return refused,
-    };
+pub(crate) async fn upload(State(state): State<AppState>, at: InChannel, body: Body) -> Response {
     let Ok(body) = axum::body::to_bytes(body, BODY_LIMIT).await else {
         return too_large();
     };
-    let Some((space, channel)) = ids(&path) else {
-        return no_channel();
-    };
+    let InChannel {
+        proved,
+        space,
+        channel,
+    } = at;
     let Ok(value) = Presence::from_cbor(&body) else {
         return invalid("The body is not a presence value.");
     };
@@ -132,66 +124,35 @@ async fn current(
 
 /// `GET /spaces/<space>/channels/<channel>/presence`: the channel's values, as the bytes the server
 /// got, base64url without padding, for a device that may send in the channel.
-pub(crate) async fn given(
-    State(state): State<AppState>,
-    Path(path): Path<(String, String)>,
-    headers: HeaderMap,
-) -> Response {
-    let proved = match prove(&state, &headers).await {
-        Ok(proved) => proved,
-        Err(refused) => return refused,
-    };
-    let Some((space, channel)) = ids(&path) else {
-        return no_channel();
-    };
-    match values(&state, &proved, space, channel).await {
+pub(crate) async fn given(State(state): State<AppState>, at: InChannel) -> Response {
+    match values(&state, &at).await {
         Ok(Some(values)) => Json(serde_json::json!({ "values": values })).into_response(),
         Ok(None) => not_a_member(),
         Err(err) => database_failed("read a channel's presence", err),
     }
 }
 
-/// The values of `channel` of `space`, base64url without padding, if `proved`'s device may send in
-/// it.
-async fn values(
-    state: &AppState,
-    proved: &Proved,
-    space: SpaceId,
-    channel: ChannelId,
-) -> Result<Option<Vec<String>>, sqlx::Error> {
-    if !sends(state, proved, space, channel).await? {
+/// The values of `at`'s channel, base64url without padding, if its device may send in it.
+async fn values(state: &AppState, at: &InChannel) -> Result<Option<Vec<String>>, sqlx::Error> {
+    if !sends(state, at).await? {
         return Ok(None);
     }
     let values: Vec<(Vec<u8>,)> =
         sqlx::query_as("SELECT value FROM presence_values WHERE channel_id = $1::uuid")
-            .bind(channel.to_string())
+            .bind(at.channel.to_string())
             .fetch_all(&state.db)
             .await?;
     Ok(Some(values.iter().map(|(bytes,)| base64(bytes)).collect()))
 }
 
-/// Whether `proved`'s device may send in `channel` of `space` ("Send"): with its token's send
-/// permission for the channel, or, without a token, in the channel in the space's latest revision;
-/// and a member of the channel's current epoch.
-async fn sends(
-    state: &AppState,
-    proved: &Proved,
-    space: SpaceId,
-    channel: ChannelId,
-) -> Result<bool, sqlx::Error> {
-    let allowed = match &proved.token {
-        Some(token) => token.sends_in(space, channel),
-        None => latest(&state.db, space).await?.is_some_and(|roster| {
-            let body = roster.body();
-            (body.channels.iter().find(|listed| listed.id == channel))
-                .is_some_and(|listed| in_channel(body, listed, proved.account, proved.device))
-        }),
-    };
-    if !allowed {
+/// Whether `at`'s device may send in its channel ([`InChannel::sends`]) and is a member of the
+/// channel's current epoch.
+async fn sends(state: &AppState, at: &InChannel) -> Result<bool, sqlx::Error> {
+    if !at.sends(&state.db).await? {
         return Ok(false);
     }
     let mut tx = state.db.begin().await?;
-    let member = current(&mut tx, space, channel, proved.device).await?;
+    let member = current(&mut tx, at.space, at.channel, at.proved.device).await?;
     tx.commit().await?;
     Ok(member.is_some())
 }
@@ -223,16 +184,8 @@ pub(crate) async fn revoked(tx: &mut PgConnection, devices: &[String]) -> Result
     Ok(())
 }
 
-/// The space and channel of the path's parameters, if they are IDs.
-fn ids((space, channel): &(String, String)) -> Option<(SpaceId, ChannelId)> {
-    Some((space.parse().ok()?, channel.parse().ok()?))
-}
-
 fn not_a_member() -> Response {
-    problem(
-        StatusCode::FORBIDDEN,
-        "not-a-member",
-        "Not a member",
+    requests::not_a_member(
         "The device is not a member of the channel's current epoch, or may not do this in it.",
     )
 }
@@ -243,14 +196,5 @@ fn too_large() -> Response {
         "too-large",
         "Value too large",
         "The presence value's ct is over 65552 bytes.",
-    )
-}
-
-fn no_channel() -> Response {
-    problem(
-        StatusCode::NOT_FOUND,
-        "no-channel",
-        "No such channel",
-        "The path names no space or channel ID.",
     )
 }

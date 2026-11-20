@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use skald_proto::ServerName;
@@ -41,6 +41,7 @@ mod notices;
 mod oidc;
 mod presence;
 mod protocol;
+mod queues;
 mod refusal;
 mod requests;
 mod revocations;
@@ -130,8 +131,8 @@ pub struct Settings {
     /// How long the server keeps a channel's history entries, up to 100 years
     /// (`docs/protocol/membership.md`, "Uploads"); without it, the history is kept for good.
     pub history_retention: Option<Duration>,
-    /// The longest payload of an envelope, in bytes (`docs/dev/architecture.md`, "Cloud limits"); no
-    /// limit without it.
+    /// The longest payload of an envelope, and `ct` of a task, in bytes (`docs/dev/architecture.md`,
+    /// "Cloud limits"); no limit without it.
     pub message_size_limit: Option<u64>,
     /// The number of messages a space stores per calendar month in UTC (`docs/dev/architecture.md`,
     /// "Cloud limits"); no limit without it.
@@ -411,6 +412,28 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(presence::given)
                 .put(presence::upload)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues",
+            get(queues::list)
+                .post(queues::create)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}",
+            patch(queues::change)
+                .delete(queues::delete)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks",
+            get(queues::tasks)
+                .post(queues::enqueue)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}",
+            get(queues::task).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",

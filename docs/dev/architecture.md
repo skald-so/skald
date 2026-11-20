@@ -212,7 +212,7 @@ The public cloud applies these limits; a self-hosted server does not.
 | Service agents per space | 10: the server setting `--service-agents-limit` (`SKALD_SERVICE_AGENTS_LIMIT`), service agent entries in the space's latest revision; a revision that adds entries beyond it is refused, one that keeps or lowers their number is taken; unset, no limit |
 | Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes, a handshake message ([Mailbox](../protocol/delivery.md#mailbox)) not at all; unset, no limit |
 | Messages per device | 120 per minute: the server setting `--send-rate-limit` (`SKALD_SEND_RATE_LIMIT`), messages one device stores within a sliding window of `--send-rate-window` (`SKALD_SEND_RATE_WINDOW`) seconds, a minute unset, counted as the messages per space, across the server's instances; unset, no limit |
-| Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), the payload in bytes; unset, no limit |
+| Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), an envelope's payload or a task's `ct` in bytes; unset, no limit |
 | Attachment | 10 MB |
 | Undelivered messages kept | 7 days: the server setting `--mailbox-retention` (`SKALD_MAILBOX_RETENTION`), in seconds; unset, until delivered or the envelope's `ttl` ends |
 | History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |
