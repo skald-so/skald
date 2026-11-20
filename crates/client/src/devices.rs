@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{ChainProblem, DeviceCheckError, check_device, check_valid_device};
-use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, Revocation, VersionRange};
+use skald_proto::{AccountRecord, Cbor as _, Cert, DeviceId, DeviceKind, Revocation, VersionRange};
 
 use crate::connection::{self, Connection, printable};
 use crate::follow::SpaceDevices;
@@ -25,12 +25,14 @@ use crate::state::{self, Link, State, StatusChange};
 /// What `skald devices` and `skald set-username` say when the machine has no session.
 const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
 
-/// `Devices` in the API spec.
+/// `Devices` in the API spec, or `SpaceDevices` with its `records`.
 #[derive(Deserialize)]
 struct Devices {
     devices: Vec<Entry>,
     #[serde(default)]
     revocations: Vec<String>,
+    #[serde(default)]
+    records: Vec<String>,
 }
 
 /// `Device` in the API spec: anything else the server gives with it, such as a name, is ignored.
@@ -184,10 +186,17 @@ pub fn fetch(
         Revocation::from_cbor(&bytes).ok()
     });
     let revocations = revocations::with_held(state, given)?;
+    let records = (devices.records.iter())
+        .filter_map(|text| {
+            let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
+            AccountRecord::from_cbor(&bytes).ok()
+        })
+        .collect();
     Ok(SpaceDevices {
         ids,
         certs,
         revocations,
+        records,
     })
 }
 
@@ -279,6 +288,7 @@ pub fn check<'c>(master: &[u8; 32], devices: &'c SpaceDevices) -> Checked<'c> {
         ids,
         certs,
         revocations,
+        ..
     } = devices;
     let mut checked = Checked {
         linked: Vec::new(),
@@ -418,6 +428,7 @@ mod tests {
             ids: ids.to_vec(),
             certs,
             revocations,
+            records: Vec::new(),
         }
     }
 

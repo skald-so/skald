@@ -327,3 +327,45 @@ impl Codec for Tier {
 }
 
 cbor::cbor!(Presence, PresenceBody, AgentStatus, ServedQueue);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cbor::Cbor;
+
+    fn value() -> Presence {
+        Presence {
+            device: DeviceId::from_signing_key(&[1; 32]),
+            channel: ChannelId::generate(),
+            epoch: 3,
+            nonce: [2; 12],
+            ct: vec![3; 4112],
+            unknown: Unknown::default(),
+        }
+    }
+
+    #[test]
+    fn a_value_round_trips_byte_for_byte() {
+        let value = value();
+        let encoded = value.to_cbor();
+        let decoded = Presence::from_cbor(&encoded).expect("a value decodes");
+        assert_eq!(decoded, value);
+        assert_eq!(decoded.to_cbor(), encoded);
+    }
+
+    #[test]
+    fn a_value_of_epoch_0_or_with_a_short_nonce_does_not_decode() {
+        let encoded = Presence {
+            epoch: 0,
+            ..value()
+        }
+        .to_cbor();
+        assert!(Presence::from_cbor(&encoded).is_err(), "epoch 0");
+        // The nonce, a byte string of 12 bytes, made one of 11.
+        let mut encoded = value().to_cbor();
+        let nonce = [&[0x4c][..], &[2; 12]].concat();
+        let at = (encoded.windows(13).position(|window| window == nonce)).expect("the nonce");
+        encoded.splice(at..at + 13, [&[0x4b][..], &[2; 11]].concat());
+        assert!(Presence::from_cbor(&encoded).is_err(), "a short nonce");
+    }
+}
