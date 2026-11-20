@@ -237,10 +237,15 @@ pub(crate) fn in_channel(
     account: AccountId,
     device: DeviceId,
 ) -> bool {
-    channel.members.iter().any(|m| m.account == account)
-        && body.members.iter().any(|m| {
-            m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
-        })
+    channel.members.iter().any(|m| m.account == account) && listed(body, account, device)
+}
+
+/// Whether `device` of `account` is in the space of the revision `body`: its account a member, the
+/// device not excluded.
+pub(crate) fn listed(body: &RosterBody, account: AccountId, device: DeviceId) -> bool {
+    body.members
+        .iter()
+        .any(|m| m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device)))
 }
 
 /// Where an envelope goes.
