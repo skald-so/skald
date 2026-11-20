@@ -15,8 +15,10 @@
 //!   returns once the command has written it, or fails as the command's write did, so the
 //!   operation marks nothing shown that the command did not show.
 //! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
-//!   when it exits.
+//!   when it exits; so is the session an MCP server holds of it for its whole run.
 //! - While a Claude Code session is registered, the helper serves it ([`crate::claude_socket`]).
+//! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
+//!   intake, when its sessions change, when a value nears its `expires` and before it exits.
 //! - The helper exits after an idle time with no command, session or registered Claude Code
 //!   session, after sign-out and when a newer command or a sign-in asks it to; a helper that is
 //!   killed leaves its socket, which the next helper replaces.
@@ -46,7 +48,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, claude_socket, connection, mailbox, state};
+use crate::{Command, Operation, claude_socket, connection, mailbox, state, uploads};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -572,6 +574,7 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
         .set_nonblocking(true)
         .map_err(|err| format!("cannot listen on {}: {err}", bound.0.display()))?;
     let _ = std::env::set_current_dir(&dir);
+    uploads::set_helper();
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
     sessions.serve_claude(settings);
@@ -582,13 +585,16 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
                 Served::Ran => {
                     last = Instant::now();
                     sessions.ran();
+                    sessions.keep_presence(&dir, true);
                 }
                 Served::Joined => last = Instant::now(),
                 Served::Exit(stream) => break stream,
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
-                match sessions.look(&dir) {
+                let looked = sessions.look(&dir);
+                sessions.keep_presence(&dir, false);
+                match looked {
                     Some(true) => last = Instant::now(),
                     Some(false) if last.elapsed() >= idle => break None,
                     Some(false) => {}
@@ -598,8 +604,8 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
             }
         }
     };
-    // Its sessions end as a dead helper's do.
-    drop(sessions);
+    // Its sessions end as a dead helper's do, its agents then offline.
+    sessions.end(&dir);
     drop(listener);
     drop(bound);
     if let Some(mut stream) = parting {
@@ -668,7 +674,8 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
-    if operation.command.waits() {
+    uploads::remember(uploads::Settings::of(&operation));
+    if operation.command.waits() || wait::holds(&operation) {
         let session = Session {
             stream,
             cwd: request.cwd,

@@ -430,7 +430,7 @@ impl Follower {
     }
 
     /// As [`Follower::open`], without checking whether the device is revoked.
-    fn unchecked(
+    pub(crate) fn unchecked(
         dir: &Path,
         storage: secrets::Storage,
         speaks: VersionRange,

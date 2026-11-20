@@ -114,7 +114,37 @@ pub fn run(
 ) -> Result<bool, String> {
     holding_warnings(dir, agent.is_some(), || {
         let form = Form::of(agent.is_some(), json);
-        received(dir, storage, (speaks, timeout), agent, (waits, form, None))
+        received(
+            dir,
+            storage,
+            (speaks, timeout),
+            agent,
+            (waits, form, None),
+            true,
+        )
+    })
+}
+
+/// The session an MCP server of `agent` holds of the helper ([`crate::wait`]): [`run`] as the
+/// agent's `skald recv --wait`, leaving what takes in what comes next, but handing nothing over,
+/// which the agent's `inbox` does.
+pub fn hold_run(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    agent: &Name,
+) -> Result<(), String> {
+    holding_warnings(dir, true, || {
+        let form = Form::Short;
+        received(
+            dir,
+            storage,
+            settings,
+            Some(agent),
+            (true, form, None),
+            false,
+        )
+        .map(drop)
     })
 }
 
@@ -138,6 +168,7 @@ pub fn inbox(
                 Form::Short,
                 Some(&|follower, ran_as| hand_over_whole(follower, ran_as, Form::Short)),
             ),
+            true,
         )
         .map(drop)
     })
@@ -185,6 +216,7 @@ pub fn hook(
                 Form::Short,
                 Some(&|follower, ran_as| hand_over_hook(follower, ran_as, event)),
             ),
+            true,
         )
         .map(drop)
     })
@@ -207,6 +239,7 @@ pub fn to_sessions(
             settings,
             Some(agent),
             (true, Form::Short, Some(&hand_over_socket)),
+            true,
         )
     })
 }
@@ -296,13 +329,15 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
 /// space: gives how many messages it handed over.
 type Whole<'w> = &'w dyn Fn(&Follower, (SpaceId, &Name)) -> Result<usize, String>;
 
-/// [`run`], showing in `form`; handing over with `whole`, if given, as [`inbox`] does.
+/// [`run`], showing in `form`; handing over with `whole`, if given, as [`inbox`] does; handing
+/// nothing over to the agent unless `hands`.
 fn received(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
     (waits, form, whole): (bool, Form, Option<Whole>),
+    hands: bool,
 ) -> Result<bool, String> {
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
@@ -350,6 +385,7 @@ fn received(
         Err(err) => Err(err.clone()),
     };
     let handed = match (ran_as, whole) {
+        (Some(_), _) if !hands => Ok(0),
         // A failed run hands nothing over.
         (Some((space, agent)), Some(whole)) => match (&received, &aligned, &shown) {
             (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)),

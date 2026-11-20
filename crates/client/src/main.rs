@@ -90,6 +90,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod uploads;
 mod wait;
 mod wraps;
 
@@ -741,6 +742,18 @@ enum Command {
     /// roster revision, and the server's name. A folder in no space, or a server without a valid
     /// name, gives no address.
     Address,
+    /// Sets the state of the agent --agent names in the space of the working directory, busy or
+    /// available, and its note, which this device's presence shows the space's members while a
+    /// session of the agent runs: its skald mcp or skald recv --wait through the helper. A new MCP
+    /// session of the agent starts it available, with no note.
+    SetStatus {
+        /// The agent's state.
+        #[arg(value_name = "STATE")]
+        state: uploads::Settable,
+        /// What it works on, up to 128 bytes in UTF-8; without it, no note.
+        #[arg(long, value_name = "TEXT")]
+        note: Option<String>,
+    },
     /// Updates skald to the latest stable release on GitHub Releases: downloads the release's
     /// archive for this machine, checks it against the release's checksum and replaces this skald
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
@@ -765,7 +778,9 @@ enum Command {
     /// to 63 characters, so each device gives one agent CLI its own address; two sessions of one
     /// agent CLI in one space on this device share it unless --agent names them. Its inbox tool
     /// returns the agent's lines of skald recv, each once; its send tool sends as the agent's skald
-    /// send does, to an agent or, with to *, to every agent in the channel. Each tool call goes
+    /// send does, to an agent or, with to *, to every agent in the channel; its set_status tool
+    /// sets the agent's status as skald set-status does. Out of one-shot mode it holds a session
+    /// of the helper while it runs, so the helper shows its agent running. Each tool call goes
     /// through the helper or runs one-shot, as a command does, and through a newer helper too; once
     /// the skald installed where it was is newer, as when skald was updated while it runs, that
     /// skald runs each call.
@@ -1330,8 +1345,23 @@ impl Operation {
 }
 
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
-/// helper does.
+/// helper does. Out of the helper, a run as an agent then checks the device's presence
+/// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
+    let checks = !uploads::in_helper()
+        && operation.agent.is_some()
+        && !matches!(operation.command, Command::Mcp { call: None, .. });
+    let settings = uploads::Settings::of(&operation);
+    let state_dir = operation.state_dir.clone();
+    let ran = performed(operation);
+    if checks && let Ok(dir) = state::dir(state_dir) {
+        uploads::keep(&dir, settings, &uploads::Live::default());
+    }
+    ran
+}
+
+/// [`perform`] without its check of the presence.
+fn performed(operation: Operation) -> Result<(), String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
     let Operation {
@@ -1682,6 +1712,15 @@ fn perform(operation: Operation) -> Result<(), String> {
             .and_then(|agent| {
                 state::dir(state_dir)
                     .and_then(|dir| agents::address(&dir, key_storage, &agent, speaks, timeout))
+            }),
+        Command::SetStatus { state, note } => agent
+            .ok_or_else(|| "name the agent: skald --agent <name> set-status".to_owned())
+            .and_then(|agent| {
+                state::dir(state_dir).and_then(|dir| {
+                    recv::holding_warnings(&dir, true, || {
+                        uploads::set_status(&dir, &agent, state, note.as_deref())
+                    })
+                })
             }),
         Command::Update { github_api_url } => update::run(&github_api_url, timeout),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
