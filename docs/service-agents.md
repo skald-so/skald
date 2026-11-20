@@ -46,6 +46,8 @@ skald revoke-service-token acme <token ID>
 
 With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
 
+No person sets the agent's inbound mode, so it takes every message: [Device to agent](protocol/delivery.md#device-to-agent).
+
 ### Running without a disk
 
 ```sh

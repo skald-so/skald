@@ -17,6 +17,7 @@ use skald_proto::{
     Scheme, SpaceId, Unknown,
 };
 
+use crate::agents::{ACME_DIR, CLAUDE, run_as_in};
 use crate::cloud::{Cloud, WAIT};
 use crate::fixtures::{Issuer, Keyed, add_device, database, hex, keyed, send_args, strs};
 use crate::kit::{RECV, latest, received};
@@ -25,7 +26,10 @@ use crate::member::{JSON, messages, shown_once};
 use crate::service_kit::{BOT, Secrets, create_agent, secrets_of, service_of};
 use crate::service_kit::{KEY_VARIABLE, TOKEN_VARIABLE};
 use crate::talk::{Talk, messages_sent};
-use crate::world::{ACME, HOST, Person, next, next_by, post_as, set_role, store, warnings, words};
+use crate::world::{
+    ACME, ADD_RULE, HOST, Person, dir_of, next, next_by, path, post_as, set_role, store, warnings,
+    words,
+};
 
 /// The level of a `service` device's messages.
 pub const SERVICE: &str = "service";
@@ -246,6 +250,18 @@ impl Scene {
         (messages_sent(&self.talk.front, self.channel(), mark).into_iter())
             .map(|sent| sent.envelope)
             .collect()
+    }
+
+    /// `~/work/acme` on Ada's machine, once bound to `acme` and her agent claude has run there
+    /// once; fails unless both succeed.
+    #[track_caller]
+    pub fn ada_acme(&self) -> PathBuf {
+        let machine = &self.ada().machine;
+        let folder = dir_of(machine, ACME_DIR);
+        let bound = crate::world::run(machine, &[ADD_RULE, path(&folder), ACME]);
+        assert!(bound.success, "not bound: {bound:?}");
+        run_as_in(machine, &folder, CLAUDE);
+        folder
     }
 
     /// Ada's `skald recv --json`; fails unless it succeeds.
