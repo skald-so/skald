@@ -3,9 +3,9 @@
 //! terminal and as the desktop app and VS Code run it. An `own` message reaches the model as its
 //! line, a `peer` one only as the signal, whose `inbox` call then gives its text. `read` goes once
 //! the model's own entry follows the message in the session file, once, and not after an API error.
+//! Where the client writes into no socket ([`SOCKET`]), the hooks give the messages: an idle
+//! session gets them once the person gives it a prompt.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -13,24 +13,45 @@ use serde_json::Value;
 use skald_proto::MessageId;
 
 use crate::claude::claude_code;
-use crate::hooks::{Bob, INBOX_WORD, assert_own_line, assert_signal};
+use crate::hooks::{Bob, INBOX_WORD, assert_signal};
 use crate::lines::agent_line_of;
 use crate::machine::Machine;
 use crate::receipts::{read_lines, shows_read_once};
-use crate::senders::{DATA, PEER, holds_word};
-use crate::socket_claude::{Session, Surface};
+use crate::senders::{DATA, OWN, PEER, holds_word};
+use crate::sessions::{assert_from, line_in};
+use crate::socket_claude::{SOCKET, Session, Surface};
 use crate::socket_model::{Model, Reply, conversation, last_user_text};
 use crate::solo::{API, Solo, WEB};
-use crate::talk::BOB_HOST;
+use crate::talk::{ADA_HOST, BOB_HOST};
 
 /// The prompt that opens each session; then it is idle.
-const START: &str = "e2e socket test: wait for messages";
+pub const START: &str = "e2e socket test: wait for messages";
+
+/// The prompt that the person gives an idle session where the client writes into no socket.
+const NUDGE: &str = "e2e socket test: anything new?";
 
 /// How long a test watches for what must not happen.
-const QUIET: Duration = Duration::from_secs(10);
+pub const QUIET: Duration = Duration::from_secs(10);
+
+/// Where the client writes into no socket ([`SOCKET`]), the person gives `session` a prompt, and
+/// its `Stop` hook gives what waits as the turn ends.
+pub fn nudged_unless_socket(session: &mut Session) {
+    if !SOCKET {
+        session.prompt(NUDGE);
+    }
+}
+
+/// Fails unless `turn`'s conversation holds `text` as the line of `msg_id` from `from`, by Ada's
+/// device, at `own`, wherever in a line it starts: Claude Code puts a hook's context after words
+/// of its own.
+#[track_caller]
+pub fn assert_own_in(turn: &Value, text: &str, msg_id: MessageId, from: &str) {
+    let line = line_in(&conversation(turn), text);
+    assert_from(&line, msg_id, (from, ADA_HOST, OWN));
+}
 
 /// Whether the last user message of a turn is a tool's result.
-fn after_a_tool(body: &Value) -> bool {
+pub fn after_a_tool(body: &Value) -> bool {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let last = messages
         .iter()
@@ -57,7 +78,7 @@ fn inbox_on_the_signal(own: &'static str) -> Model {
 
 /// Starts a session of `agent` on `surface`, gives it [`START`], and waits until its turn ended:
 /// its `SessionStart` hook has run by then, and its `Stop` hook gave nothing more.
-fn idle_session(solo: &Solo, agent: &str, model: &Model, surface: Surface) -> Option<Session> {
+pub fn idle_session(solo: &Solo, agent: &str, model: &Model, surface: Surface) -> Option<Session> {
     let claude = claude_code()?;
     let mut session = Session::start(
         &claude,
@@ -85,15 +106,20 @@ fn no_read_meanwhile(machine: &Machine, msg_id: MessageId, when: &str) {
 }
 
 /// Fails unless the session's output has a response of each hook of `events`, and every response of
-/// its hooks left the session nothing: no output. The apps' stream ends before Claude Code runs the
-/// `SessionEnd` hook, so it has no response of it.
+/// its hooks left the session nothing: no output; where the client writes into no socket
+/// ([`SOCKET`]), the hooks give the messages, so only those of `SessionStart` and `SessionEnd`. The
+/// apps' stream ends before Claude Code runs the `SessionEnd` hook, so it has no response of it.
 #[track_caller]
-fn assert_hooks_silent(session: &Session, events: &[&str]) {
+pub fn assert_hooks_silent(session: &Session, events: &[&str]) {
     for event in events {
         let responses = session.hook_responses(event);
         assert!(!responses.is_empty(), "no {event}: {}", session.output());
     }
-    for event in ["SessionStart", "PostToolUse", "Stop", "SessionEnd"] {
+    let quiet: &[&str] = match SOCKET {
+        true => &["SessionStart", "PostToolUse", "Stop", "SessionEnd"],
+        false => &["SessionStart", "SessionEnd"],
+    };
+    for event in quiet.iter().copied() {
         for response in session.hook_responses(event) {
             for field in ["output", "stdout"] {
                 assert_eq!(response[field], "", "{event}: {response}");
@@ -111,8 +137,7 @@ const PEER_SAYS: &str = "e2e socket test: review asks web for the deploy log";
 /// turn of the session's holds it as its line from api at `own`, and the person's `skald recv`
 /// shows `read` of it once. review sends web a message: a turn holds only the signal, which names
 /// `inbox`; the stub calls `inbox`, and the request after it holds review's line at `peer`, after
-/// a warning line that names data; Bob's `skald recv` shows `read` of it once. The session's
-/// `SessionStart` and `SessionEnd` hooks leave nothing in its output, and the stub got no
+/// a warning line that names data; Bob's `skald recv` shows `read` of it once. The stub got no
 /// credential but its placeholder.
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
@@ -125,11 +150,16 @@ fn idle_terminal_session_gets_own_text_and_a_peer_s_signal_without_a_prompt() {
     };
 
     let own = solo.api_sends_web(OWN_SAYS);
+    nudged_unless_socket(&mut session);
     let turn = model.wait_turn_holding(OWN_SAYS, "api's message");
-    assert_own_line(&conversation(&turn), OWN_SAYS, own, &solo.short(API));
+    assert_own_in(&turn, OWN_SAYS, own, &solo.short(API));
     shows_read_once(solo.machine(), own);
 
     let peer = bob.sends(&solo, WEB, PEER_SAYS);
+    if !SOCKET {
+        session.wait_turn_end(&model, OWN_SAYS, 2);
+    }
+    nudged_unless_socket(&mut session);
     let after_inbox = model.wait_turn_holding(PEER_SAYS, "review's message after inbox");
     let signalled = (model.turns().into_iter())
         .find(|body| !after_a_tool(body) && last_user_text(body).contains(INBOX_WORD))
@@ -172,9 +202,10 @@ fn idle_app_sessions_get_own_text_without_a_prompt_bypassing_permissions_or_not(
         };
 
         let own = solo.api_sends_web(says);
+        nudged_unless_socket(&mut session);
 
         let turn = model.wait_turn_holding(says, &format!("{surface:?}: api's message"));
-        assert_own_line(&conversation(&turn), says, own, &solo.short(API));
+        assert_own_in(&turn, says, own, &solo.short(API));
         shows_read_once(solo.machine(), own);
         assert!(
             session.end(),
@@ -221,7 +252,7 @@ fn busy_session_gets_own_text_once_after_its_running_tool() {
 
     let turn = model.wait_turn_holding(BUSY_SAYS, "api's message");
     assert!(after_a_tool(&turn), "not after the tool: {turn}");
-    assert_own_line(&conversation(&turn), BUSY_SAYS, own, &solo.short(API));
+    assert_own_in(&turn, BUSY_SAYS, own, &solo.short(API));
     shows_read_once(solo.machine(), own);
     assert!(
         session.end(),
@@ -243,9 +274,16 @@ const NEXT: &str = "e2e socket test: try again";
 /// stub answers the turn that holds it with an error Claude Code does not retry: the person's
 /// `skald recv` shows no `read` of it for a while. The person gives another prompt, and the stub
 /// replies: `read` of it once.
+///
+/// Where the client writes into no socket ([`SOCKET`]), the hooks hand the message over by
+/// construction, so the test does not run.
+#[cfg(unix)]
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
 fn an_api_error_after_the_message_gives_no_read_until_the_model_answers() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let solo = Solo::new(4_919_454_001, "ada-socket-e2e-api-error");
     let failed = Arc::new(AtomicBool::new(false));
     let failing = Arc::clone(&failed);

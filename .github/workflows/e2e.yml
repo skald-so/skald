@@ -37,6 +37,7 @@ on:
       - crates/client/tests/device_keys/keys.rs
       - crates/client/tests/device_revocation/revocations.rs
       - crates/client/tests/gap_detection/gaps.rs
+      - crates/client/tests/helper/helped.rs
       - crates/client/tests/history_common/mod.rs
       - crates/client/tests/history_devices/devices.rs
       - crates/client/tests/history_reading/reading.rs

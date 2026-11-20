@@ -6,7 +6,8 @@
 //!   with its socket and token, which Claude Code gives its hooks as [`hook::SOCKET_SETTING`] and
 //!   [`hook::TOKEN_SETTING`], and its session file ([`register`]). The token stays in the local
 //!   state. The hook goes through the helper, which it starts if none runs. `SessionEnd`
-//!   ([`end`]), or a socket that is gone, ends the registration.
+//!   ([`end`]), or a socket that is gone or takes no connection ([`runs`]), ends the
+//!   registration.
 //! - The helper keeps running while a session is registered, and serves the sessions ([`Served`]):
 //!   as each message for an agent comes, it writes it into the socket of the agent's last
 //!   registered session that still runs ([`write`]), after an auth line with the token, through the
@@ -54,6 +55,9 @@ const PATIENCE: Duration = Duration::from_secs(5);
 
 /// How long the helper waits after a failed run before what comes starts another.
 const AFTER_FAILURE: Duration = Duration::from_secs(5);
+
+/// How often the helper checks that a registered session's socket takes a connection.
+const ALIVE_EVERY: Duration = Duration::from_secs(2);
 
 /// Registers the session of `agent` that `session` names, its folder the working directory, if
 /// the folder is in a space and Claude Code gave the session's ID, file and socket.
@@ -157,6 +161,13 @@ fn relayed(mut relay: UnixStream, text: &str) -> io::Result<()> {
             "the session's relay did not take the lines",
         )),
     }
+}
+
+/// Whether the session whose socket is `socket` still runs: its socket takes a connection. Claude
+/// Code leaves the file of a socket behind when it is killed. On Windows its socket is a named
+/// pipe, which takes no Unix socket's connection: there the hooks hand messages over.
+pub fn runs(socket: &Path) -> bool {
+    UnixStream::connect(socket).is_ok()
 }
 
 /// The reply address of the helper for `session`: a socket next to the session's, the only place
@@ -292,11 +303,13 @@ pub struct Served {
     failed: Option<Instant>,
 }
 
-/// A registered session the helper serves: its reply address and its file's reading.
+/// A registered session the helper serves: its reply address, its file's reading, and when its
+/// socket last took a connection.
 struct Live {
     session: ClaudeSession,
     reply: Option<Reply>,
     scan: Scan,
+    alive: Option<Instant>,
 }
 
 /// The reply address of a session, removed on drop.
@@ -324,7 +337,22 @@ impl Live {
             session,
             reply,
             scan: Scan::default(),
+            alive: None,
         }
+    }
+
+    /// Whether its session still runs: its socket is there and, at most [`ALIVE_EVERY`] ago,
+    /// took a connection.
+    fn runs(&mut self) -> bool {
+        if !self.session.socket.exists() {
+            return false;
+        }
+        if (self.alive).is_some_and(|alive| alive.elapsed() < ALIVE_EVERY) {
+            return true;
+        }
+        let runs = runs(&self.session.socket);
+        self.alive = runs.then(Instant::now);
+        runs
     }
 
     /// The `orig_msg_id` of each failing receipt that came to the reply address.
@@ -371,7 +399,7 @@ impl Served {
     }
 
     /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
-    /// ends those whose socket is gone; records the receipts that came and what the session files
+    /// ends those whose socket is gone or takes no connection; records the receipts that came and what the session files
     /// confirm; then, for each agent that has a confirmation or a session that ended, whose space
     /// `came` concerns, or for each after a command ran, runs as the agent
     /// ([`recv::to_sessions`]). Gives whether it ran; `None` once a run panicked.
@@ -386,12 +414,12 @@ impl Served {
         let mut gone = Vec::new();
         let mut state = None;
         for (id, live) in &mut self.live {
-            let session = &live.session;
-            if !session.socket.exists() {
+            if !live.runs() {
                 gone.push(id.clone());
-                runs.insert(session.agent.clone(), session.folder.clone());
+                runs.insert(live.session.agent.clone(), live.session.folder.clone());
                 continue;
             }
+            let session = &live.session;
             let failed = live.receipts();
             let confirmed = live.scan.read(&session.file);
             let mut ran = due || (retry && came.concerns(Some(session.space)));

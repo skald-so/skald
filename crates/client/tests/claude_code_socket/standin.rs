@@ -130,6 +130,8 @@ pub struct Standin {
     dir: PathBuf,
     socket: PathBuf,
     shared: Arc<Shared>,
+    /// The thread that holds the socket's listener.
+    listening: Mutex<Option<thread::JoinHandle<()>>>,
 }
 
 impl Standin {
@@ -157,7 +159,7 @@ impl Standin {
             stopped: AtomicBool::new(false),
         });
         let serving = Arc::clone(&shared);
-        thread::spawn(move || {
+        let listening = thread::spawn(move || {
             for stream in listener.incoming() {
                 if serving.stopped.load(Ordering::SeqCst) {
                     break;
@@ -171,6 +173,7 @@ impl Standin {
             dir,
             socket,
             shared,
+            listening: Mutex::new(Some(listening)),
         }
     }
 
@@ -314,9 +317,22 @@ impl Standin {
 
     /// The socket goes, as when its session exits without `SessionEnd`: it takes no connection.
     pub fn gone(&self) {
-        self.shared.stopped.store(true, Ordering::SeqCst);
-        let _ = UnixStream::connect(&self.socket);
+        self.dies();
         let _ = fs::remove_file(&self.socket);
+    }
+
+    /// The session is killed without `SessionEnd`: its socket's file stays, and the socket takes
+    /// no connection.
+    pub fn dies(&self) {
+        self.shared.stopped.store(true, Ordering::SeqCst);
+        let listening = (self.listening.lock())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(listening) = listening {
+            // The connection wakes the listener, which then closes.
+            let _ = UnixStream::connect(&self.socket);
+            let _ = listening.join();
+        }
     }
 
     /// Appends the recorded entry `recorded` as the session's, after its last, with `edit`.

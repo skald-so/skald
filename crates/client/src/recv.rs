@@ -1152,7 +1152,8 @@ fn own_line(opened: &[u8], references: &References) -> (String, Option<MessageId
 }
 
 /// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
-/// still runs ([`claude_socket::write`]) each kept message that waits for it that no socket took:
+/// still runs ([`claude_socket::runs`]; a newer one that does not is no longer registered),
+/// with [`claude_socket::write`], each kept message that waits for it that no socket took:
 /// one at `own` as its line, within the limit ([`hook::fitted`]); those below `own` whose signal
 /// did not go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the
 /// write, and as before it if the write fails, which ends the registration. Hands nothing over:
@@ -1163,10 +1164,16 @@ fn hand_over_socket(
 ) -> Result<usize, String> {
     let state = &follower.state;
     let sessions = state.claude_sessions().map_err(text)?;
-    let Some(session) = (sessions.iter().rev()).find(|session| {
-        session.space == space && session.agent == agent.as_str() && session.socket.exists()
-    }) else {
-        return Ok(0);
+    let mut theirs = (sessions.iter().rev())
+        .filter(|session| session.space == space && session.agent == agent.as_str());
+    let session = loop {
+        let Some(session) = theirs.next() else {
+            return Ok(0);
+        };
+        if claude_socket::runs(&session.socket) {
+            break session;
+        }
+        state.end_claude(&session.session).map_err(text)?;
     };
     let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
     let written: BTreeSet<u64> = state

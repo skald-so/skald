@@ -8,8 +8,9 @@
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use std::{env, fs, sync::Arc, sync::Mutex, thread};
 
@@ -39,6 +40,10 @@ const SETTLED: Duration = Duration::from_secs(5);
 /// How long a session may take to exit once asked to.
 const EXIT_LIMIT: Duration = Duration::from_secs(30);
 
+/// Whether the client writes into Claude Code's cross-session socket here: on Windows the socket
+/// is a named pipe, which it does not write to, and a session gets its messages by the hooks.
+pub const SOCKET: bool = cfg!(unix);
+
 /// How Claude Code runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Surface {
@@ -61,6 +66,16 @@ enum Running {
     },
 }
 
+/// How a test's session differs from what [`Session::start`] runs.
+#[derive(Default)]
+pub struct Options {
+    /// The `skald` its hooks run, if not the machine's; its `skald mcp` then runs in one-shot mode,
+    /// so only the hooks start a helper, which runs this `skald`.
+    pub hooks: Option<PathBuf>,
+    /// Claude Code settings beside the hooks and permissions, such as `crossSessionInbound`.
+    pub settings: serde_json::Map<String, Value>,
+}
+
 /// A running session; asked to exit, then killed, on drop.
 pub struct Session {
     running: Running,
@@ -69,7 +84,7 @@ pub struct Session {
 
 impl Session {
     /// Starts `claude` on `machine` in `dir` on `model`, as `agent`, on `surface`. The session may
-    /// run `true` and `sleep` and call `skald`'s `inbox`; it takes no prompt yet.
+    /// run `true`, `sleep` and `echo` and call `skald`'s `inbox`; it takes no prompt yet.
     pub fn start(
         claude: &Path,
         machine: &Machine,
@@ -78,7 +93,24 @@ impl Session {
         model: &Model,
         surface: Surface,
     ) -> Self {
-        let config = (machine.root().join("tmp")).join(format!("socket-{agent}-{surface:?}"));
+        let place = (machine, dir);
+        Self::start_with(claude, place, agent, model, surface, Options::default())
+    }
+
+    /// As [`Session::start`], with `options`.
+    pub fn start_with(
+        claude: &Path,
+        (machine, dir): (&Machine, &Path),
+        agent: &str,
+        model: &Model,
+        surface: Surface,
+        options: Options,
+    ) -> Self {
+        // Each session of a test has a config home of its own.
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let next = NEXT.fetch_add(1, Ordering::Relaxed);
+        let config =
+            (machine.root().join("tmp")).join(format!("socket-{agent}-{surface:?}-{next}"));
         let home = config.join("home");
         fs::create_dir_all(&home).expect("make Claude Code's config home");
         let named = |args: &[&str]| -> Vec<String> {
@@ -98,30 +130,40 @@ impl Session {
             .filter_map(|(name, value)| Some((lossy(name), lossy(value?))))
             .collect();
         settings.push(("SKALD_HELPER_IDLE".to_owned(), HELPER_IDLE.to_owned()));
+        let hooks_skald = (options.hooks.as_deref())
+            .map_or_else(|| skald.clone(), |path| lossy(path.as_os_str()));
 
         let mcp_args: Vec<String> = mcp.get_args().map(lossy).collect();
-        let server_env: serde_json::Map<String, Value> = (settings.iter())
+        let mut server_env: serde_json::Map<String, Value> = (settings.iter())
             .map(|(name, value)| (name.clone(), json!(value)))
             .collect();
+        if options.hooks.is_some() {
+            server_env.insert(ONE_SHOT.to_owned(), json!("1"));
+        }
         let mcp_file = config.join("mcp.json");
         let servers = json!({ "skald": {
             "type": "stdio", "command": skald, "args": mcp_args, "env": server_env,
         } });
         write(&mcp_file, &json!({ "mcpServers": servers }));
         let hook = json!([{ "hooks": [{
-            "type": "command", "command": skald, "args": named(&[HOOK, CLAUDE_CODE]),
+            "type": "command", "command": hooks_skald, "args": named(&[HOOK, CLAUDE_CODE]),
         }] }]);
         let events = ["SessionStart", "SessionEnd", "PostToolUse", "Stop"];
         let hooks: serde_json::Map<String, Value> = events
             .iter()
             .map(|event| ((*event).to_owned(), hook.clone()))
             .collect();
-        let allowed = json!(["Bash(true)", "Bash(sleep:*)", skald_tool("inbox")]);
+        let allowed = json!([
+            "Bash(true)",
+            "Bash(sleep:*)",
+            "Bash(echo:*)",
+            skald_tool("inbox")
+        ]);
         let settings_file = config.join("settings.json");
-        write(
-            &settings_file,
-            &json!({ "hooks": hooks, "permissions": { "allow": allowed } }),
-        );
+        let mut given = options.settings;
+        given.insert("hooks".to_owned(), Value::Object(hooks));
+        given.insert("permissions".to_owned(), json!({ "allow": allowed }));
+        write(&settings_file, &Value::Object(given));
         // No onboarding, the placeholder approved as Claude Code keeps it, and the folder trusted:
         // the terminal asks nothing first.
         let tail = &PLACEHOLDER[PLACEHOLDER.len() - 20..];

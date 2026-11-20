@@ -4,8 +4,8 @@
 //!
 //! - `skald` as the `SessionStart` hook registers the session with the helper, starting one if none
 //!   runs, as the agent the hooks act as, with its socket, its token and its session file; the
-//!   token stays in the local state. `SessionEnd`, or a socket that is gone, ends it; the helper
-//!   keeps running while a session is registered.
+//!   token stays in the local state. `SessionEnd`, or a socket that is gone or takes no connection,
+//!   ends it; the helper keeps running while a session is registered.
 //! - The helper writes each message for the agent, as it arrives, into the socket of the last
 //!   registered of its sessions that still runs, with the token: `own` text as its line, labelled
 //!   as a request from the person's own agent; `peer` and `service` messages only as the signal.
@@ -43,6 +43,10 @@
 mod confirms;
 #[cfg(unix)]
 mod crashes;
+#[cfg(unix)]
+mod cut;
+#[cfg(unix)]
+mod ended;
 #[cfg(unix)]
 mod failing;
 #[cfg(unix)]

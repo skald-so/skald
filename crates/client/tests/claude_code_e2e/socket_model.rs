@@ -3,8 +3,9 @@
 //! conversation holds, not by a script's step, so a test can answer a turn that a message, not a
 //! prompt, started.
 //!
-//! - A request that offers tools is a turn of the session: the test's answer function picks its
-//!   reply from its body. Any other request, such as one for a title, gets [`DONE`].
+//! - A request that offers tools is a turn of the session, which counts as sent at once: the
+//!   test's answer function picks its reply from its body, and may wait to. Any other request, such
+//!   as one for a title, gets [`DONE`].
 //! - It refuses a request whose credential headers hold anything but [`PLACEHOLDER`] and records
 //!   the header's name, never its value: [`Model::assert_no_foreign_credential`] fails the test.
 
@@ -199,10 +200,14 @@ async fn messages(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: B
         .as_array()
         .is_some_and(|tools| !tools.is_empty());
     let reply = if turn {
-        let reply = (shared.answer)(&body);
         locked(&shared.turns).push(body.clone());
         shared.changed.notify_all();
-        reply
+        // The answer may wait for the test, as for a model that takes its time.
+        let answering = Arc::clone(&shared);
+        let asked = body.clone();
+        tokio::task::spawn_blocking(move || (answering.answer)(&asked))
+            .await
+            .unwrap_or(Reply::Done)
     } else {
         Reply::Done
     };
