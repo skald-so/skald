@@ -41,6 +41,8 @@ pub enum Step {
     Bash(&'static str),
     /// Calls a tool of the MCP server `skald` with its arguments.
     Skald(&'static str, Value),
+    /// Calls a built-in tool of Claude Code, such as `Write` or `Read`, with its input.
+    Tool(&'static str, Value),
 }
 
 impl Step {
@@ -49,6 +51,7 @@ impl Step {
         match self {
             Self::Bash(command) => ("Bash".to_owned(), json!({ "command": command })),
             Self::Skald(tool, arguments) => (skald_tool(tool), arguments.clone()),
+            Self::Tool(tool, input) => ((*tool).to_owned(), input.clone()),
         }
     }
 }
