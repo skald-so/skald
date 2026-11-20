@@ -12,6 +12,7 @@ use crate::world::ACME;
 /// What the agent says; none is anywhere else.
 const FIRST: &str = "hop limit member bot test: deploy-bot's first line, with nothing shown";
 const AT_TEN: &str = "hop limit member bot test: deploy-bot answers the line with 9 hops";
+const AFTER: &str = "hop limit member bot test: deploy-bot's next line, with nothing new shown";
 const OVER: &str = "hop limit member bot test: deploy-bot would answer at hop 11";
 
 /// What Bob's claude says to everyone; none is anywhere else.
@@ -20,9 +21,9 @@ const TEN: &str = "hop limit member bot test: bob's claude asks again with 10 ho
 
 /// Ada's machine creates `ci/deploy-bot` as a member of the channel, and it gets into the group.
 /// Its first `skald send` carries `hops` 0. Bob's claude says a line to everyone with `hops` 9; the
-/// agent's `skald recv` shows it, and its next send carries 10. Bob's claude says a line with
-/// `hops` 10; once the agent's run shows it, its send fails, says why, and Bob's device never
-/// reads it.
+/// agent's `skald recv` shows it, and its next send carries 10, the one after it 0. Bob's claude
+/// says a line with `hops` 10; once the agent's run shows it, its send fails, says why, and Bob's
+/// device never reads it.
 #[test]
 fn member_service_agent_s_send_counts_what_its_runs_showed_and_stops_at_ten_hops() {
     let mut bot = Bot::created(
@@ -45,6 +46,8 @@ fn member_service_agent_s_send_counts_what_its_runs_showed_and_stops_at_ten_hops
     assert!(got.shown().contains(NINE), "{NINE:?} not shown: {got:?}");
     bot.says(AT_TEN);
     assert_eq!(hops_of(&mut bot, AT_TEN), 10, "{AT_TEN:?}");
+    bot.says(AFTER);
+    assert_eq!(hops_of(&mut bot, AFTER), 0, "{AFTER:?}");
     bob_writes(
         &mut bot.talk,
         at,
