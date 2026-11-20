@@ -14,6 +14,9 @@
 //! space sends it again first, until the server takes it; only then does it count as accepted, and
 //! until then the space stays at its last accepted revision. When another revision came first, the
 //! device accepts the new revisions, applies its change to the latest and signs again.
+//!
+//! Each revision the device signs after revision 1 drops the `service` devices the revision before
+//! it lists that are revoked or on the account of no member of the new one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -757,7 +760,7 @@ impl Follower {
             }
         }
         let (roster, devices, _) = self.follow(space)?;
-        match self.add_default(space, &roster) {
+        match self.add_default(space, &roster, &devices) {
             Ok(true) => self
                 .follow(space)
                 .map(|(roster, devices, _)| (roster, devices)),
@@ -773,7 +776,12 @@ impl Follower {
     /// revision of `space`, with a new default channel first, if `latest` needs one
     /// ([`needs_default`]) and no other revision of this device waits; gives whether the server
     /// took it.
-    fn add_default(&mut self, space: &state::Space, latest: &Roster) -> Result<bool, String> {
+    fn add_default(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        devices: &SpaceDevices,
+    ) -> Result<bool, String> {
         if !admin_device(latest, self.own.account, self.this) || !needs_default(latest) {
             return Ok(false);
         }
@@ -790,7 +798,7 @@ impl Follower {
         let id = issue_channel(&mut self.connection, &self.token, space.id)
             .map_err(|err| format!("the space {name} gets no default channel yet: {err}"))?;
         let default = default_channel(id, latest.body());
-        let next = self.next_with(latest, Some(default), &[])?;
+        let next = self.next_with((latest, devices), Some(default), &[])?;
         self.submit(space, latest, &next)?;
         Ok(true)
     }
@@ -880,7 +888,7 @@ impl Follower {
                             return Ok(latest);
                         }
                         let next = self
-                            .next_by(&latest, |next| {
+                            .next_by((&latest, &devices), |next| {
                                 next.members = body.members;
                                 next.service_agents = body.service_agents;
                                 next.channels = body.channels;
@@ -976,10 +984,10 @@ impl Follower {
     }
 
     /// The revision after `latest`, with `first` added before its channels and `channels` after
-    /// them, signed by this device.
+    /// them, signed by this device, as [`Follower::next_by`] signs it with `devices`.
     pub fn next_with(
         &self,
-        latest: &Roster,
+        latest: (&Roster, &SpaceDevices),
         first: Option<Channel>,
         channels: &[Channel],
     ) -> Result<Roster, String> {
@@ -989,10 +997,12 @@ impl Follower {
         })
     }
 
-    /// The revision after `latest` with what `edit` changes in its body, signed by this device.
+    /// The revision after `latest` with what `edit` changes in its body, signed by this device,
+    /// without the `service` devices that `devices`, those of the space's accounts, show as stale
+    /// ([`drop_stale_services`]).
     pub fn next_by(
         &self,
-        latest: &Roster,
+        (latest, devices): (&Roster, &SpaceDevices),
         edit: impl FnOnce(&mut RosterBody),
     ) -> Result<Roster, String> {
         let keys = self.keys()?;
@@ -1005,6 +1015,7 @@ impl Follower {
         body.signer = self.this;
         body.timestamp = now();
         edit(&mut body);
+        drop_stale_services(&mut body, latest, &self.own, devices);
         skald_crypto::sign_roster(&body, keys.signing())
             .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
     }
@@ -1026,7 +1037,7 @@ impl Follower {
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
 /// devices it bars, the members it adds to and removes from channels, the policy's `history` it
-/// sets, the service agents it adds and the `service` devices it adds to channels.
+/// sets, the service agents it removes and adds, and the `service` devices it adds to channels.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -1036,6 +1047,7 @@ struct Change {
     joined: Vec<(ChannelId, ChannelMember)>,
     left: Vec<(ChannelId, AccountId)>,
     history: Option<u64>,
+    dropped: Vec<DeviceId>,
     agents: Vec<ServiceAgent>,
     services: Vec<(ChannelId, DeviceId)>,
 }
@@ -1088,6 +1100,15 @@ impl Change {
             .left
             .retain(|(_, account)| !change.removed.contains(account));
         change.history = Some(next.policy.history).filter(|&set| set != base.policy.history);
+        change.dropped = (base.service_agents.iter())
+            .map(|agent| agent.device)
+            .filter(|device| {
+                !next
+                    .service_agents
+                    .iter()
+                    .any(|kept| kept.device == *device)
+            })
+            .collect();
         change.agents = (next.service_agents.iter())
             .filter(|agent| {
                 !base
@@ -1104,7 +1125,8 @@ impl Change {
     /// channel; it bars a device and adds a member to a channel only of a member of `body`; it
     /// removes no member from the default channel, the first one, which keeps every member; and
     /// it puts its default channel first, with every member, only if `needs_default`; it sets the
-    /// policy's `history`; it adds a service agent only while `body` has neither its device nor its
+    /// policy's `history`; it removes a service agent's entry and its device from every channel's
+    /// `services`; it adds a service agent only while `body` has neither its device nor its
     /// address, and its owner is no member's handle; and it adds a `service` device to a channel's
     /// `services` only while `body` has the device's service agent entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
@@ -1146,6 +1168,13 @@ impl Change {
             channels.insert(0, default_channel(id, body));
         }
         body.channels = channels;
+        body.service_agents
+            .retain(|agent| !self.dropped.contains(&agent.device));
+        for channel in &mut body.channels {
+            channel
+                .services
+                .retain(|device| !self.dropped.contains(device));
+        }
         for agent in &self.agents {
             if !address_taken(body, &agent.owner, &agent.agent)
                 && !body
@@ -1168,6 +1197,52 @@ impl Change {
                 channel.services.push(*device);
             }
         }
+    }
+}
+
+/// Drops from `body`, a revision after `latest`, each `service` device that `latest` lists, in a
+/// service agent entry or a channel's `services`, and that is revoked or on the account of no member
+/// of `body`: by `devices`, the certificates and revocations of the space's accounts, against the
+/// master keys `own` and `latest` give (`docs/protocol/membership.md`, "Roster"). A device whose
+/// certificate is not among `devices` stays.
+pub fn drop_stale_services(
+    body: &mut RosterBody,
+    latest: &Roster,
+    own: &Own,
+    devices: &SpaceDevices,
+) {
+    let before = latest.body();
+    let listed = (before.service_agents.iter().map(|entry| entry.device)).chain(
+        before
+            .channels
+            .iter()
+            .flat_map(|it| it.services.iter().copied()),
+    );
+    let stale: Vec<DeviceId> = listed
+        .filter(|&device| {
+            let owner = before.members.iter().find_map(|member| {
+                let master = follow::master_of(latest, own, member.account)?;
+                let cert = skald_crypto::check_device(&master, &devices.certs, device).ok()?;
+                let body = cert.body();
+                (body.account == member.account && body.kind == DeviceKind::Service)
+                    .then_some((member.account, master))
+            });
+            owner.is_some_and(|(account, master)| {
+                body.member(account).is_none()
+                    || skald_crypto::check_valid_device(
+                        &master,
+                        &devices.certs,
+                        &devices.revocations,
+                        device,
+                    )
+                    .is_err()
+            })
+        })
+        .collect();
+    body.service_agents
+        .retain(|entry| !stale.contains(&entry.device));
+    for channel in &mut body.channels {
+        channel.services.retain(|device| !stale.contains(device));
     }
 }
 
@@ -1920,6 +1995,96 @@ pub(crate) mod tests {
     /// A space needs a default channel while it has no channel or its first channel lacks a
     /// member; a later channel with every member does not count. A default channel holds every
     /// member with `history` true; once there, it is the space's default channel.
+    /// A next revision drops the `service` devices the revision before it lists, in entries and in
+    /// `services`, that are revoked or of an account it removes; it keeps the others, and a device
+    /// whose certificate the space's devices lack.
+    #[test]
+    fn next_revisions_drop_revoked_and_removed_accounts_service_devices() {
+        let pair = Pair::new();
+        let keys: Vec<SigningKey> = (0..5).map(|_| SigningKey::generate()).collect();
+        let laptops = [
+            cert(pair.ada, &pair.ada_master, &keys[0], "ada-laptop"),
+            cert(pair.bob, &pair.bob_master, &keys[1], "bob-laptop"),
+        ];
+        let service = |account, issuer: &SigningKey, key: &SigningKey| {
+            let body = skald_proto::CertBody {
+                account,
+                device: DeviceId::from_signing_key(&key.public_key()),
+                kind: DeviceKind::Service,
+                signing: key.public_key(),
+                hpke: [4; 32],
+                issuer: Some(DeviceId::from_signing_key(&issuer.public_key())),
+                issued: 1_800_000_000,
+                ssh: None,
+                name: "ci/bot".to_owned(),
+                unknown: Unknown::default(),
+            };
+            skald_crypto::issue(&body, issuer, key).expect("a certificate")
+        };
+        let services = [
+            service(pair.ada, &keys[0], &keys[2]),
+            service(pair.ada, &keys[0], &keys[3]),
+            service(pair.bob, &keys[1], &keys[4]),
+        ];
+        let [revoked, kept, bobs] = services.each_ref().map(|cert| cert.body().device);
+        let uncertified = DeviceId::from_signing_key(&[7; 32]);
+        let revocation = skald_crypto::sign_revocation(
+            &skald_proto::RevocationBody {
+                account: pair.ada,
+                device: revoked,
+                keep: None,
+                signer: Some(laptops[0].body().device),
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            },
+            &keys[0],
+        )
+        .unwrap();
+        let devices = SpaceDevices {
+            ids: Vec::new(),
+            certs: laptops.iter().chain(&services).cloned().collect(),
+            revocations: vec![revocation],
+            records: Vec::new(),
+        };
+        let mut body = pair.roster().body().clone();
+        let entry = |device, name: &str| ServiceAgent {
+            device,
+            owner: "ci".parse().unwrap(),
+            agent: name.parse().unwrap(),
+            unknown: Unknown::default(),
+        };
+        body.service_agents = vec![
+            entry(revoked, "old-bot"),
+            entry(kept, "deploy-bot"),
+            entry(bobs, "bob-bot"),
+            entry(uncertified, "lost-bot"),
+        ];
+        let mut general = channel(ChannelId::generate(), &[pair.ada, pair.bob]);
+        general.services = vec![revoked, bobs, uncertified];
+        body.channels = vec![general];
+        let latest = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+        let listed = |body: &RosterBody| {
+            let entries: Vec<DeviceId> = body.service_agents.iter().map(|it| it.device).collect();
+            (entries, body.channels[0].services.clone())
+        };
+
+        let mut next = latest.body().clone();
+        drop_stale_services(&mut next, &latest, &pair.own(), &devices);
+        assert_eq!(
+            listed(&next),
+            (vec![kept, bobs, uncertified], vec![bobs, uncertified])
+        );
+
+        let mut without_bob = latest.body().clone();
+        remove_members(&mut without_bob, &[pair.bob]).unwrap();
+        drop_stale_services(&mut without_bob, &latest, &pair.own(), &devices);
+        assert_eq!(
+            listed(&without_bob),
+            (vec![kept, uncertified], vec![uncertified])
+        );
+    }
+
     #[test]
     fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
@@ -2043,8 +2208,9 @@ pub(crate) mod tests {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
         let [default, team, new] = [(); 3].map(|()| ChannelId::generate());
         let barred = DeviceId::from_signing_key(&[9; 32]);
-        // A service agent every revision lists.
+        // A service agent every revision lists, and one the change removes.
         let watch = agent("ops", "watch-bot", 5);
+        let old = agent("ci", "old-bot", 6);
         let mut base = acme(
             &[ada, bob, carol, dave],
             &[
@@ -2052,7 +2218,8 @@ pub(crate) mod tests {
                 (team, &[ada, bob, carol]),
             ],
         );
-        base.service_agents.push(watch.clone());
+        base.service_agents = vec![watch.clone(), old.clone()];
+        base.channels[1].services.push(old.device);
         let mut next = acme(
             &[ada, bob, dave],
             &[
@@ -2084,6 +2251,7 @@ pub(crate) mod tests {
                 joined: vec![(team, dave_in)],
                 left: vec![(team, bob)],
                 history: Some(2 * HISTORY_MIN),
+                dropped: vec![old.device],
                 agents: vec![deploy.clone()],
                 services: vec![(team, deploy.device)],
             }
@@ -2095,7 +2263,8 @@ pub(crate) mod tests {
                 (team, &[ada, bob, carol, eve]),
             ],
         );
-        latest.service_agents = vec![watch.clone(), release.clone()];
+        latest.service_agents = vec![watch.clone(), release.clone(), old.clone()];
+        latest.channels[1].services.push(old.device);
         let (space, signer) = (latest.space, latest.signer);
         change.onto(&mut latest, false);
         let mut expected = acme(
@@ -2119,7 +2288,8 @@ pub(crate) mod tests {
     /// member that is gone, a member added to a channel who left the space or is in it already, a
     /// member removed from the default channel, a default channel the revision does not need, and a
     /// service agent whose device or address the revision has or whose owner is a member's handle,
-    /// and a `service` device in a channel the revision lacks, or without the device's entry. One
+    /// a removed service agent the revision does not list, and a `service` device in a channel the
+    /// revision lacks, or without the device's entry. One
     /// that needs it gets it first, with every member.
     #[test]
     fn change_leaves_out_what_no_longer_applies() {
@@ -2137,6 +2307,8 @@ pub(crate) mod tests {
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
             history: None,
+            // An agent the revision does not list.
+            dropped: vec![agent("ops", "gone-bot", 10).device],
             agents: vec![
                 agent("ci", "deploy-bot", 7),
                 agent("ops", "other-bot", 8),

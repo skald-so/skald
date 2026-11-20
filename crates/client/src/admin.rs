@@ -50,7 +50,7 @@ pub fn run(synced: Synced, edit: &Edit) -> Result<(), String> {
         (follower.this, &follower.own),
         &devices.certs,
     )?;
-    let next = follower.next_by(&latest, |next| {
+    let next = follower.next_by((&latest, &devices), |next| {
         next.members = body.members;
         next.channels = body.channels;
         next.policy = body.policy;

@@ -21,7 +21,7 @@ pub fn create(synced: Synced) -> Result<(), String> {
         mut follower,
         space,
         roster: latest,
-        ..
+        devices,
     } = synced;
     let name = space.name.as_str();
     follower.may_change(&space, &latest)?;
@@ -41,7 +41,7 @@ pub fn create(synced: Synced) -> Result<(), String> {
         services: Vec::new(),
         unknown: Unknown::default(),
     };
-    let next = follower.next_with(&latest, None, &[channel])?;
+    let next = follower.next_with((&latest, &devices), None, &[channel])?;
     let stored = follower.submit(&space, &latest, &next)?;
     println!(
         "Created the channel {id} in the space {name}: this device signed its revision {}.",
