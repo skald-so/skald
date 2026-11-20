@@ -4,7 +4,8 @@
 //!   process that descends from the session's, whatever the token. The helper does not; the
 //!   session's `skald mcp`, which Claude Code starts, does.
 //! - `skald mcp`, given the session's socket and token, listens at [`path`], next to the socket,
-//!   and at a reply address of its own, both readable only by the person ([`Relay::start`]).
+//!   and at a reply address of its own, both readable only by the person, removing those of relays
+//!   that ended without removing them ([`Relay::start`]).
 //! - A connection that starts with the auth line of the session's token has its lines written
 //!   into the session's socket, each `from` the relay's reply address, and gets [`TAKEN`] back.
 //!   Any other connection gets nothing written.
@@ -62,6 +63,9 @@ impl Relay {
     /// Starts relaying to `socket` the lines of connections that present `token`.
     pub fn start(socket: PathBuf, token: String) -> io::Result<Relay> {
         let reply = socket.with_file_name(format!("sk-{}-relay.sock", std::process::id()));
+        if let Some(dir) = socket.parent() {
+            sweep(dir);
+        }
         let mut relay = Relay { paths: Vec::new() };
         let taking = relay.bind(path(&socket))?;
         let receiving = relay.bind(reply.clone())?;
@@ -90,6 +94,24 @@ impl Relay {
             fs::Permissions::from_mode(0o600),
         )?;
         Ok(listener)
+    }
+}
+
+/// Removes the addresses in `dir` of relays that ended without removing them, as when killed.
+fn sweep(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.map_while(Result::ok) {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let relay = name.ends_with(".relay") || name.ends_with("-relay.sock");
+        if name.starts_with("sk-")
+            && relay
+            && let Err(err) = UnixStream::connect(entry.path())
+            && err.kind() == io::ErrorKind::ConnectionRefused
+        {
+            let _ = fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -236,6 +258,24 @@ mod tests {
             session.accept().is_err(),
             "the relay connected to the session"
         );
+    }
+
+    #[test]
+    fn a_new_relay_removes_the_addresses_of_ended_ones_only() {
+        let dir = TestDir::named(&format!("sk-relay-sweep-{}", std::process::id()));
+        let ended = [dir.join("sk-2.sock.relay"), dir.join("sk-3-relay.sock")];
+        for address in &ended {
+            drop(UnixListener::bind(address).expect("bind an ended relay's address"));
+        }
+        let other = dir.join("4.sock");
+        let _other = UnixListener::bind(&other).expect("bind another socket");
+        let _session = UnixListener::bind(dir.join("1.sock")).expect("bind the session's socket");
+        let running = Relay::start(dir.join("5.sock"), "token".to_owned()).expect("start a relay");
+
+        let _relay = Relay::start(dir.join("1.sock"), "token".to_owned()).expect("start the relay");
+        assert!(ended.iter().all(|address| !address.exists()));
+        assert!(other.exists());
+        assert!(running.paths.iter().all(|address| address.exists()));
     }
 
     #[test]
