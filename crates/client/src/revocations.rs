@@ -94,22 +94,12 @@ pub fn run(
     let keys = crate::device::known_keys(&stored, device.as_ref())
         .map_err(text)?
         .ok_or_else(|| crate::device::Error::MissingKeys.to_string())?;
-    let body = RevocationBody {
-        account: own,
-        device: target,
-        keep: NonEmpty::from_vec(kept.clone()),
-        signer: Some(this),
-        timestamp: now(),
-        also: None,
-        unknown: Unknown::default(),
-    };
-    let signed = sign_revocation(&body, keys.signing())
-        .map_err(|err| format!("the revocation does not encode: {err}"))?;
-    let revocation = signed.to_cbor();
-    state
-        .add_revocations(std::slice::from_ref(&revocation), true)
-        .map_err(text)?;
-    store(&mut connection, &token, &state, &revocation)?;
+    let signed = signed_and_stored(
+        (&mut connection, &token, &state),
+        (own, this, &keys),
+        target,
+        &kept,
+    )?;
     println!("Revoked the device {target} ({name}).");
     let mut revocations = devices.revocations;
     revocations.push(signed);
@@ -123,6 +113,34 @@ pub fn run(
         }
     }
     Ok(())
+}
+
+/// Revokes `target`, a device of `account`, keeping `kept`, by a revocation that `this`, a device
+/// of the account whose keys are `keys`, signs without `also`: it waits in `state` until the server
+/// has taken it, which it then asks, as the session `token`. Gives the revocation.
+pub fn signed_and_stored(
+    (connection, token, state): (&mut Connection, &str, &State),
+    (account, this, keys): (AccountId, DeviceId, &crate::device::Keys),
+    target: DeviceId,
+    kept: &[DeviceId],
+) -> Result<Revocation, String> {
+    let body = RevocationBody {
+        account,
+        device: target,
+        keep: NonEmpty::from_vec(kept.to_vec()),
+        signer: Some(this),
+        timestamp: now(),
+        also: None,
+        unknown: Unknown::default(),
+    };
+    let signed = sign_revocation(&body, keys.signing())
+        .map_err(|err| format!("the revocation does not encode: {err}"))?;
+    let revocation = signed.to_cbor();
+    state
+        .add_revocations(std::slice::from_ref(&revocation), true)
+        .map_err(text)?;
+    store(connection, token, state, &revocation)?;
+    Ok(signed)
 }
 
 /// The device ID `given` names, as the command takes it.

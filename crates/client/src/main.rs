@@ -389,6 +389,34 @@ enum Command {
         #[arg(long)]
         keep_earlier: bool,
     },
+    /// Replaces the key of a service agent of a space this device follows, on a device of an admin
+    /// of it whose account the agent's device is on: a new device, made as skald
+    /// create-service-agent makes one, takes the old one's place in the space's next roster
+    /// revision, which ends the old device's tokens, and this device revokes the old one. Writes
+    /// the new key secret and a token to standard output as SKALD_SERVICE_KEY=... and
+    /// SKALD_SERVICE_TOKEN=..., once: nothing keeps them.
+    ReplaceServiceKey {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+    },
+    /// Removes a service agent from a space this device follows, on a device of an admin of it: the
+    /// space's next roster revision, which the device signs as skald create-channel does, lists it
+    /// no more, which ends its tokens. Revokes its device if it is of this device's account;
+    /// otherwise that account revokes it with skald revoke-device.
+    RemoveServiceAgent {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+    },
     /// Lists the live tokens of the service agents of a space this device follows, on a device of
     /// an admin of it: each one's ID, address, permissions, channel IDs, creation and expiry times
     /// and last use.
@@ -735,6 +763,8 @@ impl Command {
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
+            Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
+            Command::RemoveServiceAgent { .. } => Some("remove-service-agent"),
             Command::ServiceTokens { .. } => Some("service-tokens"),
             Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
@@ -797,6 +827,8 @@ impl Command {
                 self,
                 Command::CreateServiceAgent { .. }
                     | Command::CreateServiceToken { .. }
+                    | Command::ReplaceServiceKey { .. }
+                    | Command::RemoveServiceAgent { .. }
                     | Command::ServiceTokens { .. }
                     | Command::RevokeServiceToken { .. }
                     | Command::SignOut
@@ -1314,6 +1346,16 @@ fn perform(operation: Operation) -> Result<(), String> {
             keep_earlier,
         } => synced(state_dir, key_storage, speaks, timeout, &space, false)
             .and_then(|synced| service_agents::renew(synced, &address, &granted, keep_earlier)),
+        Command::ReplaceServiceKey {
+            space,
+            address,
+            granted,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::replace(synced, &address, &granted)),
+        Command::RemoveServiceAgent { space, address } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(|synced| service_agents::remove(synced, &address))
+        }
         Command::ServiceTokens { space } => {
             synced(state_dir, key_storage, speaks, timeout, &space, false)
                 .and_then(service_agents::list)

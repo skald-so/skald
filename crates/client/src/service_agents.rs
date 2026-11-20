@@ -1,11 +1,13 @@
-//! `skald create-service-agent`, `skald create-service-token`, `skald service-tokens` and `skald
-//! revoke-service-token`: an admin's `client` device creates a service agent of a space and its
-//! tokens (`docs/protocol/membership.md`, "Service device"; `docs/protocol/README.md`, "Service
+//! `skald create-service-agent`, `skald create-service-token`, `skald service-tokens`, `skald
+//! revoke-service-token`, `skald replace-service-key` and `skald remove-service-agent`: an admin's
+//! `client` device creates a service agent of a space and its tokens, replaces its key and removes
+//! it (`docs/protocol/membership.md`, "Service device"; `docs/protocol/README.md`, "Service
 //! grant"). A creation generates the service device's keys in memory, registers the device on the
 //! admin's account with a certificate this device issues, signs the space's next roster revision
 //! with the agent's entry as [`crate::spaces`] says, and for a member agent with its device in the
 //! `services` of the grant's channels, signs the device's grant and creates its first token. It
-//! writes the key secret and the token to stdout once, and keeps nothing of them.
+//! writes the key secret and the token to stdout once, and keeps nothing of them. A key change
+//! makes a new device the same way, puts it in the old one's place and revokes the old one.
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -13,14 +15,17 @@ use serde::{Deserialize, Serialize};
 use skald_crypto::SigningKey;
 use skald_proto::{
     CERT_NAME_MAX, Cbor as _, Cert, CertBody, ChannelId, DeviceId, DeviceKind, GRANT_LABEL, Grant,
-    GrantBody, Name, NonEmpty, Roster, ServiceAgent, ServiceKey, SpaceId, Unknown,
+    GrantBody, Name, NonEmpty, Roster, RosterBody, ServiceAgent, ServiceKey, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
 use crate::connection::{Method, printable};
 use crate::device::Keys;
 use crate::devices::text;
-use crate::spaces::{Follower, Synced, address_taken, admin_device, no_admin, now};
+use crate::follow::SpaceDevices;
+use crate::revocations;
+use crate::spaces::{Follower, Synced, address_taken, admin_device, finish, no_admin, now};
+use crate::state;
 
 /// The environment variables of a service agent's two secrets, as stdout names them.
 pub const KEY_VARIABLE: &str = "SKALD_SERVICE_KEY";
@@ -245,14 +250,13 @@ pub fn create(
     granted: &Granted,
     member: bool,
 ) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
     let Synced {
         mut follower,
         space,
         roster: latest,
         devices,
     } = synced;
-    follower.may_change(&space, &latest)?;
-    let (owner, agent) = address(address_given)?;
     let name = latest.body().name.as_str().to_owned();
     if address_taken(latest.body(), &owner, &agent) {
         return Err(format!(
@@ -271,15 +275,8 @@ pub fn create(
         ));
     }
     let admin = follower.keys()?;
-    let keys = Keys::generate();
+    let (keys, cert) = made(&mut follower, &admin, (&owner, &agent))?;
     let device = keys.id();
-    register(&mut follower, &keys, &cert_name(&owner, &agent))?;
-    let cert = certify(&mut follower, &admin, &keys, &cert_name(&owner, &agent))?;
-    // This device made it, so its next device checks do not warn of it as new.
-    follower
-        .state
-        .device_statuses(&[(device, false)])
-        .map_err(text)?;
     let entry = ServiceAgent {
         device,
         owner: owner.clone(),
@@ -292,66 +289,293 @@ pub fn create(
              entry of it: create the service agent again"
         )
     };
-    let next = follower
-        .next_by(&latest, |body| {
+    let stored = lists_new(
+        &mut follower,
+        (&space, &latest, devices),
+        (&owner, &agent, cert),
+        |body| {
             body.service_agents.push(entry);
             for channel in (body.channels.iter_mut())
                 .filter(|channel| member && checked.channels.contains(&channel.id))
             {
                 channel.services.push(device);
             }
-        })
-        .map_err(unlisted)?;
+        },
+        (unlisted, ""),
+    )?;
+    let key = key_secret(&follower, &keys, (space.id, stored.hash()));
+    hand_over(
+        &mut follower,
+        (space.id, &admin),
+        (&owner, &agent, device),
+        &checked,
+        &key,
+    )
+}
+
+/// `skald replace-service-key`: replaces the key of the service agent `address` in `synced`, a
+/// space whose admin's device this is, its device one of this device's account, which alone
+/// revokes it. A new `service` device, made as [`create`] makes one, takes the old one's place in
+/// the agent's entry and in `services` in the space's next revision, which ends the old device's
+/// tokens on the server; this device then revokes the old device. Writes the new key secret, whose
+/// anchor is that revision, and a token with `granted`, to stdout. Refused before anything is
+/// registered or signed: on a device that is no admin's, for an agent the space's last accepted
+/// revision does not list or of another account, for channels or an expiry that `granted` gets
+/// wrong, and for a member without the receive permission.
+pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
+    let Synced {
+        mut follower,
+        space,
+        roster: latest,
+        devices,
+    } = synced;
+    let old = listed(&latest, &owner, &agent)?;
+    if !own_device(&follower, &devices, old) {
+        return Err(format!(
+            "the service agent {owner}/{agent} is a device of another account, and only that \
+             account revokes its devices: an admin's device of that account replaces its key; \
+             nothing changed"
+        ));
+    }
+    let checked = granted.checked(&latest, now())?;
+    let member = (latest.body().channels.iter()).any(|channel| channel.services.contains(&old));
+    receives_if_member(member, &checked.permissions)?;
+    let admin = follower.keys()?;
+    let (keys, cert) = made(&mut follower, &admin, (&owner, &agent))?;
+    let device = keys.id();
+    let unlisted = |why: String| {
+        format!(
+            "{why}; the service device {device} is registered and certified, but the space lists \
+             the old device {old} as {owner}/{agent} still: replace its key again"
+        )
+    };
+    let not_revoked = format!(", and the old device {old} is not revoked");
+    let stored = lists_new(
+        &mut follower,
+        (&space, &latest, devices),
+        (&owner, &agent, cert),
+        |body| {
+            for entry in (body.service_agents.iter_mut()).filter(|entry| entry.device == old) {
+                entry.device = device;
+            }
+            for listed in (body.channels.iter_mut())
+                .flat_map(|channel| channel.services.iter_mut())
+                .filter(|listed| **listed == old)
+            {
+                *listed = device;
+            }
+        },
+        (unlisted, &not_revoked),
+    )?;
+    let key = key_secret(&follower, &keys, (space.id, stored.hash()));
+    let handed = hand_over(
+        &mut follower,
+        (space.id, &admin),
+        (&owner, &agent, device),
+        &checked,
+        &key,
+    );
+    drop(key);
+    let revoked = revoke_device(&mut follower, &admin, old);
+    finish(&mut follower, &space.name);
+    handed.and(revoked)
+}
+
+/// `skald remove-service-agent`: removes the service agent `address` from `synced`, a space whose
+/// admin's device this is. The space's next revision lists its device neither in an entry nor in
+/// a channel's `services`, which ends its tokens on the server. This device then revokes the device
+/// if it is of this device's account; otherwise that account does.
+pub fn remove(synced: Synced, address_given: &str) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
+    let Synced {
+        mut follower,
+        space,
+        roster: latest,
+        devices,
+    } = synced;
+    let device = listed(&latest, &owner, &agent)?;
+    let next = follower.next_by((&latest, &devices), |body| {
+        body.service_agents.retain(|entry| entry.device != device);
+        for channel in &mut body.channels {
+            channel.services.retain(|listed| *listed != device);
+        }
+    })?;
+    let stored = follower.checked_submit(&space, (&latest, &next), &devices.certs)?;
+    let body = stored.body();
+    if (body.service_agents.iter()).any(|entry| entry.device == device)
+        || (body.channels.iter()).any(|channel| channel.services.contains(&device))
+    {
+        return Err(format!(
+            "another revision of the space {} came first and lists {owner}/{agent} still; run \
+             the command again",
+            space.name
+        ));
+    }
+    println!(
+        "Removed the service agent {owner}/{agent} from the space {}: this device signed its \
+         revision {}.",
+        space.name, body.revision
+    );
+    let revoked = if own_device(&follower, &devices, device) {
+        let admin = follower.keys()?;
+        revoke_device(&mut follower, &admin, device)
+    } else {
+        println!(
+            "Its device {device} is of another account, which revokes it with skald revoke-device."
+        );
+        Ok(())
+    };
+    finish(&mut follower, &space.name);
+    revoked
+}
+
+/// `synced`, once this device may sign a change into its space's last accepted revision
+/// ([`Follower::may_change`]), and the owner and agent of `address`, of a service agent a command
+/// changes.
+fn changing(synced: Synced, address_given: &str) -> Result<(Synced, (Name, Name)), String> {
+    (synced.follower).may_change(&synced.space, &synced.roster)?;
+    let owner_agent = address(address_given)?;
+    Ok((synced, owner_agent))
+}
+
+/// Signs the revision after `latest`, the last accepted revision of `space`, with what `edit`
+/// changes, which lists the new device of `cert` as the service agent `owner/agent`; checks it as
+/// the space's members accept it with `devices` and the certificate, and has the server store it.
+/// Gives the revision the server took. Fails with what `unlisted` says of a reason, or, once the
+/// revision waits for the server, with what that leaves, `waiting` added.
+fn lists_new(
+    follower: &mut Follower,
+    (space, latest, devices): (&state::Space, &Roster, SpaceDevices),
+    (owner, agent, cert): (&Name, &Name, Cert),
+    edit: impl FnOnce(&mut RosterBody),
+    (unlisted, waiting): (impl Fn(String) -> String, &str),
+) -> Result<Roster, String> {
+    let device = cert.body().device;
+    let next = follower
+        .next_by((latest, &devices), edit)
+        .map_err(&unlisted)?;
     let mut certs = devices.certs;
     certs.push(cert);
-    follower.accepts(&latest, &next, &certs).map_err(unlisted)?;
-    let stored = follower
-        .submitted(&space, &latest, &next)
-        .map_err(|unsent| {
-            if unsent.waits {
-                format!(
-                    "{}; the service device {device} is registered and certified: once the server \
+    follower.accepts(latest, &next, &certs).map_err(&unlisted)?;
+    let stored = follower.submitted(space, latest, &next).map_err(|unsent| {
+        if unsent.waits {
+            format!(
+                "{}; the service device {device} is registered and certified: once the server \
                      takes that revision, the space lists {owner}/{agent} without a key secret, \
-                     which nothing holds",
-                    unsent.why
-                )
-            } else {
-                unlisted(unsent.why)
-            }
-        })?;
-    if entry_of(&stored, &owner, &agent) != Some(device) {
+                     which nothing holds{waiting}",
+                unsent.why
+            )
+        } else {
+            unlisted(unsent.why)
+        }
+    })?;
+    if entry_of(&stored, owner, agent) != Some(device) {
         return Err(unlisted(format!(
-            "another revision of the space {name} took the address {owner}/{agent} first"
+            "another revision of the space {} changed {owner}/{agent} first",
+            space.name
         )));
     }
+    Ok(stored)
+}
+
+/// The device of the service agent `owner/agent` in `latest`, a space's last accepted revision;
+/// why not if it has no such entry.
+fn listed(latest: &Roster, owner: &Name, agent: &Name) -> Result<DeviceId, String> {
+    entry_of(latest, owner, agent).ok_or_else(|| {
+        format!(
+            "the space {} has no service agent {owner}/{agent}; nothing changed",
+            latest.body().name.as_str()
+        )
+    })
+}
+
+/// Whether `device` is of the account of `follower`: its certificate among `devices` passes checks
+/// 1 and 2 of "Device checks" against the master key the device pinned, revoked or not.
+fn own_device(follower: &Follower, devices: &SpaceDevices, device: DeviceId) -> bool {
+    skald_crypto::check_device(&follower.own.master, &devices.certs, device)
+        .is_ok_and(|cert| cert.body().account == follower.own.account)
+}
+
+/// Revokes `device`, a `service` device of this device's account, by a revocation this device,
+/// whose keys are `admin`, signs; a `service` device certifies no other device.
+fn revoke_device(follower: &mut Follower, admin: &Keys, device: DeviceId) -> Result<(), String> {
+    let (account, this) = (follower.own.account, follower.this);
+    revocations::signed_and_stored(
+        (&mut follower.connection, &follower.token, &follower.state),
+        (account, this, admin),
+        device,
+        &[],
+    )
+    .map_err(|err| format!("{err}; the service device {device} is not revoked yet"))?;
+    eprintln!("skald: revoked the service device {device}");
+    Ok(())
+}
+
+/// A new `service` device of the service agent `owner/agent` on this device's account, whose keys
+/// are `admin`: its keys, generated in memory, and the certificate this device issues, registered
+/// and stored on the server.
+fn made(
+    follower: &mut Follower,
+    admin: &Keys,
+    (owner, agent): (&Name, &Name),
+) -> Result<(Keys, Cert), String> {
+    let keys = Keys::generate();
+    register(follower, &keys, &cert_name(owner, agent))?;
+    let cert = certify(follower, admin, &keys, &cert_name(owner, agent))?;
+    // This device made it, so its next device checks do not warn of it as new.
+    follower
+        .state
+        .device_statuses(&[(keys.id(), false)])
+        .map_err(text)?;
+    Ok((keys, cert))
+}
+
+/// The key secret of the `service` device of `keys` on `follower`'s account, in `space`, whose
+/// revision `anchor` lists it, in base64url without padding.
+fn key_secret(
+    follower: &Follower,
+    keys: &Keys,
+    (space, anchor): (SpaceId, [u8; 32]),
+) -> Zeroizing<String> {
     let key = ServiceKey {
         signing: *keys.signing().to_bytes(),
         hpke: *keys.hpke().to_bytes(),
         account: follower.own.account,
         master: follower.own.master,
-        space: space.id,
-        anchor: stored.hash(),
+        space,
+        anchor,
         server: follower.connection.server().to_owned(),
         unknown: Unknown::default(),
     };
-    let key = Zeroizing::new(URL_SAFE_NO_PAD.encode(Zeroizing::new(key.to_cbor())));
-    // The space lists the agent now: without a token, its key secret still goes out.
+    Zeroizing::new(URL_SAFE_NO_PAD.encode(Zeroizing::new(key.to_cbor())))
+}
+
+/// Creates a token of `device`, the service agent `owner/agent` of `space` that the space lists
+/// now, with `checked`, its grant signed by this device, whose keys are `admin`, and writes `key`,
+/// its key secret, and the token to stdout; without a token, the key secret still goes out.
+fn hand_over(
+    follower: &mut Follower,
+    (space, admin): (SpaceId, &Keys),
+    (owner, agent, device): (&Name, &Name, DeviceId),
+    checked: &Checked,
+    key: &str,
+) -> Result<(), String> {
     let tokenless = |why: String| {
-        println!("{KEY_VARIABLE}={}", *key);
+        println!("{KEY_VARIABLE}={key}");
         format!(
             "{why}; the space lists {owner}/{agent}, and {KEY_VARIABLE} above is its key secret: \
              create its token with skald create-service-token"
         )
     };
-    let token =
-        new_token(&mut follower, (space.id, &admin), device, &checked).map_err(tokenless)?;
+    let token = new_token(follower, (space, admin), device, checked).map_err(tokenless)?;
     let token = Zeroizing::new(token.token.ok_or_else(|| {
         tokenless(
             "the server's new token has no value; revoke it with skald revoke-service-token"
                 .to_owned(),
         )
     })?);
-    println!("{KEY_VARIABLE}={}\n{TOKEN_VARIABLE}={}", *key, *token);
+    println!("{KEY_VARIABLE}={key}\n{TOKEN_VARIABLE}={}", *token);
     Ok(())
 }
 
