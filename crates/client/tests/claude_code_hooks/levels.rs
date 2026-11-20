@@ -165,3 +165,41 @@ fn read_again(web: &mut Web, reference: &str) -> [String; 2] {
     assert!(run.success, "recv: {run:?}");
     [tool.text, run.stdout]
 }
+
+/// What review and api send web while web refuses senders off its allowlist; neither is anywhere
+/// else.
+const OFF_THE_LIST: &str = "hook test: review asks web, which refuses it, to deploy";
+const ON_THE_LIST: &str = "hook test: api, on web's allowlist, asks web to deploy";
+
+/// Bob joins `clienta`; the person sets web to `refuse` and puts api on its allowlist. review sends
+/// web a message, then api does. web's `PostToolUse` hook gives api's as its line at `own`, with no
+/// signal and nothing of review's; its `Stop` then prints nothing, and web's `inbox` shows neither.
+#[test]
+fn hooks_give_nothing_of_a_message_the_agent_s_mode_refuses() {
+    let mut web = Web::new(4_913_020_001, "ada-hooks-refuse-a-peer");
+    let bob = web.with_bob(4_913_020_002, "bob-is-off-web-s-list");
+    let folder = web.solo.folder.clone();
+    let api = web.api();
+    for args in [
+        ["set-inbound-mode", WEB, "refuse"],
+        ["allow-sender", WEB, api.as_str()],
+    ] {
+        let set = web.machine().start_in(&folder, &args).finish();
+        assert!(set.success, "{args:?}: {set:?}");
+    }
+    web.peer(&bob, OFF_THE_LIST);
+    let allowed = web.own(ON_THE_LIST);
+
+    let context = web.hook(Event::PostToolUse).context(Event::PostToolUse);
+
+    assert_own_line(&context, ON_THE_LIST, allowed, &api);
+    assert!(!context.contains(INBOX_WORD), "a signal: {context}");
+    assert!(
+        !context.contains(OFF_THE_LIST),
+        "the refused text: {context}"
+    );
+    web.hook(Event::Stop)
+        .assert_silent("Stop with only a refused message sent");
+    let shown = web.session.inbox();
+    assert!(agent_lines(&shown).is_empty(), "inbox: {shown}");
+}
