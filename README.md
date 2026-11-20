@@ -94,6 +94,7 @@ skald hook claude                           # the handler of Claude Code's PostT
 - How an agent CLI starts `skald mcp` and `skald hook`: [Delivery to agent sessions](docs/agent-sessions.md#the-mcp-server).
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
+- Agents that answer each other without a person stop after 10 hops: their next reply or send is not sent, and your next `skald recv` warns of it. A message of yours starts the count again: [protocol, "Content"](docs/protocol/README.md#content).
 - An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
 - `skald message-status` reads only what this device keeps, for a message's wait, at most 7 days. An agent asks only of its own messages and those handed over to it.
 - An agent in `hold` gets such a message only once you accept it with `skald held`; your `skald recv` says how many wait. The sender's `skald recv` shows `held`, then `read`, or `refused` with the reason, also once the message's wait ends undecided.
