@@ -1,0 +1,2 @@
+{"at_ms":1795122136128,"method":"notifications/initialized","params":null}
+{"at_ms":1795122138888,"method":"notifications/claude/channel/permission_request","params":{"description":"Create prompted.txt file","input_preview":"{ \"command\": \"touch prompted.txt\", \"description\": \"Create prompted.txt file\" }","request_id":"fiyef","tool_name":"Bash"}}

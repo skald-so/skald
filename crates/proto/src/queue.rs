@@ -33,6 +33,24 @@ pub struct QueuedTask {
     pub unknown: Unknown,
 }
 
+impl QueuedTask {
+    /// The `aad` of the seal of task `task` in `channel`'s queue `queue` under epoch `epoch`: the
+    /// encoded `[channel, queue, task, epoch]`.
+    pub fn associated_data(
+        channel: ChannelId,
+        queue: QueueId,
+        task: TaskId,
+        epoch: u64,
+    ) -> Vec<u8> {
+        cbor::array([
+            cbor::id(&channel),
+            cbor::id(&queue),
+            cbor::id(&task),
+            cbor::uint(epoch),
+        ])
+    }
+}
+
 /// A task's scheduling fields, in plaintext.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Sched {

@@ -155,16 +155,11 @@ pub fn codex_session(
     stub: Option<&str>,
 ) -> Vec<String> {
     // Codex runs a command hook with the shell.
-    let command = [
+    let command = timed_hook(
         live_check,
-        Path::new("timed-hook"),
         &dir.join(HOOK_RUNS),
-        handler,
-        Path::new("--codex"),
-        source,
-    ]
-    .map(|arg| shell_quote(&arg.to_string_lossy()))
-    .join(" ");
+        &[handler, Path::new("--codex"), source],
+    );
     codex_exec(
         project,
         &["--dangerously-bypass-hook-trust"],
@@ -173,6 +168,17 @@ pub fn codex_session(
         stub,
         &hook.prompt(kind),
     )
+}
+
+/// The shell command that runs `handler` with `live-check timed-hook`, `live_check` its binary,
+/// which records each run into `runs`.
+pub fn timed_hook(live_check: &Path, runs: &Path, handler: &[&Path]) -> String {
+    [live_check, Path::new("timed-hook"), runs]
+        .iter()
+        .chain(handler)
+        .map(|arg| shell_quote(&arg.to_string_lossy()))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What every session of the check shares.
@@ -253,6 +259,38 @@ pub fn timed(
     Ok(code)
 }
 
+/// A run of a hook handler, as [`timed`] logged it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timed {
+    pub event: String,
+    /// When the handler started, in milliseconds since the Unix epoch.
+    pub started_ms: u64,
+    pub ended_ms: Option<u64>,
+    /// `success` or `error`.
+    pub outcome: String,
+    pub stdout: String,
+    /// The hook's input.
+    pub input: Value,
+}
+
+/// The runs in `text`, the lines [`timed`] writes; a line that is not one is left out.
+pub fn timed_runs(text: &str) -> Vec<Timed> {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter_map(|run| {
+            let text = |key: &str| run[key].as_str().unwrap_or_default().to_owned();
+            Some(Timed {
+                event: run["hook_event_name"].as_str()?.to_owned(),
+                started_ms: run["started_ms"].as_u64()?,
+                ended_ms: run["ended_ms"].as_u64(),
+                outcome: text("outcome"),
+                stdout: text("stdout"),
+                input: run["input"].clone(),
+            })
+        })
+        .collect()
+}
+
 /// Where `run`'s hook handler records its runs on Codex.
 pub fn hook_runs_file(run: &Run) -> PathBuf {
     run.log.with_file_name(HOOK_RUNS)
@@ -302,20 +340,15 @@ impl HookRuns {
 
     /// Records the runs of the hook in `text`, the lines `timed` writes.
     pub fn read_log(&mut self, text: &str) {
-        for line in text.lines() {
-            let Ok(run) = serde_json::from_str::<Value>(line) else {
-                continue;
-            };
-            if run["hook_event_name"] != self.event {
-                continue;
+        for run in timed_runs(text) {
+            if run.event == self.event {
+                self.runs.push(HookRun {
+                    started_ms: run.started_ms,
+                    ended_ms: run.ended_ms,
+                    outcome: run.outcome,
+                    stdout: run.stdout,
+                });
             }
-            let text = |key: &str| run[key].as_str().unwrap_or_default().to_owned();
-            self.runs.push(HookRun {
-                started_ms: run["started_ms"].as_u64().unwrap_or_default(),
-                ended_ms: run["ended_ms"].as_u64(),
-                outcome: text("outcome"),
-                stdout: text("stdout"),
-            });
         }
     }
 

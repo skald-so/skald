@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use agent_source::{Message, Source};
 use agent_testing::{Events, add_many, opened, taken_by_a_dead_server, wait_handed_over};
-use rmcp::model::{CustomNotification, ProtocolVersion};
+use rmcp::model::{ClientNotification, CustomNotification, ProtocolVersion};
 use rmcp::service::RunningService;
 use rmcp::transport::TokioChildProcess;
 use rmcp::{RoleClient, ServiceExt};
@@ -15,9 +15,17 @@ use tokio::sync::mpsc;
 type Client = RunningService<RoleClient, Events>;
 
 async fn start(source: &Path) -> (Client, mpsc::UnboundedReceiver<CustomNotification>) {
+    start_with(&[], source).await
+}
+
+/// Starts `agent-channel` with `flags` before the source.
+async fn start_with(
+    flags: &[&Path],
+    source: &Path,
+) -> (Client, mpsc::UnboundedReceiver<CustomNotification>) {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-channel"));
     // No variable of the test's environment, so none of its credentials reach the server.
-    command.arg(source).env_clear();
+    command.arg(source).args(flags).env_clear();
     let (events, received) = mpsc::unbounded_channel();
     let client = Events(events)
         .serve(TokioChildProcess::new(command).unwrap())
@@ -53,6 +61,10 @@ async fn declares_a_channel_on_a_revision_with_a_handshake() {
     let info = client.peer_info().expect("the server initialized");
     let experimental = info.capabilities.experimental.clone().unwrap_or_default();
     assert!(experimental.contains_key("claude/channel"), "{info:?}");
+    assert!(
+        !experimental.contains_key("claude/channel/permission"),
+        "no relay without a log: {info:?}"
+    );
     assert!(info.capabilities.tools.is_none(), "{info:?}");
     assert!(
         info.protocol_version.as_str() <= ProtocolVersion::V_2025_11_25.as_str(),
@@ -63,6 +75,98 @@ async fn declares_a_channel_on_a_revision_with_a_handshake() {
         instructions.contains("msg_id") && instructions.contains("from"),
         "{instructions}"
     );
+    client.cancel().await.unwrap();
+}
+
+/// Waits up to 10 s for `count` records in the permission log `log`; returns its text and records.
+async fn logged(log: &Path, count: usize) -> (String, Vec<serde_json::Value>) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let lines = loop {
+        let text = std::fs::read_to_string(log).unwrap_or_default();
+        if text.lines().count() >= count || std::time::Instant::now() > deadline {
+            break text;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    let records: Vec<serde_json::Value> = lines
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), count, "{lines}");
+    (lines, records)
+}
+
+#[test]
+fn other_arguments_print_the_usage() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().to_str().unwrap();
+    for args in [&[][..], &[source, "--log", "file"], &[source, source]] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-channel"))
+            .args(args)
+            .env_clear()
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.starts_with("usage: agent-channel"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn with_a_permission_log_records_each_notification_and_answers_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("permission.jsonl");
+    let source = dir.path().join("source");
+    let flag = Path::new("--permission-log");
+    let (client, mut received) = start_with(&[flag, &log], &source).await;
+    let info = client.peer_info().expect("the server initialized");
+    let experimental = info.capabilities.experimental.clone().unwrap_or_default();
+    assert!(
+        experimental.contains_key("claude/channel")
+            && experimental.contains_key("claude/channel/permission"),
+        "{info:?}"
+    );
+
+    // The server handles notifications concurrently: the CLI too sends a prompt's only after the
+    // handshake's end is recorded.
+    let (lines, records) = logged(&log, 1).await;
+    assert_eq!(records[0]["method"], "notifications/initialized", "{lines}");
+    let params = json!({
+        "request_id": "abcde",
+        "tool_name": "Bash",
+        "description": "Run shell command",
+        "input_preview": "{\"command\": \"touch prompted.txt\"}",
+    });
+    for (method, params) in [
+        ("notifications/claude/channel/permission_request", &params),
+        ("notifications/other", &json!({})),
+    ] {
+        let notification = CustomNotification::new(method, Some(params.clone()));
+        client
+            .send_notification(ClientNotification::CustomNotification(notification))
+            .await
+            .unwrap();
+    }
+    let (lines, records) = logged(&log, 3).await;
+    // The handshake's end, then each notification the client sent, handled in no set order.
+    let request = records[1..]
+        .iter()
+        .find(|r| r["method"] == "notifications/claude/channel/permission_request")
+        .expect("the permission request");
+    assert_eq!(request["params"], params);
+    assert!(request["at_ms"].as_u64().unwrap() > 0, "{lines}");
+    assert!(
+        records[1..]
+            .iter()
+            .any(|r| r["method"] == "notifications/other"),
+        "{lines}"
+    );
+    // It never answers: no verdict, nor any other notification, goes to the client.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(received.try_recv().is_err(), "no notification to the CLI");
     client.cancel().await.unwrap();
 }
 
