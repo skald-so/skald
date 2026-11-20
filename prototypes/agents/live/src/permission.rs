@@ -124,7 +124,7 @@ pub fn session(
     fs::create_dir_all(&files.project)?;
     let servers = files.dir.join("mcp.json");
     let notices = files.dir.join(NOTICES);
-    let args = json!(["--permission-log", notices, files.source]);
+    let args = json!([files.source, "--permission-log", notices]);
     fs::write(
         &servers,
         pretty(&json!({ "mcpServers": { SERVER: { "command": channel, "args": args } } })),
@@ -586,9 +586,9 @@ mod tests {
         assert_eq!(
             server["args"],
             json!([
+                dir.path().join("source"),
                 "--permission-log",
-                dir.path().join(NOTICES),
-                dir.path().join("source")
+                dir.path().join(NOTICES)
             ])
         );
         let settings = read("settings.json");

@@ -25,7 +25,7 @@ async fn start_with(
 ) -> (Client, mpsc::UnboundedReceiver<CustomNotification>) {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-channel"));
     // No variable of the test's environment, so none of its credentials reach the server.
-    command.args(flags).arg(source).env_clear();
+    command.arg(source).args(flags).env_clear();
     let (events, received) = mpsc::unbounded_channel();
     let client = Events(events)
         .serve(TokioChildProcess::new(command).unwrap())
@@ -100,7 +100,7 @@ async fn logged(log: &Path, count: usize) -> (String, Vec<serde_json::Value>) {
 fn other_arguments_print_the_usage() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().to_str().unwrap();
-    for args in [&[][..], &["--log", "file", source], &[source, source]] {
+    for args in [&[][..], &[source, "--log", "file"], &[source, source]] {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-channel"))
             .args(args)
             .env_clear()
