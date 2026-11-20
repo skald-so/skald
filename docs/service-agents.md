@@ -74,3 +74,54 @@ skald send --all --channel <channel> "rollout started"
 - Keep `SKALD_STATE_DIR` between runs, for example on a persistent disk or volume. Its state is sealed under a key derived from the key secret, so the directory alone opens nothing; nothing goes to the key store.
 - Once the agent has been in a group, a run without its earlier state refuses. Restore the directory, or replace the agent's key.
 - What its `skald recv` shows counts as handed over to it for the [limit on replies without a human](protocol/README.md#content): past it, its `skald send` fails and sends nothing.
+
+## Recipes
+
+Each recipe takes only the two secrets, under their names; the key secret names the server. What a leaked secret allows: [A leaked CI secret](threat-model.md#a-leaked-ci-secret). Replace `<channel>` with the agent's channel.
+
+### GitHub Actions
+
+A step of a job on a Linux or macOS runner: it runs the agent without a disk, so create the agent without `--member`. Keep both secrets as the repository's or the environment's secrets of the same names.
+
+The job's log shows what `skald recv` prints, the channel's messages included. Use the step only where everyone who can read the log may read the channel; on a public repository, that is everyone.
+
+```yaml service-agent=github-actions
+- name: Report to Skald
+  shell: bash
+  env:
+    SKALD_SERVICE_KEY: ${{ secrets.SKALD_SERVICE_KEY }}
+    SKALD_SERVICE_TOKEN: ${{ secrets.SKALD_SERVICE_TOKEN }}
+  run: |
+    curl -fsSL https://github.com/skald-so/skald/releases/latest/download/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
+    skald recv
+    skald send --all --channel <channel> "rollout started"
+```
+
+### Docker
+
+A member agent, created with `--member`, whose state stays on the volume `deploy-bot` between containers. The image, in a directory of its own as `Dockerfile`:
+
+```dockerfile service-agent=dockerfile
+FROM debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+ENV SKALD_INSTALL_DIR=/usr/local/bin
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update \
+  && apt-get install --yes --no-install-recommends ca-certificates curl \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl -fsSL https://github.com/skald-so/skald/releases/latest/download/install.sh | sh
+RUN useradd --system --create-home --home-dir /var/lib/deploy-bot deploy-bot
+USER deploy-bot
+ENV SKALD_STATE_DIR=/var/lib/deploy-bot/state
+CMD ["sh", "-c", "skald recv && skald send --all --channel <channel> 'rollout started'"]
+```
+
+In that directory, with both secrets in the shell's environment:
+
+```sh service-agent=docker
+docker build --tag deploy-bot .
+docker run --rm --volume deploy-bot:/var/lib/deploy-bot \
+  --env SKALD_SERVICE_KEY --env SKALD_SERVICE_TOKEN deploy-bot
+```
+
+Each `docker run` starts a new container on the same volume. Without the volume, a later run refuses: [Running a member agent](#running-a-member-agent).
