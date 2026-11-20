@@ -5,8 +5,8 @@
 //! - The device keeps what a reply needs of each message its person's run showed or it handed to an
 //!   agent, for the message's wait: its envelope's `ttl`, at most [`recv::AGENT_WAIT`], after the
 //!   device wrote it ([`crate::state`]). That is the message's `msg_id`, space and channel, and its
-//!   `from` and `hops`, sealed under the state key. References count those messages
-//!   ([`crate::forms`]).
+//!   `from` and `hops`, sealed under the state key with where it came from
+//!   ([`crate::message_status`]). References count those messages ([`crate::forms`]).
 //! - A reply names the message by `#<ref>`, `<ref>`, as a shell drops an unquoted `#…`, or its
 //!   `msg_id`. The person replies to a message its run showed; an agent only to one handed over to
 //!   it in its folder's space. An unknown message, or a reference two kept messages share, sends
@@ -35,12 +35,26 @@ use crate::send::{self, Draft};
 use crate::spaces::Scope;
 use crate::state::{self, Replied, State, Target};
 
-/// What a reply needs of a message besides its `msg_id`, space and channel, as the device seals it.
+/// What the device keeps of a message besides its `msg_id`, space and channel, as it seals it: what
+/// a reply needs, and where the message came from.
 #[derive(Serialize, Deserialize)]
-struct Sealed {
+pub struct Sealed {
     /// The message's `from`, which the reply is to.
-    from: String,
-    hops: u64,
+    pub from: String,
+    pub hops: u64,
+    /// None in what an older client kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Origin>,
+}
+
+/// Where a message came from: its sending device, by its ID and its certificate's `name`, the
+/// trust level the device gave it, and its time, in Unix seconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Origin {
+    pub device: String,
+    pub device_name: String,
+    pub level: String,
+    pub time: u64,
 }
 
 /// What a reply, or a run that reads a message again, names a message by.
@@ -63,7 +77,7 @@ pub fn run(
     json: bool,
 ) -> Result<(), String> {
     recv::holding_warnings(dir, agent.is_some(), || {
-        let named = given(message)?;
+        let named = given(message).map_err(|why| format!("{why}; nothing is sent"))?;
         let (scope, reader) = reader(dir, agent)?;
         let target = target(dir, &named, reader, message)?;
         let mut synced = send::of_channel(dir, storage, settings, target.channel, scope)?;
@@ -114,18 +128,17 @@ pub fn reader<'a>(dir: &Path, agent: Option<&'a Name>) -> Result<(Scope, Reader<
 
 /// What `message` names: a `msg_id`, or else a reference, with or without its `#`, of at least
 /// [`SHORTEST`] characters.
-fn given(message: &str) -> Result<Given, String> {
+pub fn given(message: &str) -> Result<Given, String> {
     named(message).ok_or_else(|| {
         format!(
-            "\"{}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id; \
-             nothing is sent",
+            "\"{}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id",
             printable(message)
         )
     })
 }
 
 /// What `message` names, as [`given`] takes it, if anything.
-pub fn named(message: &str) -> Option<Given> {
+fn named(message: &str) -> Option<Given> {
     let trimmed = message.trim();
     if let Ok(msg_id) = trimmed.parse::<MessageId>() {
         return Some(Given::Id(msg_id));
@@ -189,13 +202,23 @@ pub fn kept_target(dir: &Path, named: &Given, reader: Reader) -> Result<Target, 
     })
 }
 
-/// The one of `targets` that `named` names; fails with whether more than one message shares it:
-/// a reference two of `kept`, the messages the device keeps, start with, or a `msg_id` two
-/// targets have.
+/// The one of `targets` that `named` names, as [`pick`] picks it.
 fn chosen(named: &Given, targets: Vec<Target>, kept: &[MessageId]) -> Result<Target, bool> {
-    let mut found: Vec<Target> = match named {
-        Given::Id(msg_id) => (targets.into_iter())
-            .filter(|target| target.msg_id == *msg_id)
+    pick(named, targets, |target| target.msg_id, kept)
+}
+
+/// The one of `found`, each of the message its `msg_id` gives, that `named` names; fails with
+/// whether more than one message shares it: a reference two of `kept`, the messages the device
+/// keeps, start with, or a `msg_id` two of `found` have.
+pub fn pick<T>(
+    named: &Given,
+    found: Vec<T>,
+    msg_id: impl Fn(&T) -> MessageId,
+    kept: &[MessageId],
+) -> Result<T, bool> {
+    let mut found: Vec<T> = match named {
+        Given::Id(given) => (found.into_iter())
+            .filter(|one| msg_id(one) == *given)
             .collect(),
         Given::Reference(reference) => {
             let mut sharing: Vec<MessageId> = (kept.iter().copied())
@@ -206,8 +229,8 @@ fn chosen(named: &Given, targets: Vec<Target>, kept: &[MessageId]) -> Result<Tar
             if sharing.len() > 1 {
                 return Err(true);
             }
-            (targets.into_iter())
-                .filter(|target| forms::whole_reference(target.msg_id).starts_with(reference))
+            (found.into_iter())
+                .filter(|one| forms::whole_reference(msg_id(one)).starts_with(reference))
                 .collect()
         }
     };
@@ -223,24 +246,26 @@ fn item(seq: u64) -> Vec<u8> {
     [b"target:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
-/// What a reply needs of the message of the entry `seq`, `from` and with `hops`, sealed with `key`
-/// for the device `this`.
+/// What the device keeps of the message of the entry `seq`, `from` and with `hops`, from `origin`,
+/// sealed with `key` for the device `this`.
 pub fn seal_target(
     key: &StateKey,
     this: DeviceId,
     seq: u64,
     (from, hops): (&Address, u64),
+    origin: Origin,
 ) -> Vec<u8> {
     let sealed = Sealed {
         from: from.to_string(),
         hops,
+        origin: Some(origin),
     };
     let bytes = serde_json::to_vec(&sealed).expect("a target encodes");
     key.seal(this, &item(seq), &bytes)
 }
 
-/// What a reply needs of `target`, opened with `key` for the device `this`, if it opens.
-fn open(key: &StateKey, this: DeviceId, target: &Target) -> Option<Sealed> {
+/// What the device keeps of `target`, opened with `key` for the device `this`, if it opens.
+pub fn open(key: &StateKey, this: DeviceId, target: &Target) -> Option<Sealed> {
     let bytes = key.open(this, &item(target.seq), &target.sealed)?;
     serde_json::from_slice(&bytes).ok()
 }

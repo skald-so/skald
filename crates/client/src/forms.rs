@@ -218,13 +218,18 @@ impl Message {
         }
     }
 
-    /// Its sender as a short line names it: `owner/agent` for an agent, the form `--to` takes, and
-    /// the full address for a person or a `from` that does not parse.
+    /// Its sender as a short line names it ([`short_address`]).
     fn sender(&self) -> String {
-        match self.from.parse::<Address>() {
-            Ok(from) if !from.is_person() => format!("{}/{}", from.owner(), from.agent()),
-            _ => self.from.clone(),
-        }
+        short_address(&self.from)
+    }
+}
+
+/// `address` as a short line names it: `owner/agent` for an agent, the form `--to` takes, and the
+/// full address for a person or an address that does not parse.
+pub fn short_address(address: &str) -> String {
+    match address.parse::<Address>() {
+        Ok(parsed) if !parsed.is_person() => format!("{}/{}", parsed.owner(), parsed.agent()),
+        _ => address.to_owned(),
     }
 }
 
