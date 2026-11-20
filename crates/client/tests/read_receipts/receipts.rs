@@ -17,7 +17,7 @@ use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::{Finished, Machine, Run};
 use crate::played::Played;
 use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word};
-use crate::talk::one_message_sent;
+use crate::talk::messages_sent;
 use crate::world::{ACME, AGENT, HOST};
 
 /// The status the CLI shows once the `to` agent has the message.
@@ -169,22 +169,35 @@ impl Roles {
         format!("{ACME}/{}/{agent}@{HOST}", self.senders.ada())
     }
 
-    /// Runs `skald --agent <A's agent> send <addressee> --channel <channel> <text>` on A's machine
-    /// in its `~/work/acme`; fails unless it succeeds and the front saw one message sent in the
-    /// channel. Gives its `msg_id`.
+    /// Runs `skald --agent <A's agent> send --json <addressee> --channel <channel> <text>` on A's
+    /// machine in its `~/work/acme`; fails unless it succeeds, reporting one `msg_id`, and the
+    /// front saw that message sent in the channel. Gives its `msg_id`, as the run reports it: B's
+    /// device may send before the run is over.
     #[track_caller]
     pub fn a_sends(&self, addressee: &[&str], text: &str) -> MessageId {
         let talk = &self.senders.agents.talk;
         let channel = talk.channel.to_string();
         let from = talk.front.sent().len();
-        let mut args = vec![AGENT, LAPTOP_AGENT, SEND];
+        let mut args = vec![AGENT, LAPTOP_AGENT, SEND, JSON_FLAG];
         args.extend_from_slice(addressee);
         args.extend([CHANNEL, channel.as_str(), text]);
         let sent = (self.a())
             .start_in(&self.senders.laptop_folder, &args)
             .finish();
         assert!(sent.success, "A's agent: {sent:?}");
-        one_message_sent(&talk.front, talk.channel, from)
+        let ids: Vec<MessageId> = (json_objects(&sent.stdout).iter())
+            .filter_map(|object| object["msg_id"].as_str()?.parse().ok())
+            .collect();
+        let msg_id = match ids.as_slice() {
+            [id, ..] if ids.iter().all(|one| one == id) => *id,
+            _ => panic!("not one msg_id: {sent:?}"),
+        };
+        let seen = messages_sent(&talk.front, talk.channel, from);
+        assert!(
+            (seen.iter()).any(|one| one.envelope.envelope().header.msg_id == msg_id),
+            "{msg_id} not sent: {seen:?}"
+        );
+        msg_id
     }
 
     /// As [`Roles::a_sends`], `--to` claude.

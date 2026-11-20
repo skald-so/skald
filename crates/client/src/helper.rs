@@ -667,11 +667,7 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
-    uploads::remember(uploads::Settings {
-        storage: operation.key_storage,
-        speaks: operation.speaks,
-        timeout: operation.timeout,
-    });
+    uploads::remember(uploads::Settings::of(&operation));
     if operation.command.waits() || wait::holds(&operation) {
         let session = Session {
             stream,

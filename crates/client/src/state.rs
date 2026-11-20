@@ -4142,8 +4142,6 @@ pub(crate) mod tests {
         "0190b6a2-1f3c-7d4e-8a5b-6c7d8e9f0a1b".parse().unwrap()
     }
 
-    /// An agent the device has run as in a space gets each entry written after that, there only.
-    /// A kept message waits for the person's run and each agent it is for until each takes it, and
     /// The state keeps each agent's status: what it set, what the device last gave it and its
     /// runtime; a new session clears what it set. Each channel's presence counts its revisions
     /// on, and keeps the last value the server took.
@@ -4217,6 +4215,8 @@ pub(crate) mod tests {
         assert_eq!(state.next_presence_revision(channel).unwrap(), 3);
     }
 
+    /// An agent the device has run as in a space gets each entry written after that, there only.
+    /// A kept message waits for the person's run and each agent it is for until each takes it, and
     /// for an agent until its wait after its entry was written ends; then the state drops it.
     #[test]
     fn kept_messages_wait_for_the_person_and_their_agents_until_handed_over_or_expired() {

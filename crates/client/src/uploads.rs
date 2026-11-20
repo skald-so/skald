@@ -10,14 +10,14 @@
 //!   note.
 //! - The helper checks the values after each command it runs, when its sessions change, after it
 //!   takes in what came for an MCP session, before a value expires and before it exits, its agents
-//!   then `offline`. Out of the helper, a run as an agent that registers it or sets its status
-//!   checks them once, after its command ([`keep`]), its agents `offline`: only the helper knows
-//!   the sessions.
+//!   then `offline`. Out of the helper, a run as an agent checks them once, after its command
+//!   ([`keep`]), its agents `offline`: only the helper knows the sessions.
 //! - A check uploads in every channel together once an agent's state or note changed there or a
 //!   value is near its `expires`; otherwise only in a channel whose epoch changed.
-//! - A value is sealed only under the channel's current epoch, judged clean, while no Commit of the
-//!   device waits there; its `revision` is recorded before the upload, as a counter is. An upload
-//!   that fails is tried again by a later check, the helper's within [`RETRY`] seconds.
+//! - A value is sealed only by a device not revoked, under the channel's current epoch, judged
+//!   clean, while no Commit of the device waits there; its `revision` is recorded before the
+//!   upload, as a counter is. An upload that fails is tried again by a later check, the helper's
+//!   within [`RETRY`] seconds.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -35,7 +35,7 @@ use skald_proto::{
 use crate::devices::text;
 use crate::spaces::Follower;
 use crate::state::{self, State, Uploaded};
-use crate::{agents, folders, follow, groups, secrets, service};
+use crate::{agents, folders, follow, groups, revocations, secrets, service};
 
 /// The setting of how far after an upload its value expires, in seconds; a helper takes it from
 /// the command that starts it.
@@ -74,6 +74,17 @@ pub struct Running {
 pub struct Live {
     pub running: BTreeSet<Running>,
     pub ended: BTreeMap<Running, u64>,
+}
+
+impl Settings {
+    /// What a check takes of `operation`'s settings.
+    pub fn of(operation: &crate::Operation) -> Self {
+        Settings {
+            storage: operation.key_storage,
+            speaks: operation.speaks,
+            timeout: operation.timeout,
+        }
+    }
 }
 
 /// The state an agent sets itself to.
@@ -126,14 +137,7 @@ pub fn set_status(
     note: Option<&str>,
 ) -> Result<(), String> {
     let note = note.filter(|note| !note.is_empty());
-    if let Some(note) = note
-        && note.len() > NOTE_MAX
-    {
-        return Err(format!(
-            "the note is {} bytes in UTF-8, over the limit of {NOTE_MAX}; nothing changed",
-            note.len()
-        ));
-    }
+    note_fits(note)?;
     let space = folders::working_space(dir)
         .map_err(|why| format!("this agent sees no space: {why}; nothing changed"))?;
     let held = State::open(dir).map_err(text)?;
@@ -148,6 +152,17 @@ pub fn set_status(
         }
     );
     Ok(())
+}
+
+/// Fails, saying the limit, for a note over [`NOTE_MAX`] bytes.
+pub fn note_fits(note: Option<&str>) -> Result<(), String> {
+    match note {
+        Some(note) if note.len() > NOTE_MAX => Err(format!(
+            "the note is {} bytes in UTF-8, over the limit of {NOTE_MAX}; nothing changed",
+            note.len()
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Checks the device's values by the state in `dir`, with the sessions of `live`, uploading what
@@ -290,6 +305,16 @@ fn checked(dir: &Path, settings: Settings, live: &Live, now: u64) -> Result<Opti
     }
     if sealing.is_empty() {
         return Ok(due);
+    }
+    // A revoked device signs and sends nothing, and checks no more.
+    let signer = (&follower.own.master, &follower.cert);
+    if revocations::revoked(
+        &mut follower.connection,
+        &follower.token,
+        &follower.state,
+        signer,
+    )? {
+        return Ok(None);
     }
     // Only agents need it, for their addresses.
     let named = (sealing.iter()).any(|channel| !spaces[&channel.space].1.is_empty());

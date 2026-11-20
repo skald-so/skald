@@ -1165,26 +1165,13 @@ impl Operation {
 }
 
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
-/// helper does. Out of the helper, a run as an agent that registers it or sets its status, a
-/// `skald recv`, `skald set-status` or an MCP server's registration or status tool, then checks
-/// the device's presence ([`uploads::keep`]); a send does not wait for it.
+/// helper does. Out of the helper, a run as an agent then checks the device's presence
+/// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
-        && matches!(
-            operation.command,
-            Command::Recv { .. }
-                | Command::SetStatus { .. }
-                | Command::Mcp {
-                    call: Some(mcp::Call::Register | mcp::Call::SetStatus { .. }),
-                    ..
-                }
-        );
-    let settings = uploads::Settings {
-        storage: operation.key_storage,
-        speaks: operation.speaks,
-        timeout: operation.timeout,
-    };
+        && !matches!(operation.command, Command::Mcp { call: None, .. });
+    let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
     if checks && let Ok(dir) = state::dir(state_dir) {

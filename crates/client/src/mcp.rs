@@ -44,7 +44,7 @@ use rmcp::transport::{IntoTransport, Transport};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use skald_proto::{DeviceId, NOTE_MAX, Name, VersionRange};
+use skald_proto::{DeviceId, Name, VersionRange};
 use tokio::sync::oneshot;
 
 use crate::devices::text;
@@ -215,15 +215,10 @@ fn status_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, Stri
     };
     let note = match field(NOTE) {
         None | Some(Value::Null) => None,
-        Some(Value::String(note)) if note.len() > NOTE_MAX => {
-            return Err(format!(
-                "the note is {} bytes in UTF-8, over the limit of {NOTE_MAX}; nothing changed",
-                note.len()
-            ));
-        }
         Some(Value::String(note)) => Some(note.clone()),
         Some(_) => return Err("`note` is not a string; nothing changed".to_owned()),
     };
+    uploads::note_fits(note.as_deref())?;
     Ok(Call::SetStatus { state, note })
 }
 

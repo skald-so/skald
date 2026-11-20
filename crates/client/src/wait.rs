@@ -90,7 +90,11 @@ pub fn here(
         let own = last_own_kept(&state, operation)?;
         let shown = crate::received(operation);
         if operation.agent.is_some() {
-            uploads::keep(dir, presence_settings(operation), &uploads::Live::default());
+            uploads::keep(
+                dir,
+                uploads::Settings::of(operation),
+                &uploads::Live::default(),
+            );
         }
         drop(lock);
         if shown? {
@@ -109,15 +113,6 @@ pub fn here(
                 break;
             }
         }
-    }
-}
-
-/// What a check of the presence takes of `operation`'s settings.
-fn presence_settings(operation: &Operation) -> uploads::Settings {
-    uploads::Settings {
-        storage: operation.key_storage,
-        speaks: operation.speaks,
-        timeout: operation.timeout,
     }
 }
 
@@ -597,7 +592,7 @@ fn hold(
     };
     crate::clock::set_offset(operation.clock_offset);
     let dir = crate::state::dir(operation.state_dir.clone())?;
-    uploads::remember(presence_settings(operation));
+    uploads::remember(uploads::Settings::of(operation));
     let Ok(space) = recv::holding_warnings(&dir, true, || folders::working_space(&dir)) else {
         return Ok(true);
     };

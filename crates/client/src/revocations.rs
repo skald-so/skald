@@ -427,23 +427,36 @@ pub fn learned(
 }
 
 /// Fails, saying so, if this device, of `cert` on the account of the pinned `master` key, is revoked
-/// by the revocations the server gives with its account's devices, as the session `token`, or
-/// those `state` holds; keeps those the server gives that count.
+/// ([`revoked`]).
 pub fn refuse_if_revoked(
     connection: &mut Connection,
     token: &str,
     state: &State,
     (master, cert): (&[u8; 32], &Cert),
 ) -> Result<(), String> {
+    match revoked(connection, token, state, (master, cert))? {
+        true => Err(format!(
+            "this device {} is revoked: it sends and receives nothing; sign in on a device that \
+             is not",
+            cert.body().device
+        )),
+        false => Ok(()),
+    }
+}
+
+/// Whether this device, of `cert` on the account of the pinned `master` key, is revoked by the
+/// revocations the server gives with its account's devices, as the session `token`, or those
+/// `state` holds; keeps those the server gives that count.
+pub fn revoked(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    (master, cert): (&[u8; 32], &Cert),
+) -> Result<bool, String> {
     let this = cert.body().device;
     let devices = devices::own(connection, token, state, master)?;
-    match check_valid_device(master, &devices.certs, &devices.revocations, this) {
-        Err(DeviceCheckError::Revoked { .. }) => Err(format!(
-            "this device {this} is revoked: it sends and receives nothing; sign in on a device \
-             that is not"
-        )),
-        _ => Ok(()),
-    }
+    let checked = check_valid_device(master, &devices.certs, &devices.revocations, this);
+    Ok(matches!(checked, Err(DeviceCheckError::Revoked { .. })))
 }
 
 #[cfg(test)]
