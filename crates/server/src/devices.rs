@@ -67,11 +67,13 @@ impl Device {
     }
 }
 
-/// `Devices` in the spec.
+/// `Devices` in the spec; with `records`, `SpaceDevices`.
 #[derive(Serialize)]
 pub(crate) struct Devices {
     devices: Vec<Device>,
     revocations: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    records: Option<Vec<String>>,
 }
 
 impl Devices {
@@ -89,6 +91,17 @@ impl Devices {
         Devices {
             devices,
             revocations,
+            records: None,
+        }
+    }
+
+    /// As [`Devices::of`], with `records`, the account records of the devices' accounts as their
+    /// first devices sent them.
+    pub(crate) fn with_records(self, records: &[(Vec<u8>,)]) -> Self {
+        let records = records.iter().map(|(record,)| base64(record)).collect();
+        Devices {
+            records: Some(records),
+            ..self
         }
     }
 }

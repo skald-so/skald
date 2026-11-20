@@ -6,7 +6,9 @@
 //!   revision it accepts later leaves the judgment; an epoch it holds no judgment of counts as
 //!   unclean.
 //! - The link of a clean epoch holds the key of `prev`, the latest epoch from 1 on before it that
-//!   the device judged clean; with none, there is no link.
+//!   the device judged clean; with none, there is no link. A device linked with the recovery key
+//!   counts as judged clean each epoch before its first judged one whose key a wrap to the recovery
+//!   key gave it ([`crate::recovery_link`]).
 //! - Once its Commit is stored, the device uploads the link of the new epoch. After its catch-up,
 //!   it uploads the links it can make that the server lacks, of the channels whose latest revision
 //!   it accepted lists its account. It does not upload again a link the server took from it, listed
@@ -24,6 +26,7 @@ use skald_proto::{
 };
 use tungstenite::Message;
 
+use crate::connection::Connection;
 use crate::devices::text;
 use crate::groups::{self, Link};
 use crate::send::{broke, closed, set_read_timeout, timed_out};
@@ -49,15 +52,35 @@ fn prev(judgments: &BTreeMap<u64, bool>, epoch: u64) -> Option<u64> {
         .map(|(prev, _)| *prev)
 }
 
+/// `judgments` with each of `recovered`, the epochs whose key a wrap to the recovery key gave the
+/// device, before its first judged epoch counted as judged clean.
+fn with_recovered(
+    judgments: &BTreeMap<u64, bool>,
+    recovered: &BTreeSet<u64>,
+) -> BTreeMap<u64, bool> {
+    let first = judgments.keys().next().copied().unwrap_or(u64::MAX);
+    let mut chain = judgments.clone();
+    chain.extend(recovered.range(..first).map(|&epoch| (epoch, true)));
+    chain
+}
+
 /// The links of `channel` the device's judgments give that it may upload, each of an epoch
-/// `wanted` holds: of each clean epoch with a `prev`, unless settled.
+/// `wanted` holds: of each clean epoch with a `prev`, unless settled. A `prev` may be an epoch
+/// [`with_recovered`] counts as judged clean.
 fn due(follower: &Follower, channel: ChannelId, wanted: impl Fn(u64) -> bool) -> Vec<Pair> {
-    let Some((judgments, settled)) = judged(follower, channel, State::settled_links) else {
+    let read = |state: &State, channel| {
+        Ok((
+            state.settled_links(channel)?,
+            state.recovered_epochs(channel)?,
+        ))
+    };
+    let Some((judgments, (settled, recovered))) = judged(follower, channel, read) else {
         return Vec::new();
     };
+    let chain = with_recovered(&judgments, &recovered);
     (judgments.iter())
         .filter(|&(&epoch, &clean)| clean && wanted(epoch))
-        .filter_map(|(&epoch, _)| Some((epoch, prev(&judgments, epoch)?)))
+        .filter_map(|(&epoch, _)| Some((epoch, prev(&chain, epoch)?)))
         .filter(|pair| !settled.contains(pair))
         .collect()
 }
@@ -161,11 +184,11 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
 
 /// The channels within `scope` of each space the run accepted the revisions of, those whose last
 /// accepted revision lists the device's account, or, for a `service` device, the device in their
-/// `services`.
+/// `services`; none for a stateless one, which is no member.
 pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
     let account = follower.own.account;
     let own = |channel: &Channel| match follower.service {
-        Some(_) => channel.services.contains(&follower.this),
+        Some(member) => !member.stateless && channel.services.contains(&follower.this),
         None => channel.members.iter().any(|entry| entry.account == account),
     };
     (follower.accepted.iter())
@@ -212,14 +235,21 @@ struct Listed(BTreeMap<String, Vec<String>>);
 /// lists, each as its bytes; those that are no base64url are left out.
 pub fn listed(
     follower: &mut Follower,
+    at: (SpaceId, ChannelId),
+    kind: &str,
+) -> Result<Vec<Vec<u8>>, String> {
+    listed_to(&mut follower.connection, &follower.token, at, kind)
+}
+
+/// As [`listed`], as the server of `connection` lists them to the session `token`.
+pub fn listed_to(
+    connection: &mut Connection,
+    token: &str,
     (space, channel): (SpaceId, ChannelId),
     kind: &str,
 ) -> Result<Vec<Vec<u8>>, String> {
     let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
-    let body = follower
-        .connection
-        .get_as(&path, &follower.token)
-        .map_err(text)?;
+    let body = connection.get_as(&path, token).map_err(text)?;
     let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
     let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
     let items = given.remove(kind).ok_or_else(unexpected)?;
@@ -238,7 +268,7 @@ fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, History
             ((space, made.channel), item, (made.channel, pair))
         })
         .collect();
-    let unanswered = upload_items(
+    let left = upload_items(
         follower,
         link,
         items,
@@ -254,7 +284,7 @@ fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, History
             follower.state.settle_links(channel, &[pair]).map_err(text)
         },
     );
-    for (channel, (epoch, _)) in unanswered {
+    for (channel, (epoch, _)) in left.warned() {
         eprintln!(
             "skald: warning: the server has not answered this device's link of the epoch {epoch} \
              in the channel {channel}; the next run uploads it again"
@@ -262,18 +292,42 @@ fn upload(follower: &mut Follower, link: &mut Link, links: Vec<(SpaceId, History
     }
 }
 
+/// What the server said to none of: the upload's items it has not answered, or all of them when
+/// the device's connection is no WebSocket, which alone carries them, so none went out.
+pub enum Left<T> {
+    Unanswered(Vec<T>),
+    OffWebSocket(Vec<T>),
+}
+
+impl<T> Left<T> {
+    /// The items left, all unanswered, once it warned of [`OFF_WEBSOCKET`] if none went out.
+    pub fn warned(self) -> Vec<T> {
+        match self {
+            Left::Unanswered(left) => left,
+            Left::OffWebSocket(left) => {
+                eprintln!("skald: warning: {OFF_WEBSOCKET}");
+                left
+            }
+        }
+    }
+}
+
+/// What a run says when its connection is no WebSocket, so history items wait for a later one.
+pub const OFF_WEBSOCKET: &str =
+    "history items go to the server over a WebSocket only, and this network lets none through";
+
 /// Uploads `items`, each a history item of its space and channel with what the caller knows it by,
 /// in `history` frames on the device's connection, then reads the server's answers for the run's
 /// timeout, giving each answered one to `answered` with the problem of a refusal, if any. Gives
-/// those the server has not answered; warns of what fails.
+/// those the server has not answered; warns of what fails but [`Left::OffWebSocket`].
 pub fn upload_items<T>(
     follower: &mut Follower,
     link: &mut Link,
     items: Vec<((SpaceId, ChannelId), HistoryItem, T)>,
     answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
-) -> Vec<T> {
+) -> Left<T> {
     if items.is_empty() {
-        return Vec::new();
+        return Left::Unanswered(Vec::new());
     }
     let mut waiting: BTreeMap<u64, T> = BTreeMap::new();
     let mut frames = Vec::new();
@@ -288,34 +342,32 @@ pub fn upload_items<T>(
         };
         frames.push(frame.to_cbor());
     }
-    if let Err(err) = answers(follower, link, &frames, &mut waiting, answered) {
-        eprintln!("skald: warning: {err}");
+    match answers(follower, link, &frames, &mut waiting, answered) {
+        Ok(true) => {}
+        Ok(false) => return Left::OffWebSocket(waiting.into_values().collect()),
+        Err(err) => eprintln!("skald: warning: {err}"),
     }
-    waiting.into_values().collect()
+    Left::Unanswered(waiting.into_values().collect())
 }
 
 /// Sends `frames` on the device's connection, then reads the server's answers to the uploads of
 /// `waiting` for the run's timeout, taking each answered one out and giving it to `answered`;
-/// fails if the connection ends, or is not a WebSocket, which alone carries them, or `answered`
-/// fails.
+/// gives whether it sent them: not if the connection is no WebSocket, which alone carries them.
+/// Fails if the connection ends or `answered` fails.
 fn answers<T>(
     follower: &mut Follower,
     link: &mut Link,
     frames: &[Vec<u8>],
     waiting: &mut BTreeMap<u64, T>,
     mut answered: impl FnMut(&Follower, T, Option<&str>) -> Result<(), String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let mut mailbox = match link.mailbox.take() {
         Some(mailbox) => mailbox,
         None => follower.connect(&link.keys)?,
     };
     let Some((socket, pushed)) = mailbox.websocket() else {
         link.mailbox = Some(mailbox);
-        return Err(
-            "history items go to the server over a WebSocket only, and this network lets none \
-             through"
-                .to_owned(),
-        );
+        return Ok(false);
     };
     for frame in frames {
         socket
@@ -347,7 +399,7 @@ fn answers<T>(
         answered(follower, known, refused.as_deref())?;
     }
     link.mailbox = Some(mailbox);
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -366,5 +418,24 @@ mod tests {
         assert_eq!(prev(&judgments, 9), Some(5));
         assert_eq!(prev(&BTreeMap::from([(2, false), (3, true)]), 4), Some(3));
         assert_eq!(prev(&BTreeMap::from([(1, false), (2, false)]), 3), None);
+    }
+
+    /// The epochs a wrap to the recovery key gave count as judged clean before the first judged
+    /// epoch only, so the link of that one has the latest of them as its `prev`.
+    #[test]
+    fn recovered_epochs_count_as_clean_before_the_first_judged_one() {
+        let judgments = BTreeMap::from([(5, true), (6, false), (7, true)]);
+        let recovered = BTreeSet::from([2, 3, 6, 8]);
+
+        let chain = with_recovered(&judgments, &recovered);
+
+        assert_eq!(
+            chain,
+            BTreeMap::from([(2, true), (3, true), (5, true), (6, false), (7, true)])
+        );
+        assert_eq!(prev(&chain, 5), Some(3));
+        assert_eq!(prev(&chain, 7), Some(5));
+        let alone = with_recovered(&BTreeMap::new(), &recovered);
+        assert_eq!(alone.len(), 4);
     }
 }

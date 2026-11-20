@@ -137,6 +137,13 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
 
+### From a stateless service agent
+A [stateless](membership.md#service-device) `service` device keeps no outbox and is in no MLS group:
+- It takes the channel's latest GroupInfo from the server and checks it as a linked browser does before it writes ([Wraps](membership.md#wraps)); every member it lists must be admitted, or nothing is sent.
+- It seals one `hpke` envelope to each member device the GroupInfo lists, with the same `msg_id`. The content carries the token's grant and no `counter`.
+- Its content has `hops` 0: it keeps no messages handed over in earlier runs, so the [limit on replies without a human](README.md#content) does not stop its loops.
+- The run fails unless the server answers `stored` to every envelope within it; nothing retries later.
+
 ### Copies to service agents
 A member device's message with an `a2a` body also goes under [`hpke`](README.md#scheme-hpke), with the same `msg_id`, to each `service` device that:
 - has a `service-agent` entry in the latest revision the sending device accepted, but is not in the channel's `services` there, even one that has not joined the group yet;
@@ -177,6 +184,8 @@ A member device's message with an `a2a` body also goes under [`hpke`](README.md#
 - A handshake message is an `mls` payload that is a Welcome, or a PublicMessage or PrivateMessage whose `content_type` is `proposal` or `commit` [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420), §6]. Its entry does not expire by time; the other rules apply to it.
 - The server deletes an expired entry and does not send it.
 - The server deletes an envelope once no mailbox entry refers to it.
+
+A stateless `service` device writes nothing: it acks an entry only once it has shown it, so a run that dies in between shows it again at the next one. It keeps no counters, so it does no [gap detection](#gap-detection) and drops a repeated `msg_id` only within a run. As a long-poll acks its cursor, such a run takes one long-poll answer.
 
 A recipient device drops, without a receipt:
 - an entry with a `seq` up to its cursor: a redelivery after a lost ack;
@@ -295,5 +304,6 @@ attachment = {
   - a sender's latest messages in a channel under a scheme, until it sends another there under it; for a message with `to`, the sender still sees no `read`;
   - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
   - content without `counter`.
+- A stateless `service` device keeps nothing between runs, so the server can give again an `hpke` envelope it acked, and the agent acts on it again.
 - Attachments carry a blob ID, not a URL. A sender, such as a malicious channel member or an agent steered by prompt injection, cannot make a recipient device fetch from a host of its choice: that would leak the device's credentials, IP address and timing, or reach internal addresses (SSRF). `digest` is checked only after the download, so it does not prevent this.
 - Everything the server sees, delivery included: [threat model, "The server sees"](../threat-model.md#the-server-sees).

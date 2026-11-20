@@ -4,7 +4,7 @@
 //! its devices. A device is revoked when checks 3 and 4 of "Device checks" fail with the stored
 //! revocations; checks 1 and 2 were made when the server took each certificate. At revocation, on
 //! every instance, the server expires each mailbox entry of the device ("Mailbox"), closes its
-//! connections and adds it no later entry.
+//! connections, deletes its presence values and adds it no later entry.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -13,12 +13,12 @@ use sha2::{Digest as _, Sha256};
 use skald_proto::{AccountId, Cbor as _, DeviceId, Revocation, ServerStatus, SpaceId};
 use sqlx::{PgConnection, PgPool};
 
-use crate::AppState;
 use crate::delivery::{Statuses, remove_on, removing};
 use crate::devices::{base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
 use crate::spaces::certs;
+use crate::{AppState, presence};
 
 /// `RevocationRequest` in the spec.
 #[derive(Deserialize)]
@@ -134,7 +134,7 @@ pub(crate) async fn store(
 
 /// Marks the devices of `account` in `revoked` as revoked and its others as not, on `conn`, in its
 /// transaction. Expires every mailbox entry of each device it newly revokes, deletes its
-/// KeyPackages, and tells the other
+/// KeyPackages and presence values, and tells the other
 /// instances to close its connections once the transaction commits. Gives those devices, and the
 /// statuses the expiry added.
 async fn mark(
@@ -169,6 +169,7 @@ async fn mark(
         .bind(&newly)
         .execute(&mut *conn)
         .await?;
+    presence::revoked(conn, &newly).await?;
     let newly: Vec<DeviceId> = newly
         .iter()
         .map(|device| device.parse().expect("a stored device ID"))

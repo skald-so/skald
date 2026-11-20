@@ -166,14 +166,18 @@ pub fn extra_environment(real: bool) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The placeholder key as Claude Code keeps it once approved: its last 20 characters.
+pub fn approved_key() -> &'static str {
+    &PLACEHOLDER[PLACEHOLDER.len() - 20..]
+}
+
 /// The CLI's whole environment on the model stub at `stub`: that of the `inbox` check, the
 /// terminal, and a config home in which onboarding is done and the placeholder key approved, so
 /// no dialog but the trust and channel ones opens.
 pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(String, String)>> {
     let mut env = Agent::Claude.environment(home, stub, path)?;
     let config = home.join(".claude");
-    // Claude Code keeps the last 20 characters of an approved key.
-    let key = &PLACEHOLDER[PLACEHOLDER.len() - 20..];
+    let key = approved_key();
     fs::write(
         config.join(".claude.json"),
         pretty(&json!({
