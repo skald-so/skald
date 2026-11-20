@@ -1,0 +1,28 @@
+//! End-to-end tests of the Claude Code paths against the real Claude Code (`docs/dev/architecture.md`,
+//! "Delivery to agents"; `docs/dev/infrastructure.md`, "PR checks"): sessions of Ada's agents run
+//! `claude` on the model stub (`stub.rs`) in a temporary config home with no sign-in, as
+//! `claude.rs` starts them, and the tests read what reached the model from the stub's requests.
+//!
+//! They run outside `script/test`, in a CI job of their own that installs the latest Claude Code:
+//! each is ignored unless run with `--run-ignored only`, and says it is skipped without Claude Code
+//! on `PATH`, a failure where `SKALD_E2E_REQUIRED=1`.
+//!
+//! As the tests of the hook handler (`claude_code_hooks/main.rs`): Ada's machine, alone in
+//! `clienta`'s groups, `~/work/clientA` bound to it; her agent api sends with `skald --agent api
+//! send`; Bob joins `clienta` by a fixture revision and his agent review sends from his machine.
+//! A session's `skald mcp` and hooks run as the machine's runs do, as `--agent <agent>` or without
+//! it.
+
+// Each test target uses a part of the shared modules.
+#![allow(dead_code)]
+
+mod claude;
+mod sessions;
+mod stub;
+
+// The hook handler's command, its runs and Ada's and Bob's agents, as the tests of the hook handler
+// have them.
+#[path = "../claude_code_hooks/hooks.rs"]
+mod hooks;
+
+include!("../claude_code_hooks/modules.rs");
