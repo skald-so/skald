@@ -42,6 +42,7 @@ mod follow;
 mod forms;
 mod gaps;
 mod groups;
+mod held;
 mod helper;
 mod history;
 mod history_reading;
@@ -390,6 +391,34 @@ enum Command {
         #[arg(long)]
         keep_earlier: bool,
     },
+    /// Replaces the key of a service agent of a space this device follows, on a device of an admin
+    /// of it whose account the agent's device is on: a new device, made as skald
+    /// create-service-agent makes one, takes the old one's place in the space's next roster
+    /// revision, which ends the old device's tokens, and this device revokes the old one. Writes
+    /// the new key secret and a token to standard output as SKALD_SERVICE_KEY=... and
+    /// SKALD_SERVICE_TOKEN=..., once: nothing keeps them.
+    ReplaceServiceKey {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+        #[command(flatten)]
+        granted: service_agents::Granted,
+    },
+    /// Removes a service agent from a space this device follows, on a device of an admin of it: the
+    /// space's next roster revision, which the device signs as skald create-channel does, lists it
+    /// no more, which ends its tokens. Revokes its device if it is of this device's account;
+    /// otherwise that account revokes it with skald revoke-device.
+    RemoveServiceAgent {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The service agent's address, owner/agent, such as ci/deploy-bot.
+        #[arg(value_name = "OWNER/AGENT")]
+        address: String,
+    },
     /// Lists the live tokens of the service agents of a space this device follows, on a device of
     /// an admin of it: each one's ID, address, permissions, channel IDs, creation and expiry times
     /// and last use.
@@ -529,8 +558,8 @@ enum Command {
     },
     /// Says where a message is, by what this device keeps, without reaching the server: of one it
     /// sent, each device it went to, with its account, its status, stored, delivered or expired,
-    /// and its time, and its to agent's read and replied, or refused with its reason; of one it
-    /// showed or handed over to an agent, its sending device's trust level and the agents it was
+    /// and its time, and its to agent's held, read and replied, or refused with its reason; of one
+    /// it showed or handed over to an agent, its sending device's trust level and the agents it was
     /// handed to. The person asks of every message; an agent only of its own and those handed over
     /// to it, in the space of its folder. Each is known until its wait ends, at most 7 days. Says
     /// nothing of a message it does not know, or of a reference two messages it keeps share, and
@@ -641,9 +670,11 @@ enum Command {
     /// Lists the rules: each one's folder and space.
     Rules,
     /// Sets the inbound mode of an agent of this device in the space of the working directory:
-    /// accept hands it every message; refuse hands it only those of the senders on its allowlist,
-    /// and tells the sender of each other message to it that it was refused. A message keeps the
-    /// mode it came under.
+    /// accept hands it every message; hold hands it those of the senders on its allowlist and
+    /// keeps each other until you accept or refuse it with skald held, telling the sender of each
+    /// such message to it that it is held; refuse hands it only those of the senders on its
+    /// allowlist, and tells the sender of each other message to it that it was refused. A message
+    /// keeps the mode it came under.
     SetInboundMode {
         /// The agent's name, as --agent takes it.
         #[arg(value_name = "AGENT")]
@@ -665,6 +696,13 @@ enum Command {
     /// Lists each agent of this device in the space of the working directory with its inbound mode
     /// and the senders on its allowlist.
     InboundModes,
+    /// Shows each message an agent in hold keeps for your decision, one at a time, and takes your
+    /// decision at the terminal: accept hands it to the agent; refuse, then a reason or an empty
+    /// line, tells its sender it was refused. Only as the person at a terminal.
+    Held,
+    /// A step of skald held after its person's answers, which skald held hands to the helper.
+    #[command(skip)]
+    HeldStep { step: held::Step },
     /// Removes a folder's rule.
     RemoveRule {
         /// The folder, such as ~/work/acme.
@@ -752,6 +790,8 @@ impl Command {
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
+            Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
+            Command::RemoveServiceAgent { .. } => Some("remove-service-agent"),
             Command::ServiceTokens { .. } => Some("service-tokens"),
             Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
@@ -766,6 +806,7 @@ impl Command {
             Command::SetInboundMode { .. } => Some("set-inbound-mode"),
             Command::AllowSender { .. } => Some("allow-sender"),
             Command::InboundModes => Some("inbound-modes"),
+            Command::Held | Command::HeldStep { .. } => Some("held"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -815,6 +856,8 @@ impl Command {
                 self,
                 Command::CreateServiceAgent { .. }
                     | Command::CreateServiceToken { .. }
+                    | Command::ReplaceServiceKey { .. }
+                    | Command::RemoveServiceAgent { .. }
                     | Command::ServiceTokens { .. }
                     | Command::RevokeServiceToken { .. }
                     | Command::SignOut
@@ -851,8 +894,8 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
-            // It takes its person's answers here and its steps lock ([`link`]).
-            Command::Link { .. } => None,
+            // It takes its person's answers here and its steps lock ([`link`], [`held`]).
+            Command::Link { .. } | Command::Held => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -999,6 +1042,9 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
+    if let Command::Held = operation.command {
+        return held(operation, !one_shot);
+    }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
@@ -1011,7 +1057,14 @@ fn main() -> ExitCode {
         Ok(helper::Route::Here(lock)) if operation.command.waits() => {
             waits_here(&dir, &operation, lock)
         }
-        // Held until the run exits.
+        route => routed(route, operation),
+    }
+}
+
+/// Runs `operation` as `route` says: here, holding the lock until it ends, or by the helper, which
+/// gave its exit code.
+fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCode {
+    match route {
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
         Err(err) => exit(Err(err)),
@@ -1099,16 +1152,7 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     let mut held: Option<Option<lock::Lock>> = None;
     let mut starts = starts;
     link_code::run(dir, person, |step| {
-        let operation = Operation {
-            speaks: operation.speaks,
-            timeout: operation.timeout,
-            clock_offset: operation.clock_offset,
-            state_dir: operation.state_dir.clone(),
-            key_storage: operation.key_storage,
-            agent: None,
-            command: Command::LinkStep { step },
-            said: link_prompt::Said::default(),
-        };
+        let operation = operation.step(Command::LinkStep { step });
         if held.is_none() {
             // A later step needs the helper that holds its run. What it shows goes to the run's
             // output, and to its page.
@@ -1121,6 +1165,24 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
             }
         }
         exit(here(operation))
+    })
+}
+
+/// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
+/// or one it starts if `starts`; otherwise it runs here, holding the lock for the step.
+fn held(operation: Operation, starts: bool) -> ExitCode {
+    if let Err(err) = operation.agent() {
+        return exit(Err(err));
+    }
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let mut starts = starts;
+    held::run(&dir, |step| {
+        let operation = operation.step(Command::HeldStep { step });
+        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
+        routed(route, operation)
     })
 }
 
@@ -1149,6 +1211,20 @@ struct Operation {
 }
 
 impl Operation {
+    /// The operation of `command`, a step of its own interactive command, as the person.
+    fn step(&self, command: Command) -> Self {
+        Operation {
+            speaks: self.speaks,
+            timeout: self.timeout,
+            clock_offset: self.clock_offset,
+            state_dir: self.state_dir.clone(),
+            key_storage: self.key_storage,
+            agent: None,
+            command,
+            said: link_prompt::Said::default(),
+        }
+    }
+
     /// Whether it shows as JSON: a `skald recv --json`.
     fn json(&self) -> bool {
         matches!(self.command, Command::Recv { json: true, .. })
@@ -1204,6 +1280,7 @@ fn perform(operation: Operation) -> Result<(), String> {
             Command::SignIn { .. }
                 | Command::Helper { .. }
                 | Command::LinkStep { .. }
+                | Command::HeldStep { .. }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -1287,6 +1364,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
             .and_then(|dir| link_code::step(&dir, key_storage, speaks, timeout, step)),
+        // It runs through `held`.
+        Command::Held => Err("skald held runs only through its own process".to_owned()),
+        Command::HeldStep { step } => state::dir(state_dir)
+            .and_then(|dir| held::step(&dir, key_storage, (speaks, timeout), step)),
         Command::RevokeDevice { device, keep } => state::dir(state_dir)
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
@@ -1332,6 +1413,16 @@ fn perform(operation: Operation) -> Result<(), String> {
             keep_earlier,
         } => synced(state_dir, key_storage, speaks, timeout, &space, false)
             .and_then(|synced| service_agents::renew(synced, &address, &granted, keep_earlier)),
+        Command::ReplaceServiceKey {
+            space,
+            address,
+            granted,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false)
+            .and_then(|synced| service_agents::replace(synced, &address, &granted)),
+        Command::RemoveServiceAgent { space, address } => {
+            synced(state_dir, key_storage, speaks, timeout, &space, false)
+                .and_then(|synced| service_agents::remove(synced, &address))
+        }
         Command::ServiceTokens { space } => {
             synced(state_dir, key_storage, speaks, timeout, &space, false)
                 .and_then(service_agents::list)

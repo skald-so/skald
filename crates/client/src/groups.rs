@@ -1628,21 +1628,22 @@ pub fn encrypt<'r>(
     )?
 }
 
-/// As [`encrypt`], a receipt that reports the `read` receipts `issued`, by their `seq`, the
-/// device owed: it goes out with `report` false, and the device owes them no more, all at once.
+/// As [`encrypt`], a receipt that reports the receipts `issued`, by their `seq`, the device owed,
+/// `held` ones if `held`, otherwise `read` or `refused` ones: it goes out with `report` false, and
+/// the device owes them no more, all at once.
 /// Gives why it waits, as [`encrypt`] says why it sends nothing, and fails only if the device or
 /// its state does.
 pub fn encrypt_receipt(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
-    (channel, issued): (ChannelId, Vec<u64>),
+    (channel, issued, held): (ChannelId, Vec<u64>, bool),
     content: impl FnOnce(MessageId, NonZeroU64) -> Content,
 ) -> Result<Result<MessageId, String>, String> {
     let sent = encrypted(
         follower,
         (roster, devices),
         channel,
-        Sending::Receipt(issued),
+        Sending::Receipt(issued, held),
         content,
     )?;
     Ok(sent.map(|(msg_id, _)| msg_id))
@@ -1652,8 +1653,8 @@ pub fn encrypt_receipt(
 enum Sending<'a, 'r> {
     /// A message of its user's, from the agent if given, with its copies to the readers.
     Message(Option<&'a str>, &'r [Reader]),
-    /// A receipt, with the `seq` of each `read` receipt it reports.
-    Receipt(Vec<u64>),
+    /// A receipt, with the `seq` of each receipt it reports, `held` ones if true.
+    Receipt(Vec<u64>, bool),
 }
 
 /// [`encrypt`] of what `sending` says; gives why it sends nothing in place of the message ID and
@@ -1716,11 +1717,11 @@ fn encrypted<'r>(
                 let (own, gets) = recv::own_message(follower, &key, at, (&content, *agent))?;
                 (Some(own), gets)
             }
-            Sending::Receipt(_) => (None, false),
+            Sending::Receipt(..) => (None, false),
         };
         let (agent, readers, issued) = match sending {
             Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None),
-            Sending::Receipt(issued) => (None, &[][..], Some(issued)),
+            Sending::Receipt(issued, held) => (None, &[][..], Some((issued, held))),
         };
         let alone = members.iter().all(|member| member.device == follower.this);
         if alone && !gets && readers.is_empty() {
@@ -1769,10 +1770,16 @@ fn encrypted<'r>(
             }
             messages.push(copy);
         }
+        let (issued, issued_held) = match issued {
+            Some((issued, true)) => (Vec::new(), issued),
+            Some((issued, false)) => (issued, Vec::new()),
+            None => (Vec::new(), Vec::new()),
+        };
         let changes = MlsChanges {
             messages,
             entries: entry.into_iter().collect(),
-            issued: issued.unwrap_or_default(),
+            issued,
+            issued_held,
             own: own.into_iter().collect(),
             tracked: tracked.into_iter().collect(),
             ..MlsChanges::default()

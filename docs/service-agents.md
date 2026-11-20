@@ -42,6 +42,16 @@ skald revoke-service-token acme <token ID>
 - A revoked or expired token is refused at once.
 - A member agent's token needs `receive`; a token without it is refused.
 
+## Replacing a key and removing an agent
+
+```sh
+skald replace-service-key acme ci/deploy-bot --channel <channel> [--expires …] [--permission …]
+skald remove-service-agent acme ci/deploy-bot
+```
+
+- `replace-service-key` runs on a device of an admin whose account the agent's device is on: only that account revokes it. A new device takes the old one's place in the roster, and the old device is revoked. It writes a new `SKALD_SERVICE_KEY=…` and `SKALD_SERVICE_TOKEN=…` once, with the options of `create-service-agent`; the old key secret and tokens stop working. A member agent then runs with a new, empty `SKALD_STATE_DIR`.
+- `remove-service-agent` runs on any admin's device. The roster lists the agent no more, and its tokens stop working. The command revokes its device if it is of this device's account; otherwise that account runs `skald revoke-device <device>`.
+
 ## Running an agent
 
 With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
@@ -72,7 +82,7 @@ skald send --all --channel <channel> "rollout started"
 
 - The agent gets into its channels' MLS groups by itself or when a member's device adds it, and sends and receives as a device does.
 - Keep `SKALD_STATE_DIR` between runs, for example on a persistent disk or volume. Its state is sealed under a key derived from the key secret, so the directory alone opens nothing; nothing goes to the key store.
-- Once the agent has been in a group, a run without its earlier state refuses. Restore the directory, or replace the agent's key.
+- Once the agent has been in a group, a run without its earlier state refuses. Restore the directory, or [replace the agent's key](#replacing-a-key-and-removing-an-agent).
 
 ## Recipes
 
