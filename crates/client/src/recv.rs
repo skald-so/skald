@@ -840,7 +840,7 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
             kept,
             (form, &references),
             (&mut written("a message"), &mut |seq| {
-                state.shown_to_person(seq)
+                state.shown_to_person(seq, follower.service.is_some())
             }),
         )?)
 }

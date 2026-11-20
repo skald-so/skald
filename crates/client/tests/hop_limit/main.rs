@@ -29,6 +29,9 @@
 //! - the person's warning of it: a line of the person's `skald recv` that holds the word `warning`,
 //!   the channel's ID, as the CLI's other warnings name a channel, and the addressee as `--to`
 //!   takes it, `owner/agent`, or in a form that holds it, such as the full address.
+//!
+//! The tests of a member service agent create `ci/deploy-bot` as the tests of service agents as
+//! channel members do (`service_members/main.rs`), with Bob's played device in the channel.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -38,6 +41,7 @@ mod exchanges;
 mod loops;
 mod one_device;
 mod people;
+mod services;
 mod spaces;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
@@ -73,6 +77,11 @@ mod receipts;
 mod replying;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
+// A member service agent, as the tests of service agents as channel members have it.
+#[path = "../service_members/member.rs"]
+mod member;
+#[path = "../service_agents/kit.rs"]
+mod service_kit;
 // The tests on one device use none of the tool names `solo` passes on.
 #[allow(unused_imports)]
 #[path = "../local_agents/solo.rs"]

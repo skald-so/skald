@@ -436,7 +436,8 @@ const MIGRATIONS: &[&str] = &[
     // The limit on replies without a human (`docs/protocol/README.md`, "Content"): the `hops` of
     // each kept message and own message waiting for the server, none for one an older client kept;
     // and, for each agent in each space, the highest `hops` of the messages handed over to it since
-    // the device last sent a message as it, no row when none was.
+    // the device last sent a message as it, no row when none was; a member service agent's under
+    // [`SERVICE_AGENT`].
     "ALTER TABLE kept ADD COLUMN hops INTEGER CHECK (hops >= 0);
     ALTER TABLE own_message ADD COLUMN hops INTEGER CHECK (hops >= 0);
     CREATE TABLE agent_hops (
@@ -446,6 +447,10 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (space, agent)
     ) STRICT",
 ];
+
+/// What a member service agent's device counts the `hops` of what its runs show under, as an
+/// agent's name: its runs send and receive as no agent, and no person shares its device.
+pub const SERVICE_AGENT: &str = "";
 
 /// The first `seq` the device gives its own messages it keeps, above any `seq` of its mailbox, so
 /// the kept messages of both have one key.
@@ -2232,10 +2237,15 @@ impl State {
         )
     }
 
-    /// Records that the person's run showed the kept message `seq`, which it can then reply to.
-    pub fn shown_to_person(&self, seq: u64) -> Result<(), Error> {
+    /// Records that the person's run showed the kept message `seq`, which it can then reply to,
+    /// and, if `service`, that a member service agent's run took it: its `hops` count for the
+    /// agent's next send under [`SERVICE_AGENT`].
+    pub fn shown_to_person(&self, seq: u64, service: bool) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.db.unchecked_transaction()?;
+        if service {
+            count_hops(&tx, seq, SERVICE_AGENT)?;
+        }
         add_target(&tx, seq)?;
         tx.execute(
             "UPDATE reply_target SET person = 1 WHERE seq = ?1",
@@ -2288,12 +2298,7 @@ impl State {
             "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
             params![seq, agent],
         )?;
-        tx.execute(
-            "INSERT INTO agent_hops (space, agent, highest)
-             SELECT space, ?2, hops FROM kept WHERE seq = ?1 AND hops IS NOT NULL
-             ON CONFLICT DO UPDATE SET highest = max(highest, excluded.highest)",
-            params![seq, agent],
-        )?;
+        count_hops(&tx, seq, agent)?;
         tx.execute(
             "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
             params![seq, agent],
@@ -2697,6 +2702,18 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     Ok(())
 }
 
+/// Counts, in `tx`, the `hops` of the kept message `seq` for the next send of `agent`
+/// ([`State::handed_hops`]).
+fn count_hops(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
+    tx.execute(
+        "INSERT INTO agent_hops (space, agent, highest)
+         SELECT space, ?2, hops FROM kept WHERE seq = ?1 AND hops IS NOT NULL
+         ON CONFLICT DO UPDATE SET highest = max(highest, excluded.highest)",
+        params![seq, agent],
+    )?;
+    Ok(())
+}
+
 /// Adds, in `tx`, the kept message `seq` to those the device can reply to, unless it is, or an
 /// older client kept it without what a reply needs; gives whether it is one now.
 fn add_target(tx: &Transaction, seq: i64) -> Result<bool, Error> {
@@ -2845,10 +2862,11 @@ fn add_message(tx: &Transaction, message: &Counted) -> Result<(), Error> {
              ON CONFLICT DO NOTHING",
             params![msg_id, space, channel, agent, addressee],
         )?;
-        // The agent's next send counts only what is handed to it from now on.
+        // The agent's next send counts only what is handed to it from now on; a message as no
+        // agent is a member service agent's, or the person's, who has no count.
         tx.execute(
             "DELETE FROM agent_hops WHERE space = ?1 AND agent = ?2",
-            params![space, agent],
+            params![space, agent.as_deref().unwrap_or(SERVICE_AGENT)],
         )?;
     }
     Ok(())
@@ -3998,8 +4016,8 @@ pub(crate) mod tests {
         state.handed_over(2, "claude").unwrap();
         assert_eq!(state.for_agent(space, "claude", now).unwrap(), lines(&[3]));
         assert_eq!(state.for_agent(space, "codex", now).unwrap(), lines(&[2]));
-        state.shown_to_person(2).unwrap();
-        state.shown_to_person(3).unwrap();
+        state.shown_to_person(2, false).unwrap();
+        state.shown_to_person(3, false).unwrap();
         assert!(state.for_person().unwrap().is_empty());
         // The short wait ends: the message is dropped for every agent.
         assert!(
@@ -4057,7 +4075,7 @@ pub(crate) mod tests {
         };
         assert!(seqs(None, now).is_empty(), "a message not shown yet");
 
-        state.shown_to_person(1).unwrap();
+        state.shown_to_person(1, false).unwrap();
         state.handed_over(2, "claude").unwrap();
         state.handed_over(3, "claude").unwrap();
         let target = &state.targets(None, now).unwrap()[0];
@@ -4143,7 +4161,7 @@ pub(crate) mod tests {
         };
 
         assert!(state.reads_due().unwrap().is_empty());
-        state.shown_to_person(2).unwrap();
+        state.shown_to_person(2, false).unwrap();
         state.handed_over(2, "codex").unwrap();
         assert!(state.reads_due().unwrap().is_empty(), "not its agent");
         state.handed_over(2, "claude").unwrap();
@@ -4190,7 +4208,7 @@ pub(crate) mod tests {
         });
 
         state.keep(2, (sender, refused.msg_id), &refused).unwrap();
-        state.shown_to_person(2).unwrap();
+        state.shown_to_person(2, false).unwrap();
 
         let due = State::open(&dir).unwrap().reads_due().unwrap();
         assert_eq!(due.len(), 1, "{due:?}");

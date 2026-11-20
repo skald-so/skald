@@ -73,3 +73,4 @@ skald send --all --channel <channel> "rollout started"
 - The agent gets into its channels' MLS groups by itself or when a member's device adds it, and sends and receives as a device does.
 - Keep `SKALD_STATE_DIR` between runs, for example on a persistent disk or volume. Its state is sealed under a key derived from the key secret, so the directory alone opens nothing; nothing goes to the key store.
 - Once the agent has been in a group, a run without its earlier state refuses. Restore the directory, or replace the agent's key.
+- What its `skald recv` shows counts as handed over to it for the [limit on replies without a human](protocol/README.md#content): past it, its `skald send` fails and sends nothing.
