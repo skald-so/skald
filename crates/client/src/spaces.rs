@@ -2006,9 +2006,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// A space needs a default channel while it has no channel or its first channel lacks a
-    /// member; a later channel with every member does not count. A default channel holds every
-    /// member with `history` true; once there, it is the space's default channel.
     /// A next revision drops the `service` devices the revision before it lists, in entries and in
     /// `services`, that are revoked or of an account it removes; it keeps the others, and a device
     /// whose certificate the space's devices lack.
@@ -2099,6 +2096,9 @@ pub(crate) mod tests {
         );
     }
 
+    /// A space needs a default channel while it has no channel or its first channel lacks a
+    /// member; a later channel with every member does not count. A default channel holds every
+    /// member with `history` true; once there, it is the space's default channel.
     #[test]
     fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());

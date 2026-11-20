@@ -43,6 +43,7 @@ mod accounts;
 mod refusals;
 mod removing;
 mod replacing;
+mod revoking;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`): the server, its
 // relay and front, people in spaces, played devices, revocations and the talk of channel messages.
@@ -66,3 +67,15 @@ mod service_kit;
 mod devices;
 #[path = "../history_reading/reading.rs"]
 mod reading;
+
+// Ada's agents and what an agent's output shows of a sender's level, which the stateless agents'
+// runs use, as the tests of handing messages over and of trust levels have them, with the modules
+// they need.
+#[path = "../agent_handover/agents.rs"]
+mod agents;
+#[path = "../gap_detection/gaps.rs"]
+mod gaps;
+#[path = "../compact_output/lines.rs"]
+mod lines;
+#[path = "../trust_levels/senders.rs"]
+mod senders;
