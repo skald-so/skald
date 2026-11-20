@@ -13,9 +13,16 @@ CREATE TABLE queues (
     UNIQUE (channel_id, name)
 );
 
--- Every channel from before queues gets `default`, with the default settings.
+-- Every channel from before queues gets `default`, with the default settings. Its ID is a UUIDv7:
+-- a random UUID with the time in milliseconds in its first 6 bytes and version bits 0111, as
+-- PostgreSQL before 18 has no uuidv7().
 INSERT INTO queues (id, channel_id, name, mode, lease, max_attempts)
-SELECT uuidv7(), id, 'default', 'at-least-once', 300, 5 FROM channels;
+SELECT encode(set_bit(set_bit(overlay(uuid_send(gen_random_uuid())
+           PLACING substring(int8send(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint)
+               FROM 3)
+           FROM 1 FOR 6), 52, 1), 53, 1), 'hex')::uuid,
+       id, 'default', 'at-least-once', 300, 5
+FROM channels;
 
 -- A task: the `queued-task` as its device uploaded it, in the order the server stored them, with
 -- that device, its `idempotency_key` and its state.
