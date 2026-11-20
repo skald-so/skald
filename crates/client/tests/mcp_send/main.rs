@@ -31,6 +31,7 @@
 
 mod addressees;
 mod channels;
+mod rate;
 mod refusals;
 mod results;
 mod tools;
@@ -128,13 +129,16 @@ mod peer;
 mod world;
 
 // Ada's machine with `clienta` and `clientb` and what Bob's device reads there, as the tests of the
-// addressee of `skald send` have them, and the fixtures and the front of the tests of sending.
+// addressee of `skald send` have them, and the fixtures, the front and what is said of a refusal
+// over the send rate of the tests of sending.
 #[path = "../send_addressee/clients.rs"]
 mod clients;
 #[path = "../sending/fixtures.rs"]
 mod fixtures;
 #[path = "../sending/front.rs"]
 mod front;
+#[path = "../sending/rate_said.rs"]
+mod rate_said;
 
 // The server, the machines and the relay of the tests of signing in.
 #[path = "../sign_in/cloud.rs"]

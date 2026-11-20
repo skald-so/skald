@@ -184,11 +184,11 @@ pub fn upload_missing(follower: &mut Follower, link: &mut Link, scope: Scope) {
 
 /// The channels within `scope` of each space the run accepted the revisions of, those whose last
 /// accepted revision lists the device's account, or, for a `service` device, the device in their
-/// `services`.
+/// `services`; none for a stateless one, which is no member.
 pub fn own_channels(follower: &Follower, scope: Scope) -> Vec<(SpaceId, ChannelId)> {
     let account = follower.own.account;
     let own = |channel: &Channel| match follower.service {
-        Some(_) => channel.services.contains(&follower.this),
+        Some(member) => !member.stateless && channel.services.contains(&follower.this),
         None => channel.members.iter().any(|entry| entry.account == account),
     };
     (follower.accepted.iter())

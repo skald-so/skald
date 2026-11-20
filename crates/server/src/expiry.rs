@@ -4,7 +4,7 @@
 //! a version not deliverable on a connection expires when the connection reaches it. The server
 //! looks for expired entries by itself, deletes them and adds `expired` for each message sent with
 //! `report` true; it forgets an idempotency key once the retention has passed since its send, and
-//! so a counted message since its count.
+//! so a counted message since its count, but not before the send rate's window has.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -28,19 +28,33 @@ pub(crate) fn deliverable(v: NonZeroU64, version: NonZeroU64) -> bool {
 }
 
 /// Looks for expired entries, as [`sweeps::every`] says, on a server with the mailbox retention
-/// `retention`; wakes the sending devices' connections in `wakers`.
-pub(crate) async fn run(db: PgPool, wakers: Arc<Wakers>, retention: Option<Duration>) {
+/// `retention` and the send rate window `window`, if it has a send rate limit; wakes the sending
+/// devices' connections in `wakers`.
+pub(crate) async fn run(
+    db: PgPool,
+    wakers: Arc<Wakers>,
+    retention: Option<Duration>,
+    window: Option<Duration>,
+) {
+    // The rate counts a device's messages within the window.
+    let counted = seconds(retention.map(|retention| retention.max(window.unwrap_or_default())));
     let retention = seconds(retention);
     sweeps::every("expire mailbox entries", || {
         let (db, wakers) = (db.clone(), Arc::clone(&wakers));
-        async move { sweep(&db, &wakers, retention).await }
+        async move { sweep(&db, &wakers, retention, counted).await }
     })
     .await;
 }
 
 /// Removes every entry expired by time, with the retention of `retention` seconds, then the
-/// idempotency keys stored longer ago than that, and the messages counted longer ago.
-async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(), sqlx::Error> {
+/// idempotency keys stored longer ago than that, and the messages counted longer ago than
+/// `counted` seconds.
+async fn sweep(
+    db: &PgPool,
+    wakers: &Wakers,
+    retention: Option<f64>,
+    counted: Option<f64>,
+) -> Result<(), sqlx::Error> {
     // Entries that an ack or another sweep holds are left to it.
     let sql = removing!(
         "DELETE FROM entries e
@@ -68,7 +82,7 @@ async fn sweep(db: &PgPool, wakers: &Wakers, retention: Option<f64>) -> Result<(
     sqlx::query(
         "DELETE FROM counted_messages WHERE counted_at <= now() - make_interval(secs => $1)",
     )
-    .bind(retention)
+    .bind(counted)
     .execute(db)
     .await?;
     Ok(())

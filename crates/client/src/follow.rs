@@ -134,7 +134,12 @@ pub fn sync(
     let (current, followed) = settle(state, (id, name), held, (&given, &trusted), (&devices, own))?;
     revocations::keep(state, &devices, |account| master_of(&current, own, account))?;
     let changed = device_changes(state, &current, &devices, own)?;
-    let records = records::settle(state, (&current, &devices), own)?;
+    // A stateless service agent's run wraps no history key, so it takes no account record.
+    let records = if crate::service::stateless() {
+        Vec::new()
+    } else {
+        records::settle(state, (&current, &devices), own)?
+    };
     for warning in (warnings.iter())
         .chain(&followed)
         .chain(&changed)
