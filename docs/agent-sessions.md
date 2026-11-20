@@ -27,6 +27,7 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - Its `inbox` tool returns the messages that came for the session since it started, each once; with `message`, a `#<ref>` it returned, that message again, whole.
 - Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
+- Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
 - Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 

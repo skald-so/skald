@@ -56,6 +56,7 @@ mod link_prompt;
 mod lock;
 mod mailbox;
 mod mcp;
+mod message_status;
 mod output;
 mod page;
 mod person;
@@ -556,6 +557,22 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Says where a message is, by what this device keeps, without reaching the server: of one it
+    /// sent, each device it went to, with its account, its status, stored, delivered or expired,
+    /// and its time, and its to agent's held, read and replied, or refused with its reason; of one
+    /// it showed or handed over to an agent, its sending device's trust level and the agents it was
+    /// handed to. The person asks of every message; an agent only of its own and those handed over
+    /// to it, in the space of its folder. Each is known until its wait ends, at most 7 days. Says
+    /// nothing of a message it does not know, or of a reference two messages it keeps share, and
+    /// says why.
+    MessageStatus {
+        /// The message: its reference, #<ref> or <ref>, as skald recv shows it, or its ID.
+        #[arg(value_name = "MESSAGE", allow_hyphen_values = true)]
+        message: String,
+        /// Says it as one JSON object, with every field.
+        #[arg(long)]
+        json: bool,
+    },
     /// Receives this device's messages: first sends what waits in the outbox, then gets every entry
     /// of the device's mailbox and exits, accepting meanwhile the new revisions of each space this
     /// device follows. It joins and follows its channels' groups and keeps them to the devices each
@@ -821,13 +838,14 @@ impl Command {
         }
     }
 
-    /// Whether the command connects as the device, so that, out of one-shot mode, it starts the
-    /// helper when none runs.
+    /// Whether, out of one-shot mode, it starts the helper when none runs: it connects as the
+    /// device, or, as `message-status`, reads what the device's runs keep.
     fn starts_helper(&self) -> bool {
         matches!(
             self,
             Command::Send { .. }
                 | Command::Reply { .. }
+                | Command::MessageStatus { .. }
                 | Command::Recv { .. }
                 | Command::Hook { .. }
                 | Command::Agents { .. }
@@ -847,7 +865,7 @@ impl Command {
 
     /// Whether it connects to the server of the machine's session as its device.
     fn connects(&self) -> bool {
-        self.starts_helper()
+        (self.starts_helper() && !matches!(self, Command::MessageStatus { .. }))
             || matches!(
                 self,
                 Command::Devices
@@ -1558,6 +1576,8 @@ fn perform(operation: Operation) -> Result<(), String> {
                 json,
             )
         }),
+        Command::MessageStatus { message, json } => state::dir(state_dir)
+            .and_then(|dir| message_status::run(&dir, key_storage, &message, agent.as_ref(), json)),
         Command::Recv {
             json,
             message: Some(message),

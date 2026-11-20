@@ -70,6 +70,7 @@ use crate::history;
 use crate::key_chain;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
+use crate::message_status;
 use crate::recv;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
@@ -1755,6 +1756,11 @@ fn encrypted<'r>(
             agent,
             addressee: content.to.as_ref().map(ToString::to_string),
         };
+        // A receipt is no message of the device's user: nothing reports on it.
+        let tracked = issued.is_none().then(|| {
+            let to = (&members[..], readers);
+            message_status::tracked(follower.this, (roster, devices), msg_id, to)
+        });
         let mut messages = vec![message];
         let mut first = Vec::new();
         for reader in readers {
@@ -1775,6 +1781,7 @@ fn encrypted<'r>(
             issued,
             issued_held,
             own: own.into_iter().collect(),
+            tracked: tracked.into_iter().collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), changes, Ok((msg_id, first))))
