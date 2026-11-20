@@ -6,6 +6,7 @@
 use std::time::Instant;
 
 use crate::agents::{CLAUDE, CODEX};
+use crate::cloud::alone;
 use crate::fixtures::person_address;
 use crate::helped::{Helped, WEBSOCKET, times, with_client_b};
 use crate::kit::{RECV, bind_client_a, received};
@@ -42,9 +43,11 @@ const TO_CODEX: &str = "wait test: codex, review the migration";
 /// `~/work/clientA` shows it within [`ARRIVAL`] and exits, the one in `~/work/clientB` keeps
 /// waiting. Bob's device then says something in clientb's channel: that session shows it within
 /// [`ARRIVAL`] and exits. Each session showed only its own message, once; the same helper served
-/// every run, and the server saw one connection of Ada's machine for them all.
+/// every run, and the server saw one connection of Ada's machine for them all. No other test's
+/// cloud runs meanwhile, so the times are those of the client, not of other tests' processes.
 #[test]
 fn sessions_in_two_folders_wait_through_one_helper_and_each_gets_only_its_own_messages() {
+    let _alone = alone();
     let mut talk = Talk::in_space(
         CLIENT_A,
         &[4_148_011_001, 4_148_011_002],
