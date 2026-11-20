@@ -9,8 +9,8 @@ use serde_json::Value;
 
 use crate::kit::{RECV, received};
 use crate::machine::Finished;
-use crate::member::{JSON, bot_address, messages, talk_with_bot};
-use crate::service_kit::Secrets;
+use crate::member::{JSON, messages, talk_with_bot};
+use crate::service_kit::{Secrets, bot_address};
 use crate::talk::Talk;
 use crate::world::run;
 

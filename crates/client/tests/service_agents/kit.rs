@@ -107,6 +107,11 @@ pub fn rosters(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Roster> {
     held.into_iter().map(|revision| revision.1).collect()
 }
 
+/// The address of `ci/deploy-bot` in `acme`, `acme/ci/deploy-bot@<server>`.
+pub fn bot_address() -> String {
+    format!("{ACME}/{BOT}@{HOST}")
+}
+
 /// The device of the service agent `owner/agent` in `roster`, if it has the entry.
 pub fn entry_of(roster: &Roster, address: &str) -> Option<DeviceId> {
     let (owner, agent) = address.split_once('/').expect("owner/agent");

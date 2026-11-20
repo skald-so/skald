@@ -22,8 +22,8 @@ use crate::cloud::{Cloud, WAIT};
 use crate::fixtures::{Issuer, Keyed, add_device, database, hex, keyed, send_args, strs};
 use crate::kit::{RECV, latest, received};
 use crate::machine::{Finished, Machine, ONE_SHOT, Run, STATE_DIR};
-use crate::member::{JSON, bot_address, messages, shown_once, talk_with_bot};
-use crate::service_kit::{BOT, Secrets, service_of};
+use crate::member::{JSON, messages, shown_once, talk_with_bot};
+use crate::service_kit::{BOT, Secrets, bot_address, service_of};
 use crate::talk::{Talk, messages_sent};
 use crate::world::{
     ACME, ADD_RULE, Person, dir_of, next, next_by, path, post_as, set_role, store, warnings, words,

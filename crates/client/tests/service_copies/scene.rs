@@ -5,15 +5,15 @@
 use skald_proto::{Cert, ChannelId, Content, DeviceId, Frame, RawEnvelope, Role, Scheme, SpaceId};
 
 use crate::agents::{
-    BOT, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, create_agent, id_of, own_record,
-    run_for_channels, secrets_of, token_of,
+    BOT, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, bot_address, create_agent, id_of,
+    own_record, run_for_channels, secrets_of, token_of,
 };
 use crate::cloud::Cloud;
 use crate::fixtures::{cert_of, send};
 use crate::machine::Finished;
 use crate::reader::{Copy, Reader};
 use crate::talk::Talk;
-use crate::world::{ACME, HOST, run};
+use crate::world::{ACME, run};
 
 /// Another service agent of Ada's account.
 pub const OTHER_BOT: &str = "ci/review-bot";
@@ -55,7 +55,7 @@ impl Scene {
         let secrets = secrets_of(&created);
         let reader = Reader::of(&secrets.key);
         let ada_cert = cert_of(talk.cloud(), &talk.ada);
-        let address = format!("{}/{BOT}@{HOST}", talk.space.name);
+        let address = bot_address();
         Scene {
             talk,
             secrets,

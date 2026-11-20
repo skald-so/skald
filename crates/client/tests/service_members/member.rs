@@ -12,9 +12,9 @@ use skald_proto::{Cbor as _, ChannelId, Content, DeviceId, MessageId, RawEnvelop
 use crate::fixtures::send;
 use crate::kit::{RECV, latest, received};
 use crate::machine::{Finished, Machine, STATE_DIR};
-use crate::service_kit::{BOT, Secrets, create_agent, key_of, secrets_of, service_of};
+use crate::service_kit::{BOT, Secrets, bot_address, create_agent, key_of, secrets_of, service_of};
 use crate::talk::{Talk, a2a, messages_sent};
-use crate::world::{ACME, HOST, now, run, space_certs};
+use crate::world::{ACME, now, run, space_certs};
 
 /// The option of the creation command that makes the agent a member of its channels.
 pub const MEMBER: &str = "--member";
@@ -111,11 +111,6 @@ pub fn talk_with_bot(ids: [u64; 2], logins: [&str; 2], extra: &[&str]) -> (Talk,
     let talk = Talk::new(&ids, &logins, false);
     let created = create_agent(&talk.ada.machine, ACME, BOT, &[talk.channel], extra);
     (talk, secrets_of(&created))
-}
-
-/// The address of `ci/deploy-bot` in `acme`, `acme/ci/deploy-bot@<server>`.
-pub fn bot_address() -> String {
-    format!("{ACME}/{BOT}@{HOST}")
 }
 
 /// The talk of Ada and Bob in `acme`, and the service agent `ci/deploy-bot` that Ada's machine
