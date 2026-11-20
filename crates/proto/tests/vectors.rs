@@ -14,18 +14,20 @@ struct Published {
     hex: String,
 }
 
-/// The sections of the document that hold no CBOR vector; `skald-crypto`'s tests check the link
-/// code keys.
-const NOT_VECTORS: [&str; 2] = ["Contents", "Link code keys"];
+/// The sections of the document that hold no CBOR vector of its own form; `skald-crypto`'s tests
+/// check the link code keys and the presence value.
+const NOT_VECTORS: [&str; 3] = ["Contents", "Link code keys", "Presence value"];
 
 /// The vectors of the document: each `##` section but [`NOT_VECTORS`], with its `cbor-diag` and
 /// `hex` blocks.
 fn published() -> Vec<Published> {
     let mut found = Vec::new();
+    let mut in_vector = false;
     let mut lines = DOC.lines();
     while let Some(line) = lines.next() {
         if let Some(name) = line.strip_prefix("## ") {
-            if !NOT_VECTORS.contains(&name) {
+            in_vector = !NOT_VECTORS.contains(&name);
+            if in_vector {
                 found.push(Published {
                     name: name.to_owned(),
                     diag: String::new(),
@@ -39,10 +41,11 @@ fn published() -> Vec<Published> {
             "```hex" => |vector: &mut Published| &mut vector.hex,
             _ => continue,
         };
-        let vector = found
-            .last_mut()
-            .expect("a code block before the first vector");
-        let text = block(vector);
+        let mut skipped = String::new();
+        let text = match found.last_mut() {
+            Some(vector) if in_vector => block(vector),
+            _ => &mut skipped,
+        };
         for line in lines.by_ref().take_while(|line| *line != "```") {
             text.push_str(line);
             text.push('\n');
