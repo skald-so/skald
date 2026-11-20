@@ -433,6 +433,22 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE read_receipt ADD COLUMN reason TEXT;
     ALTER TABLE own_message ADD COLUMN refusing TEXT;
     ALTER TABLE own_message ADD COLUMN refused TEXT;",
+    // The presence directory ([`crate::presence`]): the highest `revision` the device accepted of
+    // each device's presence value in each channel, with the SHA-256 of that value's bytes; and
+    // each line an agent's next tool result says, by the agent's space and name, until it says it.
+    "CREATE TABLE presence_revision (
+        channel TEXT NOT NULL,
+        device TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK (revision >= 1),
+        hash BLOB NOT NULL CHECK (length(hash) = 32),
+        PRIMARY KEY (channel, device)
+    ) STRICT;
+    CREATE TABLE agent_notice (
+        position INTEGER PRIMARY KEY,
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        line TEXT NOT NULL
+    ) STRICT;",
 ];
 
 /// The first `seq` the device gives its own messages it keeps, above any `seq` of its mailbox, so
@@ -1941,6 +1957,84 @@ impl State {
             params![sql_seq(position)?],
         )?;
         Ok(())
+    }
+
+    /// The highest `revision` the device accepted of the presence value of `device` in `channel`,
+    /// with the SHA-256 of that value's bytes; none before the first.
+    pub fn presence_revision(
+        &self,
+        channel: ChannelId,
+        device: DeviceId,
+    ) -> Result<Option<(u64, [u8; 32])>, Error> {
+        let row: Option<(i64, Vec<u8>)> = self
+            .db
+            .query_row(
+                "SELECT revision, hash FROM presence_revision WHERE channel = ?1 AND device = ?2",
+                params![channel.to_string(), device.to_string()],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let malformed = || Error::Malformed(format!("the presence revision of {device}"));
+        row.map(|(revision, hash)| {
+            Ok((
+                u64::try_from(revision).map_err(|_| malformed())?,
+                hash.try_into().map_err(|_| malformed())?,
+            ))
+        })
+        .transpose()
+    }
+
+    /// Records `revision`, of the value of `device` in `channel` whose bytes have the SHA-256
+    /// `hash`, as the highest the device accepted of it, in place of a lower one.
+    pub fn accept_presence(
+        &self,
+        (channel, device): (ChannelId, DeviceId),
+        revision: u64,
+        hash: &[u8; 32],
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO presence_revision (channel, device, revision, hash) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (channel, device) DO UPDATE SET revision = ?3, hash = ?4
+             WHERE revision < ?3",
+            params![
+                channel.to_string(),
+                device.to_string(),
+                sql_u64(revision)?,
+                hash.as_slice()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Keeps `line` for the next tool result of the agent `agent` in the space `space`, once.
+    pub fn keep_notice(&self, space: SpaceId, agent: &str, line: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO agent_notice (space, agent, line) SELECT ?1, ?2, ?3
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM agent_notice WHERE space = ?1 AND agent = ?2 AND line = ?3
+             )",
+            params![space.to_string(), agent, line],
+        )?;
+        Ok(())
+    }
+
+    /// Takes the lines kept for the next tool result of the agent `agent` in the space `space`, in
+    /// order: none is given again.
+    pub fn take_notices(&self, space: SpaceId, agent: &str) -> Result<Vec<String>, Error> {
+        let tx = self.db.unchecked_transaction()?;
+        let lines = {
+            let mut query = tx.prepare(
+                "SELECT line FROM agent_notice WHERE space = ?1 AND agent = ?2 ORDER BY position",
+            )?;
+            let lines = query.query_map(params![space.to_string(), agent], |row| row.get(0))?;
+            lines.collect::<Result<Vec<String>, _>>()?
+        };
+        tx.execute(
+            "DELETE FROM agent_notice WHERE space = ?1 AND agent = ?2",
+            params![space.to_string(), agent],
+        )?;
+        tx.commit()?;
+        Ok(lines)
     }
 
     /// The revocations the device holds, as their CBOR bytes, with whether each waits for the
@@ -4375,6 +4469,61 @@ pub(crate) mod tests {
             .map(|(_, status)| status)
             .collect();
         assert_eq!(for_claude, statuses);
+    }
+
+    /// The highest presence revision of a device in a channel only rises, with the hash of its
+    /// value; another device or channel has its own.
+    #[test]
+    fn presence_revisions_only_rise() {
+        let dir = TestDir::new("state-presence");
+        let state = State::open(&dir).unwrap();
+        let (channel, other) = (ChannelId::generate(), ChannelId::generate());
+        let device = DeviceId::from_signing_key(&[5; 32]);
+
+        assert_eq!(state.presence_revision(channel, device).unwrap(), None);
+        state
+            .accept_presence((channel, device), 2, &[2; 32])
+            .unwrap();
+        state
+            .accept_presence((channel, device), 1, &[1; 32])
+            .unwrap();
+        assert_eq!(
+            state.presence_revision(channel, device).unwrap(),
+            Some((2, [2; 32]))
+        );
+        state
+            .accept_presence((channel, device), 3, &[3; 32])
+            .unwrap();
+        assert_eq!(
+            state.presence_revision(channel, device).unwrap(),
+            Some((3, [3; 32]))
+        );
+        assert_eq!(state.presence_revision(other, device).unwrap(), None);
+    }
+
+    /// A line kept for an agent's next result is given once, to that agent in that space, and a
+    /// line kept twice before it is given once.
+    #[test]
+    fn notices_are_taken_once_by_their_agent() {
+        let dir = TestDir::new("state-notices");
+        let state = State::open(&dir).unwrap();
+        let (space, other) = (SpaceId::generate(), SpaceId::generate());
+        state.keep_notice(space, "api", "first").unwrap();
+        state.keep_notice(space, "api", "second").unwrap();
+        state.keep_notice(space, "api", "first").unwrap();
+        state.keep_notice(other, "api", "elsewhere").unwrap();
+        state.keep_notice(space, "docs", "another agent").unwrap();
+
+        assert_eq!(
+            state.take_notices(space, "api").unwrap(),
+            ["first", "second"]
+        );
+        assert!(state.take_notices(space, "api").unwrap().is_empty());
+        assert_eq!(state.take_notices(other, "api").unwrap(), ["elsewhere"]);
+        assert_eq!(
+            state.take_notices(space, "docs").unwrap(),
+            ["another agent"]
+        );
     }
 
     /// A kept status waits for the person's run, and for the run of the agent that sent its
