@@ -46,6 +46,7 @@ mod held;
 mod helper;
 mod history;
 mod history_reading;
+mod hook;
 mod inbound;
 mod intake;
 mod key_chain;
@@ -610,6 +611,12 @@ enum Command {
         /// device_name, problem and timestamp. As an agent, every status of its own messages.
         #[arg(long)]
         json: bool,
+        /// As an agent, shows again, whole, the message of this reference, #<ref> or <ref>, or
+        /// ID, as skald reply names it, one handed over to it in the space of its folder, while
+        /// the device keeps what a reply to it needs; receives nothing.
+        #[arg(value_name = "MESSAGE", conflicts_with = "wait")]
+        #[serde(default)]
+        message: Option<String>,
         /// With --wait through the helper, shows when each step of the helper's intake of what
         /// it shows ran, for tests.
         #[arg(
@@ -769,6 +776,25 @@ enum Command {
         #[serde(default)]
         call: Option<mcp::Call>,
     },
+    /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
+    /// PostToolUse and Stop. It reads the hook input on standard input and runs in its folder, as
+    /// the agent --agent names or, without it, the agent the session's skald mcp registers by
+    /// default. It gives the agent's waiting messages to the session as additional context, each
+    /// once, within the CLI's hook output limit, 10,000 characters: a message from the person's
+    /// own devices as its line, as skald recv shows it; for those from others, only a line that
+    /// tells the agent to call inbox. A message longer than the limit is cut, and skald recv
+    /// #<ref> shows it whole. Stop continues the turn with them, up to the CLI's cap of
+    /// continuations in a row. It prints nothing while nothing waits, and on a failure, which
+    /// exits with 1.
+    Hook {
+        /// The agent CLI.
+        #[arg(value_name = "CLI")]
+        cli: hook::Cli,
+        /// What the hook input gives.
+        #[arg(skip)]
+        #[serde(default)]
+        input: Option<hook::Input>,
+    },
     /// Runs the helper of this machine's local state, which the first command that connects as the
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
@@ -821,6 +847,7 @@ impl Command {
                 | Command::Reply { .. }
                 | Command::MessageStatus { .. }
                 | Command::Recv { .. }
+                | Command::Hook { .. }
                 | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
@@ -1042,6 +1069,9 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
+    if let Command::Hook { cli, .. } = operation.command {
+        return run_hook(operation, cli, one_shot);
+    }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
     }
@@ -1168,6 +1198,51 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     })
 }
 
+/// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
+/// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
+/// what the run gives the session, and exits with 1 on a failure, never 2.
+fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
+    let cap = std::env::var(hook::CAP_SETTING).ok();
+    let Ok(input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
+        return ExitCode::FAILURE;
+    };
+    if input.event.is_none() {
+        return ExitCode::SUCCESS;
+    }
+    if std::env::set_current_dir(&input.cwd).is_err() {
+        return ExitCode::FAILURE;
+    }
+    let Ok(dir) = state::dir(operation.state_dir.clone()) else {
+        return ExitCode::FAILURE;
+    };
+    // A machine with no state has no message for an agent.
+    if !dir.join(state::FILE).is_file() {
+        return ExitCode::SUCCESS;
+    }
+    operation.command = Command::Hook {
+        cli,
+        input: Some(input),
+    };
+    // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
+    let given = |stream, bytes: &[u8]| match stream {
+        output::Stream::Out => output::direct(stream, bytes),
+        output::Stream::Err => Ok(()),
+    };
+    let failed = |code| match code == ExitCode::SUCCESS {
+        true => code,
+        false => ExitCode::FAILURE,
+    };
+    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
+        Ok(helper::Route::Helped(code)) => failed(code),
+        // Held until the run exits.
+        Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
 /// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
 /// or one it starts if `starts`; otherwise it runs here, holding the lock for the step.
 fn held(operation: Operation, starts: bool) -> ExitCode {
@@ -1257,8 +1332,11 @@ fn perform(operation: Operation) -> Result<(), String> {
         said,
         ..
     } = operation;
-    // A stateless service agent's run opens no state directory.
+    // A hook says nothing but what it gives the session; a stateless service agent's run opens no
+    // state directory.
+    let hooked = matches!(command, Command::Hook { .. });
     if !service::stateless()
+        && !hooked
         && let Ok(dir) = state::dir(state_dir.clone())
     {
         // A grant the device took waits for the server to store its certificate.
@@ -1500,6 +1578,41 @@ fn perform(operation: Operation) -> Result<(), String> {
         }),
         Command::MessageStatus { message, json } => state::dir(state_dir)
             .and_then(|dir| message_status::run(&dir, key_storage, &message, agent.as_ref(), json)),
+        Command::Recv {
+            json,
+            message: Some(message),
+            ..
+        } => {
+            let agent =
+                agent.ok_or("skald recv <message> runs as an agent: give --agent <name>")?;
+            let dir = state::dir(state_dir)?;
+            recv::reread(
+                &dir,
+                key_storage,
+                &agent,
+                &message,
+                forms::Form::of(true, json),
+            )
+        }
+        Command::Hook { input, .. } => {
+            let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
+                return Err("skald hook runs only as itself".to_owned());
+            };
+            let Some(event) = input.event else {
+                return Ok(());
+            };
+            // Without --agent, the agent the session's skald mcp registers by default.
+            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
+                return Ok(());
+            };
+            recv::hook(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                &agent,
+                (event, input.cap),
+            )
+        }
         Command::Recv { json, .. } => state::dir(state_dir).and_then(|dir| {
             recv::run(
                 &dir,

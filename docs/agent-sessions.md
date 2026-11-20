@@ -24,12 +24,17 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - An agent CLI starts `skald mcp` as an MCP server on stdio in the session's folder, such as with `claude mcp add skald -- skald mcp` for Claude Code.
 - The session is an agent of the folder's space, named after the agent CLI and the device.
 - Two sessions of one agent CLI in one space on one device share that agent and its messages; `skald --agent <name> mcp` gives each its own.
-- Its `inbox` tool returns the messages that came for the session since it started, each once.
+- Its `inbox` tool returns the messages that came for the session since it started, each once; with `message`, a `#<ref>` it returned, that message again, whole.
 - Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
 - Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
 - Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
+
+## Claude Code hooks
+- Claude Code runs `skald hook claude` as its `PostToolUse` and `Stop` hooks, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
+- While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
+- They print nothing while nothing waits.
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.

@@ -113,9 +113,9 @@ pub fn run(
     json: bool,
 ) -> Result<(), String> {
     recv::holding_warnings(dir, agent.is_some(), || {
-        let named = reply::given(message)?;
-        let (_, reader) = reply::scope_of(dir, agent)?;
         let shown = printable(message.trim());
+        let named = reply::given(message)?;
+        let (_, reader) = reply::reader(dir, agent)?;
         let unknown = || match reader {
             Some(_) => format!(
                 "{shown} is no message this agent sent that the server stored, nor one handed \
