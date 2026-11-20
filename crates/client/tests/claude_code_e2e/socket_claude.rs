@@ -1,0 +1,401 @@
+//! The real Claude Code as a running session of one of Ada's agents that gets messages over its
+//! cross-session socket: in a pseudo-terminal, as a person runs it, or as the desktop app and VS
+//! Code run it, `-p --input-format stream-json`, with or without `--permission-mode
+//! bypassPermissions`. As in `claude.rs`: a temporary config home with no sign-in on a model stub,
+//! the session's `skald mcp` its only MCP server. Unlike there, it keeps its session file, and
+//! `skald hook claude` is also its `SessionStart` and `SessionEnd` hook, run as Claude Code runs
+//! hooks: without the one-shot setting, so `SessionStart` starts the helper.
+
+use std::ffi::OsStr;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::time::{Duration, Instant};
+use std::{env, fs, sync::Arc, sync::Mutex, thread};
+
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use serde_json::{Value, json};
+
+use crate::client::MCP;
+use crate::hooks::{CLAUDE_CODE, HOOK};
+use crate::machine::{Machine, ONE_SHOT};
+use crate::socket_model::{Model, conversation};
+use crate::stub::{PLACEHOLDER, skald_tool};
+use crate::world::AGENT;
+
+/// The helper's idle time, in seconds, once no session is registered: a helper a test leaves exits
+/// soon.
+const HELPER_IDLE: &str = "20";
+
+/// What Claude Code's prompt box starts with in a terminal.
+const PROMPT_BOX: &str = "\u{276f}";
+
+/// How long a turn may take.
+const TURN_LIMIT: Duration = Duration::from_secs(120);
+
+/// How long a terminal session sends nothing more once its turn ended.
+const SETTLED: Duration = Duration::from_secs(5);
+
+/// How long a session may take to exit once asked to.
+const EXIT_LIMIT: Duration = Duration::from_secs(30);
+
+/// How Claude Code runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Surface {
+    /// In a terminal.
+    Terminal,
+    /// As the desktop app and VS Code run it.
+    App,
+    /// As the desktop app and VS Code run it, bypassing permission prompts.
+    AppBypassing,
+}
+
+enum Running {
+    Terminal {
+        child: Box<dyn portable_pty::Child + Send + Sync>,
+        input: Box<dyn Write + Send>,
+    },
+    App {
+        child: Child,
+        input: Option<ChildStdin>,
+    },
+}
+
+/// A running session; asked to exit, then killed, on drop.
+pub struct Session {
+    running: Running,
+    output: Arc<Mutex<Vec<u8>>>,
+}
+
+impl Session {
+    /// Starts `claude` on `machine` in `dir` on `model`, as `agent`, on `surface`. The session may
+    /// run `true` and `sleep` and call `skald`'s `inbox`; it takes no prompt yet.
+    pub fn start(
+        claude: &Path,
+        machine: &Machine,
+        dir: &Path,
+        agent: &str,
+        model: &Model,
+        surface: Surface,
+    ) -> Self {
+        let config = (machine.root().join("tmp")).join(format!("socket-{agent}-{surface:?}"));
+        let home = config.join("home");
+        fs::create_dir_all(&home).expect("make Claude Code's config home");
+        let named = |args: &[&str]| -> Vec<String> {
+            [AGENT, agent]
+                .iter()
+                .chain(args)
+                .map(|arg| (*arg).to_owned())
+                .collect()
+        };
+        let mcp = machine.command_in(
+            dir,
+            &named(&[MCP]).iter().map(String::as_str).collect::<Vec<_>>(),
+        );
+        let skald = lossy(mcp.get_program());
+        let mut settings: Vec<(String, String)> = (mcp.get_envs())
+            .filter(|(name, _)| *name != OsStr::new(ONE_SHOT))
+            .filter_map(|(name, value)| Some((lossy(name), lossy(value?))))
+            .collect();
+        settings.push(("SKALD_HELPER_IDLE".to_owned(), HELPER_IDLE.to_owned()));
+
+        let mcp_args: Vec<String> = mcp.get_args().map(lossy).collect();
+        let server_env: serde_json::Map<String, Value> = (settings.iter())
+            .map(|(name, value)| (name.clone(), json!(value)))
+            .collect();
+        let mcp_file = config.join("mcp.json");
+        let servers = json!({ "skald": {
+            "type": "stdio", "command": skald, "args": mcp_args, "env": server_env,
+        } });
+        write(&mcp_file, &json!({ "mcpServers": servers }));
+        let hook = json!([{ "hooks": [{
+            "type": "command", "command": skald, "args": named(&[HOOK, CLAUDE_CODE]),
+        }] }]);
+        let events = ["SessionStart", "SessionEnd", "PostToolUse", "Stop"];
+        let hooks: serde_json::Map<String, Value> = events
+            .iter()
+            .map(|event| ((*event).to_owned(), hook.clone()))
+            .collect();
+        let allowed = json!(["Bash(true)", "Bash(sleep:*)", skald_tool("inbox")]);
+        let settings_file = config.join("settings.json");
+        write(
+            &settings_file,
+            &json!({ "hooks": hooks, "permissions": { "allow": allowed } }),
+        );
+        // No onboarding, the placeholder approved as Claude Code keeps it, and the folder trusted:
+        // the terminal asks nothing first.
+        let tail = &PLACEHOLDER[PLACEHOLDER.len() - 20..];
+        let real = fs::canonicalize(dir).expect("the agent's folder");
+        write(
+            &home.join(".claude.json"),
+            &json!({
+                "hasCompletedOnboarding": true, "theme": "dark",
+                "customApiKeyResponses": { "approved": [tail], "rejected": [] },
+                "projects": { lossy(real.as_os_str()): { "hasTrustDialogAccepted": true } },
+            }),
+        );
+        settings.extend([
+            ("PATH".to_owned(), env::var("PATH").unwrap_or_default()),
+            ("HOME".to_owned(), lossy(home.as_os_str())),
+            ("CLAUDE_CONFIG_DIR".to_owned(), lossy(home.as_os_str())),
+            ("ANTHROPIC_BASE_URL".to_owned(), model.url().to_owned()),
+            ("ANTHROPIC_API_KEY".to_owned(), PLACEHOLDER.to_owned()),
+            ("TERM".to_owned(), "xterm-256color".to_owned()),
+        ]);
+        let mut args: Vec<String> = Vec::new();
+        if surface != Surface::Terminal {
+            args.extend(
+                [
+                    "-p",
+                    "--input-format",
+                    "stream-json",
+                    "--output-format",
+                    "stream-json",
+                ]
+                .map(str::to_owned),
+            );
+            args.extend(["--verbose", "--include-hook-events"].map(str::to_owned));
+        }
+        if surface == Surface::AppBypassing {
+            args.extend(["--permission-mode", "bypassPermissions"].map(str::to_owned));
+        }
+        args.extend(["--setting-sources", "local", "--strict-mcp-config"].map(str::to_owned));
+        args.extend([
+            "--mcp-config".to_owned(),
+            lossy(mcp_file.as_os_str()),
+            "--settings".to_owned(),
+            lossy(settings_file.as_os_str()),
+            "--tools".to_owned(),
+            "Bash".to_owned(),
+        ]);
+
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let running = if surface == Surface::Terminal {
+            let pair = (native_pty_system())
+                .openpty(PtySize {
+                    rows: 50,
+                    cols: 200,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .expect("open a pseudo-terminal");
+            let mut command = CommandBuilder::new(claude);
+            command.cwd(dir);
+            command.env_clear();
+            for (name, value) in &settings {
+                command.env(name, value);
+            }
+            command.args(&args);
+            let child = pair.slave.spawn_command(command).expect("run Claude Code");
+            drop(pair.slave);
+            read_into(
+                pair.master
+                    .try_clone_reader()
+                    .expect("the terminal's output"),
+                &output,
+            );
+            let input = pair.master.take_writer().expect("the terminal's input");
+            // The terminal lives as long as its reader and writer.
+            std::mem::forget(pair.master);
+            Running::Terminal { child, input }
+        } else {
+            let mut child = Command::new(claude)
+                .current_dir(dir)
+                .env_clear()
+                .envs(settings.iter().map(|(name, value)| (name, value)))
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("run Claude Code");
+            read_into(child.stdout.take().expect("piped"), &output);
+            read_into(child.stderr.take().expect("piped"), &output);
+            let input = child.stdin.take();
+            Running::App { child, input }
+        };
+        Session { running, output }
+    }
+
+    /// The person gives the session a prompt: types it and Enter in the terminal, or sends it as
+    /// the apps do.
+    pub fn prompt(&mut self, text: &str) {
+        match &mut self.running {
+            Running::Terminal { .. } => {
+                // Claude Code reads typing once its prompt box shows; Enter that comes with the text
+                // is taken as part of a paste.
+                let deadline = Instant::now() + TURN_LIMIT;
+                while !self.output().contains(PROMPT_BOX) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "no prompt box: {}",
+                        self.output()
+                    );
+                    thread::sleep(Duration::from_millis(200));
+                }
+                thread::sleep(Duration::from_secs(1));
+                let Running::Terminal { input, .. } = &mut self.running else {
+                    unreachable!()
+                };
+                (input.write_all(text.as_bytes())).expect("type the prompt");
+                input.flush().expect("type the prompt");
+                thread::sleep(Duration::from_secs(1));
+                (input.write_all(b"\r")).expect("press Enter");
+                input.flush().expect("press Enter");
+            }
+            Running::App { input, .. } => {
+                let line =
+                    json!({ "type": "user", "message": { "role": "user", "content": text } });
+                let input = input.as_mut().expect("the session's input is open");
+                writeln!(input, "{line}").expect("send the prompt");
+                input.flush().expect("send the prompt");
+            }
+        }
+    }
+
+    /// Waits until a turn holding `text` reached `model`; fails after a while, showing what the
+    /// session printed.
+    #[track_caller]
+    pub fn wait_turn_holding(&self, model: &Model, text: &str) -> Value {
+        let deadline = Instant::now() + TURN_LIMIT;
+        loop {
+            let turns = model.turns();
+            if let Some(turn) = turns
+                .into_iter()
+                .find(|body| conversation(body).contains(text))
+            {
+                return turn;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no turn held {text:?}; the session printed: {}",
+                self.output()
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// Waits until a turn holding `text` reached `model` and the session's `ended`th turn ended:
+    /// the apps' stream has its result; in a terminal, the session sent nothing more for a while.
+    #[track_caller]
+    pub fn wait_turn_end(&self, model: &Model, text: &str, ended: usize) {
+        self.wait_turn_holding(model, text);
+        let deadline = Instant::now() + TURN_LIMIT;
+        if matches!(self.running, Running::Terminal { .. }) {
+            let mut seen = model.turns().len();
+            let mut still = Instant::now();
+            while still.elapsed() < SETTLED {
+                assert!(
+                    Instant::now() < deadline,
+                    "the turn did not end: {}",
+                    self.output()
+                );
+                thread::sleep(Duration::from_millis(200));
+                let now = model.turns().len();
+                if now != seen {
+                    (seen, still) = (now, Instant::now());
+                }
+            }
+            return;
+        }
+        while self.results() < ended {
+            assert!(
+                Instant::now() < deadline,
+                "the turn did not end: {}",
+                self.output()
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    /// The results of turns in the apps' stream so far.
+    fn results(&self) -> usize {
+        (self.output().lines())
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value["type"] == "result")
+            .count()
+    }
+
+    /// What the session printed so far.
+    pub fn output(&self) -> String {
+        String::from_utf8_lossy(
+            &self
+                .output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        )
+        .into_owned()
+    }
+
+    /// The session's hook events of `event` so far, as the apps' stream has them.
+    pub fn hook_responses(&self, event: &str) -> Vec<Value> {
+        (self.output().lines())
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|value| value["subtype"] == "hook_response" && value["hook_event"] == event)
+            .collect()
+    }
+
+    /// Asks the session to exit, as a person or the apps do, and waits for it; kills it if it does
+    /// not exit in time. Gives whether it exited by itself.
+    pub fn end(&mut self) -> bool {
+        match &mut self.running {
+            Running::Terminal { input, .. } => {
+                for _ in 0..2 {
+                    let _ = input.write_all(b"\x03");
+                    let _ = input.flush();
+                    thread::sleep(Duration::from_millis(500));
+                }
+            }
+            Running::App { input, .. } => drop(input.take()),
+        }
+        let deadline = Instant::now() + EXIT_LIMIT;
+        while Instant::now() < deadline {
+            let exited = match &mut self.running {
+                Running::Terminal { child, .. } => child.try_wait().ok().flatten().is_some(),
+                Running::App { child, .. } => child.try_wait().ok().flatten().is_some(),
+            };
+            if exited {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        match &mut self.running {
+            Running::Terminal { child, .. } => drop(child.kill()),
+            Running::App { child, .. } => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+        false
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
+/// Reads `from` into `into` to its end, on a thread of its own.
+fn read_into(mut from: impl Read + Send + 'static, into: &Arc<Mutex<Vec<u8>>>) {
+    let into = Arc::clone(into);
+    thread::spawn(move || {
+        let mut piece = vec![0; 8192];
+        loop {
+            match from.read(&mut piece) {
+                Ok(0) | Err(_) => break,
+                Ok(count) => (into.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+                    .extend_from_slice(&piece[..count]),
+            }
+        }
+    });
+}
+
+fn lossy(value: &OsStr) -> String {
+    value.to_string_lossy().into_owned()
+}
+
+fn write(path: &Path, value: &Value) {
+    let text = serde_json::to_string_pretty(value).expect("JSON encodes");
+    fs::write(path, text).expect("write Claude Code's config");
+}
