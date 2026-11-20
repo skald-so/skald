@@ -298,3 +298,16 @@ fn a_queue_key_body_is_its_map_from_epoch_one_signed_over_skald_queue_key() {
         &FieldProblem::Below { min: 1, actual: 0 },
     );
 }
+
+#[test]
+fn the_associated_data_of_a_task_is_its_channel_queue_task_and_epoch() {
+    assert_eq!(
+        QueuedTask::associated_data(channel(), queue(), task_id(), 24),
+        hex(&format!(
+            "84 {} {} {} 1818",
+            id(channel().as_bytes()),
+            id(queue().as_bytes()),
+            id(task_id().as_bytes()),
+        ))
+    );
+}

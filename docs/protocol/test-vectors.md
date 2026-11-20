@@ -2,13 +2,14 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector but [Link code keys](#link-code-keys) and [Presence value](#presence-value) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task) and [Queue key object](#queue-key-object) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
 - The presence value is genuine: signed by Alice's device's key "TEST 1" and sealed under the presence key of the history key `000102…0f`, the 16 bytes 00 to 0f.
+- The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), and a [presence value](agents.md#presence). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), a [presence value](agents.md#presence), and an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -45,6 +46,9 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Link object](#link-object)
 - [Link code keys](#link-code-keys)
 - [Presence value](#presence-value)
+- [Queue key pair](#queue-key-pair)
+- [Sealed task](#sealed-task)
+- [Queue key object](#queue-key-object)
 
 ## Envelope under `mls`
 
@@ -931,4 +935,56 @@ b7b7bcdb4c4a4f3eba098977fb54d6feaf5fa8a74f944b3f845e0217335ab668
 9dbc14dff1f3de52a4f23a0c117d1a9d86a7cfa1f05d6cb520a5723898084e31
 c42616fd137fd651a2df2382a603fab22264e3fad55e8eeda5043991729e1911
 4656ffb84765bf2126
+```
+
+## Queue key pair
+
+The queue key pair of an epoch with this history key, as RFC 9180 serializes it. Hex.
+
+- History key: `000102030405060708090a0b0c0d0e0f`
+- Private key: `c857c548fcd12b2b0d5a05a950861b11f31d65872674137a8f7e6f33f0d70d47`
+- Public key: `0bc481eb256ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64`
+
+## Sealed task
+
+A task of Alice's device in epoch 2 of the channel to Bob's codex agent, with every scheduling field, in an `at-least-once` queue, sealed to the public key of [Queue key pair](#queue-key-pair) with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.1. The plaintext is the encoded `task-plaintext`; the block, the encoded `queued-task`. Hex.
+
+- Public key: `0bc481eb256ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64`
+- Ephemeral key: `7268600d403fce431561aef583ee1613527cff655c1343f29812e66706df3234`
+- Signing key: `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60`
+- Plaintext: `8259016ba8015019ac5f784938823586a6c5809a18f6dd0250019a6f1e2b3c7d4e8f5061a2b3c4d5e70350019a6f201c007e008c000000000000e10450019a6f201d007f008d000000000000f105a4014a6275696c642d313834320466726576696577051a691bb7000650188e6ae45b2d8247b1e1583b84bd49c70601071a69127c800858e9a401782361636d652f616c6963652f636c617564652d61706940736b616c642e6578616d706c6502781c61636d652f626f622f636f64657840736b616c642e6578616d706c6504000ba101789c7b226d6573736167654964223a2230313961366632302d316430302d376630302d386430302d303030303030303030306631222c22636f6e746578744964223a2230313961366632302d303030302d373030302d383030302d303030303030303063306465222c22726f6c65223a22524f4c455f55534552222c227061727473223a5b7b2274657874223a22526576696577205052203132227d5d7d5840061cea68432639e0d54a8d4b1bcb5f043e0a729fb12e003993b2c95b0e5834c7071828fc47a71100d6eef5770d26bd0d4bd9c5440428eaef86b760afa264d606`
+
+```hex
+a60150019a6f201d007f008d000000000000f10250019a6f201c007e008c0000
+00000000e103a4014a6275696c642d313834320466726576696577051a691bb7
+000650188e6ae45b2d8247b1e1583b84bd49c7040205582037fda3567bdbd628
+e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431065901c18984cef4
+f003a9895b924ce0477366a53107d9986b4592796d750dd7e3dc1791a82d7360
+47fe4c8c95bcfe9c366225b09c382b92f5c8c57f10f5787c8dfc50296d9ee8ba
+08fe074bea5d8293bb9d9954a6fa95cb8a9dab4416c099bc3177c314f65f9f14
+793e9974d330635315b32f2fc0c48c7c9e374305930f505764afbd8f3e455ed1
+72342cccc199a9a1a2068ef5875b3e947d054a78eda0403358b94a92cc9b15cd
+708aff7d9cff0669f7ca565e672d55f78eb928fc203e9633ac7bdd51c81c1133
+706b0d54f3fd5335ba2e2da8d20ac6ae1dec203562476964606f1dc2dec5c1a8
+0fe5b7aaa5916897019018ee1cafafc54e56e5affe88d8fdf5574cb96a526d13
+81f5017b7ca2fa8171c2b7f82cde9ce66e89316117a2e742a6f314c5b0478014
+9bef92c6e311f648c8a8502b23c534e33994105060cd170257132943cc07a3ae
+c96c319714dc829ed35d86731f845eec17e609ac1ccdd3c58ba98f93f8ba2b63
+ea2b9cdaf5aaec281786786448b96a692a28430b049e084bed51b92fa98fda0f
+d25380ddd4dd713fe5be95a1dda8d1543876977d40de8639b5bacc3c008065af
+7d89b45be9707ebc801b414ead9131fdc6286b586741943c754d00c366
+```
+
+## Queue key object
+
+The queue key object of epoch 2 of the channel, its key the public key of [Queue key pair](#queue-key-pair), signed by Alice's device. The block is the encoded `queue-key`. Hex.
+
+- Signing key: `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60`
+
+```hex
+82584aa40150019a6f1e2b3c7d4e8f5061a2b3c4d5e702020358200bc481eb25
+6ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64045019ac5f
+784938823586a6c5809a18f6dd5840d97fb267ec91c45df23544ea4a5487a86d
+b263bdb472a63f08d933cf6809bdf256043ad162417b7628c37e5ed51bc4248b
+faa92e88ce23b48c9c195e5c2c3d03
 ```
