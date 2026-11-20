@@ -3,18 +3,13 @@
 
 use crate::across::a_json_once;
 use crate::agents::CLAUDE;
+use crate::inbound::{REFUSE, REFUSED, SET_MODE};
 use crate::kit::received;
 use crate::receipts::{READ, Roles};
 use crate::senders::LAPTOP_AGENT;
 use crate::solo::{API, Solo, WEB};
 use crate::statuses::{agent_time, assert_holds, hashed, json_status, shown_status};
 use crate::world::now;
-
-/// The command that sets an agent's inbound mode, the mode that refuses senders off its
-/// allowlist, and the status of a refused message.
-const SET_MODE: &str = "set-inbound-mode";
-const REFUSE: &str = "refuse";
-const REFUSED: &str = "refused";
 
 /// What A's agent sends claude, and what api sends web; neither is anywhere else.
 const TO_CLAUDE: &str = "message status test: claude, rotate the staging keys";
