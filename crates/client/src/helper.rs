@@ -16,7 +16,7 @@
 //!   operation marks nothing shown that the command did not show.
 //! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
 //!   when it exits; so is the session an MCP server holds of it for its whole run.
-//! - It keeps the device's presence ([`crate::presence`]): it checks it after each command and
+//! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
 //!   intake, when its sessions change, when a value nears its `expires` and before it exits.
 //! - The helper exits after an idle time with no command or session, after sign-out and when a
 //!   newer command or a sign-in asks it to; a helper that is killed leaves its socket, which the
@@ -47,7 +47,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, connection, mailbox, presence, state};
+use crate::{Command, Operation, connection, mailbox, state, uploads};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -568,7 +568,7 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
         .set_nonblocking(true)
         .map_err(|err| format!("cannot listen on {}: {err}", bound.0.display()))?;
     let _ = std::env::set_current_dir(&dir);
-    presence::set_helper();
+    uploads::set_helper();
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
     let parting = loop {
@@ -667,7 +667,7 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
-    presence::remember(presence::Settings {
+    uploads::remember(uploads::Settings {
         storage: operation.key_storage,
         speaks: operation.speaks,
         timeout: operation.timeout,

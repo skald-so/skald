@@ -37,7 +37,7 @@ use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::State;
-use crate::{Command, Operation, connection, folders, presence};
+use crate::{Command, Operation, connection, folders, uploads};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -90,11 +90,7 @@ pub fn here(
         let own = last_own_kept(&state, operation)?;
         let shown = crate::received(operation);
         if operation.agent.is_some() {
-            presence::keep(
-                dir,
-                presence_settings(operation),
-                &presence::Live::default(),
-            );
+            uploads::keep(dir, presence_settings(operation), &uploads::Live::default());
         }
         drop(lock);
         if shown? {
@@ -117,8 +113,8 @@ pub fn here(
 }
 
 /// What a check of the presence takes of `operation`'s settings.
-fn presence_settings(operation: &Operation) -> presence::Settings {
-    presence::Settings {
+fn presence_settings(operation: &Operation) -> uploads::Settings {
+    uploads::Settings {
         storage: operation.key_storage,
         speaks: operation.speaks,
         timeout: operation.timeout,
@@ -277,9 +273,9 @@ pub struct Sessions {
     watch: Watch,
     /// When the last `skald recv --wait` of each agent that ended did, as an [`Instant`] and in
     /// Unix seconds.
-    ends: BTreeMap<presence::Running, (Instant, u64)>,
+    ends: BTreeMap<uploads::Running, (Instant, u64)>,
     /// What the presence was last checked with.
-    kept: presence::Kept,
+    kept: uploads::Kept,
 }
 
 /// How long an agent whose `skald recv --wait` ended counts as running: it runs the next once it
@@ -336,7 +332,7 @@ impl Sessions {
         let went_on = self.again(ran, space).is_some();
         // A `skald recv --wait` that ended at once ran too.
         if let (false, Some(space), Some(agent)) = (held, space, agent) {
-            let this = presence::Running { space, agent };
+            let this = uploads::Running { space, agent };
             if !self.agents(true).contains(&this) {
                 self.ends
                     .insert(this, (Instant::now(), crate::state::unix_now()));
@@ -349,11 +345,11 @@ impl Sessions {
 
     /// The agents whose sessions wait, each in the space it kept to: of `skald recv --wait` only if
     /// `waits_only`.
-    fn agents(&self, waits_only: bool) -> BTreeSet<presence::Running> {
+    fn agents(&self, waits_only: bool) -> BTreeSet<uploads::Running> {
         (self.waiting.iter())
             .filter(|waiting| !waits_only || !holds(&waiting.session.operation))
             .filter_map(|waiting| {
-                Some(presence::Running {
+                Some(uploads::Running {
                     space: waiting.space?,
                     agent: waiting.session.operation.agent.clone()?,
                 })
@@ -363,7 +359,7 @@ impl Sessions {
 
     /// Notes the end of the `skald recv --wait` of each agent of `before` whose session no longer
     /// waits; `before` then holds those that do.
-    fn ended_since(&mut self, before: &mut BTreeSet<presence::Running>) {
+    fn ended_since(&mut self, before: &mut BTreeSet<uploads::Running>) {
         let now = self.agents(true);
         for gone in before.difference(&now) {
             (self.ends).insert(gone.clone(), (Instant::now(), crate::state::unix_now()));
@@ -373,7 +369,7 @@ impl Sessions {
 
     /// The agents whose sessions run, an ended `skald recv --wait` for [`LINGER`] more, and when
     /// the last `skald recv --wait` of each agent ended.
-    fn live(&self) -> presence::Live {
+    fn live(&self) -> uploads::Live {
         let mut running = self.agents(false);
         running.extend(
             (self.ends.iter())
@@ -383,11 +379,11 @@ impl Sessions {
         let ended = (self.ends.iter())
             .map(|(agent, (_, at))| (agent.clone(), *at))
             .collect();
-        presence::Live { running, ended }
+        uploads::Live { running, ended }
     }
 
     /// Checks the device's presence by the state in `dir` with the sessions' agents, if `anyway`,
-    /// once they changed or once it is due ([`presence::Kept::check`]).
+    /// once they changed or once it is due ([`uploads::Kept::check`]).
     pub fn keep_presence(&mut self, dir: &Path, anyway: bool) {
         let live = self.live();
         self.kept.check(dir, &live, anyway);
@@ -427,7 +423,7 @@ impl Sessions {
 
     /// [`Sessions::look`], noting the sessions of `before` that ended before it takes in again;
     /// checks the presence after a run or an intake.
-    fn looked(&mut self, dir: &Path, before: &mut BTreeSet<presence::Running>) -> Option<bool> {
+    fn looked(&mut self, dir: &Path, before: &mut BTreeSet<uploads::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
             let mut idle = Watch::default();
@@ -587,7 +583,7 @@ pub fn holds(operation: &Operation) -> bool {
 /// for [`REST`].
 fn hold(
     operation: &Operation,
-    others: Option<&BTreeSet<presence::Running>>,
+    others: Option<&BTreeSet<uploads::Running>>,
 ) -> Result<bool, String> {
     let (
         Some(agent),
@@ -601,12 +597,12 @@ fn hold(
     };
     crate::clock::set_offset(operation.clock_offset);
     let dir = crate::state::dir(operation.state_dir.clone())?;
-    presence::remember(presence_settings(operation));
+    uploads::remember(presence_settings(operation));
     let Ok(space) = recv::holding_warnings(&dir, true, || folders::working_space(&dir)) else {
         return Ok(true);
     };
     if let Some(others) = others {
-        let running = presence::Running {
+        let running = uploads::Running {
             space: space.id,
             agent: agent.to_string(),
         };

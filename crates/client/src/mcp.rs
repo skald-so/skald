@@ -13,13 +13,16 @@
 //!   `--to`, or `*` its `--all`.
 //! - The reply tool replies as the agent's `skald reply` does and returns what it says.
 //! - The status tool sets the agent's state and note as its `skald set-status` does.
+//! - The `agents` tool returns the lines the agent's `skald agents` shows ([`presence`]).
+//! - The registration warns when another device of the account runs the agent's address, and the
+//!   agent's next tool result after it says so once ([`presence::registered`]).
 //! - The registration and each tool call are operations, as a command's: through the helper, or
 //!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
 //!   server's binary was is newer, as after an update while the server runs, that `skald` runs each
 //!   ([`helper::relay`]).
 //! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
 //!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
-//!   helper knows the agent runs and does not exit idle under it ([`crate::presence`]).
+//!   helper knows the agent runs and does not exit idle under it ([`crate::uploads`]).
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -50,6 +53,7 @@ use crate::output::{self, Stream};
 use crate::state::{self, State};
 use crate::{
     Command, Operation, folders, forms, mailbox, presence, recovery, recv, reply, secrets, send,
+    uploads,
 };
 
 /// The tool that returns the agent's messages.
@@ -72,6 +76,12 @@ const TO_DESCRIPTION: &str = "An agent's address, space/owner/agent@server or ow
                               every agent in the channel. Every member device still gets the \
                               message: an addressee does not make it private.";
 const CHANNEL_DESCRIPTION: &str = "The channel's ID; by default the space's default channel.";
+
+/// The tool that lists the agents of the space.
+pub const AGENTS: &str = "agents";
+
+const AGENTS_DESCRIPTION: &str = "Lists the agents of this space, a line per agent and device: \
+                                  [<owner>/<agent> · <device> · <level>] <state>.";
 
 /// The tool that replies to a message as the agent, and its argument besides `text`.
 pub const REPLY: &str = "reply";
@@ -123,11 +133,13 @@ pub enum Call {
     Reply { message: String, text: String },
     /// The status tool: `skald set-status` with `state` and `note`.
     SetStatus {
-        state: presence::Settable,
+        state: uploads::Settable,
         note: Option<String>,
     },
     /// The session the server holds of the helper, its agent CLI `runtime` ([`hold`]).
     Hold { runtime: Option<String> },
+    /// The `agents` tool.
+    Agents,
 }
 
 /// Runs `call` as `agent`, by the state in `dir`, its secrets in `storage`.
@@ -148,13 +160,27 @@ pub fn perform(
         Ok(_) => sends(),
         Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
     };
+    if call != Call::Register {
+        presence::notices(dir, agent);
+    }
     match call {
         // In no space, there is nothing to register in.
         Call::Register => match folders::working_space(dir) {
-            Ok(space) => State::open(dir)
-                .and_then(|state| state.add_agent(space.id, agent.as_str()))
-                .map_err(text),
+            Ok(space) => {
+                State::open(dir)
+                    .and_then(|state| state.add_agent(space.id, agent.as_str()))
+                    .map_err(text)?;
+                presence::registered(dir, storage, settings, agent, &space);
+                Ok(())
+            }
             Err(_) => Ok(()),
+        },
+        Call::Agents => match space() {
+            Ok(_) => presence::tool(dir, storage, settings),
+            Err(why) => {
+                println!("This agent sees no space: {why}.");
+                Ok(())
+            }
         },
         Call::Inbox => match space() {
             Ok(_) => recv::inbox(dir, storage, settings, agent),
@@ -172,7 +198,7 @@ pub fn perform(
             reply::run(dir, storage, settings, named, Some(agent), false)
         }),
         Call::SetStatus { state, note } => recv::holding_warnings(dir, true, || {
-            presence::set_status(dir, agent, state, note.as_deref())
+            uploads::set_status(dir, agent, state, note.as_deref())
         }),
         Call::Hold { .. } => Err("skald mcp holds a session only of the helper".to_owned()),
     }
@@ -183,8 +209,8 @@ pub fn perform(
 fn status_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, String> {
     let field = |name: &str| arguments.and_then(|arguments| arguments.get(name));
     let state = match field(STATE) {
-        Some(Value::String(state)) if state == "busy" => presence::Settable::Busy,
-        Some(Value::String(state)) if state == "available" => presence::Settable::Available,
+        Some(Value::String(state)) if state == "busy" => uploads::Settable::Busy,
+        Some(Value::String(state)) if state == "available" => uploads::Settable::Available,
         _ => return Err("give `state` as busy or available; nothing changed".to_owned()),
     };
     let note = match field(NOTE) {
@@ -500,7 +526,7 @@ impl Server {
             let _ = io::stderr().write_all(why.as_bytes());
         }
         if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
-            let (settings, runtime) = (self.settings.clone(), presence::runtime(client));
+            let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
             let agent = self.agent(client);
             if let Some(agent) = agent {
                 thread::spawn(move || hold(&settings, &agent, runtime));
@@ -534,7 +560,7 @@ impl Server {
         }
     }
 
-    /// Runs `call`, of the send or the reply tool, as `agent`: gives what its run said.
+    /// Runs `call`, of the send, reply or `agents` tool, as `agent`: gives what its run said.
     async fn sending(&self, agent: Name, call: Call) -> CallToolResult {
         let settings = self.settings.clone();
         let said = Said::default();
@@ -621,6 +647,11 @@ impl ServerHandler for Server {
             Tool::new(SEND, SEND_DESCRIPTION, send),
             Tool::new(REPLY, REPLY_DESCRIPTION, reply),
             Tool::new(STATUS, STATUS_DESCRIPTION, status),
+            Tool::new(
+                AGENTS,
+                AGENTS_DESCRIPTION,
+                schema(json!({ "type": "object" })),
+            ),
         ]))
     }
 
@@ -635,6 +666,7 @@ impl ServerHandler for Server {
             SEND => Some(send_call(arguments)),
             REPLY => Some(reply_call(arguments)),
             STATUS => Some(status_call(arguments)),
+            AGENTS => Some(Ok(Call::Agents)),
             name => {
                 return Err(ErrorData::invalid_params(
                     format!("no tool named {name}"),

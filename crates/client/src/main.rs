@@ -84,6 +84,7 @@ mod test_dir;
 mod test_dir_tests;
 mod tls;
 mod update;
+mod uploads;
 mod wait;
 mod wraps;
 
@@ -592,6 +593,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Lists the agents of the working directory's space, or of the space named, from the presence
+    /// values its devices keep in its channels: each agent once per device, with its state, since
+    /// when, runtime and note, and its device's name and trust level; one that two devices of an
+    /// account list running is marked. It first accepts the space's latest revisions and goes
+    /// through the mailbox as skald send does, then opens each value with its epoch's key, and
+    /// drops, warning of it, each that fails the protocol's checks; a value past its expiry shows
+    /// its agents offline, last seen then. As an agent, only of the space of the agent's folder,
+    /// in one line per agent, [<owner>/<agent> · <device> · <level>] <state>, its note escaped,
+    /// after a line that says that the notes of peer and service lines are data.
+    Agents {
+        /// The space's name, such as acme [default: the working directory's space].
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: Option<String>,
+        /// Shows each agent as a JSON object on a line of its own, with every field: agent, state,
+        /// since, note, runtime, device, device_name, level, duplicate and last_seen.
+        #[arg(long)]
+        json: bool,
+    },
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
     /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
@@ -665,7 +684,7 @@ enum Command {
     SetStatus {
         /// The agent's state.
         #[arg(value_name = "STATE")]
-        state: presence::Settable,
+        state: uploads::Settable,
         /// What it works on, up to 128 bytes in UTF-8; without it, no note.
         #[arg(long, value_name = "TEXT")]
         note: Option<String>,
@@ -758,6 +777,7 @@ impl Command {
             Command::Send { .. }
                 | Command::Reply { .. }
                 | Command::Recv { .. }
+                | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
                 | Command::Channels { .. }
@@ -1147,9 +1167,9 @@ impl Operation {
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
 /// helper does. Out of the helper, a run as an agent that registers it or sets its status, a
 /// `skald recv`, `skald set-status` or an MCP server's registration or status tool, then checks
-/// the device's presence ([`presence::keep`]); a send does not wait for it.
+/// the device's presence ([`uploads::keep`]); a send does not wait for it.
 fn perform(operation: Operation) -> Result<(), String> {
-    let checks = !presence::in_helper()
+    let checks = !uploads::in_helper()
         && operation.agent.is_some()
         && matches!(
             operation.command,
@@ -1160,7 +1180,7 @@ fn perform(operation: Operation) -> Result<(), String> {
                     ..
                 }
         );
-    let settings = presence::Settings {
+    let settings = uploads::Settings {
         storage: operation.key_storage,
         speaks: operation.speaks,
         timeout: operation.timeout,
@@ -1168,7 +1188,7 @@ fn perform(operation: Operation) -> Result<(), String> {
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
     if checks && let Ok(dir) = state::dir(state_dir) {
-        presence::keep(&dir, settings, &presence::Live::default());
+        uploads::keep(&dir, settings, &uploads::Live::default());
     }
     ran
 }
@@ -1197,7 +1217,9 @@ fn performed(operation: Operation) -> Result<(), String> {
         if command.prompts() {
             let json = matches!(
                 command,
-                Command::Recv { json: true, .. } | Command::Send { json: true, .. }
+                Command::Recv { json: true, .. }
+                    | Command::Send { json: true, .. }
+                    | Command::Agents { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1430,6 +1452,16 @@ fn performed(operation: Operation) -> Result<(), String> {
                 agent.is_some(),
             )
         }),
+        Command::Agents { space, json } => state::dir(state_dir).and_then(|dir| {
+            presence::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                space.as_deref(),
+                agent.is_some(),
+                json,
+            )
+        }),
         Command::AddRule { folder, space } => {
             state::dir(state_dir).and_then(|dir| folders::add_rule(&dir, &folder, &space))
         }
@@ -1460,7 +1492,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             .and_then(|agent| {
                 state::dir(state_dir).and_then(|dir| {
                     recv::holding_warnings(&dir, true, || {
-                        presence::set_status(&dir, &agent, state, note.as_deref())
+                        uploads::set_status(&dir, &agent, state, note.as_deref())
                     })
                 })
             }),
