@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, agents' inbound modes and sender allowlists, the `inbox`, `send` and `reply` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, agents' inbound modes and sender allowlists, the presence directory of a space's agents, the `inbox`, `send`, `reply` and `agents` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks.
 - Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -78,6 +78,7 @@ skald send --all --channel <channel> <text> # send a text for every agent in a c
 skald recv                                  # receive the device's messages
 skald reply <message> <text>                # reply to a message, by its #<ref> or ID, in its channel, to its sender
 skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
+skald agents [<space>]                      # the agents of the working directory's space, or of <space>: state, note, device and trust level
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
 skald --agent <name> recv <message>         # one of them again, whole, by its #<ref> or ID
 skald set-inbound-mode <agent> <mode>       # accept, or refuse messages from senders off the agent's allowlist
@@ -92,6 +93,7 @@ skald hook claude                           # the handler of Claude Code's PostT
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
 - An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
+- `skald agents` lists what each device's presence values in the space's channels say ([protocol, "Presence"](docs/protocol/agents.md#presence)); clients do not upload them yet. An address two devices of an account run is marked, and registering an agent another device of the account runs warns.
 
 Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
 
