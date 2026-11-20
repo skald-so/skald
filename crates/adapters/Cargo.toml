@@ -4,3 +4,7 @@ description = "Skald adapters for AI agent tools."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+
+[dev-dependencies]
+# The model stub of the e2e tests and the config they give Claude Code.
+serde_json = "1.0"
