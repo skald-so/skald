@@ -116,6 +116,7 @@ impl Wire for Queued {
                 device: recipient.map(|device| device.to_string()),
                 device_name: None,
                 problem: Some(explained(problem)),
+                reason: None,
                 timestamp: state::unix_now(),
             }),
         };
@@ -516,7 +517,7 @@ pub fn content(
 
 /// What `--to` names, lowercased.
 #[derive(Debug, PartialEq)]
-enum Addressee {
+pub enum Addressee {
     Full(Address),
     /// `owner/agent`, in the channel's space on the machine's server.
     Short(Name, Name),
@@ -530,25 +531,9 @@ fn addressee(given: &str) -> Result<Addressee, String> {
     let invalid = |err: &dyn std::fmt::Display| {
         format!("--to \"{}\": {err}; nothing is sent", printable(given))
     };
-    let addressee = if lowered.contains('@') {
-        Addressee::Full(lowered.parse().map_err(|err| invalid(&err))?)
-    } else {
-        let Some((owner, agent)) = lowered.split_once('/').filter(|(_, it)| !it.contains('/'))
-        else {
-            return Err(invalid(
-                &"invalid agent address: use space/owner/agent@server, or owner/agent in the \
-                  channel's space",
-            ));
-        };
-        let segment = |segment, name: &str| {
-            name.parse::<Name>()
-                .map_err(|err| invalid(&AddressError::Segment(segment, err)))
-        };
-        Addressee::Short(
-            segment(Segment::Owner, owner)?,
-            segment(Segment::Agent, agent)?,
-        )
-    };
+    let form = "invalid agent address: use space/owner/agent@server, or owner/agent in the \
+                channel's space";
+    let addressee = parsed(&lowered, &invalid, form)?;
     let agent = match &addressee {
         Addressee::Full(address) => address.agent(),
         Addressee::Short(_, agent) => agent,
@@ -561,6 +546,31 @@ fn addressee(given: &str) -> Result<Addressee, String> {
         ));
     }
     Ok(addressee)
+}
+
+/// What `lowered`, a lowercased address, names: a full address or `owner/agent`. Fails with
+/// `invalid` of the problem, `form` for an address of neither form.
+pub fn parsed(
+    lowered: &str,
+    invalid: &dyn Fn(&dyn std::fmt::Display) -> String,
+    form: &str,
+) -> Result<Addressee, String> {
+    if lowered.contains('@') {
+        return Ok(Addressee::Full(
+            lowered.parse().map_err(|err| invalid(&err))?,
+        ));
+    }
+    let Some((owner, agent)) = lowered.split_once('/').filter(|(_, it)| !it.contains('/')) else {
+        return Err(invalid(&form));
+    };
+    let segment = |segment, name: &str| {
+        name.parse::<Name>()
+            .map_err(|err| invalid(&AddressError::Segment(segment, err)))
+    };
+    Ok(Addressee::Short(
+        segment(Segment::Owner, owner)?,
+        segment(Segment::Agent, agent)?,
+    ))
 }
 
 impl Addressee {
@@ -831,6 +841,7 @@ fn explained(problem: &str) -> String {
     let meaning = match problem {
         "too-large" => "the message is too large for the server",
         "quota-exceeded" => "its space has stored as many messages this month as its limit allows",
+        "rate-limited" => "its device sends too many messages too fast for the server's rate limit",
         _ => return printable(problem),
     };
     format!("{problem} ({meaning})")
