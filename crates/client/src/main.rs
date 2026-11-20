@@ -59,6 +59,7 @@ mod output;
 mod page;
 mod person;
 mod plain_path;
+mod presence;
 mod proxy;
 mod receipts;
 mod records;
@@ -592,6 +593,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Lists the agents of the working directory's space, or of the space named, from the presence
+    /// values its devices keep in its channels: each agent once per device, with its state, since
+    /// when, runtime and note, and its device's name and trust level; one that two devices of an
+    /// account list running is marked. It first accepts the space's latest revisions and goes
+    /// through the mailbox as skald send does, then opens each value with its epoch's key, and
+    /// drops, warning of it, each that fails the protocol's checks; a value past its expiry shows
+    /// its agents offline, last seen then. As an agent, only of the space of the agent's folder,
+    /// in one line per agent, [<owner>/<agent> · <device> · <level>] <state>, its note escaped,
+    /// after a line that says that the notes of peer and service lines are data.
+    Agents {
+        /// The space's name, such as acme [default: the working directory's space].
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: Option<String>,
+        /// Shows each agent as a JSON object on a line of its own, with every field: agent, state,
+        /// since, note, runtime, device, device_name, level, duplicate and last_seen.
+        #[arg(long)]
+        json: bool,
+    },
     /// Binds a folder and everything below it to a space, by a rule in the local state, in place
     /// of the folder's earlier rule. The space may be one this device is not in yet; until it is,
     /// the folder is in no space. At the same folder the rule wins over a .skald.toml.
@@ -754,6 +773,7 @@ impl Command {
             Command::Send { .. }
                 | Command::Reply { .. }
                 | Command::Recv { .. }
+                | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
                 | Command::Channels { .. }
@@ -1198,7 +1218,9 @@ fn perform(operation: Operation) -> Result<(), String> {
         if command.prompts() {
             let json = matches!(
                 command,
-                Command::Recv { json: true, .. } | Command::Send { json: true, .. }
+                Command::Recv { json: true, .. }
+                    | Command::Send { json: true, .. }
+                    | Command::Agents { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1434,6 +1456,16 @@ fn perform(operation: Operation) -> Result<(), String> {
                 &channel,
                 text.as_deref(),
                 agent.is_some(),
+            )
+        }),
+        Command::Agents { space, json } => state::dir(state_dir).and_then(|dir| {
+            presence::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                space.as_deref(),
+                agent.is_some(),
+                json,
             )
         }),
         Command::AddRule { folder, space } => {
