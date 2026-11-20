@@ -13,6 +13,7 @@ on:
     # The adapter, its tests and every module they take by #[path] or include!
     # (script/e2e-workflow-test), and this file.
     paths:
+      - crates/client/src/claude_relay.rs
       - crates/client/src/claude_socket.rs
       - crates/client/src/helper.rs
       - crates/client/src/hook.rs

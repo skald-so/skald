@@ -31,6 +31,8 @@ mod admin;
 mod agents;
 mod anchors;
 mod channels;
+#[cfg(unix)]
+mod claude_relay;
 mod claude_socket;
 mod clock;
 mod connection;

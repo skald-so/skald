@@ -278,6 +278,13 @@ fn cut(part: &mut String, length: usize) {
 /// `skald mcp`: serves MCP on standard input and output until the client closes it, for
 /// `operation`'s settings, as a run in one-shot mode if `one_shot`.
 pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
+    // Claude Code logs what its server says.
+    #[cfg(unix)]
+    let _relay = crate::claude_relay::Relay::from_settings().and_then(|started| {
+        started
+            .map_err(|err| eprintln!("the session's relay: {err}"))
+            .ok()
+    });
     let agent = operation.agent()?;
     let dir = state::dir(operation.state_dir.clone())?;
     // The person reads it in the agent CLI's log of the server.

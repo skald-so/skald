@@ -9,9 +9,10 @@
 //!   ([`end`]), or a socket that is gone, ends the registration.
 //! - The helper keeps running while a session is registered, and serves the sessions ([`Served`]):
 //!   as each message for an agent comes, it writes it into the socket of the agent's last
-//!   registered session that still runs ([`write`]), after an auth line with the token, so a
-//!   session that bypasses permission prompts takes it too: an `own` message as its line, a
-//!   message below `own` only as the signal (`crate::recv`).
+//!   registered session that still runs ([`write`]), after an auth line with the token, through the
+//!   session's relay where it runs (`crate::claude_relay`), so a session that bypasses permission
+//!   prompts takes it too: an `own` message as its line, a message below `own` only as the signal
+//!   (`crate::recv`).
 //! - What a socket took counts as handed over, and its `read` goes, only once the session file
 //!   confirms it: an entry that went to the model holds its `msg_id`, and a later entry is the
 //!   model's own, not an API error ([`Scan`]). The helper reads the file while the session runs,
@@ -20,7 +21,8 @@
 //! - The session's receipts `held`, `expired`, `refused`, `dropped` and `denied` say a line did not
 //!   reach the model: its message waits for the hooks and `inbox`, its signal for the hooks. The
 //!   file still confirms one the session later releases. A receipt goes to the line's reply
-//!   address, a socket of the helper's next to the session's ([`reply_path`]).
+//!   address, a socket of the helper's next to the session's ([`reply_path`]), through the relay
+//!   if the line went through it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -123,12 +125,38 @@ pub fn write(session: &ClaudeSession, lines: &[(String, String)]) -> io::Result<
         });
         text.push_str(&format!("{line}\n"));
     }
+    #[cfg(unix)]
+    if session.token.is_some()
+        && let Ok(relay) = UnixStream::connect(crate::claude_relay::path(&session.socket))
+    {
+        return relayed(relay, &text);
+    }
     let mut stream = UnixStream::connect(&session.socket)?;
     stream.set_write_timeout(Some(PATIENCE))?;
     stream.write_all(text.as_bytes())?;
     stream.flush()?;
     let _ = stream.shutdown(Shutdown::Write);
     Ok(())
+}
+
+/// Writes `text` through `relay`, the session's relay (`crate::claude_relay`), once it answers
+/// that the session's socket took it.
+#[cfg(unix)]
+fn relayed(mut relay: UnixStream, text: &str) -> io::Result<()> {
+    use std::io::Read;
+
+    relay.set_write_timeout(Some(PATIENCE))?;
+    relay.set_read_timeout(Some(PATIENCE))?;
+    relay.write_all(text.as_bytes())?;
+    relay.shutdown(Shutdown::Write)?;
+    let mut answer = String::new();
+    relay.read_to_string(&mut answer)?;
+    match answer == crate::claude_relay::TAKEN {
+        true => Ok(()),
+        false => Err(io::Error::other(
+            "the session's relay did not take the lines",
+        )),
+    }
 }
 
 /// The reply address of the helper for `session`: a socket next to the session's, the only place
