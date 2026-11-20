@@ -21,6 +21,14 @@ const LAPTOP: &str = "ada-laptop";
 /// How long a test watches for what must not happen.
 const QUIET: Duration = Duration::from_secs(3);
 
+/// A code counts only as a whole token: the digits of a device ID shaped like one do not.
+#[test]
+fn codes_are_whole_tokens_not_parts_of_an_id() {
+    let text = "Linked: issued by the device 84bc7bab-7813-89aa-b475-365c9d616798.\n\
+                Type this code there: VZK-MP5 (or ab1-CDE2, XYZ-ABC-DEF).";
+    assert_eq!(codes_in(text), ["VZK-MP5"]);
+}
+
 /// Whether a request to the link code relay went through the relay since `since`.
 fn relayed_since(world: &World, since: Instant) -> bool {
     let path = RELAYED.to_lowercase();
