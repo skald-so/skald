@@ -85,8 +85,8 @@ fn a_session_that_refuses_cross_session_messages_gets_them_by_the_hooks() {
 /// A session of web runs as the apps run it, its hooks run by a copy of `skald` whose processes the
 /// test finds, its `skald mcp` in one-shot mode, so only the hooks start a helper. On the prompt,
 /// the stub runs `echo` of [`PLANTED`], which the conversation then holds. api sends web a message;
-/// once a turn holds it, before the stub answers, every helper is killed, and then the stub
-/// replies. The person's `skald recv` shows `read` of the message once; after [`QUIET`] more, the
+/// once a turn holds it, before the stub answers, every helper is killed where the client writes
+/// into the socket ([`SOCKET`]), and then the stub replies. The person's `skald recv` shows `read` of the message once; after [`QUIET`] more, the
 /// session's last turn holds it once; no file of the state directory holds [`PLANTED`].
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
@@ -128,10 +128,13 @@ fn a_helper_killed_after_the_write_gives_read_once_and_keeps_nothing_of_the_conv
     let msg_id = solo.api_sends_web(KILLED_SAYS);
     nudged_unless_socket(&mut session);
     model.wait_turn_holding(KILLED_SAYS, "api's message");
-    let helpers = helped.helpers();
-    assert!(!SOCKET || !helpers.is_empty(), "no helper ran");
-    for helper in helpers {
-        helped.kill(helper);
+    // Where the client writes into no socket, no write comes before the hooks give the message.
+    if SOCKET {
+        let helpers = helped.helpers();
+        assert!(!helpers.is_empty(), "no helper ran");
+        for helper in helpers {
+            helped.kill(helper);
+        }
     }
     let (open, opened) = &*gate;
     *open.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = true;

@@ -174,13 +174,22 @@ impl Session {
         // No onboarding, the placeholder approved as Claude Code keeps it, and the folder trusted:
         // the terminal asks nothing first.
         let tail = &PLACEHOLDER[PLACEHOLDER.len() - 20..];
+        // Claude Code names the folder as it is given, or resolved on Unix; on Windows with `/`
+        // or `\`, so the folder is trusted under each name.
         let real = fs::canonicalize(dir).expect("the agent's folder");
+        let real = lossy(real.as_os_str());
+        let given = lossy(dir.as_os_str());
+        let names = [given.as_str(), real.strip_prefix(r"\\?\").unwrap_or(&real)];
+        let trusted: serde_json::Map<String, Value> = (names.iter())
+            .flat_map(|name| [name.to_string(), name.replace('\\', "/")])
+            .map(|name| (name, json!({ "hasTrustDialogAccepted": true })))
+            .collect();
         write(
             &home.join(".claude.json"),
             &json!({
                 "hasCompletedOnboarding": true, "theme": "dark",
                 "customApiKeyResponses": { "approved": [tail], "rejected": [] },
-                "projects": { lossy(real.as_os_str()): { "hasTrustDialogAccepted": true } },
+                "projects": trusted,
             }),
         );
         settings.extend([
