@@ -9,6 +9,7 @@ exclude_globs = [
   "live/src/subscription.rs",
   "live/src/wake_run.rs",
   "live/src/read_run.rs",
+  "live/src/before_run.rs",
   "testing/src/lib.rs",
 ]
 # cargo-mutants builds and tests only the mutated packages in its baseline run; live-check's tests
@@ -21,4 +22,10 @@ additional_cargo_args = [
   "--package=agent-queue",
   "--package=agent-app-server",
   "--package=agent-limits",
+]
+# cargo-mutants copies only this workspace; the test of the live checks' report reads
+# docs/dev/agent-delivery.md outside it, so it runs only in script/test.
+additional_cargo_test_args = [
+  "-E",
+  "not test(=the_report_gives_each_claude_code_checks_result_and_version_on_the_stub_and_the_real_model)",
 ]

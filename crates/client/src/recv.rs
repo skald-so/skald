@@ -1673,7 +1673,7 @@ mod tests {
                 devices: SpaceDevices {
                     ids: certs.iter().map(|cert| cert.body().device).collect(),
                     certs,
-                    revocations: Vec::new(),
+                    ..SpaceDevices::default()
                 },
                 channel,
                 bob: DeviceId::from_signing_key(&bob_key.public_key()),
@@ -1765,6 +1765,7 @@ mod tests {
                 ids: self.devices.ids.clone(),
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
+                records: Vec::new(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);

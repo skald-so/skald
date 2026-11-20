@@ -39,6 +39,7 @@ mod links;
 mod mailboxes;
 mod notices;
 mod oidc;
+mod presence;
 mod protocol;
 mod refusal;
 mod requests;
@@ -388,6 +389,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/spaces/{space}/channels/{channel}/history/wraps",
             get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/presence",
+            get(presence::given)
+                .put(presence::upload)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",

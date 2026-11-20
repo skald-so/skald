@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use skald_crypto::{HistoryKey, follow_links, open_wrap};
+use skald_crypto::{HistoryKey, HpkeKey, follow_links, open_wrap};
 use skald_proto::{
     Cbor as _, ChannelId, DeviceId, DeviceKind, HistoryEntry, HistoryItem, HistoryWrap, MessageId,
     SpaceId, WrapRecipient,
@@ -116,24 +116,31 @@ pub fn assert_no_wrap_to(talk: &Talk, from: usize, browser: DeviceId) {
 /// device takes in its mailbox first.
 #[track_caller]
 pub fn assert_wrapped(talk: &mut Talk, browser: &Keyed, epoch: u64) -> HistoryKey {
+    let recipient = WrapRecipient::Browser(browser.id);
+    assert_wrapped_as(talk, (recipient, &browser.hpke), epoch)
+}
+
+/// As [`assert_wrapped`], of the wrap to `recipient`, opening with `hpke`, its HPKE key pair.
+#[track_caller]
+pub fn assert_wrapped_as(
+    talk: &mut Talk,
+    (recipient, hpke): (WrapRecipient, &HpkeKey),
+    epoch: u64,
+) -> HistoryKey {
     let held: Vec<HistoryWrap> = talk_wraps(talk)
         .into_iter()
-        .filter(|wrap| wrap.body().recipient == WrapRecipient::Browser(browser.id))
+        .filter(|wrap| wrap.body().recipient == recipient)
         .filter(|wrap| wrap.body().epoch == epoch)
         .collect();
     assert_eq!(
         held.len(),
         1,
-        "not one wrap to {} of epoch {epoch}: {held:?}",
-        browser.id
+        "not one wrap to {recipient:?} of epoch {epoch}: {held:?}"
     );
     let wrap = &held[0];
     assert_eq!(wrap.body().channel, talk.channel, "the channel of {wrap:?}");
-    let opened = open_wrap(wrap, &browser.hpke).unwrap_or_else(|err| {
-        panic!(
-            "the wrap to {} of epoch {epoch} does not open: {err:?}",
-            browser.id
-        )
+    let opened = open_wrap(wrap, hpke).unwrap_or_else(|err| {
+        panic!("the wrap to {recipient:?} of epoch {epoch} does not open: {err:?}")
     });
     assert_eq!(
         opened.signer(),
@@ -147,8 +154,7 @@ pub fn assert_wrapped(talk: &mut Talk, browser: &Keyed, epoch: u64) -> HistoryKe
     talk.played[0].take_in(&talk.world.cloud);
     assert!(
         same(&key, key_of(&talk.played[0], talk.channel, epoch)),
-        "the wrap to {} gives a wrong key of epoch {epoch}",
-        browser.id
+        "the wrap to {recipient:?} gives a wrong key of epoch {epoch}"
     );
     key
 }
