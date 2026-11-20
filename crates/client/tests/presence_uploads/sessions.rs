@@ -15,7 +15,7 @@ use crate::presence::assert_between;
 use crate::talk::Talk;
 use crate::values::{
     EXPIRES_IN, acme_channels, ada_s_body, ada_s_value, await_in_each, await_value,
-    claude_code_session, helped_session, listed, shows, uploads,
+    claude_code_session, helped_session, listed, shows, upload_request,
 };
 use crate::world::now;
 
@@ -25,14 +25,29 @@ const CODEX_RUNTIME: &str = "codex-cli";
 /// The runtime of `claude-code`.
 const CLAUDE_RUNTIME: &str = "claude-code";
 
-/// Waits for up to `limit` until the machines have uploaded as many values in each of `ats` from
-/// `since` on, and at least one; fails unless they have. Gives the count.
+/// Waits for up to 30 seconds until the machines have uploaded as many values in each of `ats`
+/// from `since` on, and more than `before`; fails unless they have. Gives the count. The counts
+/// come from one look at the requests, so an upload in progress across the channels never looks
+/// done in some of them.
 #[track_caller]
-fn await_together(talk: &Talk, ats: &[(SpaceId, ChannelId)], since: Instant) -> usize {
+fn await_together(
+    talk: &Talk,
+    ats: &[(SpaceId, ChannelId)],
+    since: Instant,
+    before: usize,
+) -> usize {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        let counts: Vec<usize> = ats.iter().map(|at| uploads(talk, *at, since)).collect();
-        if counts[0] > 0 && counts.iter().all(|count| *count == counts[0]) {
+        let sent = talk.cloud().relay.sent_since(since);
+        let counts: Vec<usize> = (ats.iter())
+            .map(|at| {
+                let request = upload_request(*at).to_lowercase();
+                (sent.iter())
+                    .filter(|sent| sent.head.starts_with(&request))
+                    .count()
+            })
+            .collect();
+        if counts[0] > before && counts.iter().all(|count| *count == counts[0]) {
             return counts[0];
         }
         assert!(
@@ -116,7 +131,7 @@ fn running_sessions_show_their_agents_available_with_runtimes_in_each_channel_of
             "expires",
         );
     }
-    await_together(&agents.talk, &all, since);
+    await_together(&agents.talk, &all, since, 0);
     let (_, other) = await_value(&mut agents.talk, clientb, "in clientb", |_, _| true);
     assert!(
         other.agents.is_empty(),
@@ -144,8 +159,7 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
         shows(body, &claude, AgentState::Available) && shows(body, &codex, AgentState::Available)
     });
     // Until the uploads that showed both are done in clientb's channel too.
-    await_together(&agents.talk, &all, start);
-    let since = agents.talk.cloud().relay.mark();
+    let showed_both = await_together(&agents.talk, &all, start, 0);
     let ended = now();
 
     drop(claude_session);
@@ -164,7 +178,7 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
             "codex's since moved: {body:?}"
         );
     }
-    await_together(&agents.talk, &all, since);
+    await_together(&agents.talk, &all, start, showed_both);
     let other = ada_s_body(&agents.talk, clientb).expect("a value in clientb");
     assert!(
         other.agents.is_empty(),
