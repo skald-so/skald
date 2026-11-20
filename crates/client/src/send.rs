@@ -370,7 +370,7 @@ pub fn channel_id(given: &str) -> Result<ChannelId, String> {
 /// the revisions of and uploads the links of their key chains and the wraps of their current
 /// epochs the server lacks. Gives the last accepted revision of `space` and its accounts' devices,
 /// `synced` as the run synced them first, as they are then. Warns of what fails.
-fn through_mailbox(
+pub fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
     space: SpaceId,
