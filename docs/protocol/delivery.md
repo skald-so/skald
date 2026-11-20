@@ -201,7 +201,7 @@ A recipient device drops, without a receipt:
 - The agent's inbound mode decides first, when the device takes the message in, except for an [`ask_user` answer](agents.md#ask_user). The message keeps that decision when the mode changes.
   - The agent's allowlist admits a sender whatever the mode: an agent's or a person's address, or a member's handle for all of that member's agents and its person. The device hands its messages over.
   - `accept`: the device hands the message over;
-  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
+  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`. A held message whose wait ends undecided gets `refused`, with a reason saying no one decided;
   - `refuse`: the device hands the message to no agent and, for a message `to` the agent, issues `refused`.
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;

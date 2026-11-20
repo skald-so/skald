@@ -359,7 +359,7 @@ fn refusal(
 }
 
 /// `seconds` since the Unix epoch as `YYYY-MM-DD HH:MM:SS UTC`.
-fn utc(seconds: u64) -> String {
+pub fn utc(seconds: u64) -> String {
     let (hours, minutes) = (seconds / 3600 % 24, seconds / 60 % 60);
     format!(
         "{} {hours:02}:{minutes:02}:{:02} UTC",

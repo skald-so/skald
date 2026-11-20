@@ -42,6 +42,13 @@ impl Terminal {
         Self::spawn(&machine.command_in(&home, args), &home)
     }
 
+    /// As [`Terminal::start`], in the working directory `dir`.
+    // The recovery key's tests start none in another directory.
+    #[allow(dead_code)]
+    pub fn start_in(machine: &Machine, dir: &Path, args: &[&str]) -> Self {
+        Self::spawn(&machine.command_in(dir, args), dir)
+    }
+
     /// As [`Terminal::start`], its input not the terminal but empty, as a shell redirects it.
     #[cfg(unix)]
     pub fn start_without_input(machine: &Machine, args: &[&str]) -> Self {

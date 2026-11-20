@@ -249,6 +249,10 @@ service-key = {
 - One that keeps no state is in no group: it sends and receives under `hpke` only ([From a stateless service agent](delivery.md#from-a-stateless-service-agent), [Mailbox](delivery.md#mailbox)).
 - In the CLI, the key secret is base64url without padding [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §5]: [Service agents](../service-agents.md).
 
+An admin's `client` device of the account the device is on replaces its key: it creates a new `service` device as above, signs the next revision with the new device in place of the old one in the entry and in `services`, then revokes the old device ([Revocation](#revocation)). The new key secret's `anchor` is that revision.
+
+Any admin's device removes a service agent: the next revision lists its device neither in an entry nor in `services`. The device's account then revokes it.
+
 ## Revocation
 A revocation removes a device from its account.
 
@@ -362,12 +366,14 @@ channel-member = [
 - The server keeps every revision. It stores revision n+1 only if it has revision n, so of two revisions signed at once it keeps the first; it refuses the other, and its signer applies its change to the new revision and signs again.
 - It sends a [`space-notice`](delivery.md#frames) to the space's devices when it stores a revision.
 - A `service` device sends only as `space/owner/agent` from its entry ([Envelope](README.md#envelope)).
+- A revision that lists a `service` device revoked later stays acceptable to a device that walks past it, a stateless run included (check 4). A revoked device is trusted for nothing else ([Device checks](#device-checks)).
+- A revision an admin's device signs drops the entries and `services` of revoked `service` devices and of the accounts it removes. The server refuses a new revision that lists, in an entry or in `services`, a `service` device that is revoked or not on a member's account.
 
 A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). A `service` device starts as [Anchors](#anchors) says. A client MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
 1. its signature verifies with the certificate of `signer`, an admin's device in revision n;
 2. `space` and `name` are those of revision n, `revision` is n+1, and `prev` is the hash of revision n;
 3. it has at least one admin; no list repeats an account, device, channel or invite; `name`, handles, owners and agents are valid names ([Agent address](README.md#agent-address)); no two members share a handle, and no owner is a handle; service agents may share an owner, but not an owner and agent;
-4. each `service-agent` device has a valid certificate of kind `service` on a member's account; each `channel-member` is a member; `policy` passes [its checks](#policy).
+4. each `service-agent` device has a certificate of kind `service` on a member's account that passes checks 1 and 2 of [Device checks](#device-checks), revoked or not; each `channel-member` is a member; `policy` passes [its checks](#policy).
 
 A revision that fails, and every revision built on it, has no effect: the client keeps the last revision it accepted, warns its user and keeps working with that one. Two valid revisions with the same number mean the server forked the roster: the client keeps the one it accepted and warns its user.
 
