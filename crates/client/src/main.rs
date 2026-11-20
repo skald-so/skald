@@ -75,6 +75,7 @@ mod sign_in;
 mod sign_out;
 mod spaces;
 mod state;
+mod stateless;
 #[cfg(test)]
 mod test_dir;
 #[cfg(test)]
@@ -951,7 +952,8 @@ fn main() -> ExitCode {
 
 /// Runs `operation` as a service agent's run ([`service`]): only `skald send` and `skald recv`, as
 /// no agent, in this process, without a helper, holding the lock of the state directory, which it
-/// creates if it is missing.
+/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
+/// does not wait.
 fn as_service(operation: Operation) -> ExitCode {
     if !matches!(
         operation.command,
@@ -964,6 +966,17 @@ fn as_service(operation: Operation) -> ExitCode {
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
+    }
+    if operation.state_dir.is_none() {
+        if operation.command.waits() {
+            return exit(Err(
+                "a service agent's skald recv --wait needs a state directory: \
+                 set SKALD_STATE_DIR"
+                    .to_owned(),
+            ));
+        }
+        service::set_stateless();
+        return exit(here(operation));
     }
     let lock = state::dir(operation.state_dir.clone())
         .and_then(|dir| lock::take(&dir, true, operation.timeout).map(|lock| (dir, lock)));
@@ -1100,7 +1113,10 @@ fn perform(operation: Operation) -> Result<(), String> {
         said,
         ..
     } = operation;
-    if let Ok(dir) = state::dir(state_dir.clone()) {
+    // A stateless service agent's run opens no state directory.
+    if !service::stateless()
+        && let Ok(dir) = state::dir(state_dir.clone())
+    {
         // A grant the device took waits for the server to store its certificate.
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());

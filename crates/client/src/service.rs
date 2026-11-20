@@ -6,15 +6,19 @@
 //!   device's proof goes with each request that needs one.
 //! - It pins the key secret's `master` as its account's master key and follows its space from the
 //!   key secret's `anchor`, the start of the roster ([`crate::follow`]).
-//! - Its state goes to the state directory, sealed under a key derived from the key secret
+//! - With a state directory, its state goes there, sealed under a key derived from the key secret
 //!   ([`skald_crypto::StateKey::of_service`]), so the directory alone opens nothing; nothing goes to
 //!   the key storage.
+//! - Without one, the run is stateless ([`set_stateless`]): its state is in memory only, it takes
+//!   no lock and writes no file, it is a member of no group, and it sends and receives under
+//!   `hpke` only ([`crate::stateless`]).
 //! - Once the device has been in a group, a run without its earlier state refuses, so its counters
 //!   do not restart.
 //! - Its messages carry the grant of its token, which it checks against the space's last accepted
 //!   revision first.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -37,10 +41,24 @@ use crate::spaces::now;
 /// The token's own record, `GET`.
 const OWN_RECORD: &str = "/service-token";
 
-/// A service agent's run: its key secret and token.
+/// Whether this process's service agent's run is stateless ([`set_stateless`]).
+static STATELESS: AtomicBool = AtomicBool::new(false);
+
+/// Makes this process's service agent's run stateless: it has no state directory.
+pub fn set_stateless() {
+    STATELESS.store(true, Ordering::Relaxed);
+}
+
+/// Whether this process's service agent's run is stateless.
+pub fn stateless() -> bool {
+    STATELESS.load(Ordering::Relaxed)
+}
+
+/// A service agent's run: its key secret and token, and whether it is stateless.
 pub struct Agent {
     pub key: ServiceKey,
     pub token: Zeroizing<String>,
+    pub stateless: bool,
 }
 
 impl Agent {
@@ -57,16 +75,15 @@ impl Agent {
         }
     }
 
-    /// The secrets of the device of `keys` in the state directory `dir`: its keys and its state
-    /// key, held in memory only.
-    pub fn secrets(&self, dir: &std::path::Path, keys: &Keys) -> (secrets::Map, Secrets) {
+    /// The secrets of the device of `keys`: its keys and its state key, held in memory only.
+    pub fn secrets(&self, keys: &Keys) -> (secrets::Map, Secrets) {
         let state_key = StateKey::of_service(&self.key.signing, &self.key.hpke);
         let mut stored = secrets::Map::new();
         keys.store_with(&mut stored, &state_key);
         let held = Held(Mutex::new(Zeroizing::new(
             serde_json::to_string(&stored).expect("a map of strings is JSON"),
         )));
-        (stored, Secrets::with(dir, Some(Box::new(held))))
+        (stored, Secrets::in_memory(Box::new(held)))
     }
 }
 
@@ -92,7 +109,11 @@ pub fn from_env() -> Result<Option<Agent>, String> {
         return Err(format!("{TOKEN_VARIABLE} holds no service token"));
     }
     let token = Zeroizing::new(token.trim().to_owned());
-    Ok(Some(Agent { key, token }))
+    Ok(Some(Agent {
+        key,
+        token,
+        stateless: stateless(),
+    }))
 }
 
 /// What a run says with `set` set without `unset`.
@@ -207,9 +228,11 @@ pub fn sender(
     ))
 }
 
-/// What a service agent's run follows: its space and the hash of the key secret's anchor.
+/// What a service agent's run follows: its space and the hash of the key secret's anchor; and
+/// whether the run is stateless.
 #[derive(Clone, Copy)]
 pub struct Member {
     pub space: SpaceId,
     pub anchor: [u8; 32],
+    pub stateless: bool,
 }
