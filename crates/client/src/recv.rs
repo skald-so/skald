@@ -76,6 +76,7 @@ use crate::inbound;
 use crate::intake::{self, Intake};
 use crate::key_chain;
 use crate::mailbox::Mailbox;
+use crate::message_status;
 use crate::output::{self, Stream};
 use crate::receipts;
 use crate::reply;
@@ -223,9 +224,7 @@ pub fn reread(
 ) -> Result<(), String> {
     holding_warnings(dir, true, || {
         let shown = printable(message.trim());
-        let named = reply::named(message).ok_or_else(|| {
-            format!("\"{shown}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id")
-        })?;
+        let named = reply::given(message)?;
         let (_, reader) = reply::reader(dir, Some(agent))?;
         let target = reply::kept_target(dir, &named, reader).map_err(|why| match why {
             reply::Unnamed::Unknown => format!(
@@ -816,7 +815,13 @@ fn kept(
         channel: header.channel,
         msg_id: header.msg_id,
         line: key.seal(follower.this, &kept_item(seq), &record),
-        target: reply::seal_target(key, follower.this, seq, (&message.from, message.hops)),
+        target: reply::seal_target(
+            key,
+            follower.this,
+            seq,
+            (&message.from, message.hops),
+            message_status::origin(header.msg_id, (sender, &message.device), message.level),
+        ),
         wait: agent_wait(header.ttl),
         agents,
         held,
@@ -908,7 +913,13 @@ pub fn own_message(
             channel,
             msg_id,
             line: key.seal(follower.this, &kept_item(seq), &record),
-            target: reply::seal_target(key, follower.this, seq, (from, content.hops)),
+            target: reply::seal_target(
+                key,
+                follower.this,
+                seq,
+                (from, content.hops),
+                message_status::origin(msg_id, (follower.this, &name), TrustLevel::Own),
+            ),
             wait: agent_wait(None),
             agents: Vec::new(),
             held: Vec::new(),

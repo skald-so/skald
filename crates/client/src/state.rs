@@ -479,6 +479,34 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE handover ADD COLUMN signalled INTEGER NOT NULL DEFAULT 0
         CHECK (signalled IN (0, 1));
     ALTER TABLE agent ADD COLUMN stops INTEGER NOT NULL DEFAULT 0 CHECK (stops >= 0);",
+    // Where the device's messages are (`skald message-status`): for each channel message it sent,
+    // how long it keeps their statuses after the server stored it, in seconds, when the device took
+    // the server's `stored`, none before, and when its `to` agent's `held`, `read`, `replied` and
+    // `refused`, with that `refused`'s reason, came; and each device the message went to, by its
+    // envelope or a copy, with its certificate's `name`, its account and that account's handle in
+    // the space, if known, and its status, `stored`, `delivered` or `expired`, with that status's
+    // time, none before the server stored it.
+    "CREATE TABLE sent_status (
+        msg_id TEXT PRIMARY KEY,
+        wait INTEGER NOT NULL CHECK (wait >= 0),
+        stored INTEGER,
+        held INTEGER,
+        read INTEGER,
+        replied INTEGER,
+        refused INTEGER,
+        reason TEXT
+    ) STRICT;
+    CREATE TABLE sent_recipient (
+        msg_id TEXT NOT NULL,
+        device TEXT NOT NULL,
+        copy INTEGER NOT NULL CHECK (copy IN (0, 1)),
+        name TEXT,
+        account TEXT,
+        handle TEXT,
+        status TEXT,
+        timestamp INTEGER,
+        PRIMARY KEY (msg_id, device)
+    ) STRICT;",
     // Claude Code sessions over their cross-session socket ([`crate::claude_socket`]): each
     // session a `SessionStart` hook registered, by Claude Code's session ID, in the order of
     // registration, with its agent, the agent's space and folder, its socket, its token and its
@@ -893,6 +921,61 @@ pub struct MlsChanges {
     pub own: Vec<OwnMessage>,
     /// Each epoch of a channel whose key a wrap to the recovery key gave the device.
     pub recovered: Vec<(ChannelId, u64)>,
+    /// Where the channel messages of [`MlsChanges::messages`] go, which the device keeps until
+    /// their wait ends.
+    pub tracked: Vec<Tracked>,
+}
+
+/// Where a channel message of the device's own goes: the devices it goes to, and how long the
+/// device keeps their statuses after the server stores it, in seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Tracked {
+    pub msg_id: MessageId,
+    pub wait: u64,
+    pub recipients: Vec<Recipient>,
+}
+
+/// A device a message of the device's own goes to, as the device knows it at sending.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recipient {
+    pub device: DeviceId,
+    /// Whether it gets a copy under `hpke`, outside the channel's group.
+    pub copy: bool,
+    /// Its certificate's `name`, its account and that account's handle in the space, if known.
+    pub name: Option<String>,
+    pub account: Option<String>,
+    pub handle: Option<String>,
+}
+
+/// What the device keeps of where a message it sent is, until its wait ends.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SentStatus {
+    pub msg_id: MessageId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// The agent it is from, none for the person, and its `to`, if any.
+    pub agent: Option<String>,
+    pub addressee: Option<String>,
+    /// When the device took the server's `stored`, and its `to` agent's `held`, `read`, `replied`
+    /// and `refused`, in Unix seconds, with that `refused`'s reason, if any.
+    pub stored: u64,
+    pub held: Option<u64>,
+    pub read: Option<u64>,
+    pub replied: Option<u64>,
+    pub refused: Option<u64>,
+    pub reason: Option<String>,
+    pub recipients: Vec<RecipientStatus>,
+}
+
+/// A device a message of the device's own went to, with its status and that status's time.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecipientStatus {
+    pub device: DeviceId,
+    pub name: Option<String>,
+    pub account: Option<String>,
+    pub handle: Option<String>,
+    pub status: String,
+    pub timestamp: u64,
 }
 
 impl MlsChanges {
@@ -913,6 +996,7 @@ impl MlsChanges {
             && self.issued_held.is_empty()
             && self.own.is_empty()
             && self.recovered.is_empty()
+            && self.tracked.is_empty()
     }
 }
 
@@ -1386,6 +1470,9 @@ impl State {
                      ON CONFLICT DO NOTHING",
                     params![channel.to_string(), sql_u64(*epoch)?],
                 )?;
+            }
+            for tracked in &changes.tracked {
+                add_tracked(&tx, tracked)?;
             }
             Ok(())
         };
@@ -1942,7 +2029,10 @@ impl State {
 
     /// Keeps `status`, a status of the device's message `msg_id` in `space`, if known, as JSON,
     /// from the entry `seq`, for the person and for `agent`, the agent that sent the message, if
-    /// any, and takes the entry out of the inbox, at once.
+    /// any, and takes the entry out of the inbox, at once. A `delivered` or `expired` becomes its
+    /// device's status of the message while the device keeps where the message is, its time no
+    /// earlier than when the device took the server's `stored`: the server's clock is not the
+    /// device's.
     pub fn keep_status(
         &self,
         seq: u64,
@@ -1962,6 +2052,24 @@ impl State {
                 agent
             ],
         )?;
+        let fields = Fields::of(status);
+        if let (Some(device), Some(word @ ("delivered" | "expired"))) =
+            (fields.text("device"), fields.text("status"))
+        {
+            tx.execute(
+                "INSERT INTO sent_recipient (msg_id, device, copy, name, status, timestamp)
+                 SELECT msg_id, ?2, 0, ?3, ?4, max(coalesce(?5, 0), coalesce(stored, 0))
+                 FROM sent_status WHERE msg_id = ?1
+                 ON CONFLICT DO UPDATE SET status = excluded.status, timestamp = excluded.timestamp",
+                params![
+                    msg_id.to_string(),
+                    device,
+                    fields.text("device_name"),
+                    word,
+                    fields.time()
+                ],
+            )?;
+        }
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
@@ -2767,6 +2875,146 @@ impl State {
     /// The messages the person, or else the agent `agent` in the space `space`, can reply to by
     /// `now`, in Unix seconds, in `seq` order, once those whose time ended are dropped.
     pub fn targets(&self, agent: Option<(SpaceId, &str)>, now: u64) -> Result<Vec<Target>, Error> {
+        self.kept_targets(agent, true, now)
+    }
+
+    /// The messages the person's run showed or the device handed to an agent, or else those
+    /// handed to the agent `agent` in the space `space`, that it keeps for replies by `now`, in
+    /// Unix seconds, in `seq` order, once those whose time ended are dropped.
+    pub fn handed(&self, agent: Option<(SpaceId, &str)>, now: u64) -> Result<Vec<Target>, Error> {
+        self.kept_targets(agent, false, now)
+    }
+
+    /// The agents the kept message of the entry `seq` was handed to, by name.
+    pub fn handed_to(&self, seq: u64) -> Result<Vec<String>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT agent FROM reply_agent WHERE seq = ?1 ORDER BY agent")?;
+        let names = query.query_map(params![sql_seq(seq)?], |row| row.get(0))?;
+        Ok(names.collect::<Result<_, _>>()?)
+    }
+
+    /// The `msg_id` of each message the device sent that the server stored and whose wait has not
+    /// ended by `now`, in Unix seconds, of the person, or else those the agent `agent` sent in the
+    /// space `space`, once where those whose wait ended went is dropped.
+    pub fn sent_ids(
+        &self,
+        agent: Option<(SpaceId, &str)>,
+        now: u64,
+    ) -> Result<Vec<MessageId>, Error> {
+        let now = sql_u64(now)?;
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM sent_status WHERE stored + wait <= ?1",
+            params![now],
+        )?;
+        tx.execute(
+            "DELETE FROM sent_recipient WHERE msg_id NOT IN (SELECT msg_id FROM sent_status)",
+            [],
+        )?;
+        tx.commit()?;
+        let (space, agent) = agent.unzip();
+        let mut query = self.db.prepare(
+            "SELECT status.msg_id FROM sent_status AS status JOIN sent USING (msg_id)
+             WHERE status.stored IS NOT NULL
+                 AND (?1 IS NULL OR (sent.space = ?1 AND sent.agent = ?2))
+             ORDER BY status.stored, status.msg_id",
+        )?;
+        let ids = query.query_map(
+            params![space.map(|space| space.to_string()), agent],
+            |row| row.get::<_, String>(0),
+        )?;
+        ids.map(|msg_id| id("message ID", &msg_id?)).collect()
+    }
+
+    /// Where the message `msg_id` the device sent is, if the server stored it and the device keeps
+    /// it.
+    pub fn sent_status(&self, msg_id: MessageId) -> Result<Option<SentStatus>, Error> {
+        let row: Option<SentRow> = self
+            .db
+            .query_row(
+                "SELECT sent.space, sent.channel, sent.agent, sent.addressee, status.reason,
+                     status.stored, status.held, status.read, status.replied, status.refused
+                 FROM sent_status AS status JOIN sent USING (msg_id)
+                 WHERE msg_id = ?1 AND status.stored IS NOT NULL",
+                params![msg_id.to_string()],
+                |row| {
+                    Ok((
+                        [row.get(0)?, row.get(1)?],
+                        [row.get(2)?, row.get(3)?, row.get(4)?],
+                        [
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                            row.get(8)?,
+                            row.get(9)?,
+                        ],
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            [space, channel],
+            [agent, addressee, reason],
+            [stored, held, read, replied, refused],
+        )) = row
+        else {
+            return Ok(None);
+        };
+        let time = |time: Option<i64>| {
+            time.map(|time| {
+                u64::try_from(time).map_err(|_| Error::Malformed(format!("the time {time}")))
+            })
+            .transpose()
+        };
+        let mut query = self.db.prepare(
+            "SELECT device, name, account, handle, status, timestamp FROM sent_recipient
+             WHERE msg_id = ?1 AND status IS NOT NULL ORDER BY rowid",
+        )?;
+        let rows = query.query_map(params![msg_id.to_string()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                [row.get(1)?, row.get(2)?, row.get(3)?],
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
+        let recipients = rows
+            .map(|row| {
+                let (device, [name, account, handle], status, timestamp) = row?;
+                Ok(RecipientStatus {
+                    device: id("device ID", &device)?,
+                    name,
+                    account,
+                    handle,
+                    status,
+                    timestamp: time(timestamp)?.unwrap_or(0),
+                })
+            })
+            .collect::<Result<_, Error>>()?;
+        Ok(Some(SentStatus {
+            msg_id,
+            space: id("space ID", &space)?,
+            channel: id("channel ID", &channel)?,
+            agent,
+            addressee,
+            stored: time(stored)?.unwrap_or(0),
+            held: time(held)?,
+            read: time(read)?,
+            replied: time(replied)?,
+            refused: time(refused)?,
+            reason,
+            recipients,
+        }))
+    }
+
+    /// [`State::targets`] if `person_only`, otherwise [`State::handed`].
+    fn kept_targets(
+        &self,
+        agent: Option<(SpaceId, &str)>,
+        person_only: bool,
+        now: u64,
+    ) -> Result<Vec<Target>, Error> {
         let now = sql_u64(now)?;
         let tx = self.db.unchecked_transaction()?;
         tx.execute("DELETE FROM reply_target WHERE expires <= ?1", params![now])?;
@@ -2781,9 +3029,10 @@ impl State {
                 "{columns} WHERE space = ?1
                  AND seq IN (SELECT seq FROM reply_agent WHERE agent = ?2) ORDER BY seq"
             ))?,
-            None => self
+            None if person_only => self
                 .db
                 .prepare(&format!("{columns} WHERE person = 1 ORDER BY seq"))?,
+            None => self.db.prepare(&format!("{columns} ORDER BY seq"))?,
         };
         let row = |row: &rusqlite::Row| {
             Ok((
@@ -2922,6 +3171,17 @@ impl State {
                     params![read.to_string(), status],
                 )?;
             }
+            let fields = Fields::of(status);
+            if held {
+                tx.execute(
+                    "UPDATE sent_status SET held = ?2
+                     WHERE msg_id = ?1 AND held IS NULL AND read IS NULL AND refused IS NULL",
+                    params![read.to_string(), fields.time()],
+                )?;
+                continue;
+            }
+            let refused = (fields.text("status") == Some("refused")).then(|| fields.text("reason"));
+            keep_answer(&tx, &read.to_string(), fields.time(), refused)?;
         }
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
@@ -3006,10 +3266,11 @@ impl State {
 
     /// Takes the envelope of `msg_id` to `recipient`, none under `mls`, out of the outbox: the
     /// server answered it. If it stored the envelope of an own message of the device's
-    /// ([`OwnMessage`]), the device keeps that message for itself. If it refused the envelope,
-    /// `refused` its refusal as a status, as JSON, the message's history entry and own message go
-    /// too unless the envelope is a copy to `recipient`, and the refusal is kept for the agent that
-    /// sent the message, if any, all at once.
+    /// ([`OwnMessage`]), the device keeps that message for itself, and its recipient devices, or
+    /// the copy's, are `stored` now. If it refused the envelope, `refused` its refusal as a status,
+    /// as JSON, the message's history entry, own message and where it goes go too unless the
+    /// envelope is a copy to `recipient`, which alone is then no recipient, and the refusal is kept
+    /// for the agent that sent the message, if any, all at once.
     pub fn remove_outgoing(
         &self,
         msg_id: MessageId,
@@ -3029,7 +3290,12 @@ impl State {
             (Some(_), _) => {}
             (None, None) => keep_own(&tx, msg_id)?,
             (None, Some(_)) => {
-                for table in ["own_message", "history_outbox"] {
+                for table in [
+                    "own_message",
+                    "history_outbox",
+                    "sent_status",
+                    "sent_recipient",
+                ] {
                     tx.execute(
                         &format!("DELETE FROM {table} WHERE msg_id = ?1"),
                         params![msg_id.to_string()],
@@ -3037,6 +3303,7 @@ impl State {
                 }
             }
         }
+        track_answer(&tx, msg_id, recipient, refused.is_none())?;
         if let Some(refused) = refused {
             tx.execute(
                 "INSERT INTO kept_status (msg_id, space, status, person, agent)
@@ -3122,6 +3389,13 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
                 replied.space.to_string(),
                 replied.status,
                 replied.agent
+            ],
+        )?;
+        tx.execute(
+            "UPDATE sent_status SET replied = ?2 WHERE msg_id = ?1 AND replied IS NULL",
+            params![
+                replied.msg_id.to_string(),
+                Fields::of(&replied.status).time()
             ],
         )?;
     }
@@ -3291,6 +3565,7 @@ fn read_own(
         "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0",
         params![msg_id],
     )?;
+    let now = sql_u64(unix_now())?;
     if first > 0 {
         tx.execute(
             "INSERT INTO kept_status (msg_id, space, status, person, agent)
@@ -3301,16 +3576,28 @@ fn read_own(
                      ELSE json_set(?2, '$.status', 'refused', '$.reason', ?5, '$.timestamp', ?3)
                  END, 1, agent
              FROM sent WHERE msg_id = ?1",
-            params![
-                msg_id,
-                status,
-                sql_u64(unix_now())?,
-                refused.is_some(),
-                refused.flatten()
-            ],
+            params![msg_id, status, now, refused.is_some(), refused.flatten()],
         )?;
     }
+    keep_answer(tx, &msg_id, Some(now), refused)?;
     tx.execute("DELETE FROM own_read WHERE seq = ?1", params![seq])?;
+    Ok(())
+}
+
+/// Keeps, in `tx`, as the status of the device's message `msg_id`, its `to` agent's `read` at `at`
+/// or, with `refused`, its `refused` at `at` with its reason, if any; unless it has either.
+fn keep_answer(
+    tx: &Transaction,
+    msg_id: &str,
+    at: Option<i64>,
+    refused: Option<Option<&str>>,
+) -> Result<(), Error> {
+    tx.execute(
+        "UPDATE sent_status
+         SET read = iif(?3, read, ?2), refused = iif(?3, ?2, refused), reason = ?4
+         WHERE msg_id = ?1 AND read IS NULL AND refused IS NULL",
+        params![msg_id, at, refused.is_some(), refused.flatten()],
+    )?;
     Ok(())
 }
 
@@ -3494,6 +3781,12 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
                 params![msg_id, now],
             )?;
         }
+        tx.execute(
+            "UPDATE sent_status SET held = ?2
+             WHERE msg_id = ?1 AND held IS NULL AND read IS NULL AND refused IS NULL
+                 AND EXISTS (SELECT 1 FROM own_message WHERE msg_id = ?1 AND held IS NOT NULL)",
+            params![msg_id, now],
+        )?;
         let refused = tx.execute(
             "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0
              AND EXISTS (SELECT 1 FROM own_message WHERE msg_id = ?1 AND refused IS NOT NULL)",
@@ -3509,11 +3802,28 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
                 params![msg_id, now],
             )?;
         }
+        let refusal: Option<String> = tx
+            .query_row(
+                "SELECT refused FROM own_message WHERE msg_id = ?1 AND refused IS NOT NULL",
+                params![msg_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(refusal) = refusal {
+            let reason = Fields::of(&refusal);
+            keep_answer(tx, &msg_id, Some(now), Some(reason.text("reason")))?;
+        }
         tx.execute(
             "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
              SELECT seq, replied, space, replied_status, 1, replied_agent FROM own_message
              WHERE msg_id = ?1 AND replied IS NOT NULL ON CONFLICT DO NOTHING",
             params![msg_id],
+        )?;
+        tx.execute(
+            "UPDATE sent_status SET replied = ?2
+             WHERE msg_id = (SELECT replied FROM own_message WHERE msg_id = ?1)
+                 AND replied IS NULL",
+            params![msg_id, now],
         )?;
         tx.execute(
             "INSERT INTO own_read (seq, msg_id, agent, status)
@@ -3527,6 +3837,87 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     tx.execute("DELETE FROM own_message WHERE msg_id = ?1", params![msg_id])?;
     drop_done(tx)
 }
+
+/// The fields of a status as JSON ([`crate::forms::Status`]); none of one that is not.
+struct Fields(serde_json::Value);
+
+impl Fields {
+    fn of(status: &str) -> Self {
+        Fields(serde_json::from_str(status).unwrap_or_default())
+    }
+
+    /// Its field `name`, if it is a string.
+    fn text(&self, name: &str) -> Option<&str> {
+        self.0[name].as_str()
+    }
+
+    /// Its `timestamp`, if it is a time.
+    fn time(&self) -> Option<i64> {
+        self.0["timestamp"].as_i64()
+    }
+}
+
+/// Keeps, in `tx`, where the device's message of `tracked` goes, until the server stores it.
+fn add_tracked(tx: &Transaction, tracked: &Tracked) -> Result<(), Error> {
+    let msg_id = tracked.msg_id.to_string();
+    tx.execute(
+        "INSERT INTO sent_status (msg_id, wait) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+        params![msg_id, sql_u64(tracked.wait)?],
+    )?;
+    for recipient in &tracked.recipients {
+        tx.execute(
+            "INSERT INTO sent_recipient (msg_id, device, copy, name, account, handle)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT DO NOTHING",
+            params![
+                msg_id,
+                recipient.device.to_string(),
+                recipient.copy,
+                recipient.name,
+                recipient.account,
+                recipient.handle
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Records, in `tx`, the server's answer to the envelope of the device's message `msg_id` to
+/// `recipient`, none under `mls`: if `stored`, its recipient devices, or the copy's, are `stored`
+/// now, and the message is stored now; a refused copy's device is no recipient.
+fn track_answer(
+    tx: &Transaction,
+    msg_id: MessageId,
+    recipient: Option<DeviceId>,
+    stored: bool,
+) -> Result<(), Error> {
+    let (msg_id, now) = (msg_id.to_string(), sql_u64(unix_now())?);
+    let device = recipient.map(|device| device.to_string());
+    if !stored {
+        tx.execute(
+            "DELETE FROM sent_recipient WHERE msg_id = ?1 AND copy = 1 AND device = ?2",
+            params![msg_id, device],
+        )?;
+        return Ok(());
+    }
+    if recipient.is_none() {
+        tx.execute(
+            "UPDATE sent_status SET stored = ?2 WHERE msg_id = ?1 AND stored IS NULL",
+            params![msg_id, now],
+        )?;
+    }
+    tx.execute(
+        "UPDATE sent_recipient SET status = 'stored', timestamp = ?2
+         WHERE msg_id = ?1 AND status IS NULL AND copy = (?3 IS NOT NULL)
+             AND (?3 IS NULL OR device = ?3)",
+        params![msg_id, now, device],
+    )?;
+    Ok(())
+}
+
+/// A row of the device's sent messages it keeps statuses of: the space's and channel's IDs, the
+/// agent it is from, its `to` and the reason of its `refused`, and the times of its `stored`,
+/// `held`, `read`, `replied` and `refused`.
+type SentRow = ([String; 2], [Option<String>; 3], [Option<i64>; 5]);
 
 /// A row of an outbox: three IDs, as text, and an envelope's bytes.
 type EnvelopeRow = ([String; 3], Vec<u8>);
@@ -5039,6 +5430,243 @@ pub(crate) mod tests {
             "the reply to api only"
         );
         assert_eq!(waiting("web"), [to_all_seq]);
+    }
+
+    /// Where a message of the device's own goes is kept once the server stores it: each group
+    /// member `stored`, then as the server's statuses say, no earlier than `stored`, a copy's
+    /// device once its copy is stored and none once refused, with the `to` agent's `read`; only
+    /// for its sending agent in its space, or the person, until its wait ends. A refused message
+    /// keeps none.
+    #[test]
+    fn sent_statuses_follow_the_server_and_the_to_agent() {
+        let dir = TestDir::new("state-sent-status");
+        let state = with_entries(&dir, &[1, 2, 3]);
+        let (space, channel) = (SpaceId::generate(), ChannelId::generate());
+        let devices = [1, 2, 3].map(|byte| DeviceId::from_signing_key(&[byte + 10; 32]));
+        let recipient = |device: DeviceId, copy: bool| Recipient {
+            device,
+            copy,
+            name: Some(format!("box {copy}")),
+            account: Some("0190".to_owned()),
+            handle: (!copy).then(|| "bob".to_owned()),
+        };
+        let send = |counter: u64| {
+            let message = Counted {
+                outgoing: Outgoing {
+                    msg_id: MessageId::generate(),
+                    recipient: None,
+                    space,
+                    envelope: vec![1],
+                    report: true,
+                },
+                channel,
+                counter,
+                agent: Some("claude".to_owned()),
+                addressee: Some("acme/bob/codex@skald.example".to_owned()),
+            };
+            let msg_id = message.outgoing.msg_id;
+            let tracked = Tracked {
+                msg_id,
+                wait: 600,
+                recipients: vec![
+                    recipient(devices[0], false),
+                    recipient(devices[1], true),
+                    recipient(devices[2], true),
+                ],
+            };
+            state
+                .mls_change(|_| {
+                    let changes = MlsChanges {
+                        messages: vec![message],
+                        tracked: vec![tracked],
+                        ..MlsChanges::default()
+                    };
+                    Ok((None, changes, ()))
+                })
+                .unwrap();
+            msg_id
+        };
+        let (sent, refused) = (send(1), send(2));
+        let ids = |agent: Option<(SpaceId, &str)>, now: u64| state.sent_ids(agent, now).unwrap();
+        assert!(ids(None, unix_now()).is_empty(), "before stored");
+        assert_eq!(state.sent_status(sent).unwrap(), None);
+
+        let before = unix_now();
+        state.remove_outgoing(sent, None, None).unwrap();
+        state.remove_outgoing(sent, Some(devices[1]), None).unwrap();
+        state
+            .remove_outgoing(sent, Some(devices[2]), Some("refused"))
+            .unwrap();
+        state
+            .remove_outgoing(refused, None, Some("refused"))
+            .unwrap();
+        let status = |device: DeviceId, word: &str, at: u64| {
+            format!(
+                r#"{{"status":"{word}","msg_id":"{sent}","device":"{device}","device_name":"x","timestamp":{at}}}"#
+            )
+        };
+        state
+            .keep_status(
+                1,
+                (sent, Some(space), Some("claude")),
+                &status(devices[0], "delivered", before + 1000),
+            )
+            .unwrap();
+        state
+            .keep_status(
+                2,
+                (sent, Some(space), Some("claude")),
+                &status(devices[1], "expired", 7),
+            )
+            .unwrap();
+        let source = (None, (devices[0], MessageId::generate()));
+        state
+            .take_receipt(3, source, (false, &[(sent, status(devices[0], "read", 9))]))
+            .unwrap();
+
+        let now = unix_now();
+        assert_eq!(ids(None, now), [sent]);
+        assert_eq!(ids(Some((space, "claude")), now), [sent]);
+        assert!(ids(Some((space, "codex")), now).is_empty());
+        assert!(ids(Some((SpaceId::generate(), "claude")), now).is_empty());
+        let kept = state.sent_status(sent).unwrap().unwrap();
+        assert!((before..=now).contains(&kept.stored), "{}", kept.stored);
+        assert_eq!((kept.space, kept.channel), (space, channel));
+        assert_eq!(kept.agent.as_deref(), Some("claude"));
+        assert_eq!((kept.read, kept.replied), (Some(9), None));
+        let recipients: Vec<_> = (kept.recipients.iter())
+            .map(|it| (it.device, it.status.as_str(), it.handle.as_deref()))
+            .collect();
+        assert_eq!(
+            recipients,
+            [
+                (devices[0], "delivered", Some("bob")),
+                (devices[1], "expired", None)
+            ]
+        );
+        assert_eq!(kept.recipients[0].timestamp, before + 1000);
+        assert_eq!(
+            kept.recipients[1].timestamp, kept.stored,
+            "not before stored"
+        );
+        assert_eq!(state.sent_status(refused).unwrap(), None);
+
+        assert!(ids(None, kept.stored + 600).is_empty(), "after its wait");
+        assert_eq!(state.sent_status(sent).unwrap(), None);
+    }
+
+    /// Keeps, in `state`, where the device's message `msg_id` goes, with no recipient device.
+    fn track(state: &State, msg_id: MessageId) {
+        let tracked = Tracked {
+            msg_id,
+            wait: 600,
+            recipients: Vec::new(),
+        };
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    tracked: vec![tracked],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+    }
+
+    /// The `to` agent's `held` of a message of the device's own is kept from its receipt, and its
+    /// `refused` with its reason, from its receipt or, on one device, as the server stores the
+    /// message; the first of `read` and `refused` stays.
+    #[test]
+    fn refused_is_kept_with_its_reason_by_receipt_and_on_one_device() {
+        let dir = TestDir::new("state-sent-refused");
+        let state = with_entries(&dir, &[1, 2]);
+        let space = space_of_kept();
+        for agent in ["api", "web"] {
+            state.add_agent(space, agent).unwrap();
+        }
+        let channel = ChannelId::generate();
+        let afar = put_own(&state, (channel, 1), (Some("api"), None), None).0;
+        let here = (Some("api"), Some(Some("web")));
+        let here = put_own_refused(&state, (channel, 2), here, None, &["web"]).0;
+        for msg_id in [afar, here] {
+            track(&state, msg_id);
+        }
+        let before = unix_now();
+        for msg_id in [afar, here] {
+            state.remove_outgoing(msg_id, None, None).unwrap();
+        }
+        let sender = (
+            None,
+            (DeviceId::from_signing_key(&[2; 32]), MessageId::generate()),
+        );
+        let refused = r#"{"status":"refused","reason":"no","timestamp":9}"#.to_owned();
+        let held = r#"{"status":"held","timestamp":8}"#.to_owned();
+        state
+            .take_receipt(1, sender, (true, &[(afar, held)]))
+            .unwrap();
+        let sender = (
+            None,
+            (DeviceId::from_signing_key(&[2; 32]), MessageId::generate()),
+        );
+        state
+            .take_receipt(3, sender, (false, &[(afar, refused)]))
+            .unwrap();
+        let read = r#"{"status":"read","timestamp":10}"#.to_owned();
+        let sender = (
+            None,
+            (DeviceId::from_signing_key(&[2; 32]), MessageId::generate()),
+        );
+        state
+            .take_receipt(2, sender, (false, &[(afar, read)]))
+            .unwrap();
+
+        let afar = state.sent_status(afar).unwrap().unwrap();
+        assert_eq!(
+            (afar.held, afar.read, afar.refused),
+            (Some(8), None, Some(9))
+        );
+        assert_eq!(afar.reason.as_deref(), Some("no"));
+        let here = state.sent_status(here).unwrap().unwrap();
+        assert_eq!(here.read, None);
+        assert!(here.refused.is_some_and(|at| at >= before), "{here:?}");
+        assert_eq!(here.reason.as_deref(), Some("off"));
+    }
+
+    /// On one device, the `to` agent's reply to a message of the device's own makes it `replied`,
+    /// at the time the server stores the reply.
+    #[test]
+    fn reply_on_one_device_makes_the_message_replied() {
+        let dir = TestDir::new("state-replied-here");
+        let state = with_entries(&dir, &[]);
+        let space = space_of_kept();
+        for agent in ["api", "web"] {
+            state.add_agent(space, agent).unwrap();
+        }
+        let channel = ChannelId::generate();
+        let asked = put_own(&state, (channel, 1), (Some("api"), Some(Some("web"))), None).0;
+        track(&state, asked);
+        state.remove_outgoing(asked, None, None).unwrap();
+        let replied = |state: &State| state.sent_status(asked).unwrap().unwrap().replied;
+        assert_eq!(replied(&state), None, "replied before the reply");
+
+        let reply = Replied {
+            msg_id: asked,
+            space,
+            status: "replied".to_owned(),
+            agent: Some("api".to_owned()),
+        };
+        let answer = (Some("web"), Some(Some("api")));
+        let answer = put_own(&state, (channel, 2), answer, Some(reply)).0;
+        assert_eq!(
+            replied(&state),
+            None,
+            "replied before the server stored the reply"
+        );
+        let before = unix_now();
+        state.remove_outgoing(answer, None, None).unwrap();
+
+        let at = replied(&state).expect("not replied");
+        assert!((before..=unix_now()).contains(&at), "{at}");
     }
 
     /// A receipt is taken out of the inbox with its counters, or as received without them, and
