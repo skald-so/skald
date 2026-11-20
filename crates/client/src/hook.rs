@@ -47,9 +47,18 @@ const INPUT_MOST: u64 = 1 << 20;
 pub const SIGNAL: &str = "skald: a message from another account or a service waits for you: \
                           call the inbox tool, or skald recv, to read it";
 
+/// The settings Claude Code gives its hooks but `SessionEnd`'s: the session's cross-session
+/// socket, and the token that makes a line on it the session's own child's.
+pub const SOCKET_SETTING: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
+pub const TOKEN_SETTING: &str = "CLAUDE_CODE_MESSAGING_TOKEN";
+
 /// A hook event the handler acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Event {
+    /// `SessionStart`, which registers the session ([`crate::claude_socket`]).
+    SessionStart,
+    /// `SessionEnd`, which ends its registration.
+    SessionEnd,
     PostToolUse,
     /// `Stop`; `continued` in a turn a `Stop` hook kept going.
     Stop {
@@ -61,6 +70,8 @@ impl Event {
     /// Its `hook_event_name`.
     pub fn name(self) -> &'static str {
         match self {
+            Event::SessionStart => "SessionStart",
+            Event::SessionEnd => "SessionEnd",
             Event::PostToolUse => "PostToolUse",
             Event::Stop { .. } => "Stop",
         }
@@ -76,6 +87,20 @@ pub struct Input {
     pub cwd: PathBuf,
     /// How many `Stop` continuations in a row Claude Code takes.
     pub cap: u64,
+    /// The session, as the input and the settings name it.
+    #[serde(default)]
+    pub session: Session,
+}
+
+/// A Claude Code session, as a hook's input and settings name it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    /// Its ID and its session file.
+    pub id: Option<String>,
+    pub file: Option<PathBuf>,
+    /// Its cross-session socket and token, from [`SOCKET_SETTING`] and [`TOKEN_SETTING`].
+    pub socket: Option<PathBuf>,
+    pub token: Option<String>,
 }
 
 /// The hook input on `from`, with the cap `cap` sets, if any; fails on input that is not one.
@@ -86,6 +111,10 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         cwd: PathBuf,
         #[serde(default)]
         stop_hook_active: bool,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        transcript_path: Option<PathBuf>,
     }
     let mut bytes = Vec::new();
     (from.take(INPUT_MOST).read_to_end(&mut bytes))
@@ -93,6 +122,8 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
     let given: Given = serde_json::from_slice(&bytes)
         .map_err(|err| format!("the hook input is malformed: {err}"))?;
     let event = match given.hook_event_name.as_str() {
+        "SessionStart" => Some(Event::SessionStart),
+        "SessionEnd" => Some(Event::SessionEnd),
         "PostToolUse" => Some(Event::PostToolUse),
         "Stop" => Some(Event::Stop {
             continued: given.stop_hook_active,
@@ -104,7 +135,35 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         event,
         cwd: given.cwd,
         cap,
+        session: Session {
+            id: given.session_id.filter(|id| !id.is_empty()),
+            file: given.transcript_path,
+            socket: None,
+            token: None,
+        },
     })
+}
+
+/// `line`, the line of the message `#<reference>`, as Skald puts it into a session at once: whole
+/// within [`LIMIT`] characters; longer, cut so that it ends within it with how to read it whole.
+pub fn fitted(line: &str, reference: &str) -> String {
+    if line.chars().count() <= LIMIT {
+        return line.to_owned();
+    }
+    let tail = cut_tail(reference);
+    let head: String = line
+        .chars()
+        .take(LIMIT - 1 - tail.chars().count())
+        .collect();
+    format!("{head}\n{tail}")
+}
+
+/// The line that ends a message cut at `#<reference>`.
+fn cut_tail(reference: &str) -> String {
+    format!(
+        "skald: #{reference} is cut here: inbox with message #{reference}, or skald recv \
+         #{reference}, gives it whole"
+    )
 }
 
 /// What waits for the agent, in order.
@@ -182,10 +241,7 @@ pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
                     continue;
                 }
                 if lines == 0 {
-                    let tail = format!(
-                        "skald: #{reference} is cut here: inbox with message #{reference}, or \
-                         skald recv #{reference}, gives it whole"
-                    );
+                    let tail = cut_tail(reference);
                     let room = budget.saturating_sub(context.cost() + 2 + context.cost_of(&tail));
                     context.push(&cut(line, room));
                     context.push(&tail);

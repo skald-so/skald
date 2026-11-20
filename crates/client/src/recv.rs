@@ -62,6 +62,7 @@ use skald_proto::{
 };
 
 use crate::agents::server_name;
+use crate::claude_socket;
 use crate::connection::printable;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
@@ -141,16 +142,17 @@ pub fn inbox(
     })
 }
 
-/// A run of `agent`'s hook ([`crate::hook`]) on `event`, with Claude Code's cap `cap` of `Stop`
-/// continuations in a row: in a folder in no space, nothing; at the cap, nothing, leaving every
-/// message waiting; otherwise [`run`] as the agent, which hands over what [`hook::compose`] gives,
-/// in one write, and only if the run did not fail.
+/// A run of `agent`'s hook ([`crate::hook`]) on `event` of `session`, with Claude Code's cap `cap`
+/// of `Stop` continuations in a row: in a folder in no space, nothing; on `Stop`, first what the
+/// session file of a registered session confirms ([`claude_socket::confirm`]); at the cap,
+/// nothing, leaving every message waiting; otherwise [`run`] as the agent, which hands over what
+/// [`hook::compose`] gives, in one write, and only if the run did not fail.
 pub fn hook(
     dir: &Path,
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-    (event, cap): (hook::Event, u64),
+    (event, cap, session): (hook::Event, u64, &hook::Session),
 ) -> Result<(), String> {
     holding_warnings(dir, true, || {
         let Ok(space) = crate::folders::working_space(dir) else {
@@ -158,6 +160,9 @@ pub fn hook(
         };
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
+        if let (hook::Event::Stop { .. }, Some(session)) = (event, &session.id) {
+            claude_socket::confirm(&state, session).map_err(text)?;
+        }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
                 state.count_stops(space.id, agent.as_str(), None)
@@ -181,6 +186,27 @@ pub fn hook(
             ),
         )
         .map(drop)
+    })
+}
+
+/// A run of the helper for the Claude Code sessions of `agent` it serves
+/// ([`crate::claude_socket`]): [`run`] as the agent, which writes what waits for it into the
+/// socket of its last registered session that still runs, and only if the run did not fail;
+/// leaves what takes in what comes next. Gives whether the run did not fail.
+pub fn to_sessions(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    agent: &Name,
+) -> Result<bool, String> {
+    holding_warnings(dir, true, || {
+        received(
+            dir,
+            storage,
+            settings,
+            Some(agent),
+            (true, Form::Short, Some(&hand_over_socket)),
+        )
     })
 }
 
@@ -1102,6 +1128,77 @@ fn hand_over_hook(
         state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(handed.len())
+}
+
+/// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
+/// still runs ([`claude_socket::write`]) each kept message that waits for it that no socket took:
+/// one at `own` as its line, within the limit ([`hook::fitted`]); those below `own` whose signal
+/// did not go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the
+/// write, and as before it if the write fails, which ends the registration. Hands nothing over:
+/// the session file confirms what the socket took ([`claude_socket`]). Gives 0.
+fn hand_over_socket(
+    follower: &Follower,
+    (space, agent): (SpaceId, &Name),
+) -> Result<usize, String> {
+    let state = &follower.state;
+    let sessions = state.claude_sessions().map_err(text)?;
+    let Some(session) = (sessions.iter().rev()).find(|session| {
+        session.space == space && session.agent == agent.as_str() && session.socket.exists()
+    }) else {
+        return Ok(0);
+    };
+    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
+    let written: BTreeSet<u64> = state
+        .written(agent.as_str())
+        .map_err(text)?
+        .into_iter()
+        .collect();
+    let signalled: BTreeSet<u64> = (state.signalled(agent.as_str()).map_err(text)?)
+        .into_iter()
+        .collect();
+    let kept: Vec<_> = (kept.into_iter())
+        .filter(|(seq, _)| !written.contains(seq) && !signalled.contains(seq))
+        .collect();
+    if kept.is_empty() {
+        return Ok(0);
+    }
+    let key = groups::inbox_key(follower)?;
+    let references = References::new(state.kept_ids().map_err(text)?);
+    let (mut lines, mut own, mut below) = (Vec::new(), Vec::new(), Vec::new());
+    for (seq, sealed) in kept {
+        // One that does not open waits for the hooks, which warn of it.
+        let Some(opened) = key.open(follower.this, &kept_item(seq), &sealed) else {
+            continue;
+        };
+        let (line, level) = kept_line(&opened, Form::Short, &references);
+        let msg_id = (serde_json::from_slice::<forms::Message>(&opened).ok())
+            .and_then(|record| record.msg_id.parse::<MessageId>().ok());
+        match msg_id {
+            Some(msg_id) if level >= TrustLevel::Own => {
+                lines.push((
+                    msg_id.to_string(),
+                    hook::fitted(&line, &references.of(msg_id)),
+                ));
+                own.push(seq);
+            }
+            _ => below.push(seq),
+        }
+    }
+    let signal = MessageId::generate().to_string();
+    if !below.is_empty() {
+        lines.push((signal.clone(), hook::SIGNAL.to_owned()));
+    }
+    if lines.is_empty() {
+        return Ok(0);
+    }
+    let taken = (&session.session[..], agent.as_str());
+    (state.socket_takes(taken, &own, (&below, &signal))).map_err(text)?;
+    if claude_socket::write(session, &lines).is_err() {
+        let seqs: Vec<u64> = own.into_iter().chain(below).collect();
+        state.socket_failed(&seqs, agent.as_str()).map_err(text)?;
+        state.end_claude(&session.session).map_err(text)?;
+    }
+    Ok(0)
 }
 
 /// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits

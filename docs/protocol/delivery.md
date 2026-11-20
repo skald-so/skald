@@ -212,9 +212,10 @@ A recipient device drops, without a receipt:
   - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
+  - A handover into a running session counts only once the session confirms that the model got the message, or the way of handing over confirms it by construction. Until then the device hands the message over no other way; if the session reports that it did not take it, the message waits for another handover.
 - The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
 - Each handover carries the `msg_id` or its reference. An agent or adapter that keeps earlier ones drops a repeat by its `msg_id`: a later message can get an earlier one's reference. The reference is the leading characters of the base32 ([RFC 4648](https://www.rfc-editor.org/rfc/rfc4648#section-6), lowercase, without padding) of SHA-256 of the `msg_id`'s 16 bytes: at least 4, more only where two messages the device keeps would share them. Any device computes it from the `msg_id`.
-- After marking a message with `to` handed over, the device issues `read`.
+- After marking a message with `to` handed over, the device issues `read`, once.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.
 - How each agent and surface takes messages: [Delivery to agent sessions](../agent-sessions.md).
 
@@ -226,7 +227,7 @@ A recipient device drops, without a receipt:
 | `expired` | A recipient device's entry expired before its ack | Server | A `status` entry |
 | `held` | The `to` agent's inbound mode holds the message for a human | The `to` agent's device | A receipt message |
 | `refused` | The `to` agent's inbound mode or a human refused the message | The `to` agent's device | A receipt message |
-| `read` | The message was handed to the `to` agent | The `to` agent's device | A receipt message |
+| `read` | The message was handed to the `to` agent, as confirmed ([Device to agent](#device-to-agent)) | The `to` agent's device | A receipt message |
 | `replied` | The `to` agent answered | The reply itself | The reply: content from the `to` agent whose `reply_to` is the message's `msg_id` |
 
 - **Server statuses** (`stored`, `delivered`, `expired`) are per recipient device and unsigned: the sending device takes them on the server's word, over its authenticated connection.

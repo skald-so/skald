@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Tests .github/workflows/e2e.yml, which runs the client's e2e tests against the latest Claude Code:
-//   - it runs daily, by hand, and on a PR into dev that changes the adapter (hook.rs, main.rs,
-//     mcp.rs, recv.rs and state.rs of the client), its e2e or hook tests, a module the e2e tests
-//     take by #[path] or include!, found by following them from claude_code_e2e/main.rs, or the
-//     workflow; a PR that changes none of them does not start it;
+//   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_socket.rs,
+//     helper.rs, hook.rs, main.rs, mcp.rs, recv.rs, state.rs and wait.rs of the client), its e2e
+//     or hook tests, a module the e2e tests take by #[path] or include!, found by following them
+//     from claude_code_e2e/main.rs, or the workflow; a PR that changes none of them does not start
+//     it;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
 //     npm, then runs the ignored claude_code_e2e tests with SKALD_E2E_REQUIRED=1, so a skip fails,
 //     in a step without a condition;
@@ -77,11 +78,14 @@ if (!(on.schedule ?? []).some((entry) => typeof entry?.cron === 'string')) fail(
 if (!runsFor(workflow, event('workflow_dispatch', 'refs/heads/dev'))) fail('a manual run does not start it');
 if (!runsFor(workflow, event('pull_request', 'refs/pull/7/merge'))) fail('a PR into dev does not start it');
 for (const changed of [
+  'crates/client/src/claude_socket.rs',
+  'crates/client/src/helper.rs',
   'crates/client/src/hook.rs',
   'crates/client/src/main.rs',
   'crates/client/src/mcp.rs',
   'crates/client/src/recv.rs',
   'crates/client/src/state.rs',
+  'crates/client/src/wait.rs',
   'crates/client/tests/claude_code_hooks/hooks.rs',
   'crates/client/tests/claude_code_hooks/inputs/stop.json',
   ...modules('crates/client/tests/claude_code_e2e/main.rs'),

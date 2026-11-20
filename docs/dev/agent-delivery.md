@@ -484,7 +484,7 @@ What tells the sending device that the session's model got a message, for `read`
 | Layer | Signal | How |
 |---|---|---|
 | Session file, by a hook | `transcript` | `agent-hook --confirm` on `Stop`, or the handler on `PostToolUse` and `Stop`, reads the session file the hook input names: Claude Code's transcript, Codex's rollout. A handed-over message's `msg_id` in an entry that went to the model counts once a later entry is the model's own: a reply, a tool call or reasoning, not an API error ([`transcript/src/lib.rs`](../../prototypes/agents/transcript/src/lib.rs)). Both CLIs write the message before they call the model, and the entry stays when the call fails. A queued prompt or a hook's own output does not count |
-| Session file, by the client | `session-file` | The same reading by the client, of the file the `SessionStart` hook registered |
+| Session file, by the client | `session-file` | The same reading by the client, of the file the `SessionStart` hook registered. A line the socket gives a busy Claude Code session goes to the model as a `queued_command` attachment, which counts |
 | By construction | the handover | `inbox`, a hook, the socket, the mod or `codex queue` handed it over |
 | Vendor signals | `queue-taken`, `socket-<status>` | `codex queue` no longer lists it; the socket's receipts |
 | `ack` tool | `ack`, `ack-refused` | `inbox` adds a per-message secret, `ack`, to each message; the `ack` tool takes `acks: [{msg_id, ack}]` and refuses a wrong or missing secret |

@@ -16,9 +16,10 @@
 //!   operation marks nothing shown that the command did not show.
 //! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
 //!   when it exits.
-//! - The helper exits after an idle time with no command or session, after sign-out and when a
-//!   newer command or a sign-in asks it to; a helper that is killed leaves its socket, which the
-//!   next helper replaces.
+//! - While a Claude Code session is registered, the helper serves it ([`crate::claude_socket`]).
+//! - The helper exits after an idle time with no command, session or registered Claude Code
+//!   session, after sign-out and when a newer command or a sign-in asks it to; a helper that is
+//!   killed leaves its socket, which the next helper replaces.
 //! - The socket's directory is its owner's only; on Windows it has the access rights it inherits
 //!   from the state directory.
 
@@ -45,7 +46,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, connection, mailbox, state};
+use crate::{Command, Operation, claude_socket, connection, mailbox, state};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -502,6 +503,9 @@ fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
     command
         .arg("helper")
         .env(VERSION_SETTING, version())
+        // A hook's session is the state's to serve, not the helper's.
+        .env_remove(crate::hook::SOCKET_SETTING)
+        .env_remove(crate::hook::TOKEN_SETTING)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -528,9 +532,11 @@ fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
     command.spawn()
 }
 
-/// Runs the helper of the state in `dir`, exiting after `idle` with no command; waits for the lock
-/// up to `timeout`, and exits at once when another helper of the state answers.
-pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String> {
+/// Runs the helper of the state in `dir`, exiting after `idle` with no command, wait or registered
+/// Claude Code session, which it serves with `settings` ([`crate::claude_socket`]); waits for the
+/// lock up to the request timeout, and exits at once when another helper of the state answers.
+pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> Result<(), String> {
+    let timeout = settings.2;
     let dir = std::path::absolute(dir)
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
     let place = dir.join(DIR);
@@ -568,6 +574,7 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
     let _ = std::env::set_current_dir(&dir);
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
+    sessions.serve_claude(settings);
     let parting = loop {
         match listener.accept() {
             Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {

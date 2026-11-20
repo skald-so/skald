@@ -85,7 +85,8 @@ fn no_read_meanwhile(machine: &Machine, msg_id: MessageId, when: &str) {
 }
 
 /// Fails unless the session's output has a response of each hook of `events`, and every response of
-/// its hooks left the session nothing: no output.
+/// its hooks left the session nothing: no output. The apps' stream ends before Claude Code runs the
+/// `SessionEnd` hook, so it has no response of it.
 #[track_caller]
 fn assert_hooks_silent(session: &Session, events: &[&str]) {
     for event in events {
@@ -156,8 +157,7 @@ const BYPASSING_SAYS: &str = "e2e socket test: api asks web in the app bypassing
 /// and one bypassing permission prompts; each takes the prompt, and its turn ends. api sends web a
 /// message while each runs: without another prompt, a turn of the session holds it as its line from
 /// api at `own`, and the person's `skald recv` shows `read` of it once. The session exits; its
-/// output has a response of its `SessionStart` and `SessionEnd` hooks, and no hook's response
-/// holds any output.
+/// output has a response of its `SessionStart` hook, and no hook's response holds any output.
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
 fn idle_app_sessions_get_own_text_without_a_prompt_bypassing_permissions_or_not() {
@@ -181,7 +181,7 @@ fn idle_app_sessions_get_own_text_without_a_prompt_bypassing_permissions_or_not(
             "{surface:?} did not exit: {}",
             session.output()
         );
-        assert_hooks_silent(&session, &["SessionStart", "SessionEnd"]);
+        assert_hooks_silent(&session, &["SessionStart"]);
         model.assert_no_foreign_credential();
     }
 }
@@ -230,10 +230,7 @@ fn busy_session_gets_own_text_once_after_its_running_tool() {
     );
     let last = conversation(model.turns().last().expect("a turn"));
     assert_eq!(last.matches(BUSY_SAYS).count(), 1, "not once: {last}");
-    assert_hooks_silent(
-        &session,
-        &["SessionStart", "PostToolUse", "Stop", "SessionEnd"],
-    );
+    assert_hooks_silent(&session, &["SessionStart", "PostToolUse", "Stop"]);
     model.assert_no_foreign_credential();
 }
 
@@ -252,9 +249,10 @@ fn an_api_error_after_the_message_gives_no_read_until_the_model_answers() {
     let solo = Solo::new(4_919_454_001, "ada-socket-e2e-api-error");
     let failed = Arc::new(AtomicBool::new(false));
     let failing = Arc::clone(&failed);
+    // Claude Code retries the turn: each try fails, until the person's prompt.
     let model = Model::start(move |body| {
-        let first = !failing.load(Ordering::SeqCst);
-        if first && last_user_text(body).contains(FAILED_SAYS) {
+        let said = last_user_text(body);
+        if said.contains(FAILED_SAYS) && !said.contains(NEXT) {
             failing.store(true, Ordering::SeqCst);
             Reply::Fail
         } else {

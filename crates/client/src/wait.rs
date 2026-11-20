@@ -31,6 +31,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use skald_proto::SpaceId;
 
 use crate::Operation;
+use crate::claude_socket;
 use crate::connection;
 use crate::helper::{self, Route};
 use crate::intake::{self, Said};
@@ -253,11 +254,13 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
     (stop, thread)
 }
 
-/// The helper's sessions: the `skald recv --wait` commands that wait through it.
+/// The helper's sessions: the `skald recv --wait` commands that wait through it, and the Claude
+/// Code sessions it serves ([`claude_socket`]).
 #[derive(Default)]
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
+    claude: Option<claude_socket::Served>,
 }
 
 /// A waiting session, the space its last run kept to, if any, and whether a command ran since:
@@ -286,6 +289,11 @@ pub enum Ran {
 }
 
 impl Sessions {
+    /// Serves the registered Claude Code sessions too, its runs with `settings`.
+    pub fn serve_claude(&mut self, settings: claude_socket::Settings) {
+        self.claude = Some(claude_socket::Served::new(settings));
+    }
+
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
     /// it waits for or failed. Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
@@ -300,16 +308,21 @@ impl Sessions {
         for waiting in &mut self.waiting {
             waiting.due = true;
         }
+        if let Some(claude) = &mut self.claude {
+            claude.ran();
+        }
     }
 
-    /// Drops the sessions whose command went away; runs `skald recv` again, with the state in
-    /// `dir`, for each other one that a command ran since, or for each once a `link-notice` came,
-    /// and takes in what came for each one it may concern, handing each its own. Gives whether a
-    /// session waits, which after a run or a handover the next look tells; `None` once a run or
-    /// the intake panicked.
+    /// Drops the sessions whose command went away; serves the Claude Code sessions with what
+    /// came ([`claude_socket::Served::look`]); runs `skald recv` again, with the state in `dir`,
+    /// for each other one that a command ran since, or for each once a `link-notice` came, and
+    /// takes in what came for each one it may concern, handing each its own. Gives whether a
+    /// session waits or a Claude Code session is served, which after a run or a handover the next
+    /// look tells; `None` once a run or the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
-        if self.waiting.is_empty() {
+        let claude = (self.claude.as_ref()).is_some_and(claude_socket::Served::looks);
+        if self.waiting.is_empty() && !claude {
             let mut idle = Watch::default();
             idle.retry_at = self.watch.retry_at;
             self.watch = idle;
@@ -323,6 +336,14 @@ impl Sessions {
         // Each session's run says the devices that wait for linking.
         if mailbox::linking_came() {
             self.ran();
+        }
+        if let Some(claude) = &mut self.claude
+            && claude.look(dir, &came)?
+        {
+            self.watch.start();
+        }
+        if self.waiting.is_empty() {
+            return Some((self.claude.as_ref()).is_some_and(claude_socket::Served::serving));
         }
         let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());

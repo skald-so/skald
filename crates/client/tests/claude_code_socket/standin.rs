@@ -356,32 +356,34 @@ fn read_connection(stream: UnixStream, shared: &Shared) {
         };
         first = false;
         let ours = got.value["session_id"].as_str() == Some(shared.session_id.as_str());
-        {
-            let mut seen = shared.got();
-            seen.lines.push(got.clone());
+        if ours {
+            take_line(shared, &got);
         }
+        // Once the session acted on it, as a test that waits for the line acts after.
+        shared.got().lines.push(got);
         shared.changed.notify_all();
-        if !ours {
-            continue;
+    }
+}
+
+/// Acts on `got`, a user line of the session's own, as the session takes lines now.
+fn take_line(shared: &Shared, got: &Line) {
+    let take = *shared
+        .take
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match take {
+        Take::Accept => {
+            queue(shared, got);
+            converse(shared, got);
         }
-        let take = *shared
-            .take
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match take {
-            Take::Accept => {
-                queue(shared, &got);
-                converse(shared, &got);
-            }
-            Take::Queue => {
-                queue(shared, &got);
-                shared.got().queued.push(got);
-            }
-            Take::Receipt(status) => {
-                answer(shared, &got, status);
-                if status == "held" {
-                    shared.got().held.push(got);
-                }
+        Take::Queue => {
+            queue(shared, got);
+            shared.got().queued.push(got.clone());
+        }
+        Take::Receipt(status) => {
+            answer(shared, got, status);
+            if status == "held" {
+                shared.got().held.push(got.clone());
             }
         }
     }
@@ -451,7 +453,8 @@ fn append_line(shared: &Shared, entry: &Value) {
         .append(true)
         .open(&shared.file)
         .expect("open the session file");
-    writeln!(file, "{entry}").expect("write the session file");
+    // In one write, as no other writer's entry goes into it.
+    (file.write_all(format!("{entry}\n").as_bytes())).expect("write the session file");
 }
 
 fn random<const N: usize>() -> [u8; N] {

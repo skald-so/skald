@@ -15,7 +15,8 @@
     - The helper reaches the server with the environment, such as `HTTPS_PROXY`, of the command that started it.
     - A helper older than a command exits for it; a command older than the helper fails, naming both versions, and the helper keeps running.
     - A `skald recv --wait` waits through it as a session. The helper takes in each arrival once for all its sessions and hands each its own, marking a message handed over once the session has written it out; KeyPackages, GroupInfo and the revocation check stay off that path. A one-shot `skald recv --wait` holds its own connection, takes the lock only while it receives, not while it waits, and goes on through a helper that starts meanwhile.
-    - It exits after 10 minutes idle, on sign-out and before a sign-in.
+    - A Claude Code session registers with it through its `SessionStart` hook: the agent, the folder, the session's cross-session socket, its token and its session file. The helper writes each message for the agent into the socket of its last registered session that runs, and marks it handed over once the session file confirms it ([agent-delivery.md, "Read confirmations"](agent-delivery.md#read-confirmations)). `SessionEnd`, or a socket that is gone, ends the registration.
+    - It exits after 10 minutes idle, with no Claude Code session registered, on sign-out and before a sign-in.
     - Only the OS account that runs it reaches its socket: [threat model](../threat-model.md#another-account-on-the-machine).
   - **MCP server `skald mcp`:** an agent CLI starts it from its config, on stdio; its session's folder is its working directory ([agent-sessions.md](../agent-sessions.md#the-mcp-server)).
     - Before it answers `initialize`, or `server/discover` from a client that opens without `initialize` (MCP 2026-07-28), the session registers as its agent in the folder's space: the messages the device takes in from then on are kept for it.
