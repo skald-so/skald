@@ -5884,6 +5884,998 @@
         }
       }
     },
+    "/spaces/{space}/channels/{channel}/queues": {
+      "get": {
+        "operationId": "listQueues",
+        "summary": "The channel's queues",
+        "description": "The channel's queues with their settings (docs/protocol/queues.md, \"Queues\"), `default` among them. Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a device in the channel in the space's latest revision or, for a service token's device, with the token's `send` permission for the channel. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The channel's queues, in no particular order.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queues"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createQueue",
+        "summary": "Create a queue",
+        "description": "A new queue of the channel, with the settings the body states and the defaults for the others (docs/protocol/queues.md, \"Queues\"). Only from a `client` device of a member of the channel in the space's latest revision. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a setting out of range, or a name that is no `name`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-allowed`: the device may not create a queue in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`queue-name-taken`: the channel has a queue of this name.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/queues/{queue}": {
+      "patch": {
+        "operationId": "changeQueue",
+        "summary": "Change a queue's settings",
+        "description": "Changes the settings the body states (docs/protocol/queues.md, \"Queues\"); `mode` is fixed at creation, and `default` keeps its name. Only from a `client` device of the account that created the queue or of an admin in the space's latest revision; `default` has no creator. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "$ref": "#/components/parameters/Queue"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueueChange"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Changed; the queue with its settings.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Queue"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a setting out of range, or a name that is no `name`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-allowed`: the device may not change the queue, or the body changes `mode` or the name of `default`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `unknown-queue`: the channel has no such queue.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`queue-name-taken`: the channel has another queue of this name.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteQueue",
+        "summary": "Delete a queue",
+        "description": "Deletes the queue with its tasks (docs/protocol/queues.md, \"Queues\"); nobody deletes `default`. Only from a `client` device of the account that created the queue or of an admin in the space's latest revision; `default` has no creator. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "$ref": "#/components/parameters/Queue"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted, with its tasks.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-allowed`: the device may not delete the queue, or it is `default`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `unknown-queue`: the channel has no such queue.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/queues/{queue}/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "The queue's tasks",
+        "description": "The queue's tasks with their states (docs/protocol/queues.md, \"Task states\"), in the order the server stored them. Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a device in the channel in the space's latest revision or, for a service token's device, with the token's `send` permission for the channel. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "$ref": "#/components/parameters/Queue"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The queue's tasks.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Tasks"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `unknown-queue`: the channel has no such queue.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "enqueueTask",
+        "summary": "Enqueue a task",
+        "description": "Stores the body, a `queued-task`, as a task of the queue, `queued` with attempts 0, and keeps which device uploaded it (docs/protocol/queues.md, \"Tasks\"): only from a device that may send in the channel (docs/protocol/delivery.md, \"Send\") and, for a service token's device, with the token's `queues` permission; once per task ID and per `idempotency_key` in the queue. A repeated upload of a task ID from the same device gets the first answer, whatever its bytes. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "$ref": "#/components/parameters/Queue"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "description": "An encoded `queued-task` of the queue.",
+          "content": {
+            "application/cbor": {
+              "schema": {
+                "$ref": "#/components/schemas/QueuedTask"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`): a body that is no `queued-task` of the queue.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel, or the service token has no `queues` permission.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `unknown-queue`: the channel has no such queue.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "`duplicate`: another device used the task ID, or another task of the queue has the `idempotency_key`; its member `task` names that task (`DuplicateProblem`). `epoch-mismatch`: the task is sealed under an epoch other than the channel's current or previous one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/DuplicateProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "`too-large`: the task's `ct` is over the server's message size limit, or the body over 64 MiB.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}": {
+      "get": {
+        "operationId": "getTask",
+        "summary": "A task of the queue",
+        "description": "The task with its state (docs/protocol/queues.md, \"Task states\"). Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a device in the channel in the space's latest revision or, for a service token's device, with the token's `send` permission for the channel. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone makes none (docs/protocol/queues.md, \"Security considerations\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "$ref": "#/components/parameters/Queue"
+          },
+          {
+            "$ref": "#/components/parameters/Task"
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The task.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Task"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, `unknown-queue`: the channel has no such queue, or `unknown-task`: the queue has no such task.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/devices": {
       "get": {
         "operationId": "getSpaceDevices",
@@ -7010,6 +8002,15 @@
           "minimum": 1
         }
       },
+      "Queue": {
+        "name": "queue",
+        "in": "path",
+        "required": true,
+        "description": "The queue's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/QueueId"
+        }
+      },
       "Space": {
         "name": "space",
         "in": "path",
@@ -7017,6 +8018,15 @@
         "description": "The space's ID.",
         "schema": {
           "$ref": "#/components/schemas/SpaceId"
+        }
+      },
+      "Task": {
+        "name": "task",
+        "in": "path",
+        "required": true,
+        "description": "The task's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/TaskId"
         }
       }
     },
@@ -7163,6 +8173,11 @@
       },
       "ChannelId": {
         "description": "A channel's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "ClaimId": {
+        "description": "A claim's ID (`claim_id`): a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
@@ -7340,6 +8355,41 @@
             "items": {
               "$ref": "#/components/schemas/Revocation"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DuplicateProblem": {
+        "description": "A problem details object (RFC 9457) of the problem `duplicate`, naming the task stored before.",
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "task"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "https://skald.so/problems/duplicate"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "enum": [
+              409
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "task": {
+            "$ref": "#/components/schemas/TaskId"
           }
         },
         "additionalProperties": false
@@ -8091,6 +9141,140 @@
         "type": "string",
         "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
       },
+      "Queue": {
+        "description": "A queue and its settings (docs/protocol/queues.md, \"Queues\").",
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "mode",
+          "lease",
+          "max_attempts"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/QueueId"
+          },
+          "name": {
+            "description": "A `name` as in an agent address (docs/protocol/README.md, \"Agent address\"), unique in its channel.",
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+          },
+          "mode": {
+            "description": "Fixed at creation (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "string",
+            "enum": [
+              "at-least-once",
+              "at-most-once"
+            ]
+          },
+          "lease": {
+            "description": "Seconds a claim holds a task (docs/protocol/queues.md, \"Claims and leases\").",
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 3600
+          },
+          "max_attempts": {
+            "description": "Used only by `at-least-once` (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueueChange": {
+        "description": "The settings to change; the others stay.",
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "A `name` as in an agent address (docs/protocol/README.md, \"Agent address\"), unique in its channel.",
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+          },
+          "mode": {
+            "description": "Fixed at creation (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "string",
+            "enum": [
+              "at-least-once",
+              "at-most-once"
+            ]
+          },
+          "lease": {
+            "description": "Seconds a claim holds a task (docs/protocol/queues.md, \"Claims and leases\").",
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 3600
+          },
+          "max_attempts": {
+            "description": "Used only by `at-least-once` (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueueId": {
+        "description": "A queue's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "QueueRequest": {
+        "description": "A new queue: its name, and any settings other than the defaults: `at-least-once`, a lease of 300 seconds and 5 attempts.",
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "description": "A `name` as in an agent address (docs/protocol/README.md, \"Agent address\"), unique in its channel.",
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+          },
+          "mode": {
+            "description": "Fixed at creation (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "string",
+            "enum": [
+              "at-least-once",
+              "at-most-once"
+            ]
+          },
+          "lease": {
+            "description": "Seconds a claim holds a task (docs/protocol/queues.md, \"Claims and leases\").",
+            "type": "integer",
+            "minimum": 30,
+            "maximum": 3600
+          },
+          "max_attempts": {
+            "description": "Used only by `at-least-once` (docs/protocol/queues.md, \"Modes and retries\").",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueuedTask": {
+        "description": "An encoded `queued-task` (docs/protocol/queues.md, \"Tasks\").",
+        "type": "string",
+        "format": "binary"
+      },
+      "Queues": {
+        "type": "object",
+        "required": [
+          "queues"
+        ],
+        "properties": {
+          "queues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Queue"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Revocation": {
         "description": "A revocation's CBOR bytes (docs/protocol/membership.md, \"Revocation\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -8573,6 +9757,97 @@
         },
         "minItems": 1,
         "maxItems": 2
+      },
+      "Task": {
+        "description": "A task as the server gives it (docs/protocol/queues.md, \"Task states\").",
+        "type": "object",
+        "required": [
+          "queued_task",
+          "state",
+          "attempts"
+        ],
+        "properties": {
+          "queued_task": {
+            "description": "The `queued-task` as its device uploaded it, in base64url without padding (RFC 4648, §5).",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "claimed",
+              "done",
+              "dead",
+              "cancelled"
+            ]
+          },
+          "progress": {
+            "description": "Of a `claimed` task, its holder's last extend; none before it.",
+            "type": "string",
+            "enum": [
+              "started",
+              "awaiting-approval"
+            ]
+          },
+          "reason": {
+            "description": "Of a `dead` task.",
+            "type": "string",
+            "enum": [
+              "lease-expired",
+              "failed",
+              "released",
+              "deadline-passed"
+            ]
+          },
+          "attempts": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "claim": {
+            "description": "Its last claim, if it had one.",
+            "type": "object",
+            "required": [
+              "claim_id",
+              "generation",
+              "device"
+            ],
+            "properties": {
+              "claim_id": {
+                "$ref": "#/components/schemas/ClaimId"
+              },
+              "generation": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "device": {
+                "$ref": "#/components/schemas/DeviceId"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "TaskId": {
+        "description": "A task's ID (`task`), issued by its sending device, in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+      },
+      "Tasks": {
+        "type": "object",
+        "required": [
+          "tasks"
+        ],
+        "properties": {
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Task"
+            }
+          }
+        },
+        "additionalProperties": false
       },
       "UsageCount": {
         "description": "A count and its limit; `limit` is absent while no limit applies.",

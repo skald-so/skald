@@ -89,4 +89,7 @@ mod kit;
 mod access;
 mod defaults;
 mod enqueue;
+mod listing;
+mod renames;
+mod retries;
 mod settings;
