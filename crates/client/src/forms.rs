@@ -248,7 +248,7 @@ pub struct Status {
     /// The message's space and channel, if the device recorded them.
     pub space: Option<String>,
     pub channel: Option<String>,
-    /// `delivered`, `expired`, `refused`, `read` or `replied`.
+    /// `delivered`, `expired`, `refused`, `held`, `read` or `replied`.
     pub status: String,
     /// The recipient device's ID, none for a refusal of an envelope to a channel, and its
     /// certificate's `name` if the device knows it: for `read` and `replied`, the device of the `to`
@@ -274,6 +274,10 @@ pub const READ: &str = "read";
 
 /// The status of a message its `to` agent answered (`docs/protocol/delivery.md`, "Receipts").
 pub const REPLIED: &str = "replied";
+
+/// The status of a message its `to` agent's device holds for its person's decision
+/// (`docs/protocol/delivery.md`, "Receipts").
+pub const HELD: &str = "held";
 
 impl Status {
     /// The status `status`, such as [`READ`] or [`REPLIED`], that the device `device`, named
@@ -339,6 +343,9 @@ impl Status {
                     REFUSED => format!("refused for the device {device}: {problem}"),
                     REPLIED => format!("replied from the device {device}"),
                     READ => format!("read by its agent on the device {device}"),
+                    HELD => {
+                        format!("held by its agent on the device {device} until its person decides")
+                    }
                     _ => format!("delivered to the device {device}"),
                 };
                 match &self.channel {
@@ -362,6 +369,9 @@ impl Status {
                 format!("skald: #{reference} refused by its agent{reason}")
             }
             (Form::Short, REFUSED) => format!("skald: #{reference} refused: {problem}"),
+            (Form::Short, HELD) => {
+                format!("skald: #{reference} held by its agent until its person decides")
+            }
             (Form::Short, _) => return None,
             (Form::Json, _) => {
                 let mut fields = json!({
@@ -583,8 +593,8 @@ mod tests {
     }
 
     /// A status line names the status, the message, its channel if known, and the recipient
-    /// device; an agent's names `expired` by the reference and the device's name, and `refused`
-    /// with the problem, and no `delivered`.
+    /// device; an agent's names `expired` by the reference and the device's name, `refused` with
+    /// the problem and `held`, and no `delivered`.
     #[test]
     fn status_shows_in_full_short_and_as_json() {
         let delivered = status("delivered");
@@ -609,6 +619,17 @@ mod tests {
              a90f5ea9-75e5-899a-90ec-3a09f33aebdf"
         );
         assert_eq!(replied.shown(Form::Short, "6bx7"), None);
+        let held = status(HELD);
+        assert_eq!(
+            held.shown(Form::Full, "6bx7").unwrap(),
+            "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19 in the channel \
+             01a1dcab-ee8a-7872-9adc-6efd0851e3ee: held by its agent on the device \
+             a90f5ea9-75e5-899a-90ec-3a09f33aebdf until its person decides"
+        );
+        assert_eq!(
+            held.shown(Form::Short, "6bx7").unwrap(),
+            "skald: #6bx7 held by its agent until its person decides"
+        );
         assert_eq!(
             expired.shown(Form::Short, "6bx7").unwrap(),
             "skald: #6bx7 expired before the device bob-box got it"
