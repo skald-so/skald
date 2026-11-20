@@ -399,9 +399,9 @@ impl Served {
     }
 
     /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
-    /// ends those whose socket is gone or takes no connection; records the receipts that came and what the session files
-    /// confirm; then, for each agent that has a confirmation or a session that ended, whose space
-    /// `came` concerns, or for each after a command ran, runs as the agent
+    /// ends those whose socket is gone or takes no connection; records the receipts that came and
+    /// what the session files confirm; then, for each agent that has a confirmation or a session
+    /// that ended, whose space `came` concerns, or for each after a command ran, runs as the agent
     /// ([`recv::to_sessions`]). Gives whether it ran; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         let due = std::mem::take(&mut self.due);

@@ -283,8 +283,8 @@ impl Session {
     pub fn prompt(&mut self, text: &str) {
         match &mut self.running {
             Running::Terminal { .. } => {
-                // Claude Code reads typing once its prompt box shows; Enter that comes with the text
-                // is taken as part of a paste.
+                // Claude Code reads typing once its prompt box shows; Enter that comes with the
+                // text is taken as part of a paste.
                 let deadline = Instant::now() + TURN_LIMIT;
                 while !self.output().contains(PROMPT_BOX) {
                     assert!(

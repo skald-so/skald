@@ -1,6 +1,6 @@
 //! A session that refuses cross-session messages gets them by the hooks. A helper killed after the
-//! write neither loses the message nor writes it twice, and `read` of it goes once. The client keeps
-//! nothing of the conversation: a secret planted in it is in no file of the local state.
+//! write neither loses the message nor writes it twice, and `read` of it goes once. The client
+//! keeps nothing of the conversation: a secret planted in it is in no file of the local state.
 
 use std::sync::{Arc, Condvar, Mutex};
 
@@ -11,7 +11,9 @@ use crate::helped::Helped;
 use crate::receipts::shows_read_once;
 use crate::socket_claude::{Options, SOCKET, Session, Surface};
 use crate::socket_model::{Model, Reply, conversation, last_user_text};
-use crate::socket_sessions::{QUIET, START, after_a_tool, assert_own_in, nudged_unless_socket};
+use crate::socket_sessions::{
+    QUIET, START, after_a_tool, assert_own_by_hook, nudged_unless_socket,
+};
 use crate::solo::{API, Solo, WEB};
 
 /// What api says to web in each test; none is anywhere else.
@@ -43,11 +45,11 @@ fn idle_web(solo: &Solo, model: &Model, options: Options) -> Option<Session> {
     Some(session)
 }
 
-/// A session of web that refuses cross-session messages, `crossSessionInbound` `refuse`, runs as the
-/// apps run it; it takes the prompt, and its turn ends. api sends web a message; then the person
-/// gives another prompt, on which the stub runs `sleep 1` until a turn holds the message: that turn
-/// holds it as its line from api at `own`, after a tool's result, and the person's `skald recv`
-/// shows `read` of it once.
+/// A session of web that refuses cross-session messages, `crossSessionInbound` `refuse`, runs as
+/// the apps run it; it takes the prompt, and its turn ends. api sends web a message; then the
+/// person gives another prompt, on which the stub runs `sleep 1` until a turn holds the message:
+/// that turn holds it as its line from api at `own`, after a tool's result, and the person's `skald
+/// recv` shows `read` of it once.
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
 fn a_session_that_refuses_cross_session_messages_gets_them_by_the_hooks() {
@@ -77,7 +79,7 @@ fn a_session_that_refuses_cross_session_messages_gets_them_by_the_hooks() {
 
     let turn = model.wait_turn_holding(REFUSED_SAYS, "api's message after the refusal");
     assert!(after_a_tool(&turn), "not after a tool: {turn}");
-    assert_own_in(&turn, REFUSED_SAYS, msg_id, &solo.short(API));
+    assert_own_by_hook(&turn, REFUSED_SAYS, msg_id, &solo.short(API));
     shows_read_once(solo.machine(), msg_id);
     model.assert_no_foreign_credential();
 }
@@ -86,8 +88,9 @@ fn a_session_that_refuses_cross_session_messages_gets_them_by_the_hooks() {
 /// test finds, its `skald mcp` in one-shot mode, so only the hooks start a helper. On the prompt,
 /// the stub runs `echo` of [`PLANTED`], which the conversation then holds. api sends web a message;
 /// once a turn holds it, before the stub answers, every helper is killed where the client writes
-/// into the socket ([`SOCKET`]), and then the stub replies. The person's `skald recv` shows `read` of the message once; after [`QUIET`] more, the
-/// session's last turn holds it once; no file of the state directory holds [`PLANTED`].
+/// into the socket ([`SOCKET`]), and then the stub replies. The person's `skald recv` shows `read`
+/// of the message once; after [`QUIET`] more, the session's last turn holds it once; no file of the
+/// state directory holds [`PLANTED`].
 #[test]
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
 fn a_helper_killed_after_the_write_gives_read_once_and_keeps_nothing_of_the_conversation() {

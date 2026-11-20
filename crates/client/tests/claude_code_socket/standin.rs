@@ -115,6 +115,8 @@ struct Shared {
     got: Mutex<Got>,
     changed: Condvar,
     stopped: AtomicBool,
+    /// How many connections the socket took.
+    connections: AtomicUsize,
 }
 
 impl Shared {
@@ -157,6 +159,7 @@ impl Standin {
             got: Mutex::new(Got::default()),
             changed: Condvar::new(),
             stopped: AtomicBool::new(false),
+            connections: AtomicUsize::new(0),
         });
         let serving = Arc::clone(&shared);
         let listening = thread::spawn(move || {
@@ -165,6 +168,7 @@ impl Standin {
                     break;
                 }
                 let Ok(stream) = stream else { continue };
+                serving.connections.fetch_add(1, Ordering::SeqCst);
                 let shared = Arc::clone(&serving);
                 thread::spawn(move || read_connection(stream, &shared));
             }
@@ -234,6 +238,21 @@ impl Standin {
                 .0;
         }
         got.lines.clone()
+    }
+
+    /// Waits for up to [`WAIT`] until the socket takes another connection, such as the helper's
+    /// check that the session runs; fails if it does not.
+    #[track_caller]
+    pub fn wait_connection(&self) {
+        let deadline = Instant::now() + WAIT;
+        let taken = self.shared.connections.load(Ordering::SeqCst);
+        while self.shared.connections.load(Ordering::SeqCst) == taken {
+            assert!(
+                Instant::now() < deadline,
+                "the session's socket took no connection"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// Waits for up to [`WAIT`] until the socket sent `count` receipts in all; fails if it did not

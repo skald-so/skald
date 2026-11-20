@@ -13,8 +13,8 @@
 //!   file confirms it: an entry that went to the model holds its `msg_id` and the model's own entry
 //!   follows, not an API error; meanwhile no other path hands it over. A `peer` message is handed
 //!   over by the `inbox` call its signal asks for.
-//! - The socket's receipts `held`, `expired`, `refused`, `dropped` and `denied` confirm nothing: the
-//!   message waits for the hooks and `inbox`. A held message the session later releases is not
+//! - The socket's receipts `held`, `expired`, `refused`, `dropped` and `denied` confirm nothing:
+//!   the message waits for the hooks and `inbox`. A held message the session later releases is not
 //!   handed over again.
 //! - A crash after the write and before the confirmation neither loses the message nor issues
 //!   `read` twice. The client keeps no line of the session file.

@@ -13,8 +13,8 @@
 //! - It prints nothing while nothing waits, in a folder in no space, and on a failure, which never
 //!   keeps a turn going.
 //! - Its handover is by construction, so `read` goes as for `inbox`.
-//! - A session for which Claude Code gives no cross-session socket, or one that takes no write, gets
-//!   its messages by these hooks: its `SessionStart` and `SessionEnd` print nothing.
+//! - A session for which Claude Code gives no cross-session socket, or one that takes no write,
+//!   gets its messages by these hooks: its `SessionStart` and `SessionEnd` print nothing.
 //! - What it puts into a session at once stays within Claude Code's hook output limit, 10,000
 //!   characters: messages that do not fit wait for the next handover; one longer than the limit is
 //!   cut and ends with how to read it whole. `inbox` and the agent's `skald recv` take a message's

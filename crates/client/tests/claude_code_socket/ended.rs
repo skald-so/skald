@@ -20,6 +20,7 @@ const AFTER_KILL: &str = "ended test: api asks web after its newer session was k
 const BEFORE_END: &str = "ended test: api asks web before its session ends";
 const BEFORE_KILL: &str = "ended test: api asks web before its session is killed";
 const BEFORE_STOP: &str = "ended test: api asks web before its Stop hook";
+const JUST_KILLED: &str = "ended test: api asks web right after its newer session was killed";
 
 /// Two sessions of web start, the older one first, its `SessionStart` with a helper idle time of
 /// [`SHORT_IDLE`] seconds. The newer one is killed: its socket's file stays. api sends web a
@@ -41,6 +42,40 @@ fn a_killed_session_s_socket_left_behind_ends_its_registration() {
     assert_own_line(&line.content(), AFTER_KILL, msg_id, &ada.web.api());
     assert_eq!(newer.lines().len(), 0, "{:#?}", newer.lines());
     older.dies();
+    ada.helped.await_exit(helper, EXIT_LIMIT);
+}
+
+/// Two sessions of web start, the older one first. Right after the helper's check that the newer
+/// one runs, it is killed, and api sends web a message: the older session's socket gets it, as its
+/// line from api at `own`, and the newer one's gets nothing.
+#[test]
+fn a_message_sent_right_after_a_session_is_killed_goes_to_a_session_that_runs() {
+    let ada = Ada::new(4_919_466_001, "ada-socket-killed-just-now");
+    let (older, newer) = (Standin::new(Take::Queue), Standin::new(Take::Queue));
+    ada.starts(WEB, &older);
+    ada.starts(WEB, &newer);
+    newer.wait_connection();
+    newer.dies();
+
+    let msg_id = ada.web.own(JUST_KILLED);
+
+    let line = older.wait_lines(1).remove(0);
+    assert_own_line(&line.content(), JUST_KILLED, msg_id, &ada.web.api());
+    assert_eq!(newer.lines().len(), 0, "{:#?}", newer.lines());
+}
+
+/// A session of web starts, its `SessionStart` with a helper idle time of [`SHORT_IDLE`] seconds,
+/// and is killed with nothing sent: the helper exits.
+#[test]
+fn a_killed_session_with_nothing_for_it_ends_its_registration() {
+    let ada = Ada::new(4_919_467_001, "ada-socket-killed-idle");
+    let session = Standin::new(Take::Queue);
+    ada.starts_with(WEB, &session, &[(IDLE_SETTING, SHORT_IDLE)]);
+    let helper = ada.helped.one_helper();
+    session.wait_connection();
+
+    session.dies();
+
     ada.helped.await_exit(helper, EXIT_LIMIT);
 }
 
@@ -70,8 +105,8 @@ fn what_the_socket_took_unconfirmed_waits_for_the_hooks_once_the_session_ends() 
 }
 
 /// web's session starts and takes what comes into the conversation. api sends web a message; once
-/// the socket has it, the helper is killed, and the model replies. The session's `Stop` hook runs in
-/// one-shot mode, so through no helper, and prints nothing; then the session is killed. The
+/// the socket has it, the helper is killed, and the model replies. The session's `Stop` hook runs
+/// in one-shot mode, so through no helper, and prints nothing; then the session is killed. The
 /// person's `skald recv` shows `read` of the message once, and web's `PostToolUse`, in a later
 /// session of its, prints nothing.
 #[test]

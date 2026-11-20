@@ -13,7 +13,7 @@ use serde_json::Value;
 use skald_proto::MessageId;
 
 use crate::claude::claude_code;
-use crate::hooks::{Bob, INBOX_WORD, assert_signal};
+use crate::hooks::{Bob, INBOX_WORD, assert_own_line, assert_signal};
 use crate::lines::agent_line_of;
 use crate::machine::Machine;
 use crate::receipts::{read_lines, shows_read_once};
@@ -42,10 +42,21 @@ pub fn nudged_unless_socket(session: &mut Session) {
 }
 
 /// Fails unless `turn`'s conversation holds `text` as the line of `msg_id` from `from`, by Ada's
+/// device, at `own`: where the client writes into the socket ([`SOCKET`]), as one line and with no
+/// UUID ([`assert_own_line`]); otherwise as a hook gives it ([`assert_own_by_hook`]).
+#[track_caller]
+pub fn assert_own_in(turn: &Value, text: &str, msg_id: MessageId, from: &str) {
+    match SOCKET {
+        true => drop(assert_own_line(&conversation(turn), text, msg_id, from)),
+        false => assert_own_by_hook(turn, text, msg_id, from),
+    }
+}
+
+/// Fails unless `turn`'s conversation holds `text` as the line of `msg_id` from `from`, by Ada's
 /// device, at `own`, wherever in a line it starts: Claude Code puts a hook's context after words
 /// of its own.
 #[track_caller]
-pub fn assert_own_in(turn: &Value, text: &str, msg_id: MessageId, from: &str) {
+pub fn assert_own_by_hook(turn: &Value, text: &str, msg_id: MessageId, from: &str) {
     let line = line_in(&conversation(turn), text);
     assert_from(&line, msg_id, (from, ADA_HOST, OWN));
 }

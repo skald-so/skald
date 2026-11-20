@@ -1,4 +1,5 @@
-//! The relay of a Claude Code session's socket in the session's `skald mcp` (`crate::claude_socket`):
+//! The relay of a Claude Code session's socket in the session's `skald mcp`
+//! (`crate::claude_socket`):
 //!
 //! - On Linux a session that bypasses permission prompts takes a line as its own only from a
 //!   process that descends from the session's, whatever the token. The helper does not; the
