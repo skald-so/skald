@@ -1,9 +1,10 @@
 name: E2E
 
 # The e2e tests of the agent adapters against the latest agent CLIs, on Linux, macOS and Windows:
-# today the claude_code_e2e tests of the client against Claude Code, which run it on their model
-# stub, so they need no secret. Outside script/test: daily, on demand, and when a PR changes the
-# adapter, its tests or this file. A test that skips for want of the CLI fails (SKALD_E2E_REQUIRED).
+# today the client's claude_code_e2e tests and the adapters' claude_code_executor tests against
+# Claude Code, which run it on their model stub, so they need no secret. Outside script/test: daily,
+# on demand, and when a PR changes the adapter, its tests or this file. A test that skips for want
+# of the CLI fails (SKALD_E2E_REQUIRED).
 on:
   schedule:
     - cron: '30 4 * * *'
@@ -13,6 +14,7 @@ on:
     # The adapter, its tests and every module they take by #[path] or include!
     # (script/e2e-workflow-test), and this file.
     paths:
+      - crates/adapters/**
       - crates/client/src/hook.rs
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
@@ -129,3 +131,8 @@ jobs:
         env:
           SKALD_E2E_REQUIRED: '1'
         run: cargo test -p skald-client --locked --test claude_code_e2e -- --ignored
+      - name: E2E tests of the Claude Code executor
+        shell: bash
+        env:
+          SKALD_E2E_REQUIRED: '1'
+        run: cargo test -p skald-adapters --locked --test claude_code_executor -- --ignored

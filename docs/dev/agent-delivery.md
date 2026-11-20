@@ -743,6 +743,8 @@ Findings:
 - Clean: `--safe-mode` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` alone keeps the project memory out; with neither it loads. Without `--safe-mode` the `statusline-setup` agent loads.
 - What still loads with the clean flags: the built-in plugins `cc-plugin-agents-md`, `cc-plugin-telemetry`, `cc-plugin-privacy`, `cc-plugin-plugin-authoring`; the built-in agents `claude`, `Explore`, `general-purpose`, `Plan`, and with `--real` `web-fetch`; the built-in tools, including `SendMessage`, `ListAgents`, `Cron*`, `RemoteTrigger`; a messaging socket of its own (`messaging_socket_path`).
 
+The executor (`skald_adapters::claude_code`) runs `claude -p --output-format json` with the prompt on stdin, the `executor-clean` flags and variable, and `executor-read-only`'s or `executor-full`'s flags. It keeps of the device's environment only what Claude Code needs to run and to sign in: the `executor-clean` variables, Windows' system variables, `CLAUDE_CODE_GIT_BASH_PATH`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `CLAUDE_CODE_OAUTH_TOKEN`. It refuses `read-only` on a Claude Code older than 2.1.328 or of unknown version. What still loads is Claude Code's own, none of the user's config, so it refuses nothing for it.
+
 Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 
 ## Manual check
