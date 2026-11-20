@@ -76,3 +76,17 @@ impl fmt::Display for Refused {
 }
 
 impl std::error::Error for Refused {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_mode_shows_as_the_name_it_parses_from() {
+        for (name, mode) in [("read-only", Mode::ReadOnly), ("full", Mode::Full)] {
+            assert_eq!(mode.as_str(), name);
+            assert_eq!(mode.to_string(), name);
+            assert_eq!(name.parse::<Mode>(), Ok(mode));
+        }
+    }
+}

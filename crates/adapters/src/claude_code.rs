@@ -29,9 +29,10 @@ const CLEAN: [&str; 6] = [
 /// The variable that keeps the project's memory out.
 const NO_AUTO_MEMORY: (&str, &str) = ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
 
-/// The variables of the device's environment a session keeps: what Claude Code needs to run, on
-/// Unix and on Windows, and to sign in. Names on Windows match in any case.
-const KEPT: [&str; 31] = [
+/// The variables of the device's environment a session keeps to run, on Unix and on Windows, to
+/// reach the model through a proxy, and to sign in on Vertex AI; [`signs_in`] adds the other ones
+/// it signs in with. Names on Windows match in any case.
+const KEPT: [&str; 34] = [
     "PATH",
     "HOME",
     "USER",
@@ -59,11 +60,23 @@ const KEPT: [&str; 31] = [
     "PROGRAMDATA",
     "PROGRAMFILES",
     "CLAUDE_CODE_GIT_BASH_PATH",
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_OAUTH_TOKEN",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "NO_PROXY",
+    "NODE_EXTRA_CA_CERTS",
+    "CLOUD_ML_REGION",
+    "GOOGLE_APPLICATION_CREDENTIALS",
+    "GOOGLE_CLOUD_PROJECT",
 ];
+
+/// Whether Claude Code signs in with the variable `name`, in upper case: through Anthropic's API,
+/// Bedrock, Vertex AI or Foundry.
+fn signs_in(name: &str) -> bool {
+    let prefixed = ["ANTHROPIC_", "AWS_", "CLAUDE_CODE_USE_", "VERTEX_REGION_"];
+    let secret = ["KEY", "TOKEN", "AUTH", "SECRET", "PROVIDER"];
+    prefixed.iter().any(|prefix| name.starts_with(prefix))
+        || (name.starts_with("CLAUDE_") && secret.iter().any(|word| name.contains(word)))
+}
 
 /// Runs prompts in new Claude Code sessions with no person.
 #[derive(Debug, Clone)]
@@ -147,26 +160,34 @@ impl Executor {
     }
 }
 
-/// Whether a session keeps the variable `name`.
+/// Whether a session keeps the variable `name`: one of [`KEPT`], also in lower case for the proxy's,
+/// or one [`signs_in`] takes.
 fn kept(name: &OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
     };
-    KEPT.iter().any(|kept| match cfg!(windows) {
-        true => kept.eq_ignore_ascii_case(name),
-        false => *kept == name,
-    })
+    let lower = ["https_proxy", "http_proxy", "no_proxy"];
+    let name = match cfg!(windows) || lower.contains(&name) {
+        true => name.to_ascii_uppercase(),
+        false => name.to_owned(),
+    };
+    KEPT.contains(&name.as_str()) || signs_in(&name)
 }
 
 /// The arguments of a session at `mode`, its prompt on stdin: no person, its result as JSON, clean,
-/// and `read-only` as reading tools that ask nothing, `full` as every tool without prompts.
+/// and `read-only` as reading tools that ask nothing, with no settings file applied, not even the
+/// folder's own, which could allow more or run a command; `full` as every tool without prompts.
 pub fn arguments(mode: Mode) -> Vec<&'static str> {
     let mut args = vec!["-p", "--output-format", "json"];
     args.extend(CLEAN);
     match mode {
-        Mode::ReadOnly => {
-            args.extend(["--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk"])
-        }
+        Mode::ReadOnly => args.extend([
+            "--restricted",
+            "--tools",
+            "Read,Glob,Grep",
+            "--permission-mode",
+            "dontAsk",
+        ]),
         Mode::Full => args.push("--dangerously-skip-permissions"),
     }
     args
@@ -302,7 +323,13 @@ mod tests {
         }
         assert_eq!(
             arguments(Mode::ReadOnly)[9..],
-            ["--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk"]
+            [
+                "--restricted",
+                "--tools",
+                "Read,Glob,Grep",
+                "--permission-mode",
+                "dontAsk"
+            ]
         );
         assert_eq!(
             arguments(Mode::Full)[9..],
@@ -339,25 +366,53 @@ mod tests {
 
     #[test]
     fn keeps_only_what_runs_and_signs_in() {
-        for name in [
-            "PATH",
-            "HOME",
-            "CLAUDE_CONFIG_DIR",
+        let running = ["PATH", "HOME", "LC_ALL", "CLAUDE_CONFIG_DIR", "SYSTEMROOT"];
+        let proxy = [
+            "HTTPS_PROXY",
+            "https_proxy",
+            "NO_PROXY",
+            "NODE_EXTRA_CA_CERTS",
+        ];
+        let anthropic = [
             "ANTHROPIC_API_KEY",
-            "SYSTEMROOT",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ];
+        let bedrock = ["CLAUDE_CODE_USE_BEDROCK", "AWS_REGION", "AWS_PROFILE"];
+        let vertex = [
+            "CLAUDE_CODE_USE_VERTEX",
+            "ANTHROPIC_VERTEX_PROJECT_ID",
+            "CLOUD_ML_REGION",
+            "VERTEX_REGION_CLAUDE_HAIKU_4_5",
+            "GOOGLE_APPLICATION_CREDENTIALS",
+        ];
+        let foundry = ["CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_FOUNDRY_API_KEY"];
+        for names in [
+            &running[..],
+            &proxy,
+            &anthropic,
+            &bedrock,
+            &vertex,
+            &foundry,
         ] {
-            assert!(kept(OsStr::new(name)), "{name}");
+            for name in names {
+                assert!(kept(OsStr::new(name)), "{name}");
+            }
         }
         for name in [
             "GITHUB_TOKEN",
             "SKALD_TOKEN",
             "OPENAI_API_KEY",
             "CLAUDE_CODE_SAFE_MODE",
+            "CLAUDE_CODE_DISABLE_AUTO_MEMORY",
+            "NODE_OPTIONS",
             "",
         ] {
             assert!(!kept(OsStr::new(name)), "{name}");
         }
-        assert_eq!(kept(OsStr::new("Path")), cfg!(windows));
+        for name in ["Path", "aws_region", "Anthropic_Api_Key"] {
+            assert_eq!(kept(OsStr::new(name)), cfg!(windows), "{name}");
+        }
     }
 
     #[test]
