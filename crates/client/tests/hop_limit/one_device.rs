@@ -90,7 +90,7 @@ fn agents_of_one_device_sending_to_each_other_stop_at_ten_hops() {
         shown: called.text,
     };
     assert_stopped(&refused, "the send at hop 11");
-    let got = web.inbox();
-    assert!(!got.contains(over.as_str()), "web got {over:?}: {got}");
     assert_person_warned_once(solo.machine(), solo.default_channel(), &solo.short(WEB));
+    let inbox = web.inbox();
+    assert!(!inbox.contains(over.as_str()), "web got {over:?}: {inbox}");
 }
