@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 use skald_proto::{DeviceId, Scheme};
 
-use crate::agents::{ACME_DIR, CLAUDE, run_as_in};
+use crate::agents::{CLAUDE, run_as_in};
 use crate::fixtures::send;
 use crate::front::Acks;
 use crate::kit::RECV;
@@ -14,7 +14,6 @@ use crate::member::texts_of;
 use crate::scene::{Scene, killed_when, shown_with};
 use crate::senders::{assert_labelled, assert_warned_before_others};
 use crate::service_kit::BOT;
-use crate::world::{ACME, ADD_RULE, dir_of, path, run};
 
 /// What Ada and the agent say; none is anywhere else.
 const AGENT_SAYS: &str = "stateless bot test: deploy-bot starts the rollout";
@@ -136,10 +135,7 @@ fn a_run_s_message_reaches_a_member_s_agent_as_a_service_line_after_the_warning(
         ["ada-stateless-level-standin", "bob-stateless-level-standin"],
     );
     let machine = &scene.ada().machine;
-    let folder = dir_of(machine, ACME_DIR);
-    let bound = run(machine, &[ADD_RULE, path(&folder), ACME]);
-    assert!(bound.success, "not bound: {bound:?}");
-    run_as_in(machine, &folder, CLAUDE);
+    let folder = scene.ada_acme();
 
     scene.agent.sent(scene.channel(), AGENT_SAYS);
 

@@ -412,6 +412,27 @@ const MIGRATIONS: &[&str] = &[
         epoch INTEGER NOT NULL CHECK (epoch >= 1),
         PRIMARY KEY (channel, epoch)
     ) STRICT;",
+    // Inbound modes (`docs/protocol/delivery.md`, "Device to agent"): the mode of each agent of
+    // the device in each space, `accept` without a row; the senders on its allowlist, each a full
+    // address, `owner/agent` or a member's handle, lowercased; the reason of each receipt the device
+    // owes that is a `refused`, none for a `read`; and, of each own message that waits for the
+    // server, the agents of this device that refuse it, as a JSON array, and its `to` agent's
+    // `refused`, as JSON, if that agent refuses it.
+    "CREATE TABLE inbound_mode (
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('accept', 'hold', 'refuse')),
+        PRIMARY KEY (space, agent)
+    ) STRICT;
+    CREATE TABLE allowed_sender (
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        sender TEXT NOT NULL,
+        PRIMARY KEY (space, agent, sender)
+    ) STRICT;
+    ALTER TABLE read_receipt ADD COLUMN reason TEXT;
+    ALTER TABLE own_message ADD COLUMN refusing TEXT;
+    ALTER TABLE own_message ADD COLUMN refused TEXT;",
     // The limit on replies without a human (`docs/protocol/README.md`, "Content"): the `hops` of
     // each kept message and own message waiting for the server, none for one an older client kept;
     // and, for each agent in each space, the highest `hops` of the messages handed over to it since
@@ -630,7 +651,8 @@ pub struct Kept {
     pub agents: Vec<String>,
     /// The `replied` it gives a message the device sent, if it is such a reply.
     pub replied: Option<Replied>,
-    /// What its `read` receipt reports once it is handed over, if its `to` is one of `agents`.
+    /// What its receipt reports, if its `to` is an agent of this device: its `read` once it is
+    /// handed over, if its `to` is one of `agents`, or its `refused` at once.
     pub read: Option<ToRead>,
 }
 
@@ -655,7 +677,7 @@ pub struct Target {
     pub sealed: Vec<u8>,
 }
 
-/// What the `read` receipt of a kept message reports (`docs/protocol/delivery.md`, "Receipts").
+/// What the receipt of a kept message reports (`docs/protocol/delivery.md`, "Receipts").
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToRead {
     pub channel: ChannelId,
@@ -666,10 +688,12 @@ pub struct ToRead {
     /// The message's `to`, which the receipt is `from`, and the agent's name.
     pub addressee: String,
     pub agent: String,
+    /// Why the agent's inbound mode refused it: the receipt is then a `refused`, due at once.
+    pub reason: Option<String>,
 }
 
-/// A `read` receipt the device owes: of the message `msg_id`, by its kept entry's `seq`, in
-/// `space`, as [`ToRead`] says.
+/// A receipt the device owes: of the message `msg_id`, by its kept entry's `seq`, in `space`, as
+/// [`ToRead`] says; a `refused` with its reason, if any, otherwise a `read`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReadDue {
     pub seq: u64,
@@ -679,6 +703,16 @@ pub struct ReadDue {
     pub sender: DeviceId,
     pub author: String,
     pub addressee: String,
+    pub reason: Option<String>,
+}
+
+/// An agent's inbound mode in a space, as the device keeps it, and the senders on its allowlist.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Inbound {
+    pub agent: String,
+    /// `accept`, `hold` or `refuse`.
+    pub mode: String,
+    pub allowed: Vec<String>,
 }
 
 /// A channel message of the device's own, as it waits for the server's `stored` to be kept for the
@@ -698,6 +732,10 @@ pub struct OwnMessage {
     pub to: Option<Option<String>>,
     /// Its `read` status as JSON, which the device keeps once it hands it to the `to` agent.
     pub read: Option<String>,
+    /// The agents of this device whose inbound mode refuses it, which it is not kept for.
+    pub refusing: Vec<String>,
+    /// Its `refused` status as JSON, which the device keeps with it, if its `to` agent refuses it.
+    pub refused: Option<String>,
 }
 
 /// A Commit or Welcome of the device's own in the outbox.
@@ -1867,12 +1905,12 @@ impl State {
         self.drop_done_statuses()
     }
 
-    /// Records that the agent `agent` took the server's refusals of its message `msg_id`: its own
-    /// run reported them.
+    /// Records that the agent `agent` took the server's refusals of its message `msg_id`, kept for
+    /// it alone: its own run reported them.
     pub fn refusals_taken(&self, agent: &str, msg_id: MessageId) -> Result<(), Error> {
         self.db.execute(
             "UPDATE kept_status SET agent = NULL
-             WHERE seq IS NULL AND agent = ?1 AND msg_id = ?2",
+             WHERE seq IS NULL AND person = 0 AND agent = ?1 AND msg_id = ?2",
             params![agent, msg_id.to_string()],
         )?;
         self.drop_done_statuses()
@@ -2132,6 +2170,60 @@ impl State {
         Ok(names.collect::<Result<_, _>>()?)
     }
 
+    /// Sets the inbound mode of the agent `agent` in the space `space` to `mode`.
+    pub fn set_inbound_mode(&self, space: SpaceId, agent: &str, mode: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO inbound_mode (space, agent, mode) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO UPDATE SET mode = excluded.mode",
+            params![space.to_string(), agent, mode],
+        )?;
+        Ok(())
+    }
+
+    /// Puts `sender` on the allowlist of the agent `agent` in the space `space`; gives whether it
+    /// was not on it.
+    pub fn allow_sender(&self, space: SpaceId, agent: &str, sender: &str) -> Result<bool, Error> {
+        let added = self.db.execute(
+            "INSERT INTO allowed_sender (space, agent, sender) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO NOTHING",
+            params![space.to_string(), agent, sender],
+        )?;
+        Ok(added > 0)
+    }
+
+    /// The inbound mode and allowlist of each agent in the space `space` the device has run as or
+    /// keeps either of, by name; `accept` for one without a mode.
+    pub fn inbound(&self, space: SpaceId) -> Result<Vec<Inbound>, Error> {
+        let space = space.to_string();
+        let mut query = self.db.prepare(
+            "SELECT name, COALESCE((SELECT mode FROM inbound_mode WHERE space = ?1 AND agent = name),
+                 'accept')
+             FROM (SELECT name FROM agent WHERE space = ?1
+                 UNION SELECT agent FROM inbound_mode WHERE space = ?1
+                 UNION SELECT agent FROM allowed_sender WHERE space = ?1)
+             ORDER BY name",
+        )?;
+        let modes = query
+            .query_map(params![space], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<(String, String)>, _>>()?;
+        let mut query = self.db.prepare(
+            "SELECT sender FROM allowed_sender WHERE space = ?1 AND agent = ?2 ORDER BY sender",
+        )?;
+        modes
+            .into_iter()
+            .map(|(agent, mode)| {
+                let allowed = query
+                    .query_map(params![space, agent], |row| row.get(0))?
+                    .collect::<Result<_, _>>()?;
+                Ok(Inbound {
+                    agent,
+                    mode,
+                    allowed,
+                })
+            })
+            .collect()
+    }
+
     /// The kept messages the person's run has yet to show, by `seq`, each with its sealed line.
     pub fn for_person(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
         self.lines(
@@ -2350,9 +2442,10 @@ impl State {
 
     /// Takes the receipt of the entry `seq` out of the inbox, recording `counted`, the counters
     /// the device accepted from its source with it, or, without `counter`, that it came from the
-    /// device `sender` as `msg_id`; and keeps each of `reads`, `read` statuses of messages the
-    /// device sent, by their `msg_id`, as JSON, for the person and the agent that sent the message,
-    /// unless the device took a `read` of that message before; all at once.
+    /// device `sender` as `msg_id`; and keeps each of `reads`, `read` or `refused` statuses of
+    /// messages the device sent, by their `msg_id`, as JSON, for the person and the agent that sent
+    /// the message, unless the device took a `read` or `refused` of that message before; all at
+    /// once.
     pub fn take_receipt(
         &self,
         seq: u64,
@@ -2388,11 +2481,11 @@ impl State {
         Ok(())
     }
 
-    /// The `read` receipts the device owes, in `seq` order.
+    /// The receipts the device owes, in `seq` order.
     pub fn reads_due(&self) -> Result<Vec<ReadDue>, Error> {
         let mut query = self.db.prepare(
-            "SELECT seq, msg_id, space, channel, sender, author, addressee FROM read_receipt
-             WHERE due = 1 ORDER BY seq",
+            "SELECT seq, msg_id, space, channel, sender, author, addressee, reason
+             FROM read_receipt WHERE due = 1 ORDER BY seq",
         )?;
         let rows = query.query_map([], |row| {
             Ok((
@@ -2405,10 +2498,11 @@ impl State {
                 ],
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
             ))
         })?;
         rows.map(|row| {
-            let (seq, [msg_id, space, channel, sender], author, addressee) = row?;
+            let (seq, [msg_id, space, channel, sender], author, addressee, reason) = row?;
             Ok(ReadDue {
                 seq: u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?,
                 msg_id: id("message ID", &msg_id)?,
@@ -2417,6 +2511,7 @@ impl State {
                 sender: id("device ID", &sender)?,
                 author,
                 addressee,
+                reason,
             })
         })
         .collect()
@@ -2583,8 +2678,8 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     if let Some(read) = &kept.read {
         tx.execute(
             "INSERT INTO read_receipt
-                 (seq, msg_id, space, channel, sender, author, addressee, agent)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) ON CONFLICT DO NOTHING",
+                 (seq, msg_id, space, channel, sender, author, addressee, agent, due, reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT DO NOTHING",
             params![
                 seq,
                 kept.msg_id.to_string(),
@@ -2593,7 +2688,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
                 read.sender.to_string(),
                 read.author,
                 read.addressee,
-                read.agent
+                read.agent,
+                read.reason.is_some(),
+                read.reason
             ],
         )?;
     }
@@ -2773,6 +2870,8 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
         sender,
         to,
         read,
+        refusing,
+        refused,
     } = own;
     let seq = sql_seq(*seq)?;
     let changed = tx.execute(
@@ -2787,8 +2886,9 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
     let replied = kept.replied.as_ref();
     tx.execute(
         "INSERT INTO own_message (msg_id, seq, space, channel, line, target, wait, person, sender,
-             addressed, addressee, read, replied, replied_status, replied_agent, hops)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             addressed, addressee, read, replied, replied_status, replied_agent, refusing, refused,
+             hops)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             kept.msg_id.to_string(),
             seq,
@@ -2805,6 +2905,8 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
             replied.map(|replied| replied.msg_id.to_string()),
             replied.map(|replied| replied.status.clone()),
             replied.and_then(|replied| replied.agent.clone()),
+            serde_json::to_string(refusing).expect("names encode"),
+            refused,
             sql_u64(kept.hops)?,
         ],
     )?;
@@ -2813,8 +2915,9 @@ fn add_own(tx: &Transaction, own: &OwnMessage) -> Result<(), Error> {
 
 /// Keeps the device's own message `msg_id`, which the server stored, for the person if it is to
 /// show it and for each agent of this device it is for, in `tx`: each the device has run as in its
-/// space but its sender, with a `to` only the agent it names. Its `replied` of the message it
-/// answers, if any, is kept too, and its `read` is due once it is handed to its `to` agent.
+/// space but its sender and those that refuse it, with a `to` only the agent it names. Its
+/// `replied` of the message it answers, if any, is kept too, and its `read` is due once it is
+/// handed to its `to` agent; or its `refused` is kept at once, if that agent refuses it.
 fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     let msg_id = msg_id.to_string();
     let now = sql_u64(unix_now())?;
@@ -2830,9 +2933,25 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
              SELECT own.seq, agent.name FROM own_message AS own JOIN agent ON agent.space = own.space
              WHERE own.msg_id = ?1 AND agent.name IS NOT own.sender
                  AND (own.addressed = 0 OR agent.name = own.addressee)
+                 AND agent.name NOT IN (SELECT value FROM json_each(own.refusing))
              ON CONFLICT DO NOTHING",
             params![msg_id],
         )?;
+        let refused = tx.execute(
+            "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0
+             AND EXISTS (SELECT 1 FROM own_message WHERE msg_id = ?1 AND refused IS NOT NULL)",
+            params![msg_id],
+        )?;
+        if refused > 0 {
+            tx.execute(
+                "INSERT INTO kept_status (msg_id, space, status, person, agent)
+                 SELECT sent.msg_id, sent.space, json_set(own.refused, '$.timestamp', ?2), 1,
+                     sent.agent
+                 FROM sent JOIN own_message AS own ON own.msg_id = sent.msg_id
+                 WHERE sent.msg_id = ?1",
+                params![msg_id, now],
+            )?;
+        }
         tx.execute(
             "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
              SELECT seq, replied, space, replied_status, 1, replied_agent FROM own_message
@@ -4005,6 +4124,7 @@ pub(crate) mod tests {
                 author: "acme/bob/codex@skald.example".to_owned(),
                 addressee: "acme/ada/claude@skald.example".to_owned(),
                 agent: "claude".to_owned(),
+                reason: None,
             });
             kept
         };
@@ -4019,6 +4139,7 @@ pub(crate) mod tests {
             sender,
             author: "acme/bob/codex@skald.example".to_owned(),
             addressee: "acme/ada/claude@skald.example".to_owned(),
+            reason: None,
         };
 
         assert!(state.reads_due().unwrap().is_empty());
@@ -4051,6 +4172,75 @@ pub(crate) mod tests {
         assert_eq!(owed, 0, "a read is owed of a message its agent never had");
     }
 
+    /// A kept message whose `to` agent refuses it owes its `refused`, with the reason, at once,
+    /// though no agent has it, until a receipt that reports it goes into the outbox.
+    #[test]
+    fn refused_is_owed_once_the_message_is_kept() {
+        let dir = TestDir::new("state-refused");
+        let state = with_entries(&dir, &[2]);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let mut refused = kept(&[]);
+        refused.read = Some(ToRead {
+            channel: refused.channel,
+            sender,
+            author: "acme/bob/codex@skald.example".to_owned(),
+            addressee: "acme/ada/claude@skald.example".to_owned(),
+            agent: "claude".to_owned(),
+            reason: Some("off its allowlist".to_owned()),
+        });
+
+        state.keep(2, (sender, refused.msg_id), &refused).unwrap();
+        state.shown_to_person(2).unwrap();
+
+        let due = State::open(&dir).unwrap().reads_due().unwrap();
+        assert_eq!(due.len(), 1, "{due:?}");
+        assert_eq!(due[0].msg_id, refused.msg_id);
+        assert_eq!(due[0].reason.as_deref(), Some("off its allowlist"));
+        assert!(
+            state
+                .for_agent(space_of_kept(), "claude", unix_now())
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    /// The person sets an agent's mode and puts senders on its allowlist in a space; the list
+    /// holds each agent the device has run as there or keeps a mode or a sender of, `accept`
+    /// without a mode.
+    #[test]
+    fn inbound_modes_and_allowlists_are_kept_per_agent_and_space() {
+        let dir = TestDir::new("state-inbound");
+        let state = with_entries(&dir, &[]);
+        let (space, other) = (space_of_kept(), SpaceId::generate());
+        state.add_agent(space, "codex").unwrap();
+        state.set_inbound_mode(space, "claude", "refuse").unwrap();
+        state.set_inbound_mode(other, "claude", "accept").unwrap();
+        assert!(state.allow_sender(space, "claude", "bob").unwrap());
+        assert!(!state.allow_sender(space, "claude", "bob").unwrap());
+        assert!(state.allow_sender(space, "claude", "ada/codex").unwrap());
+        assert!(state.allow_sender(space, "api", "bob").unwrap());
+
+        let inbound = |agent: &str, mode: &str, allowed: &[&str]| Inbound {
+            agent: agent.to_owned(),
+            mode: mode.to_owned(),
+            allowed: allowed.iter().map(|&sender| sender.to_owned()).collect(),
+        };
+        assert_eq!(
+            State::open(&dir).unwrap().inbound(space).unwrap(),
+            [
+                inbound("api", "accept", &["bob"]),
+                inbound("claude", "refuse", &["ada/codex", "bob"]),
+                inbound("codex", "accept", &[]),
+            ]
+        );
+        state.set_inbound_mode(space, "claude", "accept").unwrap();
+        assert_eq!(state.inbound(space).unwrap()[1].mode, "accept");
+        assert_eq!(
+            state.inbound(other).unwrap(),
+            [inbound("claude", "accept", &[])]
+        );
+    }
+
     /// Puts in the outbox of `state` the device's own message in `channel` with `counter`, from
     /// `sender`, the person for none, `to` as [`OwnMessage::to`] says, with `replied` if given, by
     /// the next own `seq`; gives its `msg_id` and `seq`.
@@ -4059,6 +4249,18 @@ pub(crate) mod tests {
         (channel, counter): (ChannelId, u64),
         (sender, to): (Option<&str>, Option<Option<&str>>),
         replied: Option<Replied>,
+    ) -> (MessageId, u64) {
+        put_own_refused(state, (channel, counter), (sender, to), replied, &[])
+    }
+
+    /// As [`put_own`], with `refusing` the agents whose inbound mode refuses it: its `refused`
+    /// replaces its `read` if its `to` agent is one of them.
+    fn put_own_refused(
+        state: &State,
+        (channel, counter): (ChannelId, u64),
+        (sender, to): (Option<&str>, Option<Option<&str>>),
+        replied: Option<Replied>,
+        refusing: &[&str],
     ) -> (MessageId, u64) {
         let seq = state.next_own_seq().unwrap();
         let mut kept = kept(&[]);
@@ -4083,8 +4285,11 @@ pub(crate) mod tests {
             person: sender.is_some(),
             sender: sender.map(str::to_owned),
             to: to.map(|to| to.map(str::to_owned)),
-            read: matches!(to, Some(Some(_)))
+            read: matches!(to, Some(Some(to)) if !refusing.contains(&to))
                 .then(|| r#"{"status":"read","timestamp":0}"#.to_owned()),
+            refusing: refusing.iter().map(|&agent| agent.to_owned()).collect(),
+            refused: matches!(to, Some(Some(to)) if refusing.contains(&to))
+                .then(|| r#"{"status":"refused","reason":"off","timestamp":0}"#.to_owned()),
         };
         state
             .mls_change(|_| {

@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, the `inbox`, `send` and `reply` tools of the MCP server.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, agents' inbound modes and sender allowlists, the `inbox`, `send` and `reply` tools of the MCP server.
 - Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -79,6 +79,9 @@ skald recv                                  # receive the device's messages
 skald reply <message> <text>                # reply to a message, by its #<ref> or ID, in its channel, to its sender
 skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
+skald set-inbound-mode <agent> <mode>       # accept, or refuse messages from senders off the agent's allowlist
+skald allow-sender <agent> <sender>         # put an address or a member's handle on the agent's allowlist
+skald inbound-modes                         # each agent's mode and allowlist in the working directory's space
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 ```
 
@@ -87,6 +90,7 @@ skald mcp                                   # the MCP server of an agent session
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
 - Agents that answer each other without a person stop after 10 hops: their next reply or send is not sent, and your next `skald recv` warns of it. A message of yours starts the count again: [protocol, "Content"](docs/protocol/README.md#content).
+- An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
 
 Agents that run without a person, such as in CI: [service agents](docs/service-agents.md).
 
