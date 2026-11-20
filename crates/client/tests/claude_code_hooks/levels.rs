@@ -203,3 +203,25 @@ fn hooks_give_nothing_of_a_message_the_agent_s_mode_refuses() {
     let shown = web.session.inbox();
     assert!(agent_lines(&shown).is_empty(), "inbox: {shown}");
 }
+
+/// What api sends web while web holds messages from senders off its allowlist; it is nowhere else.
+const HELD: &str = "hook test: api asks web, which holds it, to rotate the keys";
+
+/// The person sets web to `hold`; api sends web a message. web's `PostToolUse` and `Stop` hooks
+/// print nothing, and web's `inbox` does not show it: it waits for the person's decision.
+#[test]
+fn hooks_give_nothing_of_a_message_the_agent_s_mode_holds() {
+    let mut web = Web::new(4_913_021_001, "ada-hooks-hold-api");
+    let args = ["set-inbound-mode", WEB, "hold"];
+    let set = (web.machine()).start_in(&web.solo.folder, &args).finish();
+    assert!(set.success, "{set:?}");
+    web.own(HELD);
+
+    web.hook(Event::PostToolUse)
+        .assert_silent("PostToolUse with only a held message sent");
+    web.hook(Event::Stop)
+        .assert_silent("Stop with only a held message sent");
+
+    let shown = web.session.inbox();
+    assert!(!shown.contains(HELD), "inbox: {shown}");
+}
