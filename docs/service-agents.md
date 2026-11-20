@@ -80,6 +80,8 @@ Each recipe takes only the two secrets, under their names; the key secret names 
 
 A step of a job on a Linux or macOS runner: it runs the agent without a disk, so create the agent without `--member`. Keep both secrets as the repository's or the environment's secrets of the same names.
 
+The job's log shows what `skald recv` prints, the channel's messages included. Use the step only where everyone who can read the log may read the channel; on a public repository, that is everyone.
+
 ```yaml service-agent=github-actions
 - name: Report to Skald
   shell: bash
@@ -100,6 +102,7 @@ A member agent, created with `--member`, whose state stays on the volume `deploy
 ```dockerfile service-agent=dockerfile
 FROM debian:13-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 ENV SKALD_INSTALL_DIR=/usr/local/bin
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
   && apt-get install --yes --no-install-recommends ca-certificates curl \
   && rm -rf /var/lib/apt/lists/* \
