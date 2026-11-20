@@ -50,12 +50,13 @@ fn read_shows_once_a_session_waiting_through_the_helper_has_the_message() {
     shows_read_once(roles.a(), msg_id);
 }
 
-/// Through a helper, claude's `skald recv --wait` waits in B's `~/work/acme`, each request with the
-/// timeout the tests give a run that retries. With the front swallowing every `send`, B's person
-/// sends a message `--all` in the channel, and the helper's run of `skald recv` after it tries it
-/// too: it waits in the outbox. A's agent then sends a message `--to` claude, which the helper's
-/// intake hands to the session. C reads B's waiting message, then its receipt, their counters one
-/// after the other.
+/// With the front swallowing every `send`, B's person sends a message `--all` in the channel: it
+/// waits in the outbox. Then, through a helper, claude's `skald recv --wait` waits in B's
+/// `~/work/acme`, each request with the timeout the tests give a run that retries, and its first
+/// run of `skald recv` tries the message too. B's person runs before the helper, so no run of the
+/// helper keeps it waiting past that timeout. A's agent then sends a message `--to` claude, which
+/// the helper's intake hands to the session. C reads B's waiting message, then its receipt, their
+/// counters one after the other.
 #[test]
 fn receipt_of_the_helper_goes_after_the_message_the_outbox_held_before_it() {
     let mut roles = Roles::new(
@@ -63,11 +64,7 @@ fn receipt_of_the_helper_goes_after_the_message_the_outbox_held_before_it() {
         ["ada-agent-waits-behind", "bob-counts-in-order"],
     );
     let helped = Helped::new(roles.b());
-    let args = [AGENT, CLAUDE, RECV, WAIT_FLAG];
     let timeout = TIMEOUT.as_secs().to_string();
-    let settings = [(TRACE_SETTING, "1"), (TIMEOUT_SETTING, timeout.as_str())];
-    let mut session = helped.start_in(&roles.senders.agents.folder, &settings, &args);
-    assert_keeps_waiting(&mut session);
     let (channel, b_device) = (roles.channel(), roles.b_device());
     let front = &roles.senders.agents.talk.front;
     let from = front.sent().len();
@@ -83,11 +80,15 @@ fn receipt_of_the_helper_goes_after_the_message_the_outbox_held_before_it() {
         .output()
         .expect("run skald");
     assert!(!sent.status.success(), "stored while swallowed: {sent:?}");
+    let args = [AGENT, CLAUDE, RECV, WAIT_FLAG];
+    let settings = [(TRACE_SETTING, "1"), (TIMEOUT_SETTING, timeout.as_str())];
+    let mut session = helped.start_in(&roles.senders.agents.folder, &settings, &args);
+    assert_keeps_waiting(&mut session);
     await_no_send_for(front, TIMEOUT);
     front.swallow(false);
     let left = match messages_sent(front, channel, from).first() {
         Some(sent) => sent.envelope.envelope().header.msg_id,
-        None => panic!("B's person sent nothing"),
+        None => panic!("B's person sent nothing: {sent:?}"),
     };
 
     let msg_id = a_sends_to_claude(&roles, TEXT);

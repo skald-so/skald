@@ -50,6 +50,7 @@ mod sign_in;
 mod sign_up;
 mod spaces;
 mod sweeps;
+mod unread_bodies;
 mod usage;
 mod user_agent;
 
@@ -448,6 +449,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(connections::open).layer(checked(Statement::Subprotocol)),
         )
         .route_layer(middleware::from_fn(error_reports::report_failures))
+        .layer(middleware::from_fn(unread_bodies::close_unread))
         .with_state(AppState {
             db,
             versions,
