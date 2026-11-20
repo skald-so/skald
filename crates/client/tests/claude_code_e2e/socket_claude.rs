@@ -4,15 +4,18 @@
 //! bypassPermissions`. As in `claude.rs`: a temporary config home with no sign-in on a model stub,
 //! the session's `skald mcp` its only MCP server. Unlike there, it keeps its session file, and
 //! `skald hook claude` is also its `SessionStart` and `SessionEnd` hook, run as Claude Code runs
-//! hooks: without the one-shot setting, so `SessionStart` starts the helper.
+//! hooks: without the one-shot setting, so `SessionStart` starts the helper. Where the client
+//! writes into no socket ([`SOCKET`]), a session's `skald` runs in one-shot mode, as in
+//! `claude.rs`, unless the test runs its hooks ([`Options::hooks`]): there a helper would outlive
+//! the session and keep its machine's directory from being removed.
 
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use std::{env, fs, sync::Arc, sync::Mutex, thread};
+use std::{env, fs, process::Child, process::ChildStdin, process::Command, process::Stdio};
+use std::{sync::Arc, sync::Mutex, thread};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde_json::{Value, json};
@@ -55,10 +58,13 @@ pub enum Surface {
     AppBypassing,
 }
 
+/// The terminal's input, shared with what answers its cursor queries.
+type Typing = Arc<Mutex<Box<dyn Write + Send>>>;
+
 enum Running {
     Terminal {
         child: Box<dyn portable_pty::Child + Send + Sync>,
-        input: Box<dyn Write + Send>,
+        input: Typing,
     },
     App {
         child: Child,
@@ -125,8 +131,9 @@ impl Session {
             &named(&[MCP]).iter().map(String::as_str).collect::<Vec<_>>(),
         );
         let skald = lossy(mcp.get_program());
+        let helped = SOCKET || options.hooks.is_some();
         let mut settings: Vec<(String, String)> = (mcp.get_envs())
-            .filter(|(name, _)| *name != OsStr::new(ONE_SHOT))
+            .filter(|(name, _)| !helped || *name != OsStr::new(ONE_SHOT))
             .filter_map(|(name, value)| Some((lossy(name), lossy(value?))))
             .collect();
         settings.push(("SKALD_HELPER_IDLE".to_owned(), HELPER_IDLE.to_owned()));
@@ -230,13 +237,16 @@ impl Session {
             command.args(&args);
             let child = pair.slave.spawn_command(command).expect("run Claude Code");
             drop(pair.slave);
-            read_into(
+            let input: Typing = Arc::new(Mutex::new(
+                pair.master.take_writer().expect("the terminal's input"),
+            ));
+            read_answering(
                 pair.master
                     .try_clone_reader()
                     .expect("the terminal's output"),
                 &output,
+                &input,
             );
-            let input = pair.master.take_writer().expect("the terminal's input");
             // The terminal lives as long as its reader and writer.
             std::mem::forget(pair.master);
             Running::Terminal { child, input }
@@ -276,14 +286,12 @@ impl Session {
                     thread::sleep(Duration::from_millis(200));
                 }
                 thread::sleep(Duration::from_secs(1));
-                let Running::Terminal { input, .. } = &mut self.running else {
+                let Running::Terminal { input, .. } = &self.running else {
                     unreachable!()
                 };
-                (input.write_all(text.as_bytes())).expect("type the prompt");
-                input.flush().expect("type the prompt");
+                typed(input, text.as_bytes()).expect("type the prompt");
                 thread::sleep(Duration::from_secs(1));
-                (input.write_all(b"\r")).expect("press Enter");
-                input.flush().expect("press Enter");
+                typed(input, b"\r").expect("press Enter");
             }
             Running::App { input, .. } => {
                 let line =
@@ -383,8 +391,7 @@ impl Session {
         match &mut self.running {
             Running::Terminal { input, .. } => {
                 for _ in 0..2 {
-                    let _ = input.write_all(b"\x03");
-                    let _ = input.flush();
+                    let _ = typed(input, b"\x03");
                     thread::sleep(Duration::from_millis(500));
                 }
             }
@@ -416,6 +423,46 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.end();
     }
+}
+
+/// Types `bytes` into the terminal whose input is `input`.
+fn typed(input: &Typing, bytes: &[u8]) -> std::io::Result<()> {
+    let mut input = input
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    input.write_all(bytes)?;
+    input.flush()
+}
+
+/// As [`read_into`] for a terminal's output: answers each query of where the cursor is, which a
+/// pseudo-console makes before it shows anything, with its start, as a new terminal does.
+fn read_answering(
+    mut from: impl Read + Send + 'static,
+    into: &Arc<Mutex<Vec<u8>>>,
+    input: &Typing,
+) {
+    const QUERY: &[u8] = b"\x1b[6n";
+    let (into, input) = (Arc::clone(into), Arc::clone(input));
+    thread::spawn(move || {
+        let mut piece = vec![0; 8192];
+        let mut seen: usize = 0;
+        while let Ok(count) = from.read(&mut piece) {
+            if count == 0 {
+                break;
+            }
+            let mut output = into.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            output.extend_from_slice(&piece[..count]);
+            // The queries in what is new, a query cut by the last read included.
+            let from_byte = seen.saturating_sub(QUERY.len() - 1);
+            let new = output[from_byte..]
+                .windows(QUERY.len())
+                .filter(|w| *w == QUERY);
+            for _ in new {
+                let _ = typed(&input, b"\x1b[1;1R");
+            }
+            seen = output.len();
+        }
+    });
 }
 
 /// Reads `from` into `into` to its end, on a thread of its own.

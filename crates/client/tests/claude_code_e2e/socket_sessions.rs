@@ -303,10 +303,12 @@ fn an_api_error_after_the_message_gives_no_read_until_the_model_answers() {
 
     let own = solo.api_sends_web(FAILED_SAYS);
     model.wait_turn_holding(FAILED_SAYS, "api's message");
-    assert!(
-        failed.load(Ordering::SeqCst),
-        "the stub did not fail the turn"
-    );
+    // The stub records a turn before it answers.
+    let until = Instant::now() + QUIET;
+    while !failed.load(Ordering::SeqCst) {
+        assert!(Instant::now() < until, "the stub did not fail the turn");
+        thread::sleep(Duration::from_millis(100));
+    }
     no_read_meanwhile(solo.machine(), own, "after the API error");
     session.prompt(NEXT);
     session.wait_turn_end(&model, NEXT, 2);

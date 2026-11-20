@@ -296,6 +296,25 @@ pub fn assert_own_line(context: &str, text: &str, msg_id: MessageId, api: &str) 
     got
 }
 
+/// Fails if `text` holds `long` whole, or unless its last line names [`INBOX_WORD`] and `#<ref>` of
+/// `msg_id`: how to read the message whole.
+#[track_caller]
+pub fn assert_cut(text: &str, long: &str, msg_id: MessageId) {
+    assert!(!text.contains(long), "the whole text went in");
+    let last = text.lines().rev().find(|line| !line.trim().is_empty());
+    assert!(
+        last.is_some_and(|last| last.contains(INBOX_WORD) && names_reference(last, msg_id)),
+        "the last line names no {INBOX_WORD} and #<ref>: {last:?}"
+    );
+}
+
+/// Whether a word of `line` is `#<ref>` of `msg_id`.
+fn names_reference(line: &str, msg_id: MessageId) -> bool {
+    (line.split(|c: char| c != '#' && !c.is_ascii_alphanumeric()))
+        .filter_map(|word| word.strip_prefix('#'))
+        .any(|reference| refers_to(reference, msg_id))
+}
+
 /// Fails unless `context` is the signal alone and holds nothing of `msg_id` or its sender: no
 /// message line, no warning line, a line that names [`INBOX_WORD`], and neither `text`, the
 /// sender's handle or device, nor the message's reference.
