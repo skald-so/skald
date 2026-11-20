@@ -669,6 +669,14 @@ impl MapOut {
         self
     }
 
+    pub(crate) fn put_id<K: Kind>(self, key: u64, value: &Id<K>) -> Self {
+        self.put(key, id(value))
+    }
+
+    pub(crate) fn put_bytes(self, key: u64, value: &[u8]) -> Self {
+        self.put(key, bytes(value))
+    }
+
     pub(crate) fn put_some(self, key: u64, value: Option<Vec<u8>>) -> Self {
         match value {
             Some(value) => self.put(key, value),
