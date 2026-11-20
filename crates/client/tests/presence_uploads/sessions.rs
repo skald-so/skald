@@ -107,6 +107,7 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
     );
     let (clientb, elsewhere) = with_client_b(&mut agents.talk);
     let helped = Helped::new(&agents.talk.ada.machine);
+    let start = agents.talk.cloud().relay.mark();
     let claude_session = claude_code_session(&helped, &agents, CLAUDE);
     let _codex = claude_code_session(&helped, &agents, CODEX);
     let (claude, codex) = (agents.address(CLAUDE), agents.address(CODEX));
@@ -114,6 +115,9 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
     let before = await_in_each(&mut agents.talk, &acme, "with both available", |body| {
         shows(body, &claude, AgentState::Available) && shows(body, &codex, AgentState::Available)
     });
+    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
+    // Until the uploads that showed both are done in clientb's channel too.
+    await_together(&agents.talk, &all, start);
     let since = agents.talk.cloud().relay.mark();
     let ended = now();
 
@@ -133,7 +137,6 @@ fn ended_session_shows_its_agent_offline_since_it_ended_in_every_channel_togethe
             "codex's since moved: {body:?}"
         );
     }
-    let all = [acme[0], acme[1], (clientb.id, elsewhere)];
     await_together(&agents.talk, &all, since);
     let other = ada_s_body(&agents.talk, (clientb.id, elsewhere)).expect("a value in clientb");
     assert!(
