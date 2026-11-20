@@ -55,10 +55,7 @@ pub fn run(synced: Synced, edit: &Edit) -> Result<(), String> {
         next.channels = body.channels;
         next.policy = body.policy;
     })?;
-    follower
-        .accepts(&latest, &next, &devices.certs)
-        .map_err(|err| format!("{err}; nothing is sent"))?;
-    let stored = follower.submit(&space, &latest, &next)?;
+    let stored = follower.checked_submit(&space, (&latest, &next), &devices.certs)?;
     println!(
         "{done} in the space {}: this device signed its revision {}.",
         space.name,

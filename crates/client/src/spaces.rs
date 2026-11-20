@@ -983,6 +983,20 @@ impl Follower {
         self.store(space, next)
     }
 
+    /// Checks `next`, the revision after `latest` that this device signed, as the members of
+    /// `space` accept it with `certs` ([`Follower::accepts`]), then sends it as
+    /// [`Follower::submit`] does; gives the revision the server took.
+    pub fn checked_submit(
+        &mut self,
+        space: &state::Space,
+        (latest, next): (&Roster, &Roster),
+        certs: &[Cert],
+    ) -> Result<Roster, String> {
+        self.accepts(latest, next, certs)
+            .map_err(|err| format!("{err}; nothing is sent"))?;
+        self.submit(space, latest, next)
+    }
+
     /// The revision after `latest`, with `first` added before its channels and `channels` after
     /// them, signed by this device, as [`Follower::next_by`] signs it with `devices`.
     pub fn next_with(

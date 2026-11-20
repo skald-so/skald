@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use skald_crypto::SigningKey;
 use skald_proto::{
     CERT_NAME_MAX, Cbor as _, Cert, CertBody, ChannelId, DeviceId, DeviceKind, GRANT_LABEL, Grant,
-    GrantBody, Name, NonEmpty, Roster, ServiceAgent, ServiceKey, SpaceId, Unknown,
+    GrantBody, Name, NonEmpty, Roster, RosterBody, ServiceAgent, ServiceKey, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
@@ -25,6 +25,7 @@ use crate::devices::text;
 use crate::follow::SpaceDevices;
 use crate::revocations;
 use crate::spaces::{Follower, Synced, address_taken, admin_device, finish, no_admin, now};
+use crate::state;
 
 /// The environment variables of a service agent's two secrets, as stdout names them.
 pub const KEY_VARIABLE: &str = "SKALD_SERVICE_KEY";
@@ -249,14 +250,13 @@ pub fn create(
     granted: &Granted,
     member: bool,
 ) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
     let Synced {
         mut follower,
         space,
         roster: latest,
         devices,
     } = synced;
-    follower.may_change(&space, &latest)?;
-    let (owner, agent) = address(address_given)?;
     let name = latest.body().name.as_str().to_owned();
     if address_taken(latest.body(), &owner, &agent) {
         return Err(format!(
@@ -289,38 +289,20 @@ pub fn create(
              entry of it: create the service agent again"
         )
     };
-    let next = follower
-        .next_by((&latest, &devices), |body| {
+    let stored = lists_new(
+        &mut follower,
+        (&space, &latest, devices),
+        (&owner, &agent, cert),
+        |body| {
             body.service_agents.push(entry);
             for channel in (body.channels.iter_mut())
                 .filter(|channel| member && checked.channels.contains(&channel.id))
             {
                 channel.services.push(device);
             }
-        })
-        .map_err(unlisted)?;
-    let mut certs = devices.certs;
-    certs.push(cert);
-    follower.accepts(&latest, &next, &certs).map_err(unlisted)?;
-    let stored = follower
-        .submitted(&space, &latest, &next)
-        .map_err(|unsent| {
-            if unsent.waits {
-                format!(
-                    "{}; the service device {device} is registered and certified: once the server \
-                     takes that revision, the space lists {owner}/{agent} without a key secret, \
-                     which nothing holds",
-                    unsent.why
-                )
-            } else {
-                unlisted(unsent.why)
-            }
-        })?;
-    if entry_of(&stored, &owner, &agent) != Some(device) {
-        return Err(unlisted(format!(
-            "another revision of the space {name} took the address {owner}/{agent} first"
-        )));
-    }
+        },
+        (unlisted, ""),
+    )?;
     let key = key_secret(&follower, &keys, (space.id, stored.hash()));
     hand_over(
         &mut follower,
@@ -341,14 +323,13 @@ pub fn create(
 /// revision does not list or of another account, for channels or an expiry that `granted` gets
 /// wrong, and for a member without the receive permission.
 pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
     let Synced {
         mut follower,
         space,
         roster: latest,
         devices,
     } = synced;
-    follower.may_change(&space, &latest)?;
-    let (owner, agent) = address(address_given)?;
     let old = listed(&latest, &owner, &agent)?;
     if !own_device(&follower, &devices, old) {
         return Err(format!(
@@ -369,8 +350,12 @@ pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result
              the old device {old} as {owner}/{agent} still: replace its key again"
         )
     };
-    let next = follower
-        .next_by((&latest, &devices), |body| {
+    let not_revoked = format!(", and the old device {old} is not revoked");
+    let stored = lists_new(
+        &mut follower,
+        (&space, &latest, devices),
+        (&owner, &agent, cert),
+        |body| {
             for entry in (body.service_agents.iter_mut()).filter(|entry| entry.device == old) {
                 entry.device = device;
             }
@@ -380,31 +365,9 @@ pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result
             {
                 *listed = device;
             }
-        })
-        .map_err(unlisted)?;
-    let mut certs = devices.certs;
-    certs.push(cert);
-    follower.accepts(&latest, &next, &certs).map_err(unlisted)?;
-    let stored = follower
-        .submitted(&space, &latest, &next)
-        .map_err(|unsent| {
-            if unsent.waits {
-                format!(
-                    "{}; the service device {device} is registered and certified: once the server \
-                     takes that revision, the space lists {owner}/{agent} without a key secret, \
-                     which nothing holds, and the old device {old} is not revoked",
-                    unsent.why
-                )
-            } else {
-                unlisted(unsent.why)
-            }
-        })?;
-    if entry_of(&stored, &owner, &agent) != Some(device) {
-        return Err(unlisted(format!(
-            "another revision of the space {} changed {owner}/{agent} first",
-            space.name
-        )));
-    }
+        },
+        (unlisted, &not_revoked),
+    )?;
     let key = key_secret(&follower, &keys, (space.id, stored.hash()));
     let handed = hand_over(
         &mut follower,
@@ -424,14 +387,13 @@ pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result
 /// a channel's `services`, which ends its tokens on the server. This device then revokes the device
 /// if it is of this device's account; otherwise that account does.
 pub fn remove(synced: Synced, address_given: &str) -> Result<(), String> {
+    let (synced, (owner, agent)) = changing(synced, address_given)?;
     let Synced {
         mut follower,
         space,
         roster: latest,
         devices,
     } = synced;
-    follower.may_change(&space, &latest)?;
-    let (owner, agent) = address(address_given)?;
     let device = listed(&latest, &owner, &agent)?;
     let next = follower.next_by((&latest, &devices), |body| {
         body.service_agents.retain(|entry| entry.device != device);
@@ -439,10 +401,7 @@ pub fn remove(synced: Synced, address_given: &str) -> Result<(), String> {
             channel.services.retain(|listed| *listed != device);
         }
     })?;
-    follower
-        .accepts(&latest, &next, &devices.certs)
-        .map_err(|err| format!("{err}; nothing is sent"))?;
-    let stored = follower.submit(&space, &latest, &next)?;
+    let stored = follower.checked_submit(&space, (&latest, &next), &devices.certs)?;
     let body = stored.body();
     if (body.service_agents.iter()).any(|entry| entry.device == device)
         || (body.channels.iter()).any(|channel| channel.services.contains(&device))
@@ -469,6 +428,55 @@ pub fn remove(synced: Synced, address_given: &str) -> Result<(), String> {
     };
     finish(&mut follower, &space.name);
     revoked
+}
+
+/// `synced`, once this device may sign a change into its space's last accepted revision
+/// ([`Follower::may_change`]), and the owner and agent of `address`, of a service agent a command
+/// changes.
+fn changing(synced: Synced, address_given: &str) -> Result<(Synced, (Name, Name)), String> {
+    (synced.follower).may_change(&synced.space, &synced.roster)?;
+    let owner_agent = address(address_given)?;
+    Ok((synced, owner_agent))
+}
+
+/// Signs the revision after `latest`, the last accepted revision of `space`, with what `edit`
+/// changes, which lists the new device of `cert` as the service agent `owner/agent`; checks it as
+/// the space's members accept it with `devices` and the certificate, and has the server store it.
+/// Gives the revision the server took. Fails with what `unlisted` says of a reason, or, once the
+/// revision waits for the server, with what that leaves, `waiting` added.
+fn lists_new(
+    follower: &mut Follower,
+    (space, latest, devices): (&state::Space, &Roster, SpaceDevices),
+    (owner, agent, cert): (&Name, &Name, Cert),
+    edit: impl FnOnce(&mut RosterBody),
+    (unlisted, waiting): (impl Fn(String) -> String, &str),
+) -> Result<Roster, String> {
+    let device = cert.body().device;
+    let next = follower
+        .next_by((latest, &devices), edit)
+        .map_err(&unlisted)?;
+    let mut certs = devices.certs;
+    certs.push(cert);
+    follower.accepts(latest, &next, &certs).map_err(&unlisted)?;
+    let stored = follower.submitted(space, latest, &next).map_err(|unsent| {
+        if unsent.waits {
+            format!(
+                "{}; the service device {device} is registered and certified: once the server \
+                     takes that revision, the space lists {owner}/{agent} without a key secret, \
+                     which nothing holds{waiting}",
+                unsent.why
+            )
+        } else {
+            unlisted(unsent.why)
+        }
+    })?;
+    if entry_of(&stored, owner, agent) != Some(device) {
+        return Err(unlisted(format!(
+            "another revision of the space {} changed {owner}/{agent} first",
+            space.name
+        )));
+    }
+    Ok(stored)
 }
 
 /// The device of the service agent `owner/agent` in `latest`, a space's last accepted revision;
