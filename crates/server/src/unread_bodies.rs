@@ -78,7 +78,13 @@ mod tests {
         })
     }
 
-    /// A body read to its end is marked so; one read only in part is not.
+    /// A body of chunks.
+    fn chunked(chunks: [&'static str; 2]) -> Body {
+        let chunks = chunks.map(|chunk| Ok::<_, axum::Error>(Bytes::from(chunk)));
+        Body::from_stream(futures_util::stream::iter(chunks))
+    }
+
+    /// A body read to its end is marked so, sized or in chunks; one read only in part is not.
     #[tokio::test]
     async fn a_body_is_marked_ended_once_read_to_its_end() {
         let ended = Arc::new(AtomicBool::new(false));
@@ -87,14 +93,27 @@ mod tests {
         assert!(ended.load(Ordering::SeqCst));
 
         let ended = Arc::new(AtomicBool::new(false));
-        let chunks = ["first", "second"].map(|chunk| Ok::<_, axum::Error>(Bytes::from(chunk)));
-        let body = marked(
-            Body::from_stream(futures_util::stream::iter(chunks)),
-            &ended,
-        );
-        let mut stream = body.into_data_stream();
+        let body = marked(chunked(["first", "second"]), &ended);
+        let whole = axum::body::to_bytes(body, usize::MAX).await;
+        assert_eq!(whole.expect("the body"), "firstsecond");
+        assert!(ended.load(Ordering::SeqCst));
+
+        let ended = Arc::new(AtomicBool::new(false));
+        let mut stream = marked(chunked(["first", "second"]), &ended).into_data_stream();
         let first = stream.next().await.expect("a chunk").expect("the chunk");
         assert_eq!(first, "first");
         assert!(!ended.load(Ordering::SeqCst));
+    }
+
+    /// A marked body tells its end and its size as the body it marks.
+    #[test]
+    fn a_marked_body_tells_its_end_and_size_as_its_body() {
+        let ended = Arc::new(AtomicBool::new(false));
+        let sized = marked(Body::from("whole"), &ended);
+        assert!(!sized.is_end_stream());
+        assert_eq!(sized.size_hint().exact(), Some(5));
+        let empty = marked(Body::empty(), &ended);
+        assert!(empty.is_end_stream());
+        assert_eq!(empty.size_hint().exact(), Some(0));
     }
 }

@@ -9,13 +9,11 @@ use skald_proto::{Cbor as _, Content, MessageId};
 
 use crate::agents::CLAUDE;
 use crate::cloud::WAIT;
-use crate::fixtures::{ALL, CHANNEL, SEND, TIMEOUT, TIMEOUT_SETTING, TO};
+use crate::fixtures::{ALL, CHANNEL, SEND, TIMEOUT, TIMEOUT_SETTING};
 use crate::front::Front;
 use crate::helped::Helped;
 use crate::kit::RECV;
-use crate::lines::{JSON_FLAG, json_objects};
 use crate::receipts::{Roles, assert_shows_once, shows_read_once};
-use crate::senders::LAPTOP_AGENT;
 use crate::talk::messages_sent;
 use crate::waits::{TRACE_SETTING, TRACED, WAIT_FLAG, assert_keeps_waiting};
 use crate::world::AGENT;
@@ -91,7 +89,7 @@ fn receipt_of_the_helper_goes_after_the_message_the_outbox_held_before_it() {
         None => panic!("B's person sent nothing: {sent:?}"),
     };
 
-    let msg_id = a_sends_to_claude(&roles, TEXT);
+    let msg_id = roles.a_sends_to_claude(TEXT);
 
     let got = session.finish();
     assert!(got.success, "{got:?}");
@@ -111,36 +109,6 @@ fn receipt_of_the_helper_goes_after_the_message_the_outbox_held_before_it() {
     };
     assert_eq!((*first, *second), (left, receipt), "{of_b:?}");
     assert_eq!(*next, counter + 1, "{of_b:?}");
-}
-
-/// Runs `skald --agent <A's agent> send --json --to <claude> --channel <channel> <text>` on A's
-/// machine in its `~/work/acme`; fails unless it succeeds. Gives the message's `msg_id`, as it
-/// reports it: B's device may send meanwhile.
-#[track_caller]
-fn a_sends_to_claude(roles: &Roles, text: &str) -> MessageId {
-    let (claude, channel) = (roles.claude(), roles.channel().to_string());
-    let args = [
-        AGENT,
-        LAPTOP_AGENT,
-        SEND,
-        JSON_FLAG,
-        TO,
-        &claude,
-        CHANNEL,
-        &channel,
-        text,
-    ];
-    let sent = (roles.a())
-        .start_in(&roles.senders.laptop_folder, &args)
-        .finish();
-    assert!(sent.success, "A's agent: {sent:?}");
-    let objects = json_objects(&sent.stdout);
-    let [object] = objects.as_slice() else {
-        panic!("not one object: {sent:?}");
-    };
-    (object["msg_id"].as_str())
-        .and_then(|id| id.parse().ok())
-        .unwrap_or_else(|| panic!("no msg_id: {sent:?}"))
 }
 
 /// Waits, for up to [`WAIT`], until `front` has swallowed no `send` for `quiet`: longer than a run
