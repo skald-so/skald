@@ -16,7 +16,7 @@ use crate::kit::{Change, RECV, latest, received, revise};
 use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::{Finished, Machine, Run};
 use crate::played::Played;
-use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word, reported_msg_id};
+use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word};
 use crate::talk::messages_sent;
 use crate::world::{ACME, AGENT, HOST};
 
@@ -170,9 +170,9 @@ impl Roles {
     }
 
     /// Runs `skald --agent <A's agent> send --json <addressee> --channel <channel> <text>` on A's
-    /// machine in its `~/work/acme`; fails unless it succeeds, reporting one `msg_id`, and the
-    /// front saw that message sent in the channel. Gives its `msg_id`, as the run reports it: B's
-    /// device may send before the run is over.
+    /// machine in its `~/work/acme`; fails unless it succeeds and the front saw the message sent in
+    /// the channel. Gives its `msg_id`, as the run reports it: B's device may send a receipt
+    /// meanwhile.
     #[track_caller]
     pub fn a_sends(&self, addressee: &[&str], text: &str) -> MessageId {
         let talk = &self.senders.agents.talk;
@@ -185,11 +185,18 @@ impl Roles {
             .start_in(&self.senders.laptop_folder, &args)
             .finish();
         assert!(sent.success, "A's agent: {sent:?}");
-        let msg_id = reported_msg_id(&sent);
+        let objects = json_objects(&sent.stdout);
+        let [object] = objects.as_slice() else {
+            panic!("not one object: {sent:?}");
+        };
+        let msg_id = (object["msg_id"].as_str())
+            .and_then(|id| id.parse().ok())
+            .unwrap_or_else(|| panic!("no msg_id: {sent:?}"));
         let seen = messages_sent(&talk.front, talk.channel, from);
         assert!(
-            (seen.iter()).any(|one| one.envelope.envelope().header.msg_id == msg_id),
-            "{msg_id} not sent: {seen:?}"
+            seen.iter()
+                .any(|sent| sent.envelope.envelope().header.msg_id == msg_id),
+            "{msg_id} not sent in {channel}: {seen:?}"
         );
         msg_id
     }
