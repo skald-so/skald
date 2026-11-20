@@ -264,13 +264,20 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit 1 }
           netsh int ipv6 set dynamicport tcp start=$env:EPHEMERAL_START num=$env:EPHEMERAL_PORTS
           if ($LASTEXITCODE -ne 0) { exit 1 }
-          $sampler = Join-Path $env:RUNNER_TEMP 'time-wait.ps1'
+          $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
           Set-Content -Path $sampler -Value @'
           while ($true) {
-            @(Get-NetTCPConnection -State TimeWait -ErrorAction SilentlyContinue |
-              Where-Object LocalPort -ge $env:EPHEMERAL_START |
-              Sort-Object -Property LocalPort -Unique).Count |
-              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'time-wait.txt')
+            $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
+              Where-Object { $_.LocalPort -ge $env:EPHEMERAL_START -and $_.State -ne 'Listen' })
+            $ports = @($used | Sort-Object -Property LocalPort -Unique).Count
+            $pool = [int]((Get-Counter '\Memory\Pool Nonpaged Bytes').CounterSamples[0].CookedValue / 1MB)
+            $states = ($used | Group-Object State | Sort-Object Count -Descending |
+              ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
+            $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
+              Sort-Object Count -Descending | Select-Object -First 3 |
+              ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }) -join ' '
+            "$ports $pool $(Get-Date -Format HH:mm:ss) $states $owners" |
+              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt')
             Start-Sleep -Seconds 10
           }
           '@
@@ -284,13 +291,14 @@ jobs:
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           cargo test -p skald-client --locked --no-fail-fast
-      - name: Show the most ephemeral ports TIME_WAIT held
+      - name: Show the most ephemeral ports in use
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          $held = (Get-Content -Path (Join-Path $env:RUNNER_TEMP 'time-wait.txt') | ForEach-Object { [int]$_ } |
-            Measure-Object -Maximum).Maximum
-          "TIME_WAIT held at most $held of $env:EPHEMERAL_PORTS ephemeral ports"
+          $samples = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          "$($samples.Count) samples: ports in use, non-paged pool MB, time, states, top owners"
+          $samples | Sort-Object { [int]($_ -split ' ')[0] } | Select-Object -Last 3
+          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 1
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

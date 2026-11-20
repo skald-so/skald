@@ -518,8 +518,8 @@ for (const ip of ['ipv4', 'ipv6']) {
     fail(`job ${key} does not widen the ${ip} range of ephemeral TCP ports past 16,384 within 1025-65535 before its tests`);
   }
 }
-const sampled = before.some((step) => /\bStart-Process\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes("'time-wait.txt'"));
-const heldStep = steps.slice(testIndex + 1).find((step) => commands(step.run).join('\n').includes("'time-wait.txt'"));
+const sampled = before.some((step) => /\bStart-Process\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes("'ports.txt'"));
+const heldStep = steps.slice(testIndex + 1).find((step) => commands(step.run).join('\n').includes("'ports.txt'"));
 if (!sampled || !heldStep) {
   fail(`job ${key} does not sample, from before its tests, the ephemeral ports TIME_WAIT holds, and print the most after them`);
 } else {
