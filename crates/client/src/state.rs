@@ -471,6 +471,14 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE sent ADD COLUMN held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1));
     ALTER TABLE own_message ADD COLUMN holding TEXT;
     ALTER TABLE own_message ADD COLUMN held TEXT;",
+    // Agents' hooks (`crate::hook`): the line of each message the device can reply to, sealed as
+    // its kept line, so an agent reads it whole again by its reference; whether the hook gave the
+    // signal of each message below `own` that waits for an agent; and the `Stop` continuations
+    // in a row of each agent's session.
+    "ALTER TABLE reply_target ADD COLUMN line BLOB;
+    ALTER TABLE handover ADD COLUMN signalled INTEGER NOT NULL DEFAULT 0
+        CHECK (signalled IN (0, 1));
+    ALTER TABLE agent ADD COLUMN stops INTEGER NOT NULL DEFAULT 0 CHECK (stops >= 0);",
     // The limit on replies without a human (`docs/protocol/README.md`, "Content"): the `hops` of
     // each kept message and own message waiting for the server, none for one an older client kept;
     // and, for each agent in each space, the highest `hops` of the messages handed over to it since
@@ -721,6 +729,8 @@ pub struct Target {
     pub space: SpaceId,
     pub channel: ChannelId,
     pub sealed: Vec<u8>,
+    /// Its line, sealed as the kept message's; none for one kept before the device kept lines.
+    pub line: Option<Vec<u8>>,
 }
 
 /// What the receipt of a kept message reports (`docs/protocol/delivery.md`, "Receipts").
@@ -2456,6 +2466,51 @@ impl State {
         Ok(())
     }
 
+    /// The `seq` of each kept message that waits for the agent `agent` whose signal its hook gave.
+    pub fn signalled(&self, agent: &str) -> Result<Vec<u64>, Error> {
+        let signalled: Vec<(u64, i64)> = self.lines(
+            "SELECT seq, signalled FROM handover WHERE agent = ?1 AND signalled = 1 ORDER BY seq",
+            params![agent],
+        )?;
+        Ok(signalled.into_iter().map(|(seq, _)| seq).collect())
+    }
+
+    /// Records that the hook of the agent `agent` gave the signal of the kept message `seq`.
+    pub fn signal_given(&self, seq: u64, agent: &str) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
+            params![sql_seq(seq)?, agent],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the `Stop` continuations in a row of the session of the agent `agent` in the space
+    /// `space` to `to`, or, without it, counts one more; gives how many there are now, none for an
+    /// agent the device has not run as there.
+    pub fn count_stops(&self, space: SpaceId, agent: &str, to: Option<u64>) -> Result<u64, Error> {
+        let space = space.to_string();
+        match to {
+            Some(to) => self.db.execute(
+                "UPDATE agent SET stops = ?3 WHERE space = ?1 AND name = ?2",
+                params![space, agent, sql_u64(to)?],
+            )?,
+            None => self.db.execute(
+                "UPDATE agent SET stops = stops + 1 WHERE space = ?1 AND name = ?2",
+                params![space, agent],
+            )?,
+        };
+        let stops: Option<i64> = (self.db)
+            .query_row(
+                "SELECT stops FROM agent WHERE space = ?1 AND name = ?2",
+                params![space, agent],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stops
+            .and_then(|stops| u64::try_from(stops).ok())
+            .unwrap_or(0))
+    }
+
     /// The highest `hops` of the messages handed over to the agent `agent` in the space `space`
     /// since the device last sent a message as it, if any was.
     pub fn handed_hops(&self, space: SpaceId, agent: &str) -> Result<Option<u64>, Error> {
@@ -2558,7 +2613,7 @@ impl State {
             [],
         )?;
         tx.commit()?;
-        let columns = "SELECT seq, msg_id, space, channel, target FROM reply_target";
+        let columns = "SELECT seq, msg_id, space, channel, target, line FROM reply_target";
         let mut query = match agent {
             Some(_) => self.db.prepare(&format!(
                 "{columns} WHERE space = ?1
@@ -2575,6 +2630,7 @@ impl State {
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, Vec<u8>>(4)?,
+                row.get::<_, Option<Vec<u8>>>(5)?,
             ))
         };
         let rows = match agent {
@@ -2584,7 +2640,7 @@ impl State {
             None => query.query_map([], row)?.collect::<Result<Vec<_>, _>>()?,
         };
         rows.into_iter()
-            .map(|(seq, msg_id, space, channel, sealed)| {
+            .map(|(seq, msg_id, space, channel, sealed, line)| {
                 let malformed = || Error::Malformed(format!("the message to reply to {msg_id}"));
                 Ok(Target {
                     seq: u64::try_from(seq).map_err(|_| malformed())?,
@@ -2592,6 +2648,7 @@ impl State {
                     space: space.parse().map_err(|_| malformed())?,
                     channel: channel.parse().map_err(|_| malformed())?,
                     sealed,
+                    line,
                 })
             })
             .collect()
@@ -2961,8 +3018,8 @@ fn count_hops(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
 /// older client kept it without what a reply needs; gives whether it is one now.
 fn add_target(tx: &Transaction, seq: i64) -> Result<bool, Error> {
     tx.execute(
-        "INSERT INTO reply_target (seq, msg_id, space, channel, target, expires, person)
-         SELECT seq, msg_id, space, channel, target, expires, 0 FROM kept
+        "INSERT INTO reply_target (seq, msg_id, space, channel, target, expires, person, line)
+         SELECT seq, msg_id, space, channel, target, expires, 0, line FROM kept
          WHERE seq = ?1 AND msg_id IS NOT NULL AND channel IS NOT NULL AND target IS NOT NULL
          ON CONFLICT DO NOTHING",
         params![seq],

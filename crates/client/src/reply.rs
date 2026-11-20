@@ -43,9 +43,9 @@ struct Sealed {
     hops: u64,
 }
 
-/// What a reply names a message by.
+/// What a reply, or a run that reads a message again, names a message by.
 #[derive(Debug, PartialEq)]
-enum Given {
+pub enum Given {
     Id(MessageId),
     /// Leading characters of its reference, lowercased.
     Reference(String),
@@ -64,11 +64,7 @@ pub fn run(
 ) -> Result<(), String> {
     recv::holding_warnings(dir, agent.is_some(), || {
         let named = given(message)?;
-        let scope = Scope::of_run(dir, agent.is_some())?;
-        let reader = match (scope, agent) {
-            (Scope::Only(space), Some(agent)) => Some((space, agent.as_str())),
-            _ => None,
-        };
+        let (scope, reader) = reader(dir, agent)?;
         let target = target(dir, &named, reader, message)?;
         let mut synced = send::of_channel(dir, storage, settings, target.channel, scope)?;
         let opened = open(
@@ -103,33 +99,46 @@ pub fn run(
     })
 }
 
+/// An agent with its folder's space, as [`kept_target`] takes it: none for the person.
+pub type Reader<'a> = Option<(skald_proto::SpaceId, &'a str)>;
+
+/// The scope of a run as `agent`, if given, by the state in `dir`, and its [`Reader`].
+pub fn reader<'a>(dir: &Path, agent: Option<&'a Name>) -> Result<(Scope, Reader<'a>), String> {
+    let scope = Scope::of_run(dir, agent.is_some())?;
+    let reader = match (scope, agent) {
+        (Scope::Only(space), Some(agent)) => Some((space, agent.as_str())),
+        _ => None,
+    };
+    Ok((scope, reader))
+}
+
 /// What `message` names: a `msg_id`, or else a reference, with or without its `#`, of at least
 /// [`SHORTEST`] characters.
 fn given(message: &str) -> Result<Given, String> {
+    named(message).ok_or_else(|| {
+        format!(
+            "\"{}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id; \
+             nothing is sent",
+            printable(message)
+        )
+    })
+}
+
+/// What `message` names, as [`given`] takes it, if anything.
+pub fn named(message: &str) -> Option<Given> {
     let trimmed = message.trim();
     if let Ok(msg_id) = trimmed.parse::<MessageId>() {
-        return Ok(Given::Id(msg_id));
+        return Some(Given::Id(msg_id));
     }
     let reference = trimmed.strip_prefix('#').unwrap_or(trimmed).to_lowercase();
-    if reference.len() >= SHORTEST && reference.bytes().all(|byte| forms::BASE32.contains(&byte)) {
-        return Ok(Given::Reference(reference));
-    }
-    Err(format!(
-        "\"{}\" names no message: give its #<ref>, as skald recv shows it, or its msg_id; nothing \
-         is sent",
-        printable(message)
-    ))
+    (reference.len() >= SHORTEST && reference.bytes().all(|byte| forms::BASE32.contains(&byte)))
+        .then_some(Given::Reference(reference))
 }
 
 /// The message `named`, as `message` names it, that the person, or else the agent `reader` in its
 /// space, can reply to by the state in `dir`; fails, saying why, for one it cannot reply to and for
 /// a reference two kept messages share.
-fn target(
-    dir: &Path,
-    named: &Given,
-    reader: Option<(skald_proto::SpaceId, &str)>,
-    message: &str,
-) -> Result<Target, String> {
+fn target(dir: &Path, named: &Given, reader: Reader, message: &str) -> Result<Target, String> {
     let shown = printable(message.trim());
     let unknown = || match reader {
         Some(_) => format!(
@@ -141,20 +150,41 @@ fn target(
              sent"
         ),
     };
+    kept_target(dir, named, reader).map_err(|why| match why {
+        Unnamed::Shared => format!(
+            "{shown} is the reference of more than one message this device keeps: give more of \
+             it, or the msg_id; nothing is sent"
+        ),
+        Unnamed::Unknown => unknown(),
+        Unnamed::Failed(err) => err,
+    })
+}
+
+/// Why no message is the one a run names.
+pub enum Unnamed {
+    /// None of those it can name.
+    Unknown,
+    /// A reference two kept messages share.
+    Shared,
+    /// The local state failed.
+    Failed(String),
+}
+
+/// The message `named` that the person, or else the agent `reader` in its space, can reply to by
+/// the state in `dir`, as [`chosen`] finds it among them.
+pub fn kept_target(dir: &Path, named: &Given, reader: Reader) -> Result<Target, Unnamed> {
     if !dir.join(state::FILE).is_file() {
-        return Err(unknown());
+        return Err(Unnamed::Unknown);
     }
-    let state = State::open(dir).map_err(text)?;
-    let targets = state.targets(reader, state::unix_now()).map_err(text)?;
-    let kept = state.kept_ids().map_err(text)?;
+    let failed = |err: state::Error| Unnamed::Failed(text(err));
+    let state = State::open(dir).map_err(failed)?;
+    let targets = (state.targets(reader, state::unix_now())).map_err(failed)?;
+    let kept = state.kept_ids().map_err(failed)?;
     chosen(named, targets, &kept).map_err(|shared| {
         if shared {
-            format!(
-                "{shown} is the reference of more than one message this device keeps: give more \
-                 of it, or the msg_id; nothing is sent"
-            )
+            Unnamed::Shared
         } else {
-            unknown()
+            Unnamed::Unknown
         }
     })
 }
@@ -257,6 +287,7 @@ mod tests {
             space: SpaceId::generate(),
             channel: ChannelId::generate(),
             sealed: Vec::new(),
+            line: None,
         }
     }
 
