@@ -12,13 +12,10 @@ use serde_json::{Value, json};
 
 use crate::channel::{ENTER, Files};
 use crate::gui::{Surface, UserClaude};
+use crate::hook::{HOOK_RUNS, Timed, timed_hook, timed_runs};
 use crate::{
     Agent, Call, Checks, Options, PROMPTED, SERVER, claude_flags, model_flag, pretty, seconds,
-    shell_quote,
 };
-
-/// Where a session's hook runs go, one JSON line each, as `live-check timed-hook` writes them.
-pub const RUNS: &str = "hook-runs.jsonl";
 
 /// Where the session's channel writes each notification Claude Code sends it.
 pub const NOTICES: &str = "notices.jsonl";
@@ -86,14 +83,7 @@ impl Answer {
 /// The shell command of a hook that records each run with `live-check timed-hook` into `runs`: its
 /// handler, `true`, prints nothing, so every decision stays with Claude Code and the person.
 pub fn recorder(live: &Path, runs: &Path) -> String {
-    [
-        live.to_string_lossy().as_ref(),
-        "timed-hook",
-        runs.to_string_lossy().as_ref(),
-        "true",
-    ]
-    .map(shell_quote)
-    .join(" ")
+    timed_hook(live, runs, &[Path::new("true")])
 }
 
 /// The `hooks` setting that runs `recorder` on each of [`EVENTS`] and, if given, `turns` on
@@ -113,7 +103,7 @@ pub fn hooks(recorder: &str, turns: Option<&str>) -> Value {
 /// Writes the session's MCP and settings files into `files.dir` and returns the arguments of an
 /// interactive session, which waits for [`prompt`] until its channel is ready: the channel `channel`, which records the notifications
 /// Claude Code sends it in [`NOTICES`]; the hook runs recorded by `live`, `live-check`, in
-/// [`RUNS`]; `Bash` its only tool; nothing allowed, in the `default` permission mode, so the
+/// [`HOOK_RUNS`]; `Bash` its only tool; nothing allowed, in the `default` permission mode, so the
 /// command waits on its dialog.
 pub fn session(
     files: &Files,
@@ -135,7 +125,7 @@ pub fn session(
         &settings,
         pretty(&json!({
             "promptSuggestionEnabled": false,
-            "hooks": hooks(&recorder(live, &files.dir.join(RUNS)), Some(&files.record())),
+            "hooks": hooks(&recorder(live, &files.dir.join(HOOK_RUNS)), Some(&files.record())),
         })),
     )?;
     let config = [
@@ -153,29 +143,6 @@ pub fn session(
         format!("server:{SERVER}"),
     ]);
     Ok(args)
-}
-
-/// A hook run, as `live-check timed-hook` recorded it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HookRun {
-    pub event: String,
-    /// When the handler started, in milliseconds since the Unix epoch.
-    pub at_ms: u64,
-    pub input: Value,
-}
-
-/// The hook runs in the text of a [`RUNS`] file; a line that is not one is left out.
-pub fn hook_runs(text: &str) -> Vec<HookRun> {
-    text.lines()
-        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .filter_map(|run| {
-            Some(HookRun {
-                event: run["hook_event_name"].as_str()?.to_owned(),
-                at_ms: run["started_ms"].as_u64()?,
-                input: run["input"].clone(),
-            })
-        })
-        .collect()
 }
 
 /// A notification Claude Code sent the channel.
@@ -205,7 +172,7 @@ pub fn notices(text: &str) -> Vec<Notice> {
 /// showed and when the check answered it.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Observed {
-    pub runs: Vec<HookRun>,
+    pub runs: Vec<Timed>,
     pub notices: Vec<Notice>,
     pub shown_ms: Option<u64>,
     pub answered_ms: Option<u64>,
@@ -216,7 +183,7 @@ impl Observed {
     pub fn read(dir: &Path) -> Self {
         let text = |name: &str| fs::read_to_string(dir.join(name)).unwrap_or_default();
         Self {
-            runs: hook_runs(&text(RUNS)),
+            runs: timed_runs(&text(HOOK_RUNS)),
             notices: notices(&text(NOTICES)),
             ..Self::default()
         }
@@ -227,7 +194,7 @@ impl Observed {
         self.runs
             .iter()
             .find(|run| run.event == "PreToolUse" && prompted(&run.input))
-            .map(|run| run.at_ms)
+            .map(|run| run.started_ms)
     }
 
     /// When the channel's MCP handshake ended: from then on Claude Code may relay a prompt to it.
@@ -257,7 +224,7 @@ impl Observed {
             .runs
             .iter()
             .filter(|run| ANSWER_EVENTS.contains(&run.event.as_str()) && prompted(&run.input))
-            .map(|run| (format!("{} hook", run.event), run.at_ms));
+            .map(|run| (format!("{} hook", run.event), run.started_ms));
         let notices = self
             .notices
             .iter()
@@ -321,14 +288,14 @@ impl Candidate {
                     text(&run.input["tool_name"]),
                     text(&run.input["tool_input"]["command"])
                 );
-                (run.at_ms, &run.input, says)
+                (run.started_ms, &run.input, says)
             }
             Self::Notification => {
                 let run = observed.runs.iter().find(|run| {
                     run.event == "Notification"
                         && run.input["notification_type"] == "permission_prompt"
                 })?;
-                (run.at_ms, &run.input, text(&run.input["message"]))
+                (run.started_ms, &run.input, text(&run.input["message"]))
             }
             Self::Relay => {
                 let notice = observed
@@ -461,7 +428,7 @@ impl PermissionCheck {
 
 /// Writes the GUI check of `surface`, whose version line is `version`, into `work` and returns the
 /// project to open: its local settings run the hook recorder of `live`, `live-check`, on each of
-/// [`EVENTS`] into `work`'s [`RUNS`], cap the effort, turn off the `user`'s plugins, connectors and
+/// [`EVENTS`] into `work`'s [`HOOK_RUNS`], cap the effort, turn off the `user`'s plugins, connectors and
 /// MCP servers' tools, and allow nothing. Only files in the project configure the surface.
 pub fn prepare_gui(
     work: &Path,
@@ -479,7 +446,7 @@ pub fn prepare_gui(
     let project = work.join("project");
     fs::create_dir_all(project.join(".claude"))?;
     let mut settings = json!({
-        "hooks": hooks(&recorder(live, &work.join(RUNS)), None),
+        "hooks": hooks(&recorder(live, &work.join(HOOK_RUNS)), None),
         "maxEffortLevel": "low",
     });
     user.turn_off(&mut settings);
@@ -543,7 +510,7 @@ mod tests {
 
     fn observed(runs: &str, notices_text: &str) -> Observed {
         Observed {
-            runs: hook_runs(runs),
+            runs: timed_runs(runs),
             notices: notices(notices_text),
             ..Observed::default()
         }
@@ -597,7 +564,7 @@ mod tests {
         assert_eq!(hooks.len(), EVENTS.len());
         let recorder = format!(
             "'/bin/live-check' 'timed-hook' '{}' 'true'",
-            dir.path().join(RUNS).display()
+            dir.path().join(HOOK_RUNS).display()
         );
         for event in EVENTS {
             let handlers = &hooks[event][0]["hooks"];
@@ -642,7 +609,7 @@ mod tests {
         assert_eq!(yes.channel_ready_ms(), Some(1_795_122_136_128));
         assert!(yes.channel_ready_ms() < yes.called_ms());
         assert_eq!(observed(YES, "").channel_ready_ms(), None);
-        assert!(hook_runs("not json\n{}\n").is_empty());
+        assert!(timed_runs("not json\n{}\n").is_empty());
         assert!(notices("{\"method\":\"m\"}\n").is_empty());
     }
 
@@ -720,7 +687,7 @@ mod tests {
             .iter()
             .find(|run| run.event == "PostToolUse")
             .unwrap()
-            .at_ms;
+            .started_ms;
         yes.answered_ms = Some(post - 100);
         assert_eq!(yes.after_answer(), [("PostToolUse hook".to_owned(), 100)]);
         yes.answered_ms = Some(post + 1);
@@ -795,7 +762,7 @@ mod tests {
         let mut late = observed(YES, YES_NOTICES);
         for run in &mut late.runs {
             if run.event == "Notification" {
-                run.at_ms += WITHIN_MS;
+                run.started_ms += WITHIN_MS;
             }
         }
         let mut check = PermissionCheck::default();
@@ -828,7 +795,7 @@ mod tests {
             &fs::read_to_string(project.join(".claude/settings.local.json")).unwrap(),
         )
         .unwrap();
-        let recorder = recorder(live, &dir.path().join(RUNS));
+        let recorder = recorder(live, &dir.path().join(HOOK_RUNS));
         for event in EVENTS {
             assert_eq!(
                 settings["hooks"][event][0]["hooks"][0]["command"],
@@ -860,7 +827,7 @@ mod tests {
         );
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(Observed::read(dir.path()), Observed::default());
-        fs::write(dir.path().join(RUNS), YES).unwrap();
+        fs::write(dir.path().join(HOOK_RUNS), YES).unwrap();
         fs::write(dir.path().join(NOTICES), YES_NOTICES).unwrap();
         assert_eq!(Observed::read(dir.path()), observed(YES, YES_NOTICES));
     }

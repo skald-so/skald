@@ -5,6 +5,7 @@
 mod app;
 mod before_run;
 mod gui_run;
+mod permission_gui;
 mod permission_run;
 mod pty;
 mod read_run;
@@ -109,12 +110,12 @@ fn main() -> ExitCode {
         }
         ["gui-permission", surface] => match Surface::parse(surface) {
             Some(surface @ (Surface::ClaudeDesktop | Surface::ClaudeVsCode)) => {
-                ended(permission_run::gui(surface))
+                ended(permission_gui::gui(surface))
             }
             _ => usage(),
         },
-        ["gui-permission-link", work] => ended(permission_run::gui_link(Path::new(work))),
-        ["gui-permission-result", work] => ended(permission_run::gui_result(Path::new(work))),
+        ["gui-permission-link", work] => ended(permission_gui::gui_link(Path::new(work))),
+        ["gui-permission-result", work] => ended(permission_gui::gui_result(Path::new(work))),
         ["gui-add", work] => ended(gui_run::add(Path::new(work))),
         ["gui-link", work] => ended(gui_run::link(Path::new(work))),
         ["gui-queue", work, cli @ ..] => {

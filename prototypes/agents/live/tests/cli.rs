@@ -782,25 +782,32 @@ fn gui_turns_off_the_users_claude_plugins_and_servers() {
     )
     .unwrap();
     let tmp = tempfile::tempdir().unwrap();
-    let (_, lines) = succeeded(home.path(), tmp.path(), &["gui", "socket", "claude-vscode"]);
-    let project = lines
-        .iter()
-        .find_map(|line| line.strip_prefix("project: "))
-        .expect("the project");
-    let settings: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(Path::new(project).join(".claude/settings.local.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        settings["enabledPlugins"],
-        serde_json::json!({ "tool@market": false })
-    );
-    assert_eq!(
-        settings["permissions"]["deny"],
-        serde_json::json!(["mcp__my_search", "mcp__search"])
-    );
-    assert_eq!(settings["disableClaudeAiConnectors"], true);
-    assert!(!settings.to_string().contains("secret-command"));
+    for args in [
+        &["gui", "socket", "claude-vscode"][..],
+        &["gui-permission", "claude-vscode"],
+    ] {
+        let (_, lines) = succeeded(home.path(), tmp.path(), args);
+        let project = lines
+            .iter()
+            .find_map(|line| line.strip_prefix("project: "))
+            .expect("the project");
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(Path::new(project).join(".claude/settings.local.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            settings["enabledPlugins"],
+            serde_json::json!({ "tool@market": false }),
+            "{args:?}"
+        );
+        assert_eq!(
+            settings["permissions"]["deny"],
+            serde_json::json!(["mcp__my_search", "mcp__search"]),
+            "{args:?}"
+        );
+        assert_eq!(settings["disableClaudeAiConnectors"], true, "{args:?}");
+        assert!(!settings.to_string().contains("secret-command"), "{args:?}");
+    }
 }
 
 /// Prepares the socket's GUI check on Claude Code for VS Code with `flags`; returns the home, the
