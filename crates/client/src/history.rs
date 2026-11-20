@@ -98,7 +98,7 @@ pub fn upload(follower: &mut Follower, link: &mut Link, scope: Scope) {
         }
         follower.state.remove_history_entry(msg_id).map_err(text)
     });
-    for msg_id in unanswered {
+    for msg_id in unanswered.warned() {
         eprintln!(
             "skald: warning: the server has not answered the history entry of the message \
              {msg_id}; the next run uploads it again"

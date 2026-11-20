@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    AccountId, Cbor as _, ChannelId, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey,
-    SpaceId, Stored,
+    AccountId, Cbor as _, Channel, ChannelId, DeviceId, Frame, Header, RawEnvelope, Roster,
+    RosterBody, Scheme, SendKey, SpaceId, Stored,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -202,13 +202,7 @@ async fn route(
     let Some(channel) = body.channels.iter().find(|c| c.id == header.channel) else {
         return Ok(Err(Problem::NotAMember));
     };
-    // Whether `device` of `account` is in the channel: its account a member of it, not excluded.
-    let in_channel = |account: AccountId, device: DeviceId| {
-        channel.members.iter().any(|m| m.account == account)
-            && body.members.iter().any(|m| {
-                m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
-            })
-    };
+    let in_channel = |account, device| in_channel(body, channel, account, device);
     // A `service` device sends with its token only where the token's send permission and channels
     // let it.
     let sends = match &sender.token {
@@ -233,6 +227,20 @@ async fn route(
         }
         _ => Ok(Err(Problem::UnknownRecipient)),
     }
+}
+
+/// Whether `device` of `account` is in `channel` of the revision `body`: its account a member of
+/// the channel, the device not excluded.
+pub(crate) fn in_channel(
+    body: &RosterBody,
+    channel: &Channel,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    channel.members.iter().any(|m| m.account == account)
+        && body.members.iter().any(|m| {
+            m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
+        })
 }
 
 /// Where an envelope goes.

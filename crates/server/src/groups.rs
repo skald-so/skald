@@ -19,11 +19,11 @@ use skald_crypto::{ChannelView, MlsContent, MlsFraming};
 use skald_proto::{AccountId, ChannelId, ChannelMember, DeviceId, Header, Roster};
 use sqlx::PgConnection;
 
-use crate::AppState;
 use crate::devices::{base64, bytes};
 use crate::mailboxes::{Problem, Sender, latest as latest_revision, receiving};
 use crate::refusal::{Answer, Caller, Refusal, parse};
 use crate::spaces::readable;
+use crate::{AppState, presence};
 
 /// Checks how an `mls` envelope with `header` and a payload of `framing`, `None` if it is no
 /// `MLSMessage`, is addressed: a Welcome to `recipients`, a message of the channel's group to the
@@ -159,7 +159,8 @@ fn others(members: &[DeviceId], sender: DeviceId) -> Vec<DeviceId> {
 /// A Commit's recipients: each member device of the epoch it commits from but `sender`. The first
 /// Commit of epoch 0 starts the channel's group at epoch 1 on `tx`; a later one must be of the
 /// current epoch, otherwise `epoch-mismatch`, and one the view follows, sent by the device of its
-/// sender leaf or its joiner, otherwise `not-a-member`; the view follows it on `tx`.
+/// sender leaf or its joiner, otherwise `not-a-member`; the view follows it on `tx`, and the presence
+/// values of the devices it removes go.
 async fn commit(
     tx: &mut PgConnection,
     sender: &Sender,
@@ -195,6 +196,7 @@ async fn commit(
     .execute(&mut *tx)
     .await?;
     keep_epoch(tx, channel, &next).await?;
+    presence::keep_members(tx, channel, &texts(&next.members)).await?;
     Ok(Ok(others(&group.members, sender.device)))
 }
 
