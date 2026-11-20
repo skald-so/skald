@@ -586,7 +586,14 @@ The dialog showed on the screen 0.1–0.7 s after the call, after the `Permissio
 | Tells the answer | No. "Yes": the call's `PostToolUse` 0.1 s later. "No": no hook runs; the turn ends as "Interrupted · What should Claude do instead?" without `Stop` | As `PermissionRequest` | No notification after either answer |
 | Needs | The hook in settings | The hook in settings | The channel loaded ([Channels](#channels)), declaring the capability, its handshake ended before the prompt opens; Claude Code 2.1.234 or later relays only to a channel loaded for the session |
 
-GUI checks, as in [GUI live check](#gui-live-check): `live-check gui-permission <claude-desktop|claude-vscode>` prepares a project whose `.claude/settings.local.json` runs the recorder on each event, allows nothing, caps the effort and turns off the user's plugins, connectors and MCP servers' tools; it prints the version, the project and the prompt. The driver opens the project, sends the prompt and, once the prompt shows, waits 10 s. On the desktop app, it then opens another session and runs `live-check gui-permission-link <dir>`, which opens `claude://code/needs-input?session=<the app's ID>`, and reads from a screenshot whether the app shows the waiting session. It answers Allow, then `live-check gui-permission-result <dir>` prints the versions and the hooks' lines.
+GUI checks, as in [GUI live check](#gui-live-check): `live-check gui-permission <claude-desktop|claude-vscode>` prepares a project whose `.claude/settings.local.json` runs the recorder on each event, allows nothing, caps the effort and turns off the user's plugins, connectors and MCP servers' tools; it prints the version, the project and the prompt. The driver opens the project, sends the prompt and, once the prompt shows, waits 10 s. On the desktop app, it then opens another session and runs `live-check gui-permission-link <dir>`, which opens `claude://code/needs-input?session=<the app's ID>`, and reads from a screenshot whether the app shows the waiting session. It answers Allow, then `live-check gui-permission-result <dir>` prints the versions and the hooks' lines. Claude Code for VS Code started the session in Auto mode: the driver picks Manual in the prompt box's mode menu before sending.
+
+GUI results on 2026-11-20:
+
+| Surface | Version | Result |
+|---|---|---|
+| Claude Code for VS Code | 2.1.322; the session ran Claude Code 2.1.322 | pass: `PermissionRequest` 0.0 s, `Notification` 6.0 s, each carrying what it does on the CLI. A "Yes" answered the prompt 7.7 s after the call, before the driver did: the session had Remote Control on, from the user's config, and its transcript records the decision as the user's. Then `PostToolUse` |
+| Claude desktop app | Claude 6.6395.0 | not run: the app is signed in to a Free plan, which does not run Claude Code; needs the owner's sign-in. `needs-input` not checked |
 
 In a first run the prompt was given as the argument and opened before the channel's handshake ended: the relay sent nothing. The check now types the prompt once the handshake ended.
 
@@ -594,9 +601,12 @@ Findings:
 - On the CLI, the `PermissionRequest` hook and the relay tell within 0.1 s, before the dialog shows; either can be the primary path. The hook needs no channel.
 - The `Notification` hook comes about 6 s later and carries no tool, so it can only be a fallback.
 - No path tells that "No" answered a prompt; "Yes" shows as the call's `PostToolUse`.
+- Claude Code for VS Code runs both hooks as the CLI does.
 
 Open questions:
 - What tells that a prompt answered "No" ended: such as the next `UserPromptSubmit` or `Stop`.
+- Whether Remote Control relays a prompt and takes its answer: in the VS Code run a "Yes" came from outside VS Code.
+- The desktop app: the hooks and `claude://code/needs-input`, once it is signed in to a plan with Claude Code.
 
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
