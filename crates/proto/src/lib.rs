@@ -12,6 +12,7 @@ mod history;
 mod id;
 mod link;
 mod presence;
+mod queue;
 mod receipt;
 mod revocation;
 mod roster;
@@ -49,6 +50,10 @@ pub use link::{LINK_LABEL, Link, LinkBody, LinkGrantBody, LinkMessage, LinkReque
 pub use presence::{
     AgentState, AgentStatus, NOTE_MAX, PRESENCE_LABEL, Presence, PresenceBody, PresencePlaintext,
     ServedQueue, Tier, Tiers,
+};
+pub use queue::{
+    Claim, IDEMPOTENCY_KEY_MAX, Outcome, QUEUE_KEY_LABEL, QueueKey, QueueKeyBody, QueueMode,
+    QueuedTask, Sched, TASK_LABEL, Task, TaskBody, TaskPlaintext, TaskResult,
 };
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody, Revocations};
