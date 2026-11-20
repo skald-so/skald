@@ -27,6 +27,7 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - Its `inbox` tool returns the messages that came for the session since it started, each once.
 - Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
+- Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.

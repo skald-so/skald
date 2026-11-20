@@ -646,6 +646,8 @@ enum Body<'a> {
     ProvedGet { proof: &'a str },
     /// JSON, `POST`ed with the device's proof `proof`.
     ProvedJson { json: &'a [u8], proof: &'a str },
+    /// CBOR, `PUT` with the device's proof `proof`.
+    ProvedCbor { cbor: &'a [u8], proof: &'a str },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
     /// the timeout.
     Frame {
@@ -857,6 +859,16 @@ impl Connection {
         self.http(path, Some(token), Body::ProvedJson { json, proof })
     }
 
+    /// `PUT <path>` of the CBOR `cbor` as the device of `proof`, on the device session of `token`.
+    pub fn put_cbor_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        cbor: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::ProvedCbor { cbor, proof })
+    }
+
     /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
     /// of the answer that serves it, awaited for `wait` more than the timeout.
     pub fn post_frame_as(
@@ -903,6 +915,10 @@ impl Connection {
                         .content_type("application/json")
                         .send(json)
                 }
+                Body::ProvedCbor { cbor, proof } => with_headers(agent.put(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .content_type("application/cbor")
+                    .send(cbor),
                 Body::Frame { frame, proof, .. } => {
                     with_headers(agent.post(&url), &version, bearer)
                         .header(PROOF_HEADER, proof)

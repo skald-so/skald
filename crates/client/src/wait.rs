@@ -30,14 +30,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use skald_proto::SpaceId;
 
-use crate::Operation;
-use crate::connection;
 use crate::helper::{self, Route};
 use crate::intake::{self, Said};
 use crate::lock::Lock;
 use crate::mailbox::{self, Came, Transport, Watched};
+use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::State;
+use crate::{Command, Operation, connection, folders, presence};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -89,6 +89,9 @@ pub fn here(
         let state = State::open(dir).map_err(|err| err.to_string())?;
         let own = last_own_kept(&state, operation)?;
         let shown = crate::received(operation);
+        if operation.agent.is_some() {
+            presence::keep(dir, presence_settings(operation), &BTreeSet::new());
+        }
         drop(lock);
         if shown? {
             return Ok(None);
@@ -106,6 +109,15 @@ pub fn here(
                 break;
             }
         }
+    }
+}
+
+/// What a check of the presence takes of `operation`'s settings.
+fn presence_settings(operation: &Operation) -> presence::Settings {
+    presence::Settings {
+        storage: operation.key_storage,
+        speaks: operation.speaks,
+        timeout: operation.timeout,
     }
 }
 
@@ -253,11 +265,14 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
     (stop, thread)
 }
 
-/// The helper's sessions: the `skald recv --wait` commands that wait through it.
+/// The helper's sessions: the `skald recv --wait` commands that wait through it, and the
+/// sessions MCP servers hold of it ([`hold`]).
 #[derive(Default)]
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
+    /// Whether a session ran or took in what came since this was last asked.
+    worked: bool,
 }
 
 /// A waiting session, the space its last run kept to, if any, and whether a command ran since:
@@ -266,6 +281,16 @@ struct Waiting {
     session: Session,
     space: Option<SpaceId>,
     due: bool,
+    /// Until when a held session whose run failed to take in is left be.
+    resting: Option<Instant>,
+}
+
+/// How long a held session whose run failed to take in is left be.
+const REST: Duration = Duration::from_secs(30);
+
+thread_local! {
+    /// Whether the last run of a held session on this thread failed to take in.
+    static HOLD_FAILED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// A session: the command's connection to the helper, its working directory and its operation.
@@ -287,12 +312,35 @@ pub enum Ran {
 
 impl Sessions {
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
-    /// it waits for or failed. Whether the helper goes on.
+    /// it waits for or failed. A session an MCP server holds starts its agent's session first
+    /// ([`hold`]). Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
-        let ran = helper::run_for(session, dir, crate::received);
+        let others = self.running();
+        let ran = helper::run_for(session, dir, |operation| match holds(operation) {
+            true => hold(operation, Some(&others)),
+            false => crate::received(operation),
+        });
         let went_on = self.again(ran, recv::last_space()).is_some();
         self.watch.start();
+        self.worked = true;
         went_on
+    }
+
+    /// The agents whose sessions wait, each in the space it kept to.
+    pub fn running(&self) -> BTreeSet<presence::Running> {
+        (self.waiting.iter())
+            .filter_map(|waiting| {
+                Some(presence::Running {
+                    space: waiting.space?,
+                    agent: waiting.session.operation.agent.clone()?,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether a session ran or took in what came since this was last asked.
+    pub fn worked(&mut self) -> bool {
+        std::mem::take(&mut self.worked)
     }
 
     /// Notes that a command ran.
@@ -327,8 +375,11 @@ impl Sessions {
         let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());
         let (mut runs, mut handed) = (Vec::new(), Vec::new());
+        let now = Instant::now();
         for waiting in std::mem::take(&mut self.waiting) {
-            if waiting.due {
+            if waiting.resting.is_some_and(|until| now < until) {
+                self.waiting.push(waiting);
+            } else if waiting.due {
                 runs.push(waiting);
             } else if came.concerns(waiting.space) {
                 handed.push(waiting);
@@ -339,8 +390,9 @@ impl Sessions {
         if runs.is_empty() && handed.is_empty() {
             return Some(true);
         }
+        self.worked = true;
         for waiting in runs {
-            let ran = helper::run_for(waiting.session, dir, crate::received);
+            let ran = run_again(waiting.session, dir);
             self.again(ran, recv::last_space())?;
         }
         self.hand(handed, dir, (&noticed, retry, seen))?;
@@ -364,7 +416,7 @@ impl Sessions {
         }
         let Some(mut intake) = intake::take() else {
             for waiting in handed {
-                let ran = helper::run_for(waiting.session, dir, crate::received);
+                let ran = run_again(waiting.session, dir);
                 self.again(ran, recv::last_space())?;
             }
             return Some(());
@@ -379,6 +431,11 @@ impl Sessions {
                 let none = Said::new();
                 for waiting in handed {
                     let space = waiting.space;
+                    // A held session is handed nothing: its agent's `inbox` takes it.
+                    if holds(&waiting.session.operation) {
+                        self.waiting.push(waiting);
+                        continue;
+                    }
                     let said = match space {
                         Some(space) => told.spaces.get(&space).unwrap_or(&none),
                         None => &told.person,
@@ -395,7 +452,12 @@ impl Sessions {
                 intake.send_receipts();
             }
             Err(err) => {
-                for waiting in handed {
+                for mut waiting in handed {
+                    if holds(&waiting.session.operation) {
+                        waiting.resting = Some(Instant::now() + REST);
+                        self.waiting.push(waiting);
+                        continue;
+                    }
                     helper::run_for(waiting.session, dir, |_| Err(err.clone()));
                 }
             }
@@ -409,10 +471,12 @@ impl Sessions {
     fn again(&mut self, ran: Ran, space: Option<SpaceId>) -> Option<()> {
         match ran {
             Ran::Waits(session) => {
+                let failed = holds(&session.operation) && HOLD_FAILED.with(|failed| failed.take());
                 self.waiting.push(Waiting {
                     session: *session,
                     space,
                     due: false,
+                    resting: failed.then(|| Instant::now() + REST),
                 });
                 Some(())
             }
@@ -420,6 +484,72 @@ impl Sessions {
             Ran::Panicked => None,
         }
     }
+}
+
+/// Runs `skald recv` again for `session` with the state in `dir`, or takes in again for a held
+/// one.
+fn run_again(session: Session, dir: &Path) -> Ran {
+    helper::run_for(session, dir, |operation| match holds(operation) {
+        true => hold(operation, None),
+        false => crate::received(operation),
+    })
+}
+
+/// Whether `operation` is the session an MCP server holds of the helper.
+pub fn holds(operation: &Operation) -> bool {
+    matches!(
+        operation.command,
+        Command::Mcp {
+            call: Some(Call::Hold { .. }),
+            ..
+        }
+    )
+}
+
+/// The helper's run for the session an MCP server holds of it, its `operation`: in the working
+/// directory's space, it takes in what waits for the session's agent, handing nothing over
+/// ([`recv::held`]), and waits on; in no space, it ends. On the session's start, `others` gives
+/// the agents of the other sessions: unless one of them is its agent in that space, its agent's
+/// session starts ([`State::agent_session_started`]). A failure to take in leaves the session be
+/// for [`REST`].
+fn hold(
+    operation: &Operation,
+    others: Option<&BTreeSet<presence::Running>>,
+) -> Result<bool, String> {
+    let (
+        Some(agent),
+        Command::Mcp {
+            call: Some(Call::Hold { runtime }),
+            ..
+        },
+    ) = (operation.agent()?, &operation.command)
+    else {
+        return Err("only an MCP server holds a session of the helper".to_owned());
+    };
+    crate::clock::set_offset(operation.clock_offset);
+    let dir = crate::state::dir(operation.state_dir.clone())?;
+    presence::remember(presence_settings(operation));
+    let Ok(space) = recv::holding_warnings(&dir, true, || folders::working_space(&dir)) else {
+        return Ok(true);
+    };
+    if let Some(others) = others {
+        let running = presence::Running {
+            space: space.id,
+            agent: agent.to_string(),
+        };
+        if !others.contains(&running) {
+            let held = State::open(&dir).map_err(|err| err.to_string())?;
+            (held.add_agent(space.id, agent.as_str()))
+                .and_then(|()| {
+                    held.agent_session_started(space.id, agent.as_str(), runtime.as_deref())
+                })
+                .map_err(|err| err.to_string())?;
+        }
+    }
+    let settings = (operation.speaks, operation.timeout);
+    let held = recv::held(&dir, operation.key_storage, settings, &agent);
+    HOLD_FAILED.with(|failed| failed.set(held.is_err()));
+    Ok(false)
 }
 
 /// Shows when each of `marks` and the handover to a session started, in milliseconds since the

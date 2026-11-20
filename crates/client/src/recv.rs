@@ -107,7 +107,37 @@ pub fn run(
 ) -> Result<bool, String> {
     holding_warnings(dir, agent.is_some(), || {
         let form = Form::of(agent.is_some(), json);
-        received(dir, storage, (speaks, timeout), agent, (waits, form, false))
+        received(
+            dir,
+            storage,
+            (speaks, timeout),
+            agent,
+            (waits, form, false),
+            true,
+        )
+    })
+}
+
+/// The session an MCP server of `agent` holds of the helper ([`crate::wait`]): [`run`] as the
+/// agent's `skald recv --wait`, leaving what takes in what comes next, but handing nothing over,
+/// which the agent's `inbox` does.
+pub fn held(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    agent: &Name,
+) -> Result<(), String> {
+    holding_warnings(dir, true, || {
+        let form = Form::Short;
+        received(
+            dir,
+            storage,
+            settings,
+            Some(agent),
+            (true, form, false),
+            false,
+        )
+        .map(drop)
     })
 }
 
@@ -127,6 +157,7 @@ pub fn inbox(
             settings,
             Some(agent),
             (false, Form::Short, true),
+            true,
         )
         .map(drop)
     })
@@ -165,13 +196,15 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
     }
 }
 
-/// [`run`], showing in `form`; as [`inbox`] if `whole`.
+/// [`run`], showing in `form`; as [`inbox`] if `whole`; handing nothing over to the agent unless
+/// `hands`.
 fn received(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
     agent: Option<&Name>,
     (waits, form, whole): (bool, Form, bool),
+    hands: bool,
 ) -> Result<bool, String> {
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
@@ -219,6 +252,7 @@ fn received(
         Err(err) => Err(err.clone()),
     };
     let handed = match ran_as {
+        Some(_) if !hands => Ok(0),
         // A failed run hands nothing over.
         Some((space, agent)) if whole => match (&received, &aligned, &shown) {
             (Ok(()), Ok(()), Ok(())) => hand_over_whole(&follower, (space, agent), form),

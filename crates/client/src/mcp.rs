@@ -12,16 +12,22 @@
 //! - The send tool sends as the agent's `skald send` does and returns what it says: `to` is its
 //!   `--to`, or `*` its `--all`.
 //! - The reply tool replies as the agent's `skald reply` does and returns what it says.
+//! - The status tool sets the agent's state and note as its `skald set-status` does.
 //! - The registration and each tool call are operations, as a command's: through the helper, or
 //!   one-shot, and through a helper newer than the server too. Once the `skald` installed where the
 //!   server's binary was is newer, as after an update while the server runs, that `skald` runs each
 //!   ([`helper::relay`]).
+//! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
+//!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
+//!   helper knows the agent runs and does not exit idle under it ([`crate::presence`]).
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, mpsc};
+use std::thread;
 use std::time::Duration;
 
 use rmcp::model::{
@@ -35,14 +41,16 @@ use rmcp::transport::{IntoTransport, Transport};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use skald_proto::{DeviceId, Name, VersionRange};
+use skald_proto::{DeviceId, NOTE_MAX, Name, VersionRange};
 use tokio::sync::oneshot;
 
 use crate::devices::text;
 use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
-use crate::{Command, Operation, folders, forms, mailbox, recovery, recv, reply, secrets, send};
+use crate::{
+    Command, Operation, folders, forms, mailbox, presence, recovery, recv, reply, secrets, send,
+};
 
 /// The tool that returns the agent's messages.
 pub const INBOX: &str = "inbox";
@@ -72,6 +80,14 @@ const MESSAGE: &str = "message";
 const REPLY_DESCRIPTION: &str = "Replies to a Skald message, to its sender in its channel: sent \
                                  #<ref>.";
 const MESSAGE_DESCRIPTION: &str = "The message's #<ref>, as inbox shows it, or its msg_id.";
+
+/// The tool that sets the agent's state and note, and its arguments.
+pub const STATUS: &str = "set_status";
+const STATE: &str = "state";
+const NOTE: &str = "note";
+
+const STATUS_DESCRIPTION: &str = "Sets this session's Skald status, which other agents see.";
+const NOTE_DESCRIPTION: &str = "What it works on, up to 128 bytes.";
 
 /// What the send tool says without `to`.
 const NO_TO: &str = "name the addressee in `to`: an agent's address, or * for every agent in the \
@@ -105,6 +121,13 @@ pub enum Call {
     },
     /// The reply tool: `skald reply` to the message `message` names with the text `text`.
     Reply { message: String, text: String },
+    /// The status tool: `skald set-status` with `state` and `note`.
+    SetStatus {
+        state: presence::Settable,
+        note: Option<String>,
+    },
+    /// The session the server holds of the helper, its agent CLI `runtime` ([`hold`]).
+    Hold { runtime: Option<String> },
 }
 
 /// Runs `call` as `agent`, by the state in `dir`, its secrets in `storage`.
@@ -148,7 +171,34 @@ pub fn perform(
             let named = (message.as_str(), text.as_str());
             reply::run(dir, storage, settings, named, Some(agent), false)
         }),
+        Call::SetStatus { state, note } => recv::holding_warnings(dir, true, || {
+            presence::set_status(dir, agent, state, note.as_deref())
+        }),
+        Call::Hold { .. } => Err("skald mcp holds a session only of the helper".to_owned()),
     }
+}
+
+/// The call of the status tool with `arguments`; fails, saying why, without `state` or with one
+/// that is neither `busy` nor `available`, or with `note` not a string.
+fn status_call(arguments: Option<&rmcp::model::JsonObject>) -> Result<Call, String> {
+    let field = |name: &str| arguments.and_then(|arguments| arguments.get(name));
+    let state = match field(STATE) {
+        Some(Value::String(state)) if state == "busy" => presence::Settable::Busy,
+        Some(Value::String(state)) if state == "available" => presence::Settable::Available,
+        _ => return Err("give `state` as busy or available; nothing changed".to_owned()),
+    };
+    let note = match field(NOTE) {
+        None | Some(Value::Null) => None,
+        Some(Value::String(note)) if note.len() > NOTE_MAX => {
+            return Err(format!(
+                "the note is {} bytes in UTF-8, over the limit of {NOTE_MAX}; nothing changed",
+                note.len()
+            ));
+        }
+        Some(Value::String(note)) => Some(note.clone()),
+        Some(_) => return Err("`note` is not a string; nothing changed".to_owned()),
+    };
+    Ok(Call::SetStatus { state, note })
 }
 
 /// The call of the send tool with `arguments`; fails, saying why, without `to` or `text`, or with
@@ -210,6 +260,13 @@ pub fn default_name(client: &str, device_name: &str, device: DeviceId) -> Name {
         .expect("a default name is a valid name")
 }
 
+/// `text` made a name as [`name_part`] makes it, cut to 63 characters as [`cut`] cuts it.
+pub fn name_of(text: &str) -> String {
+    let mut part = name_part(text);
+    cut(&mut part, NAME_MOST);
+    part
+}
+
 /// `text` with its ASCII letters lowercased, each run of characters other than `a`–`z` and `0`–`9`
 /// made one `-`, `-` trimmed at both ends, as `architecture.md`, "Data model", makes a username.
 fn name_part(text: &str) -> String {
@@ -244,6 +301,7 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
         dir,
         agent: Mutex::new(agent),
         pending: Arc::clone(&pending),
+        holding: AtomicBool::new(false),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -364,6 +422,33 @@ impl Settings {
     }
 }
 
+/// How long the session held of the helper waits before it tries again after its helper went
+/// away, and after it found none to hold.
+const HOLD_AGAIN: Duration = Duration::from_secs(1);
+const HOLD_LATER: Duration = Duration::from_secs(10);
+
+/// Holds a session of the helper of `settings`' state for the server's whole run, as `agent`, its
+/// agent CLI `runtime`, starting the helper when none runs; ends once the helper ends the session,
+/// as in a folder in no space. What the helper's run of it says goes to the server's standard
+/// error.
+fn hold(settings: &Settings, agent: &Name, runtime: Option<String>) {
+    let Ok(dir) = state::dir(settings.state_dir.clone()) else {
+        return;
+    };
+    let operation = settings.operation(Call::Hold { runtime }, agent);
+    let mut said = |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    loop {
+        match helper::route_into(&dir, &operation, (false, true, true), &mut said) {
+            Ok(Route::Helped(_)) => return,
+            Ok(Route::Here(lock)) => {
+                drop(lock);
+                thread::sleep(HOLD_LATER);
+            }
+            Err(_) => thread::sleep(HOLD_AGAIN),
+        }
+    }
+}
+
 /// The name of the client of the request of `context`: from the request's `_meta`, or from the
 /// session's `initialize`; empty with neither.
 fn client_of(context: &RequestContext<RoleServer>) -> String {
@@ -383,6 +468,8 @@ struct Server {
     /// The session's agent, once named: as `--agent` names it, or by default.
     agent: Mutex<Option<Name>>,
     pending: Pending,
+    /// Whether it holds a session of the helper ([`hold`]).
+    holding: AtomicBool,
 }
 
 impl Server {
@@ -411,6 +498,13 @@ impl Server {
         .await;
         if let Ok((false, why)) = registered {
             let _ = io::stderr().write_all(why.as_bytes());
+        }
+        if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
+            let (settings, runtime) = (self.settings.clone(), presence::runtime(client));
+            let agent = self.agent(client);
+            if let Some(agent) = agent {
+                thread::spawn(move || hold(&settings, &agent, runtime));
+            }
         }
     }
 
@@ -514,10 +608,19 @@ impl ServerHandler for Server {
             },
             "required": [MESSAGE, TEXT],
         }));
+        let status = schema(json!({
+            "type": "object",
+            "properties": {
+                STATE: { "enum": ["busy", "available"] },
+                NOTE: { "type": "string", "description": NOTE_DESCRIPTION },
+            },
+            "required": [STATE],
+        }));
         Ok(ListToolsResult::with_all_items(vec![
             Tool::new(INBOX, INBOX_DESCRIPTION, inbox),
             Tool::new(SEND, SEND_DESCRIPTION, send),
             Tool::new(REPLY, REPLY_DESCRIPTION, reply),
+            Tool::new(STATUS, STATUS_DESCRIPTION, status),
         ]))
     }
 
@@ -531,6 +634,7 @@ impl ServerHandler for Server {
             INBOX => None,
             SEND => Some(send_call(arguments)),
             REPLY => Some(reply_call(arguments)),
+            STATUS => Some(status_call(arguments)),
             name => {
                 return Err(ErrorData::invalid_params(
                     format!("no tool named {name}"),
@@ -911,6 +1015,7 @@ mod tests {
             dir: PathBuf::new(),
             agent: Mutex::new(None),
             pending: Pending::default(),
+            holding: AtomicBool::new(false),
         };
 
         let info = server.get_info();

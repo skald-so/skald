@@ -15,7 +15,9 @@
 //!   returns once the command has written it, or fails as the command's write did, so the
 //!   operation marks nothing shown that the command did not show.
 //! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
-//!   when it exits.
+//!   when it exits; so is the session an MCP server holds of it for its whole run.
+//! - It keeps the device's presence ([`crate::presence`]): it checks it after each command and
+//!   intake, when its sessions change, when a value nears its `expires` and before it exits.
 //! - The helper exits after an idle time with no command or session, after sign-out and when a
 //!   newer command or a sign-in asks it to; a helper that is killed leaves its socket, which the
 //!   next helper replaces.
@@ -45,7 +47,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, connection, mailbox, state};
+use crate::{Command, Operation, connection, mailbox, presence, state};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -566,8 +568,10 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
         .set_nonblocking(true)
         .map_err(|err| format!("cannot listen on {}: {err}", bound.0.display()))?;
     let _ = std::env::set_current_dir(&dir);
+    presence::set_helper();
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
+    let mut kept = presence::Kept::default();
     let parting = loop {
         match listener.accept() {
             Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {
@@ -575,13 +579,21 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
                 Served::Ran => {
                     last = Instant::now();
                     sessions.ran();
+                    kept.check(&dir, sessions.running(), true);
                 }
-                Served::Joined => last = Instant::now(),
+                Served::Joined => {
+                    last = Instant::now();
+                    let worked = sessions.worked();
+                    kept.check(&dir, sessions.running(), worked);
+                }
                 Served::Exit(stream) => break stream,
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
-                match sessions.look(&dir) {
+                let looked = sessions.look(&dir);
+                let worked = sessions.worked();
+                kept.check(&dir, sessions.running(), worked);
+                match looked {
                     Some(true) => last = Instant::now(),
                     Some(false) if last.elapsed() >= idle => break None,
                     Some(false) => {}
@@ -591,8 +603,9 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
             }
         }
     };
-    // Its sessions end as a dead helper's do.
+    // Its sessions end as a dead helper's do, its agents then offline.
     drop(sessions);
+    kept.check(&dir, std::collections::BTreeSet::new(), false);
     drop(listener);
     drop(bound);
     if let Some(mut stream) = parting {
@@ -661,7 +674,12 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
-    if operation.command.waits() {
+    presence::remember(presence::Settings {
+        storage: operation.key_storage,
+        speaks: operation.speaks,
+        timeout: operation.timeout,
+    });
+    if operation.command.waits() || wait::holds(&operation) {
         let session = Session {
             stream,
             cwd: request.cwd,
