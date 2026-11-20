@@ -346,7 +346,8 @@ pub fn commit_sent(front: &Front, channel: ChannelId, from: usize) -> bool {
 }
 
 /// The A2A `messageId` and the text parts of the A2A message in `content`.
-fn a2a(content: &Content) -> (String, Vec<String>) {
+#[track_caller]
+pub fn a2a(content: &Content) -> (String, Vec<String>) {
     let Some(Body::A2a(json)) = &content.body else {
         panic!("not an a2a body: {content:?}");
     };

@@ -832,6 +832,7 @@ fn kept(
             message_status::origin(header.msg_id, (sender, &message.device), message.level),
         ),
         wait: agent_wait(header.ttl),
+        hops: message.hops,
         agents,
         held,
         read,
@@ -930,6 +931,7 @@ pub fn own_message(
                 message_status::origin(msg_id, (follower.this, &name), TrustLevel::Own),
             ),
             wait: agent_wait(None),
+            hops: content.hops,
             agents: Vec::new(),
             held: Vec::new(),
             replied,
@@ -1019,7 +1021,7 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
             kept,
             (form, &references),
             (&mut written("a message"), &mut |seq| {
-                state.shown_to_person(seq)
+                state.shown_to_person(seq, follower.service.is_some())
             }),
         )?)
 }

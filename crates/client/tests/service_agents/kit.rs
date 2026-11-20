@@ -9,7 +9,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_crypto::{check_valid_device, verify};
 use skald_proto::{
-    Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, GRANT_LABEL, Grant, Role, Roster, SpaceId,
+    Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, GRANT_LABEL, Grant, Role, Roster, ServiceKey,
+    SpaceId,
 };
 
 use crate::browser::Page;
@@ -106,6 +107,11 @@ pub fn rosters(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Roster> {
     held.into_iter().map(|revision| revision.1).collect()
 }
 
+/// The address of `ci/deploy-bot` in `acme`, `acme/ci/deploy-bot@<server>`.
+pub fn bot_address() -> String {
+    format!("{ACME}/{BOT}@{HOST}")
+}
+
 /// The device of the service agent `owner/agent` in `roster`, if it has the entry.
 pub fn entry_of(roster: &Roster, address: &str) -> Option<DeviceId> {
     let (owner, agent) = address.split_once('/').expect("owner/agent");
@@ -125,8 +131,19 @@ pub fn create_agent(
     channels: &[ChannelId],
     extra: &[&str],
 ) -> Finished {
+    let command = (CREATE_SERVICE_AGENT, space, address);
+    run_for_channels(machine, command, channels, extra)
+}
+
+/// Runs `skald <command> <space> <address> --channel <channel>... <extra>` on `machine`.
+pub fn run_for_channels(
+    machine: &Machine,
+    (command, space, address): (&str, &str, &str),
+    channels: &[ChannelId],
+    extra: &[&str],
+) -> Finished {
     let channels: Vec<String> = channels.iter().map(ToString::to_string).collect();
-    let mut args = vec![CREATE_SERVICE_AGENT, space, address];
+    let mut args = vec![command, space, address];
     for channel in &channels {
         args.extend([CHANNEL, channel.as_str()]);
     }
@@ -141,6 +158,13 @@ pub struct Secrets {
     pub key: String,
     /// The token.
     pub token: String,
+}
+
+impl Secrets {
+    /// Both secrets, by their environment variables' names.
+    pub fn variables(&self) -> [(&'static str, &str); 2] {
+        [(KEY_VARIABLE, &self.key), (TOKEN_VARIABLE, &self.token)]
+    }
 }
 
 /// The values of stdout's lines `<name>=<value>`, by name, in their order; fails on any other
@@ -163,6 +187,16 @@ fn assignments(finished: &Finished) -> Vec<(String, String)> {
         found.push((name.to_owned(), value.to_owned()));
     }
     found
+}
+
+/// The key secret `key`, as a creation gave it, decoded.
+#[track_caller]
+pub fn key_of(key: &str) -> ServiceKey {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(key)
+        .unwrap_or_else(|err| panic!("a key secret that is no base64url: {err}"));
+    ServiceKey::from_cbor(&bytes)
+        .unwrap_or_else(|err| panic!("a key secret that does not decode: {err}"))
 }
 
 /// The key secret and the token of `finished`, a creation that must succeed: stdout holds them as

@@ -42,6 +42,15 @@ macro_rules! record_columns {
     };
 }
 
+/// The condition that the token `t`, of the device `d`, has not ended by its expiry or its device's
+/// revocation; a revocation of the token and a revision without its device's entry delete it.
+macro_rules! live_token {
+    () => {
+        "t.expires_at > now() AND NOT d.revoked"
+    };
+}
+pub(crate) use live_token;
+
 /// A token's record as [`record_columns`] reads it.
 type Row = (
     String,
@@ -367,8 +376,9 @@ pub(crate) async fn list(State(state): State<AppState>, Gotten(found): Gotten) -
         "SELECT ",
         record_columns!(),
         " FROM service_tokens t JOIN devices d ON d.id = t.device_id
-         WHERE t.space_id = $1::uuid AND t.expires_at > now() AND NOT d.revoked
-         ORDER BY t.created_at, t.id"
+         WHERE t.space_id = $1::uuid AND ",
+        live_token!(),
+        " ORDER BY t.created_at, t.id"
     ))
     .bind(found.id.to_string())
     .fetch_all(&state.db)
@@ -390,12 +400,12 @@ struct Grants {
 /// `GET /spaces/<space>/service-grants`: the grants of the space's tokens that have not ended and
 /// have the receive permission, oldest first, for a session of an account that gets the space.
 pub(crate) async fn grants(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
-    let rows: Vec<(Vec<u8>,)> = sqlx::query_as(
+    let rows: Vec<(Vec<u8>,)> = sqlx::query_as(concat!(
         "SELECT t.grant_cbor FROM service_tokens t JOIN devices d ON d.id = t.device_id
-         WHERE t.space_id = $1::uuid AND t.expires_at > now() AND NOT d.revoked
-             AND 'receive' = ANY(t.permissions)
-         ORDER BY t.created_at, t.id",
-    )
+         WHERE t.space_id = $1::uuid AND 'receive' = ANY(t.permissions) AND ",
+        live_token!(),
+        " ORDER BY t.created_at, t.id",
+    ))
     .bind(found.id.to_string())
     .fetch_all(&state.db)
     .await
@@ -425,12 +435,13 @@ pub(crate) async fn revoke(
         // As text: an ID that is no UUID is no token. One that has ended stays as it is.
         let failed = |err| Refusal::Database("revoke a service token", err);
         let mut tx = state.db.begin().await.map_err(failed)?;
-        let deleted: Vec<(Vec<u8>,)> = sqlx::query_as(
+        let deleted: Vec<(Vec<u8>,)> = sqlx::query_as(concat!(
             "DELETE FROM service_tokens t USING devices d
              WHERE t.space_id = $1::uuid AND t.id::text = lower($2) AND d.id = t.device_id
-                 AND t.expires_at > now() AND NOT d.revoked
-             RETURNING t.token_hash",
-        )
+                 AND ",
+            live_token!(),
+            " RETURNING t.token_hash",
+        ))
         .bind(found.id.to_string())
         .bind(&token)
         .fetch_all(&mut *tx)
@@ -466,11 +477,12 @@ pub(crate) async fn own(State(state): State<AppState>, headers: HeaderMap) -> Re
 /// The record and grant of the token whose value has the SHA-256 `hash`, if it has not ended, with
 /// its use recorded.
 async fn own_record(db: &PgPool, hash: &[u8]) -> Result<Option<OwnToken>, sqlx::Error> {
-    let found: Option<(String, Vec<u8>)> = sqlx::query_as(
+    let found: Option<(String, Vec<u8>)> = sqlx::query_as(concat!(
         "SELECT t.space_id::text, t.grant_cbor FROM service_tokens t
          JOIN devices d ON d.id = t.device_id
-         WHERE t.token_hash = $1 AND t.expires_at > now() AND NOT d.revoked",
-    )
+         WHERE t.token_hash = $1 AND ",
+        live_token!(),
+    ))
     .bind(hash)
     .fetch_optional(db)
     .await?;
@@ -552,13 +564,14 @@ pub(crate) fn seen(token: Option<&Token>, mut spaces: Vec<SpaceId>) -> Vec<Space
 /// the minute.
 pub(crate) async fn live(db: &PgPool, hash: &[u8]) -> Result<Option<Token>, sqlx::Error> {
     type Found = (String, String, String, Vec<String>, Vec<String>, i64);
-    let found: Option<Found> = sqlx::query_as(
+    let found: Option<Found> = sqlx::query_as(concat!(
         "WITH t AS (
              SELECT t.token_hash, t.space_id, t.device_id, d.account_id, t.permissions,
                  t.channels, t.expires_at, t.last_used_at
              FROM service_tokens t JOIN devices d ON d.id = t.device_id
-             WHERE t.token_hash = $1 AND t.expires_at > now() AND NOT d.revoked
-         ), used AS (
+             WHERE t.token_hash = $1 AND ",
+        live_token!(),
+        "), used AS (
              UPDATE service_tokens u SET last_used_at = now() FROM t
              WHERE u.token_hash = t.token_hash
                  AND (t.last_used_at IS NULL OR t.last_used_at <= now() - interval '1 minute')
@@ -566,7 +579,7 @@ pub(crate) async fn live(db: &PgPool, hash: &[u8]) -> Result<Option<Token>, sqlx
          SELECT space_id::text, device_id::text, account_id::text, permissions,
              channels::text[], floor(extract(epoch FROM expires_at))::bigint
          FROM t",
-    )
+    ))
     .bind(hash)
     .fetch_optional(db)
     .await?;

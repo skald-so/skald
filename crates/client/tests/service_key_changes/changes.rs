@@ -9,7 +9,7 @@ use crate::fixtures::{Issuer, add_device_of_kind};
 use crate::kit::latest;
 use crate::machine::Finished;
 use crate::revocations::account_revocations;
-use crate::service_kit::{AGENT_NAME, BOT, CHANNEL, OWNER};
+use crate::service_kit::{AGENT_NAME, BOT, OWNER, run_for_channels};
 use crate::world::{ACME, Person, next_with, run, store};
 
 /// The commands: replace a service agent's key; remove a service agent.
@@ -24,12 +24,8 @@ pub const ROUNDS: usize = 4;
 
 /// Runs `skald replace-service-key acme ci/deploy-bot --channel <channel>...` on `person`'s machine.
 pub fn replace_key(person: &Person, channels: &[ChannelId]) -> Finished {
-    let channels: Vec<String> = channels.iter().map(ToString::to_string).collect();
-    let mut args = vec![REPLACE_SERVICE_KEY, ACME, BOT];
-    for channel in &channels {
-        args.extend([CHANNEL, channel.as_str()]);
-    }
-    run(&person.machine, &args)
+    let command = (REPLACE_SERVICE_KEY, ACME, BOT);
+    run_for_channels(&person.machine, command, channels, &[])
 }
 
 /// Runs `skald remove-service-agent acme ci/deploy-bot` on `person`'s machine.
