@@ -571,7 +571,6 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
     presence::set_helper();
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
-    let mut kept = presence::Kept::default();
     let parting = loop {
         match listener.accept() {
             Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {
@@ -579,20 +578,15 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
                 Served::Ran => {
                     last = Instant::now();
                     sessions.ran();
-                    kept.check(&dir, sessions.running(), true);
+                    sessions.keep_presence(&dir, true);
                 }
-                Served::Joined => {
-                    last = Instant::now();
-                    let worked = sessions.worked();
-                    kept.check(&dir, sessions.running(), worked);
-                }
+                Served::Joined => last = Instant::now(),
                 Served::Exit(stream) => break stream,
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
                 let looked = sessions.look(&dir);
-                let worked = sessions.worked();
-                kept.check(&dir, sessions.running(), worked);
+                sessions.keep_presence(&dir, false);
                 match looked {
                     Some(true) => last = Instant::now(),
                     Some(false) if last.elapsed() >= idle => break None,
@@ -604,8 +598,7 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
         }
     };
     // Its sessions end as a dead helper's do, its agents then offline.
-    drop(sessions);
-    kept.check(&dir, std::collections::BTreeSet::new(), false);
+    sessions.end(&dir);
     drop(listener);
     drop(bound);
     if let Some(mut stream) = parting {

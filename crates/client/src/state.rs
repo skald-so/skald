@@ -4057,6 +4057,9 @@ pub(crate) mod tests {
     fn agent_statuses_and_presence_revisions_are_kept() {
         let dir = TestDir::new("state-presence");
         let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
         let space = SpaceId::generate();
         state.add_agent(space, "codex").unwrap();
         state.add_agent(space, "claude").unwrap();

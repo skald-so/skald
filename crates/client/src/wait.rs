@@ -18,7 +18,7 @@
 //!   also watches the local state for a message another run of the device keeps for it, which no
 //!   connection brings.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -90,7 +90,11 @@ pub fn here(
         let own = last_own_kept(&state, operation)?;
         let shown = crate::received(operation);
         if operation.agent.is_some() {
-            presence::keep(dir, presence_settings(operation), &BTreeSet::new());
+            presence::keep(
+                dir,
+                presence_settings(operation),
+                &presence::Live::default(),
+            );
         }
         drop(lock);
         if shown? {
@@ -271,9 +275,16 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
-    /// Whether a session ran or took in what came since this was last asked.
-    worked: bool,
+    /// When the last `skald recv --wait` of each agent that ended did, as an [`Instant`] and in
+    /// Unix seconds.
+    ends: BTreeMap<presence::Running, (Instant, u64)>,
+    /// What the presence was last checked with.
+    kept: presence::Kept,
 }
+
+/// How long an agent whose `skald recv --wait` ended counts as running: it runs the next once it
+/// has handled what it got.
+pub const LINGER: Duration = Duration::from_secs(30);
 
 /// A waiting session, the space its last run kept to, if any, and whether a command ran since:
 /// it may have written what the session waits for.
@@ -315,20 +326,32 @@ impl Sessions {
     /// it waits for or failed. A session an MCP server holds starts its agent's session first
     /// ([`hold`]). Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
-        let others = self.running();
-        let ran = helper::run_for(session, dir, |operation| match holds(operation) {
+        let others = self.live().running;
+        let (held, agent) = (holds(&session.operation), session.operation.agent.clone());
+        let ran = helper::run_for(session, dir, |operation| match held {
             true => hold(operation, Some(&others)),
             false => crate::received(operation),
         });
-        let went_on = self.again(ran, recv::last_space()).is_some();
+        let space = recv::last_space();
+        let went_on = self.again(ran, space).is_some();
+        // A `skald recv --wait` that ended at once ran too.
+        if let (false, Some(space), Some(agent)) = (held, space, agent) {
+            let this = presence::Running { space, agent };
+            if !self.agents(true).contains(&this) {
+                self.ends
+                    .insert(this, (Instant::now(), crate::state::unix_now()));
+            }
+        }
+        self.keep_presence(dir, true);
         self.watch.start();
-        self.worked = true;
         went_on
     }
 
-    /// The agents whose sessions wait, each in the space it kept to.
-    pub fn running(&self) -> BTreeSet<presence::Running> {
+    /// The agents whose sessions wait, each in the space it kept to: of `skald recv --wait` only if
+    /// `waits_only`.
+    fn agents(&self, waits_only: bool) -> BTreeSet<presence::Running> {
         (self.waiting.iter())
+            .filter(|waiting| !waits_only || !holds(&waiting.session.operation))
             .filter_map(|waiting| {
                 Some(presence::Running {
                     space: waiting.space?,
@@ -338,9 +361,49 @@ impl Sessions {
             .collect()
     }
 
-    /// Whether a session ran or took in what came since this was last asked.
-    pub fn worked(&mut self) -> bool {
-        std::mem::take(&mut self.worked)
+    /// Notes the end of the `skald recv --wait` of each agent of `before` whose session no longer
+    /// waits; `before` then holds those that do.
+    fn ended_since(&mut self, before: &mut BTreeSet<presence::Running>) {
+        let now = self.agents(true);
+        for gone in before.difference(&now) {
+            (self.ends).insert(gone.clone(), (Instant::now(), crate::state::unix_now()));
+        }
+        *before = now;
+    }
+
+    /// The agents whose sessions run, an ended `skald recv --wait` for [`LINGER`] more, and when
+    /// the last `skald recv --wait` of each agent ended.
+    fn live(&self) -> presence::Live {
+        let mut running = self.agents(false);
+        running.extend(
+            (self.ends.iter())
+                .filter(|(_, (at, _))| at.elapsed() < LINGER)
+                .map(|(agent, _)| agent.clone()),
+        );
+        let ended = (self.ends.iter())
+            .map(|(agent, (_, at))| (agent.clone(), *at))
+            .collect();
+        presence::Live { running, ended }
+    }
+
+    /// Checks the device's presence by the state in `dir` with the sessions' agents, if `anyway`,
+    /// once they changed or once it is due ([`presence::Kept::check`]).
+    pub fn keep_presence(&mut self, dir: &Path, anyway: bool) {
+        let live = self.live();
+        self.kept.check(dir, &live, anyway);
+    }
+
+    /// Ends the sessions, as the helper exits, and checks the presence by the state in `dir` with
+    /// their agents `offline`.
+    pub fn end(mut self, dir: &Path) {
+        let mut live = self.live();
+        live.running.clear();
+        let now = crate::state::unix_now();
+        for agent in self.agents(false) {
+            live.ended.insert(agent, now);
+        }
+        self.waiting.clear();
+        self.kept.check(dir, &live, false);
     }
 
     /// Notes that a command ran.
@@ -356,6 +419,15 @@ impl Sessions {
     /// session waits, which after a run or a handover the next look tells; `None` once a run or
     /// the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
+        let mut before = self.agents(true);
+        let looked = self.looked(dir, &mut before);
+        self.ended_since(&mut before);
+        looked
+    }
+
+    /// [`Sessions::look`], noting the sessions of `before` that ended before it takes in again;
+    /// checks the presence after a run or an intake.
+    fn looked(&mut self, dir: &Path, before: &mut BTreeSet<presence::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         if self.waiting.is_empty() {
             let mut idle = Watch::default();
@@ -390,12 +462,13 @@ impl Sessions {
         if runs.is_empty() && handed.is_empty() {
             return Some(true);
         }
-        self.worked = true;
         for waiting in runs {
             let ran = run_again(waiting.session, dir);
             self.again(ran, recv::last_space())?;
         }
         self.hand(handed, dir, (&noticed, retry, seen))?;
+        self.ended_since(before);
+        self.keep_presence(dir, true);
         self.watch.start();
         // The next look counts the sessions left.
         Some(true)

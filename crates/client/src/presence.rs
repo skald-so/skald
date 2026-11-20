@@ -3,13 +3,16 @@
 //! space, and `skald --agent <name> set-status` sets an agent's state and note ([`set_status`]).
 //!
 //! - An agent is `available` while a session of it runs through the helper, an MCP server's or a
-//!   `skald recv --wait`, or `busy` once it set itself so; otherwise `offline`. `since` is when it
-//!   entered that state; its note shows while a session of it runs. A new MCP session of an agent
-//!   starts it `available`, with no note.
+//!   `skald recv --wait`, or `busy` once it set itself so; otherwise `offline`. A `skald recv
+//!   --wait` that ended counts as running for [`crate::wait::LINGER`] more, as an agent runs the
+//!   next once it has handled what it got. `since` is when it entered that state; its note shows
+//!   while a session of it runs. A new MCP session of an agent starts it `available`, with no
+//!   note.
 //! - The helper checks the values after each command it runs, when its sessions change, after it
 //!   takes in what came for an MCP session, before a value expires and before it exits, its agents
-//!   then `offline`. A one-shot run with an agent checks them once, after its command ([`keep`]),
-//!   its agents `offline`: only the helper knows the sessions.
+//!   then `offline`. Out of the helper, a run as an agent that registers it or sets its status
+//!   checks them once, after its command ([`keep`]), its agents `offline`: only the helper knows
+//!   the sessions.
 //! - A check uploads in every channel together once an agent's state or note changed there or a
 //!   value is near its `expires`; otherwise only in a channel whose epoch changed.
 //! - A value is sealed only under the channel's current epoch, judged clean, while no Commit of the
@@ -63,6 +66,14 @@ pub struct Settings {
 pub struct Running {
     pub space: SpaceId,
     pub agent: String,
+}
+
+/// The agents whose sessions run, and when the last session of each other agent that ran through
+/// the helper ended, in Unix seconds: the `since` of its `offline`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Live {
+    pub running: BTreeSet<Running>,
+    pub ended: BTreeMap<Running, u64>,
 }
 
 /// The state an agent sets itself to.
@@ -139,10 +150,10 @@ pub fn set_status(
     Ok(())
 }
 
-/// Checks the device's values by the state in `dir`, with the sessions of `running`, uploading
-/// what is due ([`self`]); gives when the next check is due, in Unix seconds, if one is. What
-/// fails leaves its upload to a later check.
-pub fn keep(dir: &Path, settings: Settings, running: &BTreeSet<Running>) -> Option<u64> {
+/// Checks the device's values by the state in `dir`, with the sessions of `live`, uploading what
+/// is due ([`self`]); gives when the next check is due, in Unix seconds, if one is. What fails
+/// leaves its upload to a later check.
+pub fn keep(dir: &Path, settings: Settings, live: &Live) -> Option<u64> {
     if service::stateless() || !dir.join(state::FILE).is_file() {
         return None;
     }
@@ -150,7 +161,7 @@ pub fn keep(dir: &Path, settings: Settings, running: &BTreeSet<Running>) -> Opti
         return None;
     }
     let now = state::unix_now();
-    match checked(dir, settings, running, now) {
+    match checked(dir, settings, live, now) {
         Ok(due) => due,
         Err(_) => Some(now + RETRY),
     }
@@ -165,19 +176,19 @@ pub struct Kept {
 }
 
 impl Kept {
-    /// Checks the values by the state in `dir` with the sessions of `running` ([`keep`]) if
-    /// `anyway`, if those changed or once the next check is due, with the settings the helper
+    /// Checks the values by the state in `dir` with the sessions of `live` ([`keep`]) if `anyway`,
+    /// if the agents that run changed or once the next check is due, with the settings the helper
     /// keeps; with none yet, leaves it to the next.
-    pub fn check(&mut self, dir: &Path, running: BTreeSet<Running>, anyway: bool) {
+    pub fn check(&mut self, dir: &Path, live: &Live, anyway: bool) {
         let due = self.due.is_some_and(|due| state::unix_now() >= due);
-        if !anyway && !due && self.running.as_ref() == Some(&running) {
+        if !anyway && !due && self.running.as_ref() == Some(&live.running) {
             return;
         }
         let Some(settings) = remembered() else {
             return;
         };
-        self.due = keep(dir, settings, &running);
-        self.running = Some(running);
+        self.due = keep(dir, settings, live);
+        self.running = Some(live.running.clone());
     }
 }
 
@@ -201,12 +212,7 @@ struct Open {
 }
 
 /// [`keep`] at `now`.
-fn checked(
-    dir: &Path,
-    settings: Settings,
-    running: &BTreeSet<Running>,
-    now: u64,
-) -> Result<Option<u64>, String> {
+fn checked(dir: &Path, settings: Settings, live: &Live, now: u64) -> Result<Option<u64>, String> {
     let Some(mut follower) =
         Follower::unchecked(dir, settings.storage, settings.speaks, settings.timeout)?
     else {
@@ -221,7 +227,7 @@ fn checked(
     let mut channels = Vec::new();
     for space in follower.state.spaces().map_err(text)? {
         let roster = follow::decode(&space.accepted, &space.name)?;
-        let shown = shown(&follower.state, space.id, running, now)?;
+        let shown = shown(&follower.state, space.id, live, now)?;
         channels.extend(
             roster
                 .body()
@@ -285,7 +291,12 @@ fn checked(
     if sealing.is_empty() {
         return Ok(due);
     }
-    let server = agents::server_name(&mut follower.connection)?;
+    // Only agents need it, for their addresses.
+    let named = (sealing.iter()).any(|channel| !spaces[&channel.space].1.is_empty());
+    let server = match named {
+        true => agents::server_name(&mut follower.connection)?,
+        false => None,
+    };
     let mut failed = false;
     for channel in sealing {
         let (roster, shown) = &spaces[&channel.space];
@@ -329,20 +340,17 @@ fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
     Some(due.map_or(at, |due| due.min(at)))
 }
 
-/// The status of each agent of the device in `space`, by name, as the sessions of `running` make
-/// it at `now`, recording each one's new state with `now` as its `since`.
-fn shown(
-    held: &State,
-    space: SpaceId,
-    running: &BTreeSet<Running>,
-    now: u64,
-) -> Result<Vec<Shown>, String> {
+/// The status of each agent of the device in `space`, by name, as the sessions of `live` make it
+/// at `now`, recording each one's new state with its `since`: `now`, or for an `offline`, when its
+/// last session ended, if `live` has it.
+fn shown(held: &State, space: SpaceId, live: &Live, now: u64) -> Result<Vec<Shown>, String> {
     let mut shown = Vec::new();
     for record in held.agent_statuses(space).map_err(text)? {
-        let runs = running.contains(&Running {
+        let this = Running {
             space,
             agent: record.name.clone(),
-        });
+        };
+        let runs = live.running.contains(&this);
         let state = match (runs, record.busy) {
             (false, _) => AgentState::Offline,
             (true, true) => AgentState::Busy,
@@ -351,10 +359,14 @@ fn shown(
         let code = code(state);
         let since = match record.shown {
             Some((shown, since)) if shown == code => since,
-            _ => {
-                held.agent_shown(space, &record.name, (code, now))
+            last => {
+                let ended = (live.ended.get(&this).copied())
+                    .filter(|ended| !runs && *ended <= now)
+                    .filter(|ended| last.is_none_or(|(_, since)| *ended >= since));
+                let since = ended.unwrap_or(now);
+                held.agent_shown(space, &record.name, (code, since))
                     .map_err(text)?;
-                now
+                since
             }
         };
         shown.push(Shown {

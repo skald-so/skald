@@ -1145,16 +1145,21 @@ impl Operation {
 }
 
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
-/// helper does. Out of the helper, a run as an agent whose command connects, sets its status or is
-/// an MCP server's call then checks the device's presence ([`presence::keep`]).
+/// helper does. Out of the helper, a run as an agent that registers it or sets its status, a
+/// `skald recv`, `skald set-status` or an MCP server's registration or status tool, then checks
+/// the device's presence ([`presence::keep`]); a send does not wait for it.
 fn perform(operation: Operation) -> Result<(), String> {
     let checks = !presence::in_helper()
         && operation.agent.is_some()
-        && (operation.command.connects()
-            || matches!(
-                operation.command,
-                Command::SetStatus { .. } | Command::Mcp { .. }
-            ));
+        && matches!(
+            operation.command,
+            Command::Recv { .. }
+                | Command::SetStatus { .. }
+                | Command::Mcp {
+                    call: Some(mcp::Call::Register | mcp::Call::SetStatus { .. }),
+                    ..
+                }
+        );
     let settings = presence::Settings {
         storage: operation.key_storage,
         speaks: operation.speaks,
@@ -1163,7 +1168,7 @@ fn perform(operation: Operation) -> Result<(), String> {
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
     if checks && let Ok(dir) = state::dir(state_dir) {
-        presence::keep(&dir, settings, &std::collections::BTreeSet::new());
+        presence::keep(&dir, settings, &presence::Live::default());
     }
     ran
 }

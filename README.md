@@ -79,7 +79,7 @@ skald recv                                  # receive the device's messages
 skald reply <message> <text>                # reply to a message, by its #<ref> or ID, in its channel, to its sender
 skald history <channel> [<text>]            # the channel's history, oldest first; with <text>, only the messages that contain it
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
-skald --agent <name> set-status busy --note <text> # the agent's status, busy or available, in the device's presence
+skald --agent <name> set-status busy        # the agent's status in the device's presence: busy or available, with --note <text>
 skald set-inbound-mode <agent> <mode>       # accept, or refuse messages from senders off the agent's allowlist
 skald allow-sender <agent> <sender>         # put an address or a member's handle on the agent's allowlist
 skald inbound-modes                         # each agent's mode and allowlist in the working directory's space
