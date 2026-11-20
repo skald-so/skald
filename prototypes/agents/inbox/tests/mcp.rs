@@ -15,9 +15,14 @@ use serde_json::{Value, json};
 type Client = RunningService<RoleClient, ()>;
 
 async fn start(source: &Path) -> Client {
+    start_with(source, &[]).await
+}
+
+/// The server on `source` with the arguments `args` after it.
+async fn start_with(source: &Path, args: &[&Path]) -> Client {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-inbox"));
     // No variable of the test's environment, so none of its credentials reach the server.
-    command.arg(source).env_clear();
+    command.arg(source).args(args).env_clear();
     ().serve(TokioChildProcess::new(command).unwrap())
         .await
         .unwrap()
@@ -51,16 +56,53 @@ async fn call(client: &Client, tool: &'static str, arguments: Value) -> String {
     content.as_text().expect("text content").text.clone()
 }
 
+/// The names of the tools the server lists.
+async fn tool_names(client: &Client) -> Vec<String> {
+    let tools = client.list_all_tools().await.unwrap();
+    tools.iter().map(|tool| tool.name.to_string()).collect()
+}
+
 #[tokio::test]
 async fn lists_the_inbox_tool() {
     let dir = tempfile::tempdir().unwrap();
     let client = start(dir.path()).await;
     let info = client.peer_info().expect("the server initialized");
     assert!(info.capabilities.tools.is_some(), "{info:?}");
-    let tools = client.list_all_tools().await.unwrap();
-    let names: Vec<_> = tools.iter().map(|tool| tool.name.as_ref()).collect();
-    assert_eq!(names, ["inbox", "ack", "reply"]);
+    assert_eq!(tool_names(&client).await, ["inbox", "ack", "reply"]);
     client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn with_a_claim_directory_the_stub_claim_tool_records_its_calls() {
+    let (dir, claims) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(claims.path().join("task-1"), "The task.").unwrap();
+    let client = start_with(dir.path(), &[Path::new("--claim"), claims.path()]).await;
+    assert_eq!(
+        tool_names(&client).await,
+        ["inbox", "ack", "reply", "claim"]
+    );
+    assert_eq!(call(&client, "claim", json!({})).await, "The task.");
+    assert_eq!(
+        call(&client, "claim", json!({})).await,
+        agent_inbox::NO_TASK
+    );
+    let calls = std::fs::read_to_string(claims.path().join(agent_inbox::CLAIMS)).unwrap();
+    assert_eq!(calls.lines().count(), 2, "{calls}");
+    client.cancel().await.unwrap();
+}
+
+#[test]
+fn takes_a_claim_directory_only_after_its_flag() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_agent-inbox"))
+        .arg(dir.path())
+        .args(["--other", "claims"])
+        .env_clear()
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("usage: agent-inbox "), "{stderr}");
 }
 
 #[tokio::test]
