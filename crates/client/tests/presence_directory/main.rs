@@ -16,6 +16,8 @@
 //!   that registers an agent whose address another device of its account lists as running warns
 //!   its person and the agent's next result, once.
 //! - As an agent, the device names nothing of other spaces.
+//! - The values a client uploads list an MCP session's agent `available` while it runs through the
+//!   helper and `offline` once it ended (`uploaded.rs`).
 //!
 //! As the tests of trust levels (`trust_levels/main.rs`): the CLI runs on Ada's machine, whose
 //! agents run in `~/work/acme`, bound to `acme`; Bob's devices, of another account the roster of
@@ -59,6 +61,7 @@ mod duplicates;
 mod listing;
 mod notes;
 mod spaces;
+mod uploaded;
 mod values;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second

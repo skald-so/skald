@@ -221,8 +221,8 @@ struct Cli {
     )]
     history_retention: Option<u64>,
 
-    /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
-    /// too-large [default: no limit].
+    /// The longest payload of an envelope a device sends, and the longest ct of a task it
+    /// enqueues, in bytes; a longer one is refused with too-large [default: no limit].
     #[arg(
         long,
         env = "SKALD_MESSAGE_SIZE_LIMIT",

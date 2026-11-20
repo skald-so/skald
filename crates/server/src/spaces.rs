@@ -20,7 +20,7 @@ use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
-use crate::{AppState, history, mailboxes, revocations, sessions};
+use crate::{AppState, history, mailboxes, queues, revocations, sessions};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -422,20 +422,28 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     Ok(Json(ListedMembers { members }).into_response())
 }
 
-/// `POST /spaces/<space>/channels`: a new channel ID for the space, for an admin's session.
+/// `POST /spaces/<space>/channels`: a new channel ID for the space, with its queue `default`, for an
+/// admin's session.
 pub(crate) async fn channel(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     if !found.admin {
         return Err(Refusal::NotAllowed(
             "only an admin in the space's latest revision gets a channel ID".to_owned(),
         ));
     }
-    let channel = ChannelId::generate().to_string();
+    let channel = ChannelId::generate();
+    let failed = |err| Refusal::Database("issue a channel ID", err);
+    let mut tx = state.db.begin().await.map_err(failed)?;
     sqlx::query("INSERT INTO channels (id, space_id) VALUES ($1::uuid, $2::uuid)")
-        .bind(&channel)
+        .bind(channel.to_string())
         .bind(found.id.to_string())
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
-        .map_err(|err| Refusal::Database("issue a channel ID", err))?;
+        .map_err(failed)?;
+    queues::create_default(&mut tx, channel)
+        .await
+        .map_err(failed)?;
+    tx.commit().await.map_err(failed)?;
+    let channel = channel.to_string();
     Ok((StatusCode::CREATED, Json(NewChannel { channel })).into_response())
 }
 
