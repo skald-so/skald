@@ -46,7 +46,10 @@ pub use id::{
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
 pub use link::{LINK_LABEL, Link, LinkBody, LinkGrantBody, LinkMessage, LinkRequestBody};
-pub use presence::Presence;
+pub use presence::{
+    AgentState, AgentStatus, NOTE_MAX, PRESENCE_LABEL, Presence, PresenceBody, PresencePlaintext,
+    ServedQueue, Tier, Tiers,
+};
 pub use receipt::{DeliveryStatus, Receipt, ReceiptStatus, SendKey, ServerStatus, Stored};
 pub use revocation::{REVOCATION_LABEL, Revocation, RevocationBody, Revocations};
 pub use roster::{
