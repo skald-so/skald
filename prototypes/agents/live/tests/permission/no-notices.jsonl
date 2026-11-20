@@ -1,0 +1,2 @@
+{"at_ms":1795122091165,"method":"notifications/initialized","params":null}
+{"at_ms":1795122091856,"method":"notifications/claude/channel/permission_request","params":{"description":"Run shell command","input_preview":"{ \"command\": \"touch prompted.txt\" }","request_id":"zqkyx","tool_name":"Bash"}}

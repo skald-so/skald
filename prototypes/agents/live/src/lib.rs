@@ -12,6 +12,7 @@ pub mod channel;
 pub mod gui;
 pub mod hook;
 pub mod limits;
+pub mod permission;
 pub mod queue;
 pub mod read;
 mod stub;
@@ -28,8 +29,8 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 pub use stub::{
-    AckWith, Call, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, QUICK, Request, Response, SHELL, Stub,
-    StubLog, held,
+    AckWith, Call, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, PROMPTED, QUICK, Request, Response,
+    SHELL, Stub, StubLog, held,
 };
 
 /// The name of the MCP server in each session's config.

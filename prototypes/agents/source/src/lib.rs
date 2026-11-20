@@ -501,18 +501,27 @@ fn sorted_names(dir: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-/// The source of the command line `<bin> <source-dir>`, that of a server over stdio. On another
-/// command line, or a source it cannot open, prints why and returns the exit code.
-pub fn from_args(bin: &str) -> Result<Source, ExitCode> {
-    let mut args = std::env::args_os().skip(1);
-    let (Some(dir), None) = (args.next(), args.next()) else {
-        eprintln!("usage: {bin} <source-dir>");
-        return Err(ExitCode::from(2));
+/// The source and the option's value of the command line `<bin> <source-dir> [<flag> <value>]`,
+/// that of a server over stdio, with `option` as `(flag, value)`. On another command line, or a
+/// source it cannot open, prints why and returns the exit code.
+pub fn from_args(bin: &str, option: (&str, &str)) -> Result<(Source, Option<PathBuf>), ExitCode> {
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let (dir, value) = match args.as_slice() {
+        [dir] => (dir, None),
+        [dir, flag, value] if flag == option.0 => (dir, Some(PathBuf::from(value))),
+        _ => {
+            eprintln!("usage: {bin} <source-dir> [{} <{}>]", option.0, option.1);
+            return Err(ExitCode::from(2));
+        }
     };
-    Source::open(&dir).map_err(|error| {
-        eprintln!("{bin}: cannot open the source {}: {error}", dir.display());
+    let source = Source::open(dir).map_err(|error| {
+        eprintln!(
+            "{bin}: cannot open the source {}: {error}",
+            Path::new(dir).display()
+        );
         ExitCode::FAILURE
-    })
+    })?;
+    Ok((source, value))
 }
 
 /// Milliseconds since the Unix epoch.

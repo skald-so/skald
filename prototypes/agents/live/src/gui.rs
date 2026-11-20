@@ -399,7 +399,7 @@ impl UserClaude {
     /// and each server's tools, but those of a server named as the check's, by a deny rule on the
     /// name Claude Code gives its tools. Claude Code still starts the servers; the session gets
     /// none of their tools.
-    fn turn_off(&self, settings: &mut Value) {
+    pub(crate) fn turn_off(&self, settings: &mut Value) {
         settings["disableClaudeAiConnectors"] = true.into();
         if !self.plugins.is_empty() {
             let off: serde_json::Map<String, Value> = self
@@ -876,7 +876,7 @@ pub fn link(work: &Path, home: &Path) -> io::Result<String> {
 /// The Claude desktop app's ID of the Claude Code session `cli_session`: the `sessionId` of its
 /// record, `claude-code-sessions/<account>/<organization>/local_<id>.json` in the app's data in
 /// `home`, whose `cliSessionId` it is. Reads only those two keys.
-fn desktop_session(home: &Path, cli_session: &str) -> io::Result<Option<String>> {
+pub(crate) fn desktop_session(home: &Path, cli_session: &str) -> io::Result<Option<String>> {
     let root = home.join("Library/Application Support/Claude/claude-code-sessions");
     let entries = |dir: &Path| -> Vec<PathBuf> {
         fs::read_dir(dir)
@@ -910,7 +910,7 @@ fn desktop_session(home: &Path, cli_session: &str) -> io::Result<Option<String>>
 
 /// `text` percent-encoded for a URL's path segment or query value: all but the unreserved
 /// characters.
-fn encode(text: &str) -> String {
+pub(crate) fn encode(text: &str) -> String {
     text.bytes()
         .map(|byte| match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
