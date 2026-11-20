@@ -4,7 +4,7 @@
 //! agent"). The person sets and lists them in the space of the working directory; they are kept in
 //! the local state. An agent cannot run the commands ([`crate::agents::person_only`]).
 //!
-//! The mode decides when the device takes a message in ([`refusing`], [`holding`]); a message taken
+//! The mode decides when the device takes a message in ([`refusing_and_holding`]); a message taken
 //! in keeps that decision when the mode changes. The person decides a held message with
 //! `skald held` ([`crate::held`]).
 
@@ -139,46 +139,32 @@ fn admits(entry: &str, from: &Address) -> bool {
 }
 
 /// The agents of `agents`, the device's agents in the space `space` a message from `from` is for,
-/// whose inbound mode refuses it: those in `refuse` without a sender on their allowlist that admits
-/// `from`, by the state `state`.
-pub fn refusing(
+/// whose inbound mode refuses it, and those whose mode holds it for the person's decision: those in
+/// `refuse`, and in `hold`, without a sender on their allowlist that admits `from`, by the state
+/// `state`.
+pub fn refusing_and_holding(
     state: &State,
     space: skald_proto::SpaceId,
     agents: &[String],
     from: &Address,
-) -> Result<Vec<String>, String> {
-    in_mode(state, (space, agents), from, Mode::Refuse)
-}
-
-/// As [`refusing`], the agents whose inbound mode holds it for the person's decision: those in
-/// `hold` without a sender on their allowlist that admits `from`.
-pub fn holding(
-    state: &State,
-    space: skald_proto::SpaceId,
-    agents: &[String],
-    from: &Address,
-) -> Result<Vec<String>, String> {
-    in_mode(state, (space, agents), from, Mode::Hold)
-}
-
-/// The agents of `agents`, the device's agents in the space `space` a message from `from` is for,
-/// in `mode` without a sender on their allowlist that admits `from`, by the state `state`.
-fn in_mode(
-    state: &State,
-    (space, agents): (skald_proto::SpaceId, &[String]),
-    from: &Address,
-    mode: Mode,
-) -> Result<Vec<String>, String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
+    let (mut refusing, mut holding) = (Vec::new(), Vec::new());
     if agents.is_empty() {
-        return Ok(Vec::new());
+        return Ok((refusing, holding));
     }
-    let inbound = state.inbound(space).map_err(text)?;
-    Ok((inbound.into_iter())
-        .filter(|inbound| agents.contains(&inbound.agent))
-        .filter(|inbound| inbound.mode == mode.name())
-        .filter(|inbound| !inbound.allowed.iter().any(|entry| admits(entry, from)))
-        .map(|inbound| inbound.agent)
-        .collect())
+    for inbound in state.inbound(space).map_err(text)? {
+        if !agents.contains(&inbound.agent)
+            || inbound.allowed.iter().any(|entry| admits(entry, from))
+        {
+            continue;
+        }
+        if inbound.mode == Mode::Refuse.name() {
+            refusing.push(inbound.agent);
+        } else if inbound.mode == Mode::Hold.name() {
+            holding.push(inbound.agent);
+        }
+    }
+    Ok((refusing, holding))
 }
 
 #[cfg(test)]

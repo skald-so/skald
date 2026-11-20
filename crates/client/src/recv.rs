@@ -646,8 +646,8 @@ fn kept(
     gap: Option<(u64, u64)>,
 ) -> Result<Kept, String> {
     let mut agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
-    let refusing = inbound::refusing(&follower.state, header.space, &agents, &message.from)?;
-    let held = inbound::holding(&follower.state, header.space, &agents, &message.from)?;
+    let (refusing, held) =
+        inbound::refusing_and_holding(&follower.state, header.space, &agents, &message.from)?;
     // With `to`, the agents are none or the one it names.
     let read = match (&message.to, agents.first()) {
         (Some(to), Some(agent)) => Some(ToRead {
@@ -731,8 +731,7 @@ pub fn own_message(
     agents.retain(|it| {
         Some(it.as_str()) != agent && (to.as_ref()).is_none_or(|to| to.as_deref() == Some(it))
     });
-    let refusing = inbound::refusing(&follower.state, space, &agents, from)?;
-    let holding = inbound::holding(&follower.state, space, &agents, from)?;
+    let (refusing, holding) = inbound::refusing_and_holding(&follower.state, space, &agents, from)?;
     let gets = agent.is_some() || agents.iter().any(|it| !refusing.contains(it));
     let device = (follower.this, Some(name.clone()));
     let (read, refused) = match &to {

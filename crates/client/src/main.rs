@@ -987,7 +987,14 @@ fn main() -> ExitCode {
         Ok(helper::Route::Here(lock)) if operation.command.waits() => {
             waits_here(&dir, &operation, lock)
         }
-        // Held until the run exits.
+        route => routed(route, operation),
+    }
+}
+
+/// Runs `operation` as `route` says: here, holding the lock until it ends, or by the helper, which
+/// gave its exit code.
+fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCode {
+    match route {
         Ok(helper::Route::Here(_lock)) => exit(here(operation)),
         Ok(helper::Route::Helped(code)) => code,
         Err(err) => exit(Err(err)),
@@ -1075,16 +1082,7 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     let mut held: Option<Option<lock::Lock>> = None;
     let mut starts = starts;
     link_code::run(dir, person, |step| {
-        let operation = Operation {
-            speaks: operation.speaks,
-            timeout: operation.timeout,
-            clock_offset: operation.clock_offset,
-            state_dir: operation.state_dir.clone(),
-            key_storage: operation.key_storage,
-            agent: None,
-            command: Command::LinkStep { step },
-            said: link_prompt::Said::default(),
-        };
+        let operation = operation.step(Command::LinkStep { step });
         if held.is_none() {
             // A later step needs the helper that holds its run. What it shows goes to the run's
             // output, and to its page.
@@ -1112,22 +1110,9 @@ fn held(operation: Operation, starts: bool) -> ExitCode {
     };
     let mut starts = starts;
     held::run(&dir, |step| {
-        let operation = Operation {
-            speaks: operation.speaks,
-            timeout: operation.timeout,
-            clock_offset: operation.clock_offset,
-            state_dir: operation.state_dir.clone(),
-            key_storage: operation.key_storage,
-            agent: None,
-            command: Command::HeldStep { step },
-            said: link_prompt::Said::default(),
-        };
-        match helper::route(&dir, &operation, false, std::mem::take(&mut starts)) {
-            // Held until the step ends.
-            Ok(helper::Route::Here(_lock)) => exit(here(operation)),
-            Ok(helper::Route::Helped(code)) => code,
-            Err(err) => exit(Err(err)),
-        }
+        let operation = operation.step(Command::HeldStep { step });
+        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
+        routed(route, operation)
     })
 }
 
@@ -1156,6 +1141,20 @@ struct Operation {
 }
 
 impl Operation {
+    /// The operation of `command`, a step of its own interactive command, as the person.
+    fn step(&self, command: Command) -> Self {
+        Operation {
+            speaks: self.speaks,
+            timeout: self.timeout,
+            clock_offset: self.clock_offset,
+            state_dir: self.state_dir.clone(),
+            key_storage: self.key_storage,
+            agent: None,
+            command,
+            said: link_prompt::Said::default(),
+        }
+    }
+
     /// Whether it shows as JSON: a `skald recv --json`.
     fn json(&self) -> bool {
         matches!(self.command, Command::Recv { json: true, .. })

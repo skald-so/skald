@@ -2330,7 +2330,7 @@ impl State {
             "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
             params![seq, agent],
         )?;
-        read_own(&tx, seq, agent)?;
+        read_own(&tx, seq, agent, None)?;
         drop_done(&tx)?;
         tx.commit()?;
         Ok(())
@@ -2339,22 +2339,8 @@ impl State {
     /// The kept messages that wait for the person's decision for an agent by `now`, in Unix
     /// seconds: those whose wait has not ended, in `seq` order, then by agent.
     pub fn held(&self, now: u64) -> Result<Vec<Held>, Error> {
-        let mut query = self.db.prepare(
-            "SELECT held.seq, held.agent, kept.space, held.taken, kept.line
-             FROM held_message AS held JOIN kept ON kept.seq = held.seq
-             WHERE kept.expires > ?1 ORDER BY held.seq, held.agent",
-        )?;
-        let rows = query.query_map(params![sql_u64(now)?], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Vec<u8>>(4)?,
-            ))
-        })?;
-        rows.map(|row| {
-            let (seq, agent, space, taken, line) = row?;
+        let rows = held_rows(&self.db, now, false)?.into_iter();
+        rows.map(|(seq, agent, space, taken, line)| {
             let malformed = || Error::Malformed(format!("the held message {seq}"));
             Ok(Held {
                 seq: u64::try_from(seq).map_err(|_| malformed())?,
@@ -2416,17 +2402,7 @@ impl State {
     /// and whose wait ended by `now`, in Unix seconds, as [`refuse_held`] does.
     pub fn end_held_waits(&self, now: u64, reason: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
-        let ended = {
-            let mut query = tx.prepare(
-                "SELECT held.seq, held.agent FROM held_message AS held
-                 JOIN kept ON kept.seq = held.seq WHERE kept.expires <= ?1",
-            )?;
-            let rows = query.query_map(params![sql_u64(now)?], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()?
-        };
-        for (seq, agent) in ended {
+        for (seq, agent, ..) in held_rows(&tx, now, true)? {
             refuse_held(&tx, seq, &agent, Some(reason))?;
         }
         tx.commit()?;
@@ -2892,6 +2868,30 @@ fn drop_done(tx: &Transaction) -> Result<(), Error> {
     Ok(())
 }
 
+/// A kept message that waits for the person's decision for an agent: its `seq`, the agent, its
+/// space, when the device took it in and its sealed line.
+type HeldRow = (i64, String, String, i64, Vec<u8>);
+
+/// The kept messages in `db` that wait for the person's decision for an agent whose wait has, if
+/// `ended`, or else has not ended by `now`, in Unix seconds, in `seq` order, then by agent.
+fn held_rows(db: &rusqlite::Connection, now: u64, ended: bool) -> Result<Vec<HeldRow>, Error> {
+    let mut query = db.prepare(
+        "SELECT held.seq, held.agent, kept.space, held.taken, kept.line
+         FROM held_message AS held JOIN kept ON kept.seq = held.seq
+         WHERE (kept.expires <= ?1) = ?2 ORDER BY held.seq, held.agent",
+    )?;
+    let rows = query.query_map(params![sql_u64(now)?, ended], |row| {
+        Ok((
+            row.get(0)?,
+            row.get(1)?,
+            row.get(2)?,
+            row.get(3)?,
+            row.get(4)?,
+        ))
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
 /// Refuses, in `tx`, the kept message `seq` for the agent `agent`, which waits for the person's
 /// decision for it, with `reason`, if any: it no longer waits, and its `refused` is due, with its
 /// `held` if that has not gone yet; or, for an own message of the device's, its `refused` is kept
@@ -2906,41 +2906,20 @@ fn refuse_held(tx: &Transaction, seq: i64, agent: &str, reason: Option<&str>) ->
         "UPDATE read_receipt SET due = 1, refused = 1, reason = ?3 WHERE seq = ?1 AND agent = ?2",
         params![seq, agent, reason],
     )?;
-    let own: Option<(String, String)> = tx
-        .query_row(
-            "SELECT msg_id, status FROM own_read WHERE seq = ?1 AND agent = ?2",
-            params![seq, agent],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    if let Some((msg_id, read)) = own {
-        let first = tx.execute(
-            "UPDATE sent SET read = 1 WHERE msg_id = ?1 AND read = 0",
-            params![msg_id],
-        )?;
-        // The `refused` its `to` agent's device gives, as its `read` would be.
-        if first > 0 {
-            tx.execute(
-                "INSERT INTO kept_status (msg_id, space, status, person, agent)
-                 SELECT msg_id, space,
-                     CASE WHEN ?3 IS NULL
-                         THEN json_set(json_remove(?2, '$.reason'), '$.status', 'refused',
-                             '$.timestamp', ?4)
-                         ELSE json_set(?2, '$.status', 'refused', '$.reason', ?3, '$.timestamp', ?4)
-                     END, 1, agent
-                 FROM sent WHERE msg_id = ?1",
-                params![msg_id, read, reason, sql_u64(unix_now())?],
-            )?;
-        }
-        tx.execute("DELETE FROM own_read WHERE seq = ?1", params![seq])?;
-    }
+    read_own(tx, seq, agent, Some(reason))?;
     drop_done(tx)
 }
 
 /// Keeps, in `tx`, the `read` of the device's own message of the kept entry `seq`, now handed to
 /// its `to` agent `agent`, as a status for the person and the agent that sent it, stamped now,
-/// unless the device has a `read` of it already.
-fn read_own(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
+/// unless the device has a `read` or `refused` of it already; with `refused`, the `refused` that
+/// agent's device gives instead, with its reason, if any.
+fn read_own(
+    tx: &Transaction,
+    seq: i64,
+    agent: &str,
+    refused: Option<Option<&str>>,
+) -> Result<(), Error> {
     let read: Option<(String, String)> = tx
         .query_row(
             "SELECT msg_id, status FROM own_read WHERE seq = ?1 AND agent = ?2",
@@ -2958,9 +2937,20 @@ fn read_own(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
     if first > 0 {
         tx.execute(
             "INSERT INTO kept_status (msg_id, space, status, person, agent)
-             SELECT msg_id, space, json_set(?2, '$.timestamp', ?3), 1, agent FROM sent
-             WHERE msg_id = ?1",
-            params![msg_id, status, sql_u64(unix_now())?],
+             SELECT msg_id, space,
+                 CASE WHEN ?4 = 0 THEN json_set(?2, '$.timestamp', ?3)
+                     WHEN ?5 IS NULL THEN json_set(json_remove(?2, '$.reason'), '$.status',
+                         'refused', '$.timestamp', ?3)
+                     ELSE json_set(?2, '$.status', 'refused', '$.reason', ?5, '$.timestamp', ?3)
+                 END, 1, agent
+             FROM sent WHERE msg_id = ?1",
+            params![
+                msg_id,
+                status,
+                sql_u64(unix_now())?,
+                refused.is_some(),
+                refused.flatten()
+            ],
         )?;
     }
     tx.execute("DELETE FROM own_read WHERE seq = ?1", params![seq])?;
@@ -3110,24 +3100,26 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
         params![msg_id, now],
     )?;
     if kept > 0 {
-        tx.execute(
-            "INSERT INTO handover (seq, agent)
-             SELECT own.seq, agent.name FROM own_message AS own JOIN agent ON agent.space = own.space
+        // Each agent of the device in its space the message is for, but its sender and those
+        // that refuse it.
+        let agents = "FROM own_message AS own JOIN agent ON agent.space = own.space
              WHERE own.msg_id = ?1 AND agent.name IS NOT own.sender
                  AND (own.addressed = 0 OR agent.name = own.addressee)
-                 AND agent.name NOT IN (SELECT value FROM json_each(own.refusing))
+                 AND agent.name NOT IN (SELECT value FROM json_each(own.refusing))";
+        tx.execute(
+            &format!(
+                "INSERT INTO handover (seq, agent) SELECT own.seq, agent.name {agents}
                  AND agent.name NOT IN (SELECT value FROM json_each(own.holding))
-             ON CONFLICT DO NOTHING",
+                 ON CONFLICT DO NOTHING"
+            ),
             params![msg_id],
         )?;
         tx.execute(
-            "INSERT INTO held_message (seq, agent, taken)
-             SELECT own.seq, agent.name, ?2 FROM own_message AS own
-             JOIN agent ON agent.space = own.space
-             WHERE own.msg_id = ?1 AND agent.name IS NOT own.sender
-                 AND (own.addressed = 0 OR agent.name = own.addressee)
+            &format!(
+                "INSERT INTO held_message (seq, agent, taken) SELECT own.seq, agent.name, ?2 {agents}
                  AND agent.name IN (SELECT value FROM json_each(own.holding))
-             ON CONFLICT DO NOTHING",
+                 ON CONFLICT DO NOTHING"
+            ),
             params![msg_id, now],
         )?;
         let held = tx.execute(
@@ -4369,18 +4361,8 @@ pub(crate) mod tests {
         let state = with_entries(&dir, &[2, 3, 4]);
         let sender = DeviceId::from_signing_key(&[2; 32]);
         let held = |wait| {
-            let mut held = kept(&[]);
+            let mut held = held_for_claude(sender);
             held.wait = wait;
-            held.held = vec!["claude".to_owned()];
-            held.read = Some(ToRead {
-                channel: held.channel,
-                sender,
-                author: "acme/bob/codex@skald.example".to_owned(),
-                addressee: "acme/ada/claude@skald.example".to_owned(),
-                agent: "claude".to_owned(),
-                reason: None,
-                held: true,
-            });
             held
         };
         let (accepted, refused, ended) = (held(86_400), held(86_400), held(10));
@@ -4458,12 +4440,8 @@ pub(crate) mod tests {
         assert_eq!(ended.reason.as_deref(), Some("no one"));
     }
 
-    /// A message held before its `held` goes owes the `held` first, then its `refused`.
-    #[test]
-    fn held_goes_before_the_refused_of_the_same_message() {
-        let dir = TestDir::new("state-held-order");
-        let state = with_entries(&dir, &[2]);
-        let sender = DeviceId::from_signing_key(&[2; 32]);
+    /// What keeps a message from `sender` `to` claude, which holds it, as [`kept`] does.
+    fn held_for_claude(sender: DeviceId) -> Kept {
         let mut held = kept(&[]);
         held.held = vec!["claude".to_owned()];
         held.read = Some(ToRead {
@@ -4475,6 +4453,16 @@ pub(crate) mod tests {
             reason: None,
             held: true,
         });
+        held
+    }
+
+    /// A message held before its `held` goes owes the `held` first, then its `refused`.
+    #[test]
+    fn held_goes_before_the_refused_of_the_same_message() {
+        let dir = TestDir::new("state-held-order");
+        let state = with_entries(&dir, &[2]);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let held = held_for_claude(sender);
         state.keep(2, (sender, held.msg_id), &held).unwrap();
         assert!(state.refuse_held(2, "claude", None, unix_now()).unwrap());
 
