@@ -9,8 +9,8 @@ use crate::helped::{Helped, IDLE_SETTING, LONG_IDLE, VERSION_SETTING, newer};
 use crate::kit::RECV;
 use crate::revocations::{self, signed, store_revocation};
 use crate::values::{
-    acme_channels, ada_s_body, ada_s_value, addresses, assert_between, await_available,
-    await_in_each, body_of, listed, ran_as, run_with, shows, uploads,
+    acme_channels, ada_s_body, addresses, assert_between, await_available, await_in_each, listed,
+    ran_as, run_with, shows, uploads,
 };
 use crate::world::{AGENT, now};
 
@@ -123,8 +123,7 @@ fn helper_exiting_under_a_session_leaves_its_agent_offline() {
 
     let after = now();
     for at in acme {
-        let value = ada_s_value(&agents.talk, at).expect("a value of Ada's");
-        let body = body_of(&agents.talk, &value);
+        let body = ada_s_body(&agents.talk, at).expect("a value of Ada's");
         let status = listed(&body, &claude);
         assert_eq!(
             status.state,

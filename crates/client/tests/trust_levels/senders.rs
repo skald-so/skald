@@ -154,6 +154,19 @@ pub fn assert_none_own(shown: &str) {
     assert!(own.is_empty(), "{own:?} in {shown}");
 }
 
+/// The one `msg_id` the JSON objects of `sent`, a `skald send --json`, report; fails unless they
+/// report one.
+#[track_caller]
+pub fn reported_msg_id(sent: &Finished) -> MessageId {
+    let ids: Vec<MessageId> = (json_objects(&sent.stdout).iter())
+        .filter_map(|object| object["msg_id"].as_str()?.parse().ok())
+        .collect();
+    match ids.as_slice() {
+        [id, ..] if ids.iter().all(|one| one == id) => *id,
+        _ => panic!("not one msg_id: {sent:?}"),
+    }
+}
+
 /// Ada's agents, with Bob's played device and Ada's second machine, linked by hand, in the
 /// channel; the second machine's `~/work/acme` is bound to `acme`.
 pub struct Senders {
@@ -229,13 +242,7 @@ impl Senders {
         let args = [SEND, JSON_FLAG, ALL, CHANNEL, &channel, text].map(str::to_owned);
         let sent = self.laptop.machine.start(&strs(&args)).finish();
         assert!(sent.success, "the person on the laptop: {sent:?}");
-        let ids: Vec<MessageId> = (json_objects(&sent.stdout).iter())
-            .filter_map(|object| object["msg_id"].as_str()?.parse().ok())
-            .collect();
-        match ids.as_slice() {
-            [id, ..] if ids.iter().all(|one| one == id) => *id,
-            _ => panic!("not one msg_id: {sent:?}"),
-        }
+        reported_msg_id(&sent)
     }
 
     /// Runs `skald --agent claude recv`, with `--wait` if `wait`, in `~/work/acme` on Ada's

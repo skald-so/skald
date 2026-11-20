@@ -16,7 +16,7 @@ use crate::kit::{Change, RECV, latest, received, revise};
 use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::{Finished, Machine, Run};
 use crate::played::Played;
-use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word};
+use crate::senders::{LAPTOP_AGENT, Senders, WAIT_FLAG, holds_word, reported_msg_id};
 use crate::talk::messages_sent;
 use crate::world::{ACME, AGENT, HOST};
 
@@ -185,13 +185,7 @@ impl Roles {
             .start_in(&self.senders.laptop_folder, &args)
             .finish();
         assert!(sent.success, "A's agent: {sent:?}");
-        let ids: Vec<MessageId> = (json_objects(&sent.stdout).iter())
-            .filter_map(|object| object["msg_id"].as_str()?.parse().ok())
-            .collect();
-        let msg_id = match ids.as_slice() {
-            [id, ..] if ids.iter().all(|one| one == id) => *id,
-            _ => panic!("not one msg_id: {sent:?}"),
-        };
+        let msg_id = reported_msg_id(&sent);
         let seen = messages_sent(&talk.front, talk.channel, from);
         assert!(
             (seen.iter()).any(|one| one.envelope.envelope().header.msg_id == msg_id),
