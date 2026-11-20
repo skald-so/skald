@@ -152,10 +152,7 @@ fn a_token_is_revoked_only_through_its_space_and_once() {
 fn a_token_stays_ended_once_its_entry_is_listed_again() {
     let mut stage = Stage::new(3_535_600_011);
     let created = stage.create();
-    let bot = stage.bot.id;
-    stage
-        .f
-        .revise(|body| body.service_agents.retain(|agent| agent.device != bot));
+    stage.drop_entry();
     let entry = service_agent(&stage.bot);
     stage.f.revise(|body| body.service_agents.push(entry));
 

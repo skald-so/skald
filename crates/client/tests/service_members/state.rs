@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::gaps::{bob_in, bob_sends};
 use crate::keys;
 use crate::member::{Bot, Runner, STATE, assert_not_shown, shown_once};
-use crate::service_kit::{KEY_VARIABLE, TOKEN_VARIABLE};
+use crate::service_kit::TOKEN_VARIABLE;
 
 /// What Ada, Bob and the agent say; none is anywhere else.
 const ADA_SAYS: &str = "member state test: ada asks for the nightly build";
@@ -136,11 +136,7 @@ fn the_agent_s_state_directory_opens_only_with_its_key_secret() {
         read_before,
         "Bob's device read more from the agent"
     );
-    let both = [
-        (KEY_VARIABLE, bot.secrets.key.as_str()),
-        (TOKEN_VARIABLE, bot.secrets.token.as_str()),
-    ];
-    let copy = Runner::copy_of(&bot.runner, &both);
+    let copy = Runner::copy_of(&bot.runner, &bot.secrets.variables());
     let got = copy.received();
     shown_once(&got, BOB_SAYS, (channel, &bob_from, bob_device));
 }

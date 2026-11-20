@@ -23,6 +23,7 @@ use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::notices::Noticed;
 use crate::protocol::Stated;
+use crate::service_tokens::live_token;
 use crate::sign_in::{bearer, digest, not_signed_in, param};
 use crate::{AppState, database_failed, error_reports, link_runs, notices, problem};
 
@@ -273,12 +274,13 @@ pub(crate) async fn prove(state: &AppState, headers: &HeaderMap) -> Result<Prove
 /// Whether the token of a device session, or a service token that has not ended, has the SHA-256
 /// `session`.
 async fn bearer_lives(db: &PgPool, session: &[u8]) -> Result<bool, sqlx::Error> {
-    let found: Option<(i32,)> = sqlx::query_as(
+    let found: Option<(i32,)> = sqlx::query_as(concat!(
         "SELECT 1 FROM sessions WHERE kind = 'device' AND token_hash = $1
          UNION ALL
          SELECT 1 FROM service_tokens t JOIN devices d ON d.id = t.device_id
-         WHERE t.token_hash = $1 AND t.expires_at > now() AND NOT d.revoked",
-    )
+         WHERE t.token_hash = $1 AND ",
+        live_token!(),
+    ))
     .bind(session)
     .fetch_optional(db)
     .await?;

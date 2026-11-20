@@ -11,7 +11,7 @@ use std::{fs, thread};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
-use skald_crypto::{check_grant, open_message, sign_anchors};
+use skald_crypto::{open_message, sign_anchors};
 use skald_proto::{
     AnchorsBody, Cbor as _, Cert, ChannelId, Content, DeviceId, Push, RawEnvelope, Role, Roster,
     Scheme, SpaceId, Unknown,
@@ -22,13 +22,11 @@ use crate::cloud::{Cloud, WAIT};
 use crate::fixtures::{Issuer, Keyed, add_device, database, hex, keyed, send_args, strs};
 use crate::kit::{RECV, latest, received};
 use crate::machine::{Finished, Machine, ONE_SHOT, Run, STATE_DIR};
-use crate::member::{JSON, messages, shown_once};
-use crate::service_kit::{BOT, Secrets, create_agent, secrets_of, service_of};
-use crate::service_kit::{KEY_VARIABLE, TOKEN_VARIABLE};
+use crate::member::{JSON, messages, shown_once, talk_with_bot};
+use crate::service_kit::{BOT, Secrets, bot_address, service_of};
 use crate::talk::{Talk, messages_sent};
 use crate::world::{
-    ACME, ADD_RULE, HOST, Person, dir_of, next, next_by, path, post_as, set_role, store, warnings,
-    words,
+    ACME, ADD_RULE, Person, dir_of, next, next_by, path, post_as, set_role, store, warnings, words,
 };
 
 /// The level of a `service` device's messages.
@@ -65,19 +63,13 @@ impl Agent {
     /// A new machine whose runs have both of `secrets` as their environment variables, and
     /// nothing else of the agent's.
     pub fn of(secrets: &Secrets) -> Self {
-        Self::with(&[
-            (KEY_VARIABLE, secrets.key.as_str()),
-            (TOKEN_VARIABLE, secrets.token.as_str()),
-        ])
+        Self::with(&secrets.variables())
     }
 
     /// As [`Agent::of`], with the setting `name` set to `value` too.
     pub fn of_with(secrets: &Secrets, (name, value): (&str, &str)) -> Self {
-        Self::with(&[
-            (KEY_VARIABLE, secrets.key.as_str()),
-            (TOKEN_VARIABLE, secrets.token.as_str()),
-            (name, value),
-        ])
+        let [key, token] = secrets.variables();
+        Self::with(&[key, token, (name, value)])
     }
 
     /// Its home.
@@ -197,12 +189,10 @@ impl Scene {
     /// The talk of Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones; Ada's
     /// machine creates `ci/deploy-bot`, which must succeed, and takes in its mailbox.
     pub fn new(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let talk = Talk::new(&ids, &logins, false);
-        let ada = &talk.ada.machine;
-        let secrets = secrets_of(&create_agent(ada, ACME, BOT, &[talk.channel], &[]));
-        received(ada);
+        let (talk, secrets) = talk_with_bot(ids, logins, &[]);
+        received(&talk.ada.machine);
         let (device, cert) = service_of(talk.cloud(), &talk.ada);
-        let (address, agent) = (format!("{ACME}/{BOT}@{HOST}"), Agent::of(&secrets));
+        let (address, agent) = (bot_address(), Agent::of(&secrets));
         Scene {
             talk,
             secrets,
@@ -324,25 +314,10 @@ impl Scene {
             .collect()
     }
 
-    /// Fails unless `content` carries a grant that passes the checks of "Service grant" as Bob's
-    /// device makes them now: of the agent's device, for the channel, signed by an admin's device,
-    /// not expired.
+    /// As [`crate::member::assert_granted`], of the agent's device.
     #[track_caller]
     pub fn assert_granted(&self, content: &Content) {
-        let grant = (content.grant.as_ref()).unwrap_or_else(|| panic!("no grant: {content:?}"));
-        let bob = self.bob();
-        let roster = latest(self.cloud(), &bob.token, self.space());
-        let certs = crate::world::space_certs(self.cloud(), &bob.token, self.space());
-        check_grant(
-            grant,
-            (self.device, self.channel()),
-            &roster,
-            &certs,
-            &[],
-            (bob.account, &bob.master),
-            crate::world::now(),
-        )
-        .unwrap_or_else(|err| panic!("Bob's device refuses the grant: {err}; {content:?}"));
+        crate::member::assert_granted(&self.talk, self.device, content);
     }
 
     /// Fails unless the server's database holds each of `envelopes` and not `text`.

@@ -5,22 +5,16 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_crypto::check_grant;
-use skald_proto::{
-    Body, Cbor as _, ChannelId, Content, DeviceId, MessageId, RawEnvelope, ServiceKey,
-};
+use skald_proto::{Cbor as _, ChannelId, Content, DeviceId, MessageId, RawEnvelope, ServiceKey};
 
 use crate::fixtures::send;
 use crate::kit::{RECV, latest, received};
 use crate::machine::{Finished, Machine, STATE_DIR};
-use crate::service_kit::{
-    BOT, KEY_VARIABLE, Secrets, TOKEN_VARIABLE, create_agent, secrets_of, service_of,
-};
-use crate::talk::{Talk, messages_sent};
-use crate::world::{ACME, HOST, now, run, space_certs};
+use crate::service_kit::{BOT, Secrets, bot_address, create_agent, key_of, secrets_of, service_of};
+use crate::talk::{Talk, a2a, messages_sent};
+use crate::world::{ACME, now, run, space_certs};
 
 /// The option of the creation command that makes the agent a member of its channels.
 pub const MEMBER: &str = "--member";
@@ -59,10 +53,7 @@ impl Runner {
 
     /// A new machine whose runs have both of `secrets`, as their environment variables.
     pub fn of(secrets: &Secrets) -> Self {
-        Self::with(&[
-            (KEY_VARIABLE, secrets.key.as_str()),
-            (TOKEN_VARIABLE, secrets.token.as_str()),
-        ])
+        Self::with(&secrets.variables())
     }
 
     /// A new machine whose runs have the settings `vars`, its state directory a copy of `from`'s.
@@ -113,14 +104,13 @@ fn copy_dir(from: &Path, to: &Path) {
     }
 }
 
-/// The key secret in `secrets`, decoded.
-#[track_caller]
-pub fn key_of(secrets: &Secrets) -> ServiceKey {
-    let bytes = URL_SAFE_NO_PAD
-        .decode(&secrets.key)
-        .unwrap_or_else(|err| panic!("a key secret that is no base64url: {err}"));
-    ServiceKey::from_cbor(&bytes)
-        .unwrap_or_else(|err| panic!("a key secret that does not decode: {err}"))
+/// The talk of Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones, in `acme`, and
+/// the secrets of `ci/deploy-bot`, which Ada's machine creates for the talk's channel with `extra`;
+/// the creation must succeed.
+pub fn talk_with_bot(ids: [u64; 2], logins: [&str; 2], extra: &[&str]) -> (Talk, Secrets) {
+    let talk = Talk::new(&ids, &logins, false);
+    let created = create_agent(&talk.ada.machine, ACME, BOT, &[talk.channel], extra);
+    (talk, secrets_of(&created))
 }
 
 /// The talk of Ada and Bob in `acme`, and the service agent `ci/deploy-bot` that Ada's machine
@@ -142,12 +132,10 @@ impl Bot {
     /// machine creates `ci/deploy-bot` as a member of the talk's channel, with the creation's
     /// default permissions, which must succeed.
     pub fn created(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let talk = Talk::new(&ids, &logins, false);
-        let created = create_agent(&talk.ada.machine, ACME, BOT, &[talk.channel], &[MEMBER]);
-        let secrets = secrets_of(&created);
+        let (talk, secrets) = talk_with_bot(ids, logins, &[MEMBER]);
         let (device, _) = service_of(talk.cloud(), &talk.ada);
-        let key = key_of(&secrets);
-        let address = format!("{}/{BOT}@{HOST}", talk.space.name);
+        let key = key_of(&secrets.key);
+        let address = bot_address();
         let runner = Runner::of(&secrets);
         Bot {
             talk,
@@ -238,26 +226,32 @@ impl Bot {
             .collect()
     }
 
-    /// Fails unless `content` carries a grant that passes the checks of "Service grant" as Bob's
-    /// device makes them now, against the latest revision and the space's certificates: of the
-    /// agent's device, for the channel, signed by an admin's device, not expired.
+    /// As [`assert_granted`], of the agent's device.
     #[track_caller]
     pub fn assert_granted(&self, content: &Content) {
-        let grant = (content.grant.as_ref()).unwrap_or_else(|| panic!("no grant: {content:?}"));
-        let (cloud, bob) = (self.talk.cloud(), &self.talk.played[0].person);
-        let roster = latest(cloud, &bob.token, self.talk.space.id);
-        let certs = space_certs(cloud, &bob.token, self.talk.space.id);
-        check_grant(
-            grant,
-            (self.device, self.channel()),
-            &roster,
-            &certs,
-            &[],
-            (bob.account, &bob.master),
-            now(),
-        )
-        .unwrap_or_else(|err| panic!("Bob's device refuses the grant: {err}; {content:?}"));
+        assert_granted(&self.talk, self.device, content);
     }
+}
+
+/// Fails unless `content` carries a grant that passes the checks of "Service grant" as Bob's device
+/// in `talk` makes them now, against the latest revision and the space's certificates: of
+/// `device`, for the talk's channel, signed by an admin's device, not expired.
+#[track_caller]
+pub fn assert_granted(talk: &Talk, device: DeviceId, content: &Content) {
+    let grant = (content.grant.as_ref()).unwrap_or_else(|| panic!("no grant: {content:?}"));
+    let (cloud, bob) = (talk.cloud(), &talk.played[0].person);
+    let roster = latest(cloud, &bob.token, talk.space.id);
+    let certs = space_certs(cloud, &bob.token, talk.space.id);
+    check_grant(
+        grant,
+        (device, talk.channel),
+        &roster,
+        &certs,
+        &[],
+        (bob.account, &bob.master),
+        now(),
+    )
+    .unwrap_or_else(|err| panic!("Bob's device refuses the grant: {err}; {content:?}"));
 }
 
 /// The messages `finished`, a run of `skald recv --json`, shows: the JSON objects with a `text` on
@@ -304,14 +298,5 @@ pub fn assert_not_shown(finished: &Finished, text: &str) {
 /// The text parts of the A2A message in `content`.
 #[track_caller]
 pub fn texts_of(content: &Content) -> Vec<String> {
-    let Some(Body::A2a(json)) = &content.body else {
-        panic!("not an a2a body: {content:?}");
-    };
-    let message: Value = serde_json::from_str(json).expect("an A2A message in JSON");
-    message["parts"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str().map(str::to_owned))
-        .collect()
+    a2a(content).1
 }

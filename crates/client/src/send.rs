@@ -309,9 +309,8 @@ pub fn send_synced(
     // A service agent's message carries its token's grant; only a member's has copies.
     let (from, grant, readers) = match follower.service {
         Some(_) => {
-            let grant = service::grant(&mut follower.connection, &follower.token)?;
-            let at = (follower.this, channel);
-            let from = service::sender(at, (&roster, &devices), &follower.own, server, &grant)?;
+            let (from, grant) =
+                service::sender(&mut follower, (&roster, &devices), (channel, server))?;
             (from, Some(grant), Vec::new())
         }
         None => {

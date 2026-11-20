@@ -16,7 +16,8 @@ use crate::kit::{RECV, group_info_request, received};
 use crate::member::{JSON, texts_of};
 use crate::scene::{Agent, OWN_RECORD_REQUEST, Scene, names_revision};
 use crate::service_kit::{
-    BOT, CHANNEL, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, id_of, own_record, token_of,
+    BOT, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, id_of, own_record, run_for_channels,
+    token_of,
 };
 use crate::world::{
     ACME, change_devices, device_entry, devices_request, next, next_with, now, revisions_request,
@@ -119,10 +120,12 @@ fn a_run_whose_grant_signer_is_revoked_says_a_new_token_is_needed() {
     let said = refused(&scene, "a grant whose signer is revoked");
 
     assert!(said.stderr.contains(NEW_TOKEN), "{said:?}");
-    let channel = scene.channel().to_string();
-    let token = token_of(&run(
+    let command = (CREATE_SERVICE_TOKEN, ACME, BOT);
+    let token = token_of(&run_for_channels(
         &laptop.machine,
-        &[CREATE_SERVICE_TOKEN, ACME, BOT, CHANNEL, &channel],
+        command,
+        &[scene.channel()],
+        &[],
     ));
     let renewed = Agent::of(&Secrets {
         key: scene.secrets.key.clone(),

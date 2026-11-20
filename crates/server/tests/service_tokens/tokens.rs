@@ -121,6 +121,12 @@ impl Stage {
         self.f.team.space
     }
 
+    /// alice's laptop stores the next revision, without the bot's entry.
+    pub fn drop_entry(&mut self) {
+        let bot = self.bot.id;
+        (self.f).revise(|body| body.service_agents.retain(|agent| agent.device != bot));
+    }
+
     pub fn base(&self) -> &str {
         self.f.team.flow.stand.server.base()
     }

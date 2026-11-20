@@ -31,7 +31,7 @@ use crate::delivery::{self, Reader};
 use crate::mailboxes::{self, Sender};
 use crate::protocol::Stated;
 use crate::refusal::Caller;
-use crate::service_tokens::{self, Token};
+use crate::service_tokens::{self, Token, live_token};
 use crate::sign_in::{bearer, digest, not_signed_in};
 use crate::{AppState, database_failed};
 use crate::{error_reports, history};
@@ -253,7 +253,7 @@ pub(crate) async fn challenge(State(state): State<AppState>, headers: HeaderMap)
     };
     let mut challenge = [0; 32];
     getrandom::fill(&mut challenge).expect("the operating system's random generator failed");
-    let issued = sqlx::query(
+    let issued = sqlx::query(concat!(
         "WITH expired AS (DELETE FROM connection_challenges WHERE expires_at <= now())
          INSERT INTO connection_challenges
              (challenge_hash, session_hash, service_token_hash, expires_at)
@@ -262,8 +262,9 @@ pub(crate) async fn challenge(State(state): State<AppState>, headers: HeaderMap)
          UNION ALL
          SELECT $1, NULL, t.token_hash, now() + make_interval(secs => $3)
          FROM service_tokens t JOIN devices d ON d.id = t.device_id
-         WHERE t.token_hash = $2 AND t.expires_at > now() AND NOT d.revoked",
-    )
+         WHERE t.token_hash = $2 AND ",
+        live_token!(),
+    ))
     .bind(Sha256::digest(challenge).to_vec())
     .bind(digest(token))
     .bind(CHALLENGE_LIFETIME.as_secs_f64())
