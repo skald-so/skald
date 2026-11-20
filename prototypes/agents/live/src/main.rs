@@ -5,6 +5,8 @@
 mod app;
 mod before_run;
 mod gui_run;
+mod permission_gui;
+mod permission_run;
 mod pty;
 mod read_run;
 mod run;
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
         ),
         ["inbox", agent, options @ ..] => agent_check(agent, options, run::inbox),
         ["channel", "claude", options @ ..] => check(options, pty::channel),
+        ["permission", "claude", options @ ..] => check(options, permission_run::permission),
         ["queue", "codex", options @ ..] => check(options, pty::queue),
         ["app-server", "codex", options @ ..] => check(options, app::app_server),
         [path, "claude", options @ ..] if Wake::parse(path).is_some() => {
@@ -105,6 +108,14 @@ fn main() -> ExitCode {
             };
             ended(gui_run::socket(Path::new(work), auth, listen))
         }
+        ["gui-permission", surface] => match Surface::parse(surface) {
+            Some(surface @ (Surface::ClaudeDesktop | Surface::ClaudeVsCode)) => {
+                ended(permission_gui::gui(surface))
+            }
+            _ => usage(),
+        },
+        ["gui-permission-link", work] => ended(permission_gui::gui_link(Path::new(work))),
+        ["gui-permission-result", work] => ended(permission_gui::gui_result(Path::new(work))),
         ["gui-add", work] => ended(gui_run::add(Path::new(work))),
         ["gui-link", work] => ended(gui_run::link(Path::new(work))),
         ["gui-queue", work, cli @ ..] => {
@@ -195,6 +206,7 @@ fn usage() -> ExitCode {
         "usage: live-check add <source-dir> <sender> <text>\n       \
          live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check channel claude [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check permission claude [--all] [--real] [--model <model>] [--keep]\n       \
          live-check <post-tool-use|stop> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
@@ -218,6 +230,9 @@ fn usage() -> ExitCode {
          live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
          live-check gui-result <check-dir> <token>\n       \
+         live-check gui-permission <claude-desktop|claude-vscode>\n       \
+         live-check gui-permission-link <check-dir>\n       \
+         live-check gui-permission-result <check-dir>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)

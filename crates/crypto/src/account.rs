@@ -1,14 +1,12 @@
 //! The account record, the recovery key and the master backup: `docs/protocol/membership.md`,
 //! "Account".
 
-use std::convert::Infallible;
 use std::fmt;
 
 use hkdf::Hkdf;
 use hpke::aead::AesGcm128;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::X25519HkdfSha256;
-use hpke::rand_core::{TryCryptoRng, TryRng};
 use hpke::{Deserializable as _, Kem, OpModeR, OpModeS, PskBundle, Serializable as _};
 use sha2::Sha256;
 use skald_proto::{
@@ -16,6 +14,7 @@ use skald_proto::{
 };
 use zeroize::Zeroizing;
 
+use crate::hpke::Fixed;
 use crate::sign::{SigningKey, random_secret, verify};
 
 /// `info` and `psk_id` of the master backup's seal.
@@ -310,26 +309,3 @@ pub fn open_master_backup(
     }
     Ok(opened)
 }
-
-/// A generator that gives the 32 bytes it holds once: the ephemeral key's `ikm`.
-struct Fixed(Option<[u8; 32]>);
-
-impl TryRng for Fixed {
-    type Error = Infallible;
-
-    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
-        unreachable!("the seal draws only the ephemeral key's 32 bytes")
-    }
-
-    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
-        unreachable!("the seal draws only the ephemeral key's 32 bytes")
-    }
-
-    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
-        let bytes = self.0.take().expect("the ephemeral key is drawn once");
-        dst.copy_from_slice(&bytes);
-        Ok(())
-    }
-}
-
-impl TryCryptoRng for Fixed {}

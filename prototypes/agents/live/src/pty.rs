@@ -612,6 +612,12 @@ impl Live {
         self.screen.showed(text)
     }
 
+    /// Types `keys` into the terminal, as a person answering a dialog.
+    pub(crate) fn press(&mut self, keys: &[u8]) -> Result<()> {
+        self.writer.write_all(keys)?;
+        Ok(())
+    }
+
     /// Reads the terminal for up to a tick, answers its dialogs and reads what the session did;
     /// whether the CLI still runs.
     fn pump(&mut self) -> Result<bool> {

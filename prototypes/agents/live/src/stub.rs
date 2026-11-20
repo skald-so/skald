@@ -28,6 +28,9 @@ pub const QUICK: &str = "true";
 /// A short pause, after which Claude Code has written its transcript.
 pub const PAUSE: &str = "sleep 2";
 
+/// A shell command no check's settings allow, so Claude Code asks for permission to run it.
+pub const PROMPTED: &str = "touch prompted.txt";
+
 /// The stub's reply once its script ends.
 pub const DONE: &str = "Done.";
 
@@ -45,6 +48,8 @@ pub enum Call {
     Quick,
     /// Runs `PAUSE`.
     Pause,
+    /// Runs `PROMPTED`.
+    Prompted,
     /// Calls the server's `ack` tool for each message the conversation holds, with its secret as
     /// `AckWith` says.
     Ack(AckWith),
@@ -107,6 +112,7 @@ impl Call {
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
             Self::Pause => Some(PAUSE),
+            Self::Prompted => Some(PROMPTED),
             Self::Inbox
             | Self::Ack(_)
             | Self::InboxSeen
@@ -132,6 +138,7 @@ impl Call {
             Self::Shell
             | Self::Quick
             | Self::Pause
+            | Self::Prompted
             | Self::Cron
             | Self::Fail
             | Self::Tool { .. } => None,
@@ -1240,6 +1247,7 @@ mod tests {
         assert_eq!(Call::Quick.server_tool(&body), None);
         assert_eq!(Call::Pause.server_tool(&body), None);
         assert_eq!(Call::Pause.command(), Some("sleep 2"));
+        assert_eq!(Call::Prompted.command(), Some("touch prompted.txt"));
         // Without messages, a reply names none.
         assert_eq!(
             Call::Reply.server_tool(&json!({})).unwrap(),
