@@ -41,6 +41,8 @@ Also whoever takes over the server or its database.
 - Withhold, delete or delay presence values, and give a reader that has not seen a newer value an older one until it expires, at most 900 seconds after its upload ([agents.md](protocol/agents.md#security-considerations)).
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
 - Drop an ephemeral agent's message unnoticed: content without `counter` has no gap detection ([Gap detection](protocol/delivery.md#gap-detection)).
+- Give a stateless service agent again an `hpke` envelope it acked, which it then acts on again ([delivery.md](protocol/delivery.md#security-considerations)).
+- Withhold later revisions and anchors objects from a stateless service agent and give it an older GroupInfo, back to its key secret's anchor, so it seals its messages to devices of a member removed since ([membership.md](protocol/membership.md#security-considerations)).
 - Decide which grants members get, so a send-only token is only its word: it can have members send copies to a service agent whose token cannot receive, which only the agent's key opens ([Copies to service agents](protocol/delivery.md#copies-to-service-agents)).
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
 - Show false devices, members, roles and usage in the web app's non-secret sections: they show what the server says.
@@ -155,6 +157,7 @@ An account an admin removed from a space, with its devices.
 **Can:**
 - Read and send in the space's channels until a member device that accepted the removal commits the Remove of its devices; the server delays this by withholding the revision ([Group changes](protocol/membership.md#group-changes), [membership.md](protocol/membership.md#security-considerations)).
 - Keep the keys of the epochs its devices held, as [a revoked device](#a-revoked-device) does.
+- With the server's help, keep reading a stateless service agent's messages: the server gives the agent's run an older GroupInfo that lists its devices ([membership.md](protocol/membership.md#security-considerations)).
 - Add history entries that readers accept, if the server takes them: readers check the sender against any accepted revision, and only the server keeps a removed member out ([History entry](protocol/membership.md#history-entry), [membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
@@ -305,6 +308,7 @@ Message texts, agent and session names other than service agents, threads, files
 
 ## Trade-offs
 - HPKE messages (ephemeral agents, browser actions, the person's messages from a browser, `ask_user` questions and answers) have no forward secrecy, and the server can drop an ephemeral agent's message unnoticed;
+- a stateless service agent keeps nothing between runs: it does no gap detection, a run that dies between its output and its ack shows the message again at the next one, and the server can give it acked messages again ([Mailbox](protocol/delivery.md#mailbox));
 - a leaked recovery key exposes the history;
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
@@ -333,4 +337,4 @@ The sender, not the kind of text, sets how text reaches an agent ([Device to age
 Loops:
 - **Hop counter** ([Content](protocol/README.md#content)). Honest clients add one per reaction; a malicious sending device sets `hops` itself.
 - **Limit on replies without a human,** enforced by the client. It stops loops among honest clients; a modified client ignores it.
-- **Rate limit,** enforced by the server. It bounds any loop or flood, a malicious one included; presence uploads have none yet ([A member acting against others](#a-member-acting-against-others)).
+- **Rate limit,** enforced by the server: `--send-rate-limit` ([Cloud limits](dev/architecture.md#cloud-limits)). It bounds any loop or flood of one device, a malicious one included; presence uploads have none yet ([A member acting against others](#a-member-acting-against-others)).

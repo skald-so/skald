@@ -132,7 +132,8 @@ impl fmt::Display for Error {
 }
 
 pub struct Secrets {
-    file: PathBuf,
+    /// The secrets file; none for secrets held in memory only.
+    file: Option<PathBuf>,
     keyring: Option<Box<dyn Keyring>>,
 }
 
@@ -157,15 +158,23 @@ impl Secrets {
     /// The secrets of the state directory `dir`, in `keyring` if given, else in the file.
     pub fn with(dir: &Path, keyring: Option<Box<dyn Keyring>>) -> Self {
         Secrets {
-            file: dir.join(FILE),
+            file: Some(dir.join(FILE)),
             keyring,
+        }
+    }
+
+    /// The secrets in `keyring` only, without a file.
+    pub fn in_memory(keyring: Box<dyn Keyring>) -> Self {
+        Secrets {
+            file: None,
+            keyring: Some(keyring),
         }
     }
 
     /// The secrets file.
     #[cfg(test)]
     pub fn file(&self) -> &Path {
-        &self.file
+        self.file.as_deref().expect("a secrets file")
     }
 
     /// The stored secrets: the key storage's if it has them, otherwise the file's, if any.
@@ -177,11 +186,9 @@ impl Secrets {
                 Err(KeyringError::Failed(err)) => return Err(Error::Keyring(err)),
             }
         }
-        match fs::read_to_string(&self.file) {
-            Ok(value) => parse(&value, &plain(&self.file).display().to_string()),
-            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
-            Err(err) => Err(Error::File(self.file.clone(), err)),
-        }
+        self.file
+            .as_deref()
+            .map_or_else(|| Ok(Map::new()), read_file)
     }
 
     /// Keeps `secrets` instead of the stored ones: in the key storage, removing the file, or
@@ -195,35 +202,48 @@ impl Secrets {
                 Err(KeyringError::Failed(err)) => return Err(Error::Keyring(err)),
             }
         }
-        self.write_file(&value)
-            .map_err(|err| Error::File(self.file.clone(), err))
+        let file = (self.file.as_deref()).ok_or_else(|| {
+            Error::Keyring("it is unavailable, and the secrets have no file".to_owned())
+        })?;
+        write_file(file, &value).map_err(|err| Error::File(file.to_path_buf(), err))
     }
 
     fn remove_file(&self) -> Result<(), Error> {
-        match fs::remove_file(&self.file) {
+        let Some(file) = &self.file else {
+            return Ok(());
+        };
+        match fs::remove_file(file) {
             Err(err) if err.kind() != io::ErrorKind::NotFound => {
-                Err(Error::File(self.file.clone(), err))
+                Err(Error::File(file.clone(), err))
             }
             _ => Ok(()),
         }
     }
+}
 
-    /// Writes the file whole or not at all: a new file, with 0600 permissions on Unix, renamed over
-    /// it.
-    fn write_file(&self, value: &str) -> io::Result<()> {
-        let new = self.file.with_extension("json.new");
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        let mut file = options.open(&new)?;
-        // The mode applies only to a file the open creates.
-        #[cfg(unix)]
-        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-        file.write_all(value.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&new, &self.file)
+/// The secrets in the file `path`; none if there is no such file.
+fn read_file(path: &Path) -> Result<Map, Error> {
+    match fs::read_to_string(path) {
+        Ok(value) => parse(&value, &plain(path).display().to_string()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(Map::new()),
+        Err(err) => Err(Error::File(path.to_path_buf(), err)),
     }
+}
+
+/// Writes `path` whole or not at all: a new file, with 0600 permissions on Unix, renamed over it.
+fn write_file(path: &Path, value: &str) -> io::Result<()> {
+    let new = path.with_extension("json.new");
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&new)?;
+    // The mode applies only to a file the open creates.
+    #[cfg(unix)]
+    file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    file.write_all(value.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&new, path)
 }
 
 fn parse(value: &str, place: &str) -> Result<Map, Error> {
@@ -371,6 +391,29 @@ mod tests {
             matches!(&error, Error::Keyring(err) if err == "locked"),
             "{error:?}"
         );
+    }
+
+    #[test]
+    fn secrets_in_memory_write_no_file() {
+        let keyring = StandIn::new(None);
+        let secrets = Secrets::in_memory(Box::new(keyring.clone()));
+        assert_eq!(secrets.load().unwrap(), Map::new());
+
+        secrets.save(&token("one")).unwrap();
+
+        assert_eq!(secrets.load().unwrap(), token("one"));
+        assert_eq!(
+            keyring.value.borrow().as_deref(),
+            Some(r#"{"session_token":"one"}"#)
+        );
+
+        let unavailable = StandIn::new(Some(|| KeyringError::Unavailable));
+        let secrets = Secrets::in_memory(Box::new(unavailable));
+        let error = secrets
+            .save(&token("one"))
+            .expect_err("no file to fall back to");
+        assert!(matches!(error, Error::Keyring(_)), "{error:?}");
+        assert_eq!(secrets.load().unwrap(), Map::new());
     }
 
     #[test]

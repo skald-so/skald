@@ -9,6 +9,7 @@ mod history;
 mod hpke;
 mod link;
 mod mls;
+mod presence;
 mod revocation;
 mod roster;
 mod sealed;
@@ -31,6 +32,7 @@ pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,
 };
+pub use presence::{PresenceError, PresenceKey};
 pub use revocation::{check_valid_device, counts, marked_stolen, revoked_devices, sign_revocation};
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
