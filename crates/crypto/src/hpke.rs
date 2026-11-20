@@ -1,11 +1,13 @@
 //! Stateless HPKE: `docs/protocol/README.md`, "Scheme `hpke`". A device's X25519 key pair, the
 //! single-shot seal and open in base mode of the suite, and the `hpke` payload on top of them.
 
+use std::convert::Infallible;
 use std::fmt;
 
 use hpke::aead::AesGcm128;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::X25519HkdfSha256;
+use hpke::rand_core::{TryCryptoRng, TryRng};
 use hpke::{Deserializable as _, Kem, OpModeR, OpModeS, Serializable as _};
 use skald_proto::{
     Cbor, Cert, Content, DecodeError, DeviceId, Header, HpkePayload, HpkePlaintext, Scheme,
@@ -34,7 +36,12 @@ impl HpkeKey {
     /// DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3), as `docs/protocol/membership.md`, "Account",
     /// says. Its [`HpkeKey::to_bytes`] are the derived private key, clamped.
     pub fn from_recovery_key(recovery: &[u8; 32]) -> Self {
-        let (key, _) = <Dhkem as Kem>::derive_keypair(recovery);
+        Self::derived(recovery)
+    }
+
+    /// The private key of `DeriveKeyPair(ikm)` of DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3).
+    pub(crate) fn derived(ikm: &[u8; 32]) -> Self {
+        let (key, _) = <Dhkem as Kem>::derive_keypair(ikm);
         let mut secret = Zeroizing::new([0; 32]);
         key.write_exact(secret.as_mut());
         Self::from_bytes(&secret)
@@ -74,15 +81,37 @@ impl HpkeKey {
         aad: &[u8],
         plaintext: &[u8],
     ) -> Result<([u8; 32], Vec<u8>), HpkeError> {
+        Self::seal_with(recipient, info, aad, plaintext, None)
+    }
+
+    /// [`HpkeKey::seal`], with the ephemeral key pair `DeriveKeyPair(ephemeral)` if given, for a
+    /// test vector.
+    pub(crate) fn seal_with(
+        recipient: &[u8; 32],
+        info: &[u8],
+        aad: &[u8],
+        plaintext: &[u8],
+        ephemeral: Option<&[u8; 32]>,
+    ) -> Result<([u8; 32], Vec<u8>), HpkeError> {
         let recipient = <Dhkem as Kem>::PublicKey::from_bytes(recipient)
             .map_err(|_| HpkeError::RecipientKey)?;
-        let (enc, ct) = hpke::single_shot_seal::<AesGcm128, HkdfSha256, Dhkem>(
-            &OpModeS::Base,
-            &recipient,
-            info,
-            plaintext,
-            aad,
-        )
+        let (enc, ct) = match ephemeral {
+            None => hpke::single_shot_seal::<AesGcm128, HkdfSha256, Dhkem>(
+                &OpModeS::Base,
+                &recipient,
+                info,
+                plaintext,
+                aad,
+            ),
+            Some(ephemeral) => hpke::single_shot_seal_with_rng::<AesGcm128, HkdfSha256, Dhkem>(
+                &OpModeS::Base,
+                &recipient,
+                info,
+                plaintext,
+                aad,
+                &mut Fixed(Some(*ephemeral)),
+            ),
+        }
         .map_err(|_| HpkeError::RecipientKey)?;
         Ok((enc.to_bytes().into(), ct))
     }
@@ -114,6 +143,29 @@ impl HpkeKey {
         .map_err(|_| HpkeError::Open)
     }
 }
+
+/// A generator that gives the 32 bytes it holds once: the ephemeral key's `ikm`.
+pub(crate) struct Fixed(pub(crate) Option<[u8; 32]>);
+
+impl TryRng for Fixed {
+    type Error = Infallible;
+
+    fn try_next_u32(&mut self) -> Result<u32, Infallible> {
+        unreachable!("the seal draws only the ephemeral key's 32 bytes")
+    }
+
+    fn try_next_u64(&mut self) -> Result<u64, Infallible> {
+        unreachable!("the seal draws only the ephemeral key's 32 bytes")
+    }
+
+    fn try_fill_bytes(&mut self, dst: &mut [u8]) -> Result<(), Infallible> {
+        let bytes = self.0.take().expect("the ephemeral key is drawn once");
+        dst.copy_from_slice(&bytes);
+        Ok(())
+    }
+}
+
+impl TryCryptoRng for Fixed {}
 
 impl fmt::Debug for HpkeKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

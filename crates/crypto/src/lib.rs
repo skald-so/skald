@@ -10,6 +10,7 @@ mod hpke;
 mod link;
 mod mls;
 mod presence;
+mod queue;
 mod revocation;
 mod roster;
 mod sealed;
@@ -33,6 +34,10 @@ pub use mls::{
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,
 };
 pub use presence::{PresenceError, PresenceKey};
+pub use queue::{
+    QueueError, QueueKeyPair, check_queue_key, check_task, seal_task, seal_task_with_ephemeral,
+    sign_queue_key, sign_task,
+};
 pub use revocation::{check_valid_device, counts, marked_stolen, revoked_devices, sign_revocation};
 pub use roster::{RosterError, accept_next, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
