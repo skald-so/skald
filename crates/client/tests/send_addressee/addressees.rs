@@ -1,7 +1,8 @@
 //! Who a message is for: `--to` one agent, the content's `to`, or `--all`, every agent in the
 //! channel, with no `to`; the short and the uppercase forms of an address name the full one.
 
-use crate::clients::{ADA_AGENT, ALL, BOB_CLAUDE, BOB_CODEX, CHANNEL, Clients, TO, assert_one};
+use crate::clients::{ADA_AGENT, BOB_CLAUDE, BOB_CODEX, Clients, assert_one};
+use crate::fixtures::{ALL, CHANNEL, TO};
 use crate::talk::messages_sent;
 use crate::world::{CLIENT_A, CLIENT_B};
 

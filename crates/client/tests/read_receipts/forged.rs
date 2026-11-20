@@ -4,9 +4,9 @@
 use skald_proto::{Body, ChannelId, MessageId, NonEmpty, Receipt, ReceiptStatus, Unknown};
 
 use crate::agents::{Agents, CLAUDE};
-use crate::fixtures::SEND;
+use crate::fixtures::{CHANNEL, SEND, TO};
 use crate::kit::received;
-use crate::receipts::{CHANNEL, TO, read_lines, shows_read_once};
+use crate::receipts::{read_lines, shows_read_once};
 use crate::talk::{Line, one_message_sent};
 use crate::world::{ACME, AGENT, HOST};
 

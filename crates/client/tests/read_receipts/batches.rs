@@ -6,8 +6,8 @@ use std::collections::BTreeSet;
 use skald_proto::MessageId;
 
 use crate::agents::CLAUDE;
-use crate::fixtures::{SEND, person_address};
-use crate::receipts::{CHANNEL, Got, Roles, TO};
+use crate::fixtures::{CHANNEL, SEND, TO, person_address};
+use crate::receipts::{Got, Roles};
 use crate::senders::LAPTOP_AGENT;
 use crate::talk::{Line, one_message_sent};
 use crate::world::{ACME, HOST};

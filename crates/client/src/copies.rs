@@ -220,6 +220,7 @@ mod tests {
             ids: certs.iter().map(|cert| cert.body().device).collect(),
             certs,
             revocations: Vec::new(),
+            records: Vec::new(),
         };
         let own = Own {
             account: ada.id,

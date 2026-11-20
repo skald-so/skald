@@ -118,6 +118,13 @@ pub fn perform(
     let (Some(call), Some(agent)) = (call, agent) else {
         return Err("skald mcp runs only as itself".to_owned());
     };
+    // The folder's space, its warnings held for the person.
+    let space = || recv::holding_warnings(dir, true, || folders::working_space(dir));
+    // Runs `sends` in the folder's space; in no space, sends nothing.
+    let sending = |sends: &dyn Fn() -> Result<(), String>| match space() {
+        Ok(_) => sends(),
+        Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
+    };
     match call {
         // In no space, there is nothing to register in.
         Call::Register => match folders::working_space(dir) {
@@ -126,39 +133,21 @@ pub fn perform(
                 .map_err(text),
             Err(_) => Ok(()),
         },
-        Call::Inbox => match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
+        Call::Inbox => match space() {
             Ok(_) => recv::inbox(dir, storage, settings, agent),
             Err(why) => {
                 println!("This agent sees no space: {why}.");
                 Ok(())
             }
         },
-        Call::Send { to, channel, text } => {
-            match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
-                Ok(_) => send::run(
-                    dir,
-                    storage,
-                    settings,
-                    (to.as_deref(), channel.as_deref(), &text),
-                    Some(agent),
-                    false,
-                ),
-                Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
-            }
-        }
-        Call::Reply { message, text } => {
-            match recv::holding_warnings(dir, true, || folders::working_space(dir)) {
-                Ok(_) => reply::run(
-                    dir,
-                    storage,
-                    settings,
-                    (&message, &text),
-                    Some(agent),
-                    false,
-                ),
-                Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
-            }
-        }
+        Call::Send { to, channel, text } => sending(&|| {
+            let named = (to.as_deref(), channel.as_deref(), text.as_str());
+            send::run(dir, storage, settings, named, Some(agent), false)
+        }),
+        Call::Reply { message, text } => sending(&|| {
+            let named = (message.as_str(), text.as_str());
+            reply::run(dir, storage, settings, named, Some(agent), false)
+        }),
     }
 }
 

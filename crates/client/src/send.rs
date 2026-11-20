@@ -1177,6 +1177,7 @@ pub(crate) mod tests {
             ids: certs.iter().map(id).collect(),
             certs: certs.clone(),
             revocations: Vec::new(),
+            records: Vec::new(),
         };
 
         let given: BTreeMap<DeviceId, [u8; 32]> =

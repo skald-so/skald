@@ -525,6 +525,7 @@ mod tests {
                 ids: (0..3).map(|at| self.device(at)).collect(),
                 certs: self.certs.clone(),
                 revocations: revocations.iter().map(|&one| one.clone()).collect(),
+                records: Vec::new(),
             }
         }
 

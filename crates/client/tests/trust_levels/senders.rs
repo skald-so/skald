@@ -7,7 +7,7 @@ use skald_proto::MessageId;
 
 use crate::agents::{ACME_DIR, Agents, CLAUDE};
 use crate::devices::second_machine;
-use crate::fixtures::{SEND, strs};
+use crate::fixtures::{ALL, CHANNEL, SEND, strs};
 use crate::kit::{RECV, received};
 use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::Finished;
@@ -214,15 +214,7 @@ impl Senders {
     #[track_caller]
     pub fn laptop_agent_says(&self, agent: &str, text: &str) {
         let channel = self.agents.talk.channel.to_string();
-        let args = [
-            AGENT,
-            agent,
-            SEND,
-            "--all",
-            "--channel",
-            channel.as_str(),
-            text,
-        ];
+        let args = [AGENT, agent, SEND, ALL, CHANNEL, channel.as_str(), text];
         let sent = (self.laptop.machine)
             .start_in(&self.laptop_folder, &args)
             .finish();
@@ -234,7 +226,7 @@ impl Senders {
     #[track_caller]
     pub fn laptop_person_says(&self, text: &str) -> MessageId {
         let channel = self.agents.talk.channel.to_string();
-        let args = [SEND, JSON_FLAG, "--all", "--channel", &channel, text].map(str::to_owned);
+        let args = [SEND, JSON_FLAG, ALL, CHANNEL, &channel, text].map(str::to_owned);
         let sent = self.laptop.machine.start(&strs(&args)).finish();
         assert!(sent.success, "the person on the laptop: {sent:?}");
         let ids: Vec<MessageId> = (json_objects(&sent.stdout).iter())

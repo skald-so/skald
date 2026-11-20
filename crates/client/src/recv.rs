@@ -598,17 +598,9 @@ fn reads(
         if sent.channel != header.channel || sent.addressee.as_deref() != Some(from.as_str()) {
             continue;
         }
-        let status = forms::Status {
-            msg_id: msg_id.to_string(),
-            space: Some(sent.space.to_string()),
-            channel: Some(header.channel.to_string()),
-            status: forms::READ.to_owned(),
-            device: Some(sender.to_string()),
-            device_name: device_name(checks, sent.space, sender),
-            problem: None,
-            timestamp: state::unix_now(),
-        };
-        let json = serde_json::to_string(&status).expect("a status encodes");
+        let name = device_name(checks, sent.space, sender);
+        let at = (sent.space, header.channel);
+        let json = forms::Status::from_device(forms::READ, msg_id, at, (sender, name));
         reads.push((msg_id, json));
     }
     Ok(reads)
@@ -638,14 +630,9 @@ fn kept(
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
     let agents = agents_of(follower, checks, (seq, header), message.to.as_ref())?;
-    let replied = match message.reply_to {
-        Some(original) => {
-            let at = (header.space, header.channel);
-            let reply = (at, sender, &message.from, message.device.as_str());
-            reply::replied(&follower.state, reply, original)?
-        }
-        None => None,
-    };
+    let at = (header.space, header.channel);
+    let reply = (at, sender, &message.from, message.device.as_str());
+    let replied = reply::replied(&follower.state, reply, message.reply_to)?;
     let key = match &checks.inbox_key {
         Some(key) => key,
         None => checks.inbox_key.insert(groups::inbox_key(follower)?),
@@ -704,13 +691,8 @@ pub fn own_message(
         reply_to: content.reply_to.map(|reply_to| reply_to.to_string()),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
-    let replied = match content.reply_to {
-        Some(original) => {
-            let reply = ((space, channel), follower.this, from, name.as_str());
-            reply::replied(&follower.state, reply, original)?
-        }
-        None => None,
-    };
+    let reply = ((space, channel), follower.this, from, name.as_str());
+    let replied = reply::replied(&follower.state, reply, content.reply_to)?;
     // Only an agent's address of this account in the space on this server, as `from` is, names an
     // agent of this device.
     let to = content.to.as_ref().map(|to| {
@@ -721,16 +703,12 @@ pub fn own_message(
         ours.then(|| to.agent().to_string())
     });
     let read = match &to {
-        Some(Some(_)) => Some(forms::Status {
-            msg_id: msg_id.to_string(),
-            space: Some(space.to_string()),
-            channel: Some(channel.to_string()),
-            status: forms::READ.to_owned(),
-            device: Some(follower.this.to_string()),
-            device_name: Some(name),
-            problem: None,
-            timestamp: state::unix_now(),
-        }),
+        Some(Some(_)) => Some(forms::Status::from_device(
+            forms::READ,
+            msg_id,
+            (space, channel),
+            (follower.this, Some(name)),
+        )),
         _ => None,
     };
     // Every agent it has run as in the space: none ran as one after `seq`, past the cursor.
@@ -754,7 +732,7 @@ pub fn own_message(
         person: agent.is_some(),
         sender: agent.map(str::to_owned),
         to,
-        read: read.map(|read| serde_json::to_string(&read).expect("a status encodes")),
+        read,
     };
     Ok((own, gets))
 }
@@ -1554,7 +1532,7 @@ mod tests {
                 devices: SpaceDevices {
                     ids: certs.iter().map(|cert| cert.body().device).collect(),
                     certs,
-                    revocations: Vec::new(),
+                    ..SpaceDevices::default()
                 },
                 channel,
                 bob: DeviceId::from_signing_key(&bob_key.public_key()),
@@ -1646,6 +1624,7 @@ mod tests {
                 ids: self.devices.ids.clone(),
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
+                records: Vec::new(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);

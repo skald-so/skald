@@ -215,13 +215,16 @@ fn open(key: &StateKey, this: DeviceId, target: &Target) -> Option<Sealed> {
 }
 
 /// The `replied` a message in `channel` of `space` from the device `sender`, named `name`, from
-/// `from`, a reply to `original`, gives the message `original` the device sent, by `state`: only if
-/// it is in that message's space and channel, and from its `to`, an agent.
+/// `from`, a reply to `original` if given, gives the message `original` the device sent, by
+/// `state`: only if it is in that message's space and channel, and from its `to`, an agent.
 pub fn replied(
     state: &State,
     ((space, channel), sender, from, name): ((SpaceId, ChannelId), DeviceId, &Address, &str),
-    original: MessageId,
+    original: Option<MessageId>,
 ) -> Result<Option<Replied>, String> {
+    let Some(original) = original else {
+        return Ok(None);
+    };
     let Some(sent) = state.sent(original).map_err(text)? else {
         return Ok(None);
     };
@@ -232,20 +235,11 @@ pub fn replied(
     if !answers {
         return Ok(None);
     }
-    let status = forms::Status {
-        msg_id: original.to_string(),
-        space: Some(space.to_string()),
-        channel: Some(channel.to_string()),
-        status: forms::REPLIED.to_owned(),
-        device: Some(sender.to_string()),
-        device_name: Some(name.to_owned()),
-        problem: None,
-        timestamp: state::unix_now(),
-    };
+    let device = (sender, Some(name.to_owned()));
     Ok(Some(Replied {
         msg_id: original,
         space,
-        status: serde_json::to_string(&status).expect("a status encodes"),
+        status: forms::Status::from_device(forms::REPLIED, original, (space, channel), device),
         agent: sent.agent,
     }))
 }

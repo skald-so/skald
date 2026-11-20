@@ -1,7 +1,8 @@
 //! Sends that name no addressee, two, or one `--to` does not take: each fails, says why and sends
 //! nothing.
 
-use crate::clients::{ADA_AGENT, ALL, BOB_CLAUDE, CHANNEL, Clients, TO, assert_refused};
+use crate::clients::{ADA_AGENT, BOB_CLAUDE, Clients, assert_refused};
+use crate::fixtures::{ALL, CHANNEL, TO};
 use crate::world::{CLIENT_A, CLIENT_B, HOST};
 
 /// The text of every refused send; it is nowhere else.
@@ -22,10 +23,7 @@ fn refused(clients: &mut Clients, cases: &[(&str, Vec<String>, &[&str])]) {
         assert_refused(&finished, words, what);
         clients.assert_no_message_sent(from, what);
     }
-    for channel in clients.channels() {
-        let read = clients.bob_reads(channel);
-        assert!(read.is_empty(), "read in {channel}: {read:?}");
-    }
+    clients.assert_bob_read_nothing();
 }
 
 /// `args` as owned strings.
@@ -68,28 +66,14 @@ fn person_s_address_sends_nothing_and_says_only_a_reply_goes_to_a_person() {
         ["ada-to-a-person", "bob-the-person"],
     );
     let channel = clients.talk.channel.to_string();
-    let bob = clients.bob();
-    let ada = clients.talk.ada.handle.to_string();
-    let reason: &[&str] = &["person", "reply"];
-    let to = |address: String| owned(&[TO, &address, CHANNEL, &channel]);
+    let cases: Vec<(&str, Vec<String>, &[&str])> = (clients.person_addresses().into_iter())
+        .map(|(what, address)| {
+            let args = owned(&[TO, &address, CHANNEL, &channel]);
+            (what, args, &["person", "reply"][..])
+        })
+        .collect();
 
-    refused(
-        &mut clients,
-        &[
-            (
-                "bob, full",
-                to(format!("{CLIENT_A}/{bob}/user@{HOST}")),
-                reason,
-            ),
-            ("bob, short", to(format!("{bob}/user")), reason),
-            ("bob, uppercase", to(format!("{bob}/USER")), reason),
-            (
-                "ada, full",
-                to(format!("{CLIENT_A}/{ada}/user@{HOST}")),
-                reason,
-            ),
-        ],
-    );
+    refused(&mut clients, &cases);
 }
 
 /// `skald send --to` an invalid address, one of another space and one of another server, in the
@@ -103,31 +87,9 @@ fn invalid_address_or_one_of_another_space_or_server_sends_nothing_and_says_why(
     );
     let channel = clients.talk.channel.to_string();
     let bob = clients.bob();
-    let to = |address: String| owned(&[TO, &address, CHANNEL, &channel]);
-    let invalid: &[&str] = &["address"];
-    let mut cases = Vec::new();
-    for address in [
-        BOB_CLAUDE.to_owned(),
-        format!("{bob}/"),
-        format!("/{BOB_CLAUDE}"),
-        format!("{bob}/claude_r4n8vz"),
-        format!("{CLIENT_A}//{BOB_CLAUDE}@{HOST}"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@{HOST}:8443"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@"),
-        format!("{CLIENT_A}/{bob}/{BOB_CLAUDE} x@{HOST}"),
-    ] {
-        cases.push(("invalid", to(address), invalid));
-    }
-    cases.push((
-        "another space",
-        to(format!("{CLIENT_B}/{bob}/{BOB_CLAUDE}@{HOST}")),
-        &["space"],
-    ));
-    cases.push((
-        "another server",
-        to(format!("{CLIENT_A}/{bob}/{BOB_CLAUDE}@elsewhere.example")),
-        &["server"],
-    ));
+    let cases: Vec<(&str, Vec<String>, &[&str])> = (clients.invalid_addresses().into_iter())
+        .map(|(what, address, words)| (what, owned(&[TO, &address, CHANNEL, &channel]), words))
+        .collect();
 
     refused(&mut clients, &cases);
 
@@ -136,8 +98,5 @@ fn invalid_address_or_one_of_another_space_or_server_sends_nothing_and_says_why(
     let agent = clients.agent_sends_in(&clients.folder_a, ADA_AGENT, &[TO, &elsewhere, REFUSED]);
     assert!(!agent.success, "as an agent, to clientb: {agent:?}");
     clients.assert_no_message_sent(from, "as an agent, to clientb");
-    for channel in clients.channels() {
-        let read = clients.bob_reads(channel);
-        assert!(read.is_empty(), "read in {channel}: {read:?}");
-    }
+    clients.assert_bob_read_nothing();
 }
