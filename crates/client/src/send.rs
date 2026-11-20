@@ -866,6 +866,7 @@ fn explained(problem: &str) -> String {
     let meaning = match problem {
         "too-large" => "the message is too large for the server",
         "quota-exceeded" => "its space has stored as many messages this month as its limit allows",
+        "rate-limited" => "its device sends too many messages too fast for the server's rate limit",
         _ => return printable(problem),
     };
     format!("{problem} ({meaning})")
