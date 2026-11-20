@@ -10,10 +10,10 @@ use crate::changes::{ROUNDS, lists, new_device, replace_key, revoked, services_o
 use crate::devices::second_machine;
 use crate::fixtures::{fronted, last_channel, send};
 use crate::kit::{channels, latest, received};
-use crate::member::{Bot, Runner, assert_not_shown, key_of, shown_once, texts_of};
+use crate::member::{Bot, Runner, assert_not_shown, shown_once, texts_of};
 use crate::scene::{Agent, Scene};
 use crate::service_kit::{
-    Acme, BOT, RECEIVE, SEND, assert_certified_by, assert_record, create_agent, entry_of,
+    Acme, BOT, RECEIVE, SEND, assert_certified_by, assert_record, create_agent, entry_of, key_of,
     own_record, rosters, secrets_of,
 };
 use crate::talk::messages_sent;
@@ -68,7 +68,7 @@ fn after_a_key_change_the_old_key_and_tokens_are_refused_and_the_new_ones_work()
         .unwrap_or_else(|err| panic!("Bob's device refuses the revision: {err:?}"));
     assert_certified_by(ada, &certs, new);
     assert_eq!(
-        key_of(&fresh).anchor,
+        key_of(&fresh.key).anchor,
         after.hash(),
         "the new key secret's anchor"
     );

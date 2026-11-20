@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use crate::cloud::Cloud;
 use crate::fixtures::{fronted, last_channel};
 use crate::kit::{
-    Acme, BOT, CHANNEL, CREATE_SERVICE_TOKEN, EXPIRES, KEEP_EARLIER, PERMISSION, RECEIVE,
+    Acme, BOT, CREATE_SERVICE_TOKEN, EXPIRES, KEEP_EARLIER, PERMISSION, RECEIVE,
     REVOKE_SERVICE_TOKEN, SEND, assert_grant, assert_record, cli_lines_of, create_agent, grant_of,
-    id_of, listed_ids, own_record, secrets_of, service_of, token_of,
+    id_of, listed_ids, own_record, run_for_channels, secrets_of, service_of, token_of,
 };
 use crate::world::{ACME, CREATE_CHANNEL, Person, World, run};
 
@@ -42,22 +42,15 @@ impl Bot {
     /// Runs `skald create-service-token acme ci/deploy-bot` on `ada`'s machine for both channels,
     /// expiring in 30 days, with only `send`, and `extra`; gives the new token.
     fn new_token(&self, ada: &Person, extra: &[&str]) -> String {
-        let (default, second) = (self.acme.default.to_string(), self.second.to_string());
-        let mut args = vec![
-            CREATE_SERVICE_TOKEN,
-            ACME,
-            BOT,
-            CHANNEL,
-            &default,
-            CHANNEL,
-            &second,
-            EXPIRES,
-            "30d",
-            PERMISSION,
-            SEND,
-        ];
-        args.extend_from_slice(extra);
-        let token = token_of(&run(&ada.machine, &args));
+        let command = (CREATE_SERVICE_TOKEN, ACME, BOT);
+        let channels = [self.acme.default, self.second];
+        let options = [&[EXPIRES, "30d", PERMISSION, SEND][..], extra].concat();
+        let token = token_of(&run_for_channels(
+            &ada.machine,
+            command,
+            &channels,
+            &options,
+        ));
         assert_eq!(
             ada.machine.files_holding(&token),
             Vec::<PathBuf>::new(),

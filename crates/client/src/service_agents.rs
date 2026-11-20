@@ -223,6 +223,20 @@ fn receives_if_member(member: bool, permissions: &[Permission]) -> Result<(), St
     Ok(())
 }
 
+/// Whether `roster` lists `device` in a channel's `services`: a member agent's.
+fn in_services(roster: &Roster, device: DeviceId) -> bool {
+    (roster.body().channels.iter()).any(|channel| channel.services.contains(&device))
+}
+
+/// The value of `record`, a new token, taken out of it.
+fn value_of(record: &mut Record) -> Result<Zeroizing<String>, String> {
+    let value = record
+        .token
+        .take()
+        .ok_or("the server's new token has no value; revoke it with skald revoke-service-token")?;
+    Ok(Zeroizing::new(value))
+}
+
 /// What a command reads of `SpaceUsage` in the API spec: the limit on the space's service agents,
 /// absent while none applies.
 #[derive(Deserialize)]
@@ -339,8 +353,7 @@ pub fn replace(synced: Synced, address_given: &str, granted: &Granted) -> Result
         ));
     }
     let checked = granted.checked(&latest, now())?;
-    let member = (latest.body().channels.iter()).any(|channel| channel.services.contains(&old));
-    receives_if_member(member, &checked.permissions)?;
+    receives_if_member(in_services(&latest, old), &checked.permissions)?;
     let admin = follower.keys()?;
     let (keys, cert) = made(&mut follower, &admin, (&owner, &agent))?;
     let device = keys.id();
@@ -404,7 +417,7 @@ pub fn remove(synced: Synced, address_given: &str) -> Result<(), String> {
     let stored = follower.checked_submit(&space, (&latest, &next), &devices.certs)?;
     let body = stored.body();
     if (body.service_agents.iter()).any(|entry| entry.device == device)
-        || (body.channels.iter()).any(|channel| channel.services.contains(&device))
+        || in_services(&stored, device)
     {
         return Err(format!(
             "another revision of the space {} came first and lists {owner}/{agent} still; run \
@@ -568,13 +581,8 @@ fn hand_over(
              create its token with skald create-service-token"
         )
     };
-    let token = new_token(follower, (space, admin), device, checked).map_err(tokenless)?;
-    let token = Zeroizing::new(token.token.ok_or_else(|| {
-        tokenless(
-            "the server's new token has no value; revoke it with skald revoke-service-token"
-                .to_owned(),
-        )
-    })?);
+    let mut token = new_token(follower, (space, admin), device, checked).map_err(tokenless)?;
+    let token = value_of(&mut token).map_err(tokenless)?;
     println!("{KEY_VARIABLE}={key}\n{TOKEN_VARIABLE}={}", *token);
     Ok(())
 }
@@ -606,14 +614,10 @@ pub fn renew(
         )
     })?;
     let checked = granted.checked(&latest, now())?;
-    let member = (latest.body().channels.iter()).any(|channel| channel.services.contains(&device));
-    receives_if_member(member, &checked.permissions)?;
+    receives_if_member(in_services(&latest, device), &checked.permissions)?;
     let admin = follower.keys()?;
     let mut token = new_token(&mut follower, (space.id, &admin), device, &checked)?;
-    let value =
-        Zeroizing::new(token.token.take().ok_or(
-            "the server's new token has no value; revoke it with skald revoke-service-token",
-        )?);
+    let value = value_of(&mut token)?;
     println!("{TOKEN_VARIABLE}={}", *value);
     drop(value);
     if keep_earlier {

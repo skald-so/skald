@@ -142,6 +142,7 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 A [stateless](membership.md#service-device) `service` device keeps no outbox and is in no MLS group:
 - It takes the channel's latest GroupInfo from the server and checks it as a linked browser does before it writes ([Wraps](membership.md#wraps)); every member it lists must be admitted, or nothing is sent.
 - It seals one `hpke` envelope to each member device the GroupInfo lists, with the same `msg_id`. The content carries the token's grant and no `counter`.
+- Its content has `hops` 0: it keeps no messages handed over in earlier runs, so the [limit on replies without a human](README.md#content) does not stop its loops.
 - The run fails unless the server answers `stored` to every envelope within it; nothing retries later.
 
 ### Copies to service agents

@@ -339,5 +339,5 @@ The sender, not the kind of text, sets how text reaches an agent ([Device to age
 
 Loops:
 - **Hop counter** ([Content](protocol/README.md#content)). Honest clients add one per reaction; a malicious sending device sets `hops` itself.
-- **Limit on replies without a human,** enforced by the client. It stops loops among honest clients; a modified client ignores it.
+- **[Limit on replies without a human](protocol/README.md#content),** enforced by the client. It stops loops among honest clients; a modified client ignores it, and a stateless service agent cannot apply it ([From a stateless service agent](protocol/delivery.md#from-a-stateless-service-agent)).
 - **Rate limit,** enforced by the server: `--send-rate-limit` ([Cloud limits](dev/architecture.md#cloud-limits)). It bounds any loop or flood of one device, a malicious one included; presence uploads have none yet ([A member acting against others](#a-member-acting-against-others)).

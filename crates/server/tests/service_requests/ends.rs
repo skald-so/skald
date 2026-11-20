@@ -99,10 +99,7 @@ fn a_tokens_connections_end_once_a_revision_drops_its_entry() {
     let created = token(&stage, &[SEND, RECEIVE]);
     let connections = connected(&stage, &stage.f.team.flow.stand.server, &created.token);
 
-    let bot = stage.bot.id;
-    stage
-        .f
-        .revise(|body| body.service_agents.retain(|agent| agent.device != bot));
+    stage.drop_entry();
     let since = Instant::now();
     assert_ended(connections, since, END, true, "its entry dropped");
 }

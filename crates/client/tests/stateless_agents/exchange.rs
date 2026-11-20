@@ -25,9 +25,9 @@ const ADA_SAYS: [&str; 2] = [
 /// The agent's run sends a line in the channel and succeeds, leaving nothing on its machine's disk.
 /// The front saw it send one `hpke` envelope to each member device of the channel's group, Ada's
 /// and Bob's, and no `mls` one. The server's database holds each envelope and not the text. Bob's
-/// device opens the one to it: from the agent's address, without `counter`, with the text and a
-/// grant that passes Bob's device's checks. Ada's run shows the line once, from the agent's address
-/// and device, named `ci/deploy-bot`, at the `service` level.
+/// device opens the one to it: from the agent's address, without `counter`, with `hops` 0, the
+/// text and a grant that passes Bob's device's checks. Ada's run shows the line once, from the
+/// agent's address and device, named `ci/deploy-bot`, at the `service` level.
 #[test]
 fn a_run_with_only_the_two_secrets_sends_to_each_member_device_once() {
     let scene = Scene::new(
@@ -58,6 +58,7 @@ fn a_run_with_only_the_two_secrets_sends_to_each_member_device_once() {
     };
     assert_eq!(content.from.to_string(), scene.address, "{content:?}");
     assert_eq!(content.counter, None, "{content:?}");
+    assert_eq!(content.hops, 0, "{content:?}");
     assert_eq!(texts_of(content), [AGENT_SAYS], "{content:?}");
     scene.assert_granted(content);
 

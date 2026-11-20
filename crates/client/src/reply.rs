@@ -13,7 +13,8 @@
 //!   nothing and says why, naming nothing of another space.
 //! - It sends as `skald send` does ([`send::send_synced`]), in the message's channel, `to` its
 //!   `from`, a person's address included (`docs/protocol/agents.md`, "Person"), with `reply_to`
-//!   its `msg_id` and `hops` 0 from the person, one more than the message's from an agent.
+//!   its `msg_id` and `hops` 0 from the person, one more than the message's from an agent; an
+//!   agent's reply past [`send::MOST_HOPS`] is not sent.
 //! - A reply the device takes in gives one of its messages `replied` ([`replied`]) only if it is in
 //!   that message's channel and from its `to` agent (`docs/protocol/delivery.md`, "Receipts").
 
