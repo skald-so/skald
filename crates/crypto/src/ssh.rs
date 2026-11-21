@@ -16,7 +16,7 @@ pub enum SshCheck {
     Passed { key: usize },
     /// A key change: malformed, of another namespace, by a key not in the list or not verifying.
     Failed,
-    /// By a key in the list of a type this client does not verify.
+    /// By a key in the list of a type or size this client does not verify.
     NotChecked,
 }
 
@@ -56,20 +56,19 @@ pub fn check_ssh_signature(body: &CertBody, keys: &[&str]) -> SshCheck {
     }
 }
 
-/// The SSH signature of version 1 that `ssh` holds in its binary form, with nothing after it.
+/// The SSH signature of version 1 in namespace `skald.so` that `ssh` holds in its binary form,
+/// with nothing after it.
 fn decode(ssh: &[u8]) -> Option<SshSig> {
     let mut rest = ssh;
     let sig = SshSig::decode(&mut rest).ok()?;
-    (rest.is_empty() && sig.version() == SshSig::VERSION).then_some(sig)
+    (rest.is_empty() && sig.version() == SshSig::VERSION && sig.namespace() == SSH_NAMESPACE)
+        .then_some(sig)
 }
 
-/// The sizes of the RSA keys the client verifies, in bits: those the `rsa` crate takes.
-const RSA_BITS: std::ops::RangeInclusive<u32> = 1024..=8192;
-
-/// Whether the client verifies signatures by this key.
+/// Whether the client verifies signatures by this key: an RSA key only if the `rsa` crate takes it.
 fn verifies(key: &KeyData) -> bool {
     match key {
-        KeyData::Rsa(key) => RSA_BITS.contains(&key.key_size()),
+        KeyData::Rsa(key) => rsa::PublicKey::try_from(key).is_ok(),
         KeyData::Ed25519(_)
         | KeyData::Ecdsa(_)
         | KeyData::SkEd25519(_)
@@ -83,8 +82,8 @@ mod tests {
     //! Key types beyond those the integration tests in `tests/ssh_signatures` cover: ECDSA P-384
     //! and P-521, whose fixed signatures `ssh-keygen -Y sign -n skald.so` made with keys made for
     //! these tests alone, security keys, whose signatures the tests make as a security key would,
-    //! RSA keys of sizes the client does not verify, a key of a type it does not verify that is
-    //! not on the list, and the version and the end of a signature's binary form.
+    //! RSA keys `rsa` refuses, a key of a type the client does not verify that is not on the list
+    //! or signs in another namespace, and the version and the end of a signature's binary form.
 
     use ed25519_dalek::Signer as _;
     use sha2::{Digest as _, Sha256};
@@ -151,15 +150,36 @@ U1NIU0lHAAAAAQAAAKwAAAATZWNkc2Etc2hhMi1uaXN0cDUyMQAAAAhuaXN0cDUyMQAAAIUEAdTakMJT
         .concat()
     }
 
+    /// The binary form of an SSH signature in `namespace` by `key`, its raw signature `data` of
+    /// `algorithm`.
+    fn signed_by(key: KeyData, namespace: &str, algorithm: Algorithm, data: Vec<u8>) -> Vec<u8> {
+        let signature = Signature::new(algorithm, data).unwrap();
+        SshSig::new(key, namespace, HashAlg::Sha512, signature)
+            .unwrap()
+            .encode_vec()
+            .unwrap()
+    }
+
     /// The binary form of an SSH signature by `key`, whose raw signature `raw` a security key made
     /// with `flags` and `counter`.
     fn sk_sig(key: KeyData, algorithm: Algorithm, raw: &[u8], flags: u8, counter: u32) -> Vec<u8> {
         let data = [raw, &[flags], &counter.to_be_bytes()].concat();
-        let signature = Signature::new(algorithm, data).unwrap();
-        SshSig::new(key, SSH_NAMESPACE, HashAlg::Sha512, signature)
-            .unwrap()
-            .encode_vec()
-            .unwrap()
+        signed_by(key, SSH_NAMESPACE, algorithm, data)
+    }
+
+    /// Checks that `sig` is not checked with the key of `line` on the list, and a key change
+    /// without it.
+    fn assert_not_checked_while_listed(sig: Vec<u8>, line: &str, what: &str) {
+        assert_eq!(
+            check_ssh_signature(&body(sig.clone()), &[P384, line]),
+            SshCheck::NotChecked,
+            "{what}"
+        );
+        assert_eq!(
+            check_ssh_signature(&body(sig), &[P384]),
+            SshCheck::Failed,
+            "{what}"
+        );
     }
 
     fn sk_ed25519() -> (Vec<u8>, String) {
@@ -251,54 +271,48 @@ U1NIU0lHAAAAAQAAAKwAAAATZWNkc2Etc2hhMi1uaXN0cDUyMQAAAAhuaXN0cDUyMQAAAIUEAdTakMJT
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    fn a_signature_by_a_listed_rsa_key_of_another_size_is_not_checked() {
-        for bytes in [127, 1025] {
-            let n = Mpint::from_positive_bytes(&vec![0xc5; bytes]);
-            let e = Mpint::from_positive_bytes(&[1, 0, 1]);
+    fn a_signature_by_a_listed_rsa_key_rsa_refuses_is_not_checked() {
+        let modulus = |bytes: usize, first: u8| {
+            let mut n = vec![0xc5; bytes];
+            n[0] = first;
+            n
+        };
+        for (n, e, what) in [
+            (modulus(127, 0xc5), vec![1, 0, 1], "1016 bits"),
+            // 128 bytes, its top 4 bits clear.
+            (modulus(128, 0x08), vec![1, 0, 1], "1020 bits"),
+            (modulus(1025, 0xc5), vec![1, 0, 1], "8200 bits"),
+            (modulus(256, 0xc5), vec![1], "exponent 1"),
+        ] {
+            let bytes = n.len();
+            let n = Mpint::from_positive_bytes(&n);
+            let e = Mpint::from_positive_bytes(&e);
             let key = KeyData::Rsa(RsaPublicKey::new(e, n).unwrap());
             let line = PublicKey::from(key.clone()).to_openssh().unwrap();
-            let signature = Signature::new(
-                Algorithm::Rsa {
-                    hash: Some(HashAlg::Sha512),
-                },
-                vec![0x24; bytes],
-            )
-            .unwrap();
-            let sig = SshSig::new(key, SSH_NAMESPACE, HashAlg::Sha512, signature)
-                .unwrap()
-                .encode_vec()
-                .unwrap();
-            assert_eq!(
-                check_ssh_signature(&body(sig.clone()), &[P384, &line]),
-                SshCheck::NotChecked,
-                "{} bits",
-                bytes * 8
-            );
-            assert_eq!(
-                check_ssh_signature(&body(sig), &[P384]),
-                SshCheck::Failed,
-                "{} bits",
-                bytes * 8
-            );
+            let rsa = Algorithm::Rsa {
+                hash: Some(HashAlg::Sha512),
+            };
+            let sig = signed_by(key, SSH_NAMESPACE, rsa, vec![0x24; bytes]);
+            assert_not_checked_while_listed(sig, &line, what);
         }
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-    fn a_signature_by_a_key_type_it_does_not_verify_and_not_listed_is_a_key_change() {
+    fn an_unverified_key_type_unlisted_or_in_another_namespace_is_a_key_change() {
         let key = KeyData::Other(ssh_key::public::OpaquePublicKey::new(
             vec![0x42; 32],
             "ssh-unknown@example.com".parse().unwrap(),
         ));
-        let signature = Signature::new(
-            Algorithm::Other("ssh-unknown@example.com".parse().unwrap()),
-            vec![0x24; 64],
-        )
-        .unwrap();
-        let sig = SshSig::new(key, SSH_NAMESPACE, HashAlg::Sha512, signature)
-            .unwrap()
-            .encode_vec()
-            .unwrap();
-        assert_eq!(check_ssh_signature(&body(sig), &[P384]), SshCheck::Failed);
+        let line = PublicKey::from(key.clone()).to_openssh().unwrap();
+        let sig = |namespace: &str| {
+            let other = Algorithm::Other("ssh-unknown@example.com".parse().unwrap());
+            signed_by(key.clone(), namespace, other, vec![0x24; 64])
+        };
+        assert_not_checked_while_listed(sig(SSH_NAMESPACE), &line, "in `skald.so`");
+        assert_eq!(
+            check_ssh_signature(&body(sig("git")), &[&line]),
+            SshCheck::Failed
+        );
     }
 }

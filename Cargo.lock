@@ -3310,6 +3310,7 @@ dependencies = [
  "p256",
  "pakery-cpace",
  "pakery-crypto",
+ "rsa",
  "sha2 0.11.1",
  "skald-proto",
  "ssh-key",

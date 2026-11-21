@@ -24,9 +24,11 @@ mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_p
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.23"
+# The RSA keys ssh-key verifies with: which of them `crypto` checks.
+rsa = { version = "0.10", default-features = false }
 sha2 = { version = "0.11", default-features = false }
 skald-proto = { path = "../proto" }
-# Checks certificates' SSH signatures. Its 0.7 is the line on ed25519-dalek 3 and sha2 0.11.
+# Checks certificates' SSH signatures; why this version: docs/dev/tech-stack.md.
 ssh-key = { version = "=0.7.0-rc.12", default-features = false, features = ["alloc", "ed25519", "p256", "p384", "p521", "rsa"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"

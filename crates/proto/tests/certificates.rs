@@ -274,6 +274,24 @@ fn a_minimal_certificate_round_trips_byte_for_byte() {
 }
 
 #[test]
+fn ssh_and_github_come_both_or_neither() {
+    for (absent, missing) in [(10, "cert-body.github"), (8, "cert-body.ssh")] {
+        let body = map(fields_with(absent, None));
+        match CertBody::from_cbor(&body) {
+            Err(DecodeError::Field {
+                field,
+                problem: FieldProblem::Missing,
+            }) => assert_eq!(field, missing),
+            other => panic!("without key {absent}: {other:?}"),
+        }
+        assert!(
+            Cert::from_cbor(&cert_bytes(&body)).is_err(),
+            "without key {absent}"
+        );
+    }
+}
+
+#[test]
 fn required_fields_are_required() {
     for key in [1, 2, 3, 4, 5, 7, 9] {
         let body = map(fields_with(key, None));

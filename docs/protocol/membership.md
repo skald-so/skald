@@ -109,7 +109,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
     - it passes when its key is on the list and it verifies with that key;
     - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;
-    - it counts as not checked when the client cannot check it, as with GitHub unreachable or a listed key of a type or size it does not verify. A client verifies Ed25519, ECDSA (P-256, P-384, P-521) and RSA keys of 1024 to 8192 bits, and the security keys `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com`.
+    - it counts as not checked when the client cannot check it, as with GitHub unreachable or a listed key it does not verify. A client verifies Ed25519 and ECDSA (P-256, P-384, P-521) keys, RSA keys of 1024 to 8192 bits with an exponent of 2 to 2^33 − 1, and the security keys `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com`.
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
