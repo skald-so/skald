@@ -4,12 +4,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::agents::{Agents, CODEX as AGENT_NAME};
-use crate::cloud::WAIT;
 use crate::codex::{Event, Thread, given, hook_command};
 use crate::gaps::bob_says;
 use crate::helped::Helped;
 use crate::hooks::run_hook;
-use crate::kit::received;
+use crate::kit::RECV;
+use crate::world::run;
 
 /// How many messages Bob's device sends.
 const MANY: u64 = 1_000;
@@ -19,11 +19,25 @@ fn note(counter: u64) -> String {
     format!("codex limit test: Bob's note {counter:04} of {MANY}")
 }
 
-/// Waits for up to [`WAIT`] until the person's `skald recv` on Ada's machine has shown `text`.
+/// How long Ada's machine may take to take in [`MANY`] messages: a slow machine, as Windows', takes
+/// over a minute.
+const TAKE_IN: Duration = Duration::from_secs(300);
+
+/// What a run says when the helper stays busy, as taking messages in, past its request timeout.
+const BUSY: &str = "the helper of the local state is busy";
+
+/// Waits for up to [`TAKE_IN`] until the person's `skald recv` on Ada's machine has shown `text`;
+/// a run that gave up on a busy helper runs again.
 #[track_caller]
 fn person_has_seen(agents: &Agents, text: &str) {
-    let deadline = Instant::now() + WAIT;
-    while !received(&agents.talk.ada.machine).shown().contains(text) {
+    let deadline = Instant::now() + TAKE_IN;
+    loop {
+        let finished = run(&agents.talk.ada.machine, &[RECV]);
+        let busy = !finished.success && finished.shown().contains(BUSY);
+        assert!(finished.success || busy, "{finished:?}");
+        if finished.shown().contains(text) {
+            return;
+        }
         assert!(Instant::now() < deadline, "{text:?} not taken in");
         thread::sleep(Duration::from_millis(500));
     }

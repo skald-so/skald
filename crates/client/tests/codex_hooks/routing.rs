@@ -3,6 +3,7 @@
 //! never one whose Codex process ended. A session keeps the helper running while its Codex process
 //! runs, also through the npm package's launcher, and the helper exits idle once none does.
 
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
@@ -129,22 +130,7 @@ const LIVE_FOR: Duration = Duration::from_secs(8);
 #[test]
 fn helper_runs_while_a_session_lives_and_exits_once_none_does() {
     let codex = Codex::new(4_927_012_001, "ada-codex-helper-lifetime");
-    let web = codex.thread_of(WEB);
-    let mut process = CodexProcess::start();
-    codex.helped.assert_none();
-
-    let command = hook_command(&codex.helped, &web, &[(IDLE_SETTING, SHORT_IDLE)]);
-    (process.run(&command, &web.input(Event::SessionStart))).assert_silent("SessionStart");
-    (codex.hook_by(&mut process, &web, Event::PostToolUse)).assert_silent("PostToolUse");
-    let helper = codex.helped.one_helper();
-    thread::sleep(LIVE_FOR);
-    assert!(
-        codex.helped.helpers().contains(&helper),
-        "the helper exited while the session lived"
-    );
-
-    process.end();
-    codex.helped.await_exit(helper, EXIT_LIMIT);
+    assert_helper_lives_with_the_session(&codex, |hook| hook);
 }
 
 /// The npm package's launcher's setting of its own process and its parent's.
@@ -153,18 +139,13 @@ const LAUNCHER: &str = "SKALD_LAUNCHER";
 
 /// As [`helper_runs_while_a_session_lives_and_exits_once_none_does`], with each hook run through a
 /// launcher as the npm package's: a process between Codex and `skald` that exits with it and gives
-/// it [`LAUNCHER`]. The helper still runs after [`LIVE_FOR`], and exits once the Codex process does.
+/// it [`LAUNCHER`].
 #[cfg(unix)]
 #[test]
 fn a_session_through_the_npm_launcher_lives_while_its_codex_process_runs() {
     let codex = Codex::new(4_927_012_002, "ada-codex-npm-launcher");
-    let web = codex.thread_of(WEB);
-    let mut process = CodexProcess::start();
-    codex.helped.assert_none();
-
-    let mut launched = |event: Event| {
-        let hook = hook_command(&codex.helped, &web, &[(IDLE_SETTING, SHORT_IDLE)]);
-        let mut command = std::process::Command::new("/bin/sh");
+    assert_helper_lives_with_the_session(&codex, |hook| {
+        let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(format!("{LAUNCHER}=\"$$ $PPID\" \"$0\" \"$@\"; exit $?"))
@@ -176,10 +157,28 @@ fn a_session_through_the_npm_launcher_lives_while_its_codex_process_runs() {
             }
         }
         command.current_dir(hook.get_current_dir().expect("the session's folder"));
+        command
+    });
+}
+
+/// With no helper on Ada's machine, web's session starts in a Codex process of its own, its
+/// `SessionStart` and then its `PostToolUse` run as `through` makes each of the hook's command,
+/// with a helper idle time of [`SHORT_IDLE`] seconds; fails unless one helper then runs, still
+/// runs after [`LIVE_FOR`] with no command, and exits once the Codex process does.
+#[track_caller]
+fn assert_helper_lives_with_the_session(codex: &Codex, through: impl Fn(Command) -> Command) {
+    let web = codex.thread_of(WEB);
+    let mut process = CodexProcess::start();
+    codex.helped.assert_none();
+
+    for event in [Event::SessionStart, Event::PostToolUse] {
+        let command = through(hook_command(
+            &codex.helped,
+            &web,
+            &[(IDLE_SETTING, SHORT_IDLE)],
+        ));
         (process.run(&command, &web.input(event))).assert_silent(event.name());
-    };
-    launched(Event::SessionStart);
-    launched(Event::PostToolUse);
+    }
     let helper = codex.helped.one_helper();
     thread::sleep(LIVE_FOR);
     assert!(
