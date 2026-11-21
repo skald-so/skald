@@ -509,8 +509,12 @@ const given = commands(testStep.run).some((line) => /^\s*\$env:SKALD_TEST_PORT_S
 if (!sampled || !heldStep || !given) {
   fail(`job ${key} does not sample, from before its tests, the ephemeral ports in use, give the samples to them and print the most after them`);
 } else {
-  const scope = { ...states[key].scope, status: { success: false, always: true, failure: true, cancelled: false } };
-  if (truth(condition(heldStep.if ?? 'success()', scope)) !== true) fail(`the step of job ${key} that prints the most ephemeral ports in use does not run when the tests fail`);
+  for (const failure of [false, true]) {
+    const scope = { ...states[key].scope, status: { success: !failure, always: true, failure, cancelled: false } };
+    if (truth(condition(heldStep.if ?? 'success()', scope)) !== true) {
+      fail(`the step of job ${key} that prints the most ephemeral ports in use does not run when the tests ${failure ? 'fail' : 'pass'}`);
+    }
+  }
 }
 
 // PostgreSQL's failures, printed after the tests when they fail.

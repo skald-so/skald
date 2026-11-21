@@ -183,9 +183,23 @@ pub const NO_BUFFER_SPACE: i32 = 10055;
 /// in time, or while Windows has no buffer space for it, up to [`SETUP_ATTEMPTS`] times; any other
 /// error is returned at once. Under the load of the client's tests PostgreSQL on Windows now and
 /// then resets or delays a new connection and goes on serving the others, and Windows now and then
-/// fails a connect with WSAENOBUFS for a cause still unknown.
+/// fails a connect with WSAENOBUFS for a cause still unknown. Each retry is a line on stderr, past
+/// the test harness's capture so a passing test's log keeps it too, as [`retried_into`] writes it
+/// with the samples CI's sampler of the ports in use writes.
 pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
+    step: impl FnMut() -> F,
+) -> Result<T, sqlx::Error> {
+    let samples = env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into);
+    retried_into(what, samples, &mut io::stderr(), step).await
+}
+
+/// What [`retried_on_reset`] gives, each retry a line written to `sink`: its error and wait, and for
+/// WSAENOBUFS the last of the ports in use that `samples` holds.
+pub async fn retried_into<T, F: Future<Output = Result<T, sqlx::Error>>>(
+    what: &str,
+    samples: Option<std::path::PathBuf>,
+    sink: &mut (impl Write + Send),
     mut step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
     let mut wait = SETUP_RETRY_WAIT;
@@ -199,14 +213,12 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
                 ) || err.raw_os_error() == Some(NO_BUFFER_SPACE))
                     && attempt < SETUP_ATTEMPTS =>
             {
-                let line = format!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
+                let mut line =
+                    format!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
                 if err.raw_os_error() == Some(NO_BUFFER_SPACE) {
-                    // Past the test harness's capture, so a passing test's log keeps it too.
-                    let ports = last_sample(env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into));
-                    let _ = writeln!(io::stderr(), "{line}; ports: {ports}");
-                } else {
-                    eprintln!("{line}");
+                    line += &format!("; ports: {}", last_sample(samples.clone()));
                 }
+                let _ = writeln!(sink, "{line}");
                 tokio::time::sleep(wait).await;
                 wait *= 2;
                 attempt += 1;

@@ -1,6 +1,7 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
 //! connection, or by opening none in time, or that Windows fails with WSAENOBUFS, is tried again, a
-//! few times, the last with the sampled ports in use; any other error is not;
+//! few times, each retry a line with its error, for WSAENOBUFS with the sampled ports in use; any
+//! other error is not;
 //! a server that fails to start drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
@@ -13,8 +14,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use common::{
-    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Server, close, connect, last_sample, retried_on_reset, server,
-    test_databases,
+    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Server, close, connect, retried_into, server, test_databases,
 };
 
 /// An I/O error of `kind`, as sqlx gives it.
@@ -22,11 +22,12 @@ fn io_error(kind: io::ErrorKind) -> sqlx::Error {
     sqlx::Error::Io(io::Error::from(kind))
 }
 
-/// What [`retried_on_reset`] gives for `step`, whose result is ready at once.
+/// What `retried_on_reset` gives for `step`, whose result is ready at once; its retries' lines are
+/// dropped.
 fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, sqlx::Error> {
     tokio::runtime::Runtime::new()
         .expect("start a tokio runtime")
-        .block_on(retried_on_reset("a step", step))
+        .block_on(retried_into("a step", None, &mut io::sink(), step))
 }
 
 #[test]
@@ -90,7 +91,7 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     let attempts = RefCell::new(Vec::new());
     let result: Result<(), _> = runtime.block_on(async {
         let started = tokio::time::Instant::now();
-        retried_on_reset("a step", || {
+        retried_into("a step", None, &mut io::sink(), || {
             attempts.borrow_mut().push(started.elapsed());
             ready(Err(io_error(io::ErrorKind::ConnectionReset)))
         })
@@ -101,8 +102,30 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     assert_eq!(attempts.into_inner(), at);
 }
 
+/// The lines of the retries of a step that fails twice with `error`, the ports sampled in `samples`.
+fn retry_lines(error: fn() -> io::Error, samples: Option<std::path::PathBuf>) -> Vec<String> {
+    let mut sink = Vec::new();
+    let calls = Cell::new(0);
+    let result = tokio::runtime::Runtime::new()
+        .expect("start a tokio runtime")
+        .block_on(retried_into("a step", samples, &mut sink, || {
+            calls.set(calls.get() + 1);
+            ready(if calls.get() < 3 {
+                Err(sqlx::Error::Io(error()))
+            } else {
+                Ok(())
+            })
+        }));
+    assert!(result.is_ok(), "{result:?}");
+    String::from_utf8(sink)
+        .expect("lines in UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
-fn a_retry_for_no_buffer_space_names_the_last_sample_of_the_ports() {
+fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_the_ports() {
     let dir = std::env::temp_dir().join(format!("skald-client-samples-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("make a directory");
     let samples = dir.join("ports.txt");
@@ -111,12 +134,36 @@ fn a_retry_for_no_buffer_space_names_the_last_sample_of_the_ports() {
         "10:00:00: 900 ports in use\n10:00:10: 950 ports in use\n\n",
     )
     .expect("write the samples");
-    let last = last_sample(Some(samples));
-    let gone = last_sample(Some(dir.join("none.txt")));
+    let no_buffer_space = || io::Error::from_raw_os_error(NO_BUFFER_SPACE);
+    let sampled = retry_lines(no_buffer_space, Some(samples.clone()));
+    let gone = retry_lines(no_buffer_space, Some(dir.join("none.txt")));
+    let reset = retry_lines(
+        || io::Error::from(io::ErrorKind::ConnectionReset),
+        Some(samples),
+    );
     std::fs::remove_dir_all(&dir).expect("remove the directory");
-    assert_eq!(last, "10:00:10: 950 ports in use");
-    assert_eq!(gone, "not sampled");
-    assert_eq!(last_sample(None), "not sampled");
+
+    let error = no_buffer_space().to_string();
+    assert_eq!(
+        sampled,
+        [100, 200].map(|ms| format!(
+            "a step: no connection to PostgreSQL: {error}; again in {ms}ms; \
+             ports: 10:00:10: 950 ports in use"
+        ))
+    );
+    assert_eq!(gone.len(), 2, "{gone:?}");
+    assert!(
+        gone.iter()
+            .all(|line| line.ends_with("; ports: not sampled")),
+        "{gone:?}"
+    );
+    let reset_error = io::Error::from(io::ErrorKind::ConnectionReset).to_string();
+    assert_eq!(
+        reset,
+        [100, 200].map(|ms| format!(
+            "a step: no connection to PostgreSQL: {reset_error}; again in {ms}ms"
+        ))
+    );
 }
 
 /// The only test of this binary that makes databases: no other test's are listed.
