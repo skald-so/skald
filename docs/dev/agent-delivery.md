@@ -814,7 +814,7 @@ Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" US
 | `live-check executor-full codex` | pass | pass |
 | `live-check executor-clean codex` | pass | pass |
 
-`live-check signal codex --real`: pending; its result, Codex version and tokens go here.
+`live-check signal codex --real`, Codex 0.162.1, macOS, the idle session: fail without `--model`, as the API key's project may not use Codex's default model, `gpt-6.1-terra` (403), so nothing reached the model; pass with `--model gpt-5.6-terra`, 1 `claim` call, the token reached the model only in `inbox`'s result; tokens: input 15,736 (cached 55,559), output 201.
 
 What each attempt did, the same on macOS and Linux:
 
