@@ -4602,6 +4602,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn of_two_writes_to_one_session_a_refused_one_takes_back_its_wake_beside_a_confirmed_one() {
+        let state = State::in_memory().unwrap();
+        let channels = BTreeSet::from(["c".to_owned()]);
+        (state.socket_wakes("a", &["m1".to_owned()], &channels)).unwrap();
+        (state.socket_wakes("a", &["m2".to_owned()], &channels)).unwrap();
+        state.confirmed("a", &["m1".to_owned()]).unwrap();
+        state.not_taken("a", "m2").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
+    }
+
+    #[test]
     fn new_state_has_the_latest_schema_and_no_session() {
         let dir = TestDir::new("state-new");
         let state = State::open(&dir).expect("open");
