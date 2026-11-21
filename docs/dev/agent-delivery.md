@@ -805,28 +805,30 @@ The executor (`skald_adapters::claude_code`):
 - `executor-read-only`, `executor-full`: `codex exec` with the clean flags below, `--sandbox read-only` or `danger-full-access` and `-C` a temporary folder. Its commands read a file in the folder, write a file in it and one outside it, run `echo`, `curl` a local server and `https://example.com/`, and read a file outside the folder. `read-only` passes when only the read in the folder succeeds; full access passes when all but the public host succeed.
 - `executor-clean`: the config home holds the sign-in, `auth.json` with the placeholder key, an MCP server, a hook in `hooks.json`, an enabled plugin of a local marketplace with a hook and a skill, a rule that forbids a `touch`, a skill and `AGENTS.md`. Three sessions run that `touch` and print a variable: a control without the clean flags, with `--dangerously-bypass-hook-trust` and the variable, which must get all seven; one with only the clean flags; one with the flags and `CODEX_HOME` a folder that holds only `auth.json`. Passes when each signed in from `auth.json` and ran its commands, and the last got nothing planted and no variable.
 
-Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root.
+Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root, run with `--security-opt systempaths=unconfined` so that bubblewrap can mount `/proc`.
 
-| Check | macOS, the stub | Linux, the stub | `--real` |
-|---|---|---|---|
-| `live-check signal codex`, also `--all` | pass | pass | not run |
-| `live-check executor-read-only codex` | fail | fail | stub only |
-| `live-check executor-full codex` | pass | pass | stub only |
-| `live-check executor-clean codex` | pass | pass | stub only |
+| Check | macOS, the stub | Linux, the stub |
+|---|---|---|
+| `live-check signal codex`, also `--all` | pass | pass |
+| `live-check executor-read-only codex` | fail | fail |
+| `live-check executor-full codex` | pass | pass |
+| `live-check executor-clean codex` | pass | pass |
 
-What each attempt did:
+`live-check signal codex --real`: pending; its result, Codex version and tokens go here.
 
-| Attempt | macOS, `read-only` | Linux, `read-only` | Full access, both |
-|---|---|---|---|
-| Read a file in the folder | yes | no | yes |
-| Write a file in the folder or outside it | no, "operation not permitted" | no | yes |
-| Run a command | yes | no | yes |
-| Reach the local server or the public host | no, `curl` exits 7 and 6 | no | yes |
-| Read a file outside the folder | yes | no | yes |
+What each attempt did, the same on macOS and Linux:
+
+| Attempt | `read-only` | Full access |
+|---|---|---|
+| Read a file in the folder | yes | yes |
+| Write a file in the folder or outside it | no; macOS: "operation not permitted" | yes |
+| Run a command | yes | yes |
+| Reach the local server or the public host | no; macOS: `curl` exits 7 and 6 | yes |
+| Read a file outside the folder | yes | yes |
 
 Findings:
-- `read-only` on macOS blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
-- `read-only` in the container runs no command at all: "bwrap: Can't mount proc on /proc: Operation not permitted". A Linux host where bubblewrap can start is not checked.
+- `read-only` blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
+- In Docker's default container, `read-only` runs no command at all, not even the read in the folder: "bwrap: Can't mount proc on /proc: Operation not permitted". The other checks pass there too.
 - Codex runs a command with the session's environment: the control's variable reached `echo`.
 - With the clean flags, only the config home's `AGENTS.md` still reaches the session; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
 
