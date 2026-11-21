@@ -7,12 +7,13 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    AccountBody, AccountId, AccountRecord, Address, Anchors, AnchorsBody, Attachment, Body, Cbor,
-    ChannelId, Content, DecodeError, Delegation, DelegationBody, DeliveryStatus, DeviceId,
-    Envelope, FieldProblem, Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem,
-    HpkePayload, HpkePlaintext, Link, LinkBody, MasterBackup, MessageId, NonEmpty, Push,
-    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
-    ServerStatus, SpaceId, Stored, Unknown,
+    Acceptance, AcceptanceBody, AccountBody, AccountId, AccountRecord, Address, Anchors,
+    AnchorsBody, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
+    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
+    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, Invite, InviteBody, Link,
+    LinkBody, MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus,
+    RequestProof, Revocation, RevocationBody, Role, Scheme, SendKey, ServerStatus, SpaceId, Stored,
+    Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -331,6 +332,37 @@ pub fn link() -> Link {
     Link::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// Alice's invite of Bob to the space: its key the invite key of the secret 00 to 1f, to
+/// [`channel`] reading its history and to [`other_channel`] not reading it, signed by Alice's
+/// device.
+pub fn invite() -> Invite {
+    let body = InviteBody {
+        invite: "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1".parse().unwrap(),
+        space: space(),
+        key: hex("8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a")
+            .try_into()
+            .unwrap(),
+        role: Role::Member,
+        channels: vec![(channel(), true), (other_channel(), false)],
+        signer: alice_device(),
+        expires: 1_763_424_000,
+        unknown: Unknown::default(),
+    };
+    Invite::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
+/// Bob's acceptance of [`invite`]: his account, his master key "TEST 2" and the handle `bob`.
+pub fn acceptance() -> Acceptance {
+    let body = AcceptanceBody {
+        invite: invite().body().invite,
+        account: "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f2".parse().unwrap(),
+        master: hex(KEY_2).try_into().unwrap(),
+        handle: "bob".parse().unwrap(),
+        unknown: Unknown::default(),
+    };
+    Acceptance::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -549,5 +581,7 @@ pub fn vectors() -> Vec<Vector> {
         vector("Master backup", master_backup()),
         vector("Anchors object", anchors()),
         vector("Link object", link()),
+        vector("Invite", invite()),
+        vector("Acceptance", acceptance()),
     ]
 }

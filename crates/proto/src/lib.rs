@@ -10,6 +10,7 @@ mod envelope;
 mod frame;
 mod history;
 mod id;
+mod invite;
 mod link;
 mod presence;
 mod queue;
@@ -46,6 +47,7 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
+pub use invite::{ACCEPTANCE_LABEL, Acceptance, AcceptanceBody, INVITE_LABEL, Invite, InviteBody};
 pub use link::{LINK_LABEL, Link, LinkBody, LinkGrantBody, LinkMessage, LinkRequestBody};
 pub use presence::{
     AgentState, AgentStatus, NOTE_MAX, PRESENCE_LABEL, Presence, PresenceBody, PresencePlaintext,

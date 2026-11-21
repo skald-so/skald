@@ -431,7 +431,7 @@ acceptance-body = {
 ```
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
-- **Link:** `https://<server>/invite/<invite>#<fragment>`; the fragment is base64url without padding of the secret followed by the hash of the roster revision the admin's device last accepted. Browsers do not send a fragment to the server.
+- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
 - The server stores the invite and the acceptance. Revoking an invite deletes it on the server.
 
 The newcomer's device MUST, from the link:

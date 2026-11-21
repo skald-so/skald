@@ -8,6 +8,8 @@ license.workspace = true
 [dependencies]
 # Seals history links and entries.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
+# Invite links.
+base64 = "0.23"
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 # The link codes' CPace, on ristretto255.
