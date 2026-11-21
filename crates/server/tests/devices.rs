@@ -335,12 +335,12 @@ fn device_list_gives_each_certificate_as_sent() {
     machine.register_device(&device);
     machine.register_device(&other);
 
-    // A body with a field of a later version, 10 => "later": the map's head counts one more pair,
+    // A body with a field of a later version, 11 => "later": the map's head counts one more pair,
     // and the field goes last, as deterministic encoding orders the keys.
     let mut body = device.body(&machine.account).to_cbor();
     assert_eq!(body[0], 0xa7, "a map of 7 pairs");
     body[0] = 0xa8;
-    body.extend_from_slice(&[0x0a, 0x65]);
+    body.extend_from_slice(&[0x0b, 0x65]);
     body.extend_from_slice(b"later");
     let master = Key::generate();
     let signature = master.key.sign(CERT_LABEL, &[&body]);

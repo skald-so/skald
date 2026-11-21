@@ -917,6 +917,7 @@ mod tests {
                     issued: NOW,
                     name: "A device".to_owned(),
                     ssh: None,
+                    github: None,
                     unknown: Unknown::default(),
                 };
                 crate::issue(&body, &SigningKey::from_bytes(&[1; 32]), &key).unwrap()
