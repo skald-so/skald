@@ -620,6 +620,13 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE master_warning (
         masters TEXT PRIMARY KEY
     ) STRICT;",
+    // Resending (`crate::resend`): the path that last took each kept message that waits for
+    // an agent, `socket`, `channel`, `rewake` or `mod`, or `hooks` once the paths are done, none
+    // before the first; until when, in Unix milliseconds, it waits for its confirmation there; and
+    // when the first path took it.
+    "ALTER TABLE handover ADD COLUMN path TEXT;
+    ALTER TABLE handover ADD COLUMN due INTEGER;
+    ALTER TABLE handover ADD COLUMN given INTEGER;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -922,6 +929,24 @@ pub struct ReadDue {
     pub addressee: String,
     pub status: ReceiptStatus,
     pub reason: Option<String>,
+}
+
+/// The path of a kept message that resending left to the hooks and `inbox` ([`State::pushed`]).
+pub const HOOKS: &str = "hooks";
+
+/// A kept message that waits for an agent, as resending sees it ([`State::pending`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub seq: u64,
+    /// Its sealed line.
+    pub line: Vec<u8>,
+    pub msg_id: Option<MessageId>,
+    /// The path that last took it, if any, and until when, in Unix milliseconds, it waits for its
+    /// confirmation there.
+    pub path: Option<String>,
+    pub due: Option<i64>,
+    /// Whether its signal went, for a message below `own`.
+    pub signalled: bool,
 }
 
 /// A Claude Code session a `SessionStart` hook registered ([`crate::claude_socket`]).
@@ -3055,13 +3080,28 @@ impl State {
 
     /// The kept messages that wait for the agent `agent` in the space `space`, by `seq`, each with
     /// its sealed line, once those whose wait ended by `now`, in Unix seconds, are dropped for
-    /// every agent; but those a session's socket took that wait for its confirmation.
+    /// every agent; but the `own` ones a path that pushes took while they wait for their
+    /// confirmation there ([`State::pending`]).
     pub fn for_agent(
         &self,
         space: SpaceId,
         agent: &str,
         now: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        self.drop_ended(now)?;
+        self.lines(
+            "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2
+                 AND NOT (handover.path IS NOT NULL AND handover.due IS NOT NULL
+                     AND handover.path IN ('socket', 'channel', 'rewake')
+                     AND handover.due > ?3 AND handover.signalled = 0)
+             ORDER BY kept.seq",
+            params![space.to_string(), agent, unix_ms()],
+        )
+    }
+
+    /// Drops the kept messages whose wait ended by `now`, in Unix seconds, for every agent.
+    fn drop_ended(&self, now: u64) -> Result<(), Error> {
         let now = i64::try_from(now).unwrap_or(i64::MAX);
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
@@ -3070,13 +3110,187 @@ impl State {
         )?;
         drop_done(&tx)?;
         tx.commit()?;
-        self.lines(
-            "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
+        Ok(())
+    }
+
+    /// Each kept message that waits for the agent `agent` in the space `space`, by `seq`, once
+    /// those whose wait ended by `now`, in Unix seconds, are dropped: its sealed line, `msg_id`,
+    /// and where resending has it ([`Pending`]).
+    pub fn pending(&self, space: SpaceId, agent: &str, now: u64) -> Result<Vec<Pending>, Error> {
+        self.drop_ended(now)?;
+        let mut query = self.db.prepare(
+            "SELECT kept.seq, kept.line, kept.msg_id, handover.path, handover.due,
+                 handover.signalled
+             FROM kept JOIN handover ON handover.seq = kept.seq
              WHERE kept.space = ?1 AND handover.agent = ?2
-                 AND (handover.written IS NULL OR handover.failed = 1)
              ORDER BY kept.seq",
-            params![space.to_string(), agent],
+        )?;
+        let rows = query.query_map(params![space.to_string(), agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, line, msg_id, path, due, signalled) = row?;
+            Ok(Pending {
+                seq: u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?,
+                line,
+                msg_id: msg_id.and_then(|msg_id| msg_id.parse().ok()),
+                path,
+                due,
+                signalled: signalled == 1,
+            })
+        })
+        .collect()
+    }
+
+    /// How many kept messages wait for the agent `agent` in the space `space`.
+    pub fn waiting(&self, space: SpaceId, agent: &str) -> Result<u64, Error> {
+        let count: i64 = self.db.query_row(
+            "SELECT count(*) FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2 AND kept.expires > ?3",
+            params![
+                space.to_string(),
+                agent,
+                i64::try_from(unix_now()).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    /// Records that `path` took the kept messages `seqs` that wait for the agent `agent`, each to
+    /// wait for its confirmation there until `due`, in Unix milliseconds; those of `signalled`,
+    /// below `own`, by their signal. `hooks`, with no `due`, leaves them to the hooks and `inbox`,
+    /// which give the signal again.
+    pub fn pushed(
+        &self,
+        (seqs, signalled): (&[u64], &[u64]),
+        agent: &str,
+        (path, due): (&str, Option<i64>),
+    ) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs.iter().chain(signalled) {
+            let signal = match path {
+                HOOKS => 0,
+                _ => i64::from(signalled.contains(seq)),
+            };
+            tx.execute(
+                "UPDATE handover SET path = ?3, due = ?4, signalled = ?5, given = COALESCE(given, ?6)
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, path, due, signal, unix_ms()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` of each kept message that waits for the agent `agent`, which a path took, whose
+    /// reference ([`crate::forms::whole_reference`]) starts with one of `references`, each of at
+    /// least [`crate::forms::SHORTEST`] characters, with when a session's file got it, in Unix
+    /// milliseconds: since the first path took it.
+    pub fn by_reference(
+        &self,
+        agent: &str,
+        references: &[(String, i64)],
+    ) -> Result<Vec<u64>, Error> {
+        let references: Vec<&(String, i64)> = (references.iter())
+            .filter(|(reference, _)| reference.len() >= crate::forms::SHORTEST)
+            .collect();
+        if references.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut query = self.db.prepare(
+            "SELECT handover.seq, kept.msg_id, handover.given FROM handover
+             JOIN kept ON kept.seq = handover.seq
+             WHERE handover.agent = ?1 AND handover.path IS NOT NULL ORDER BY handover.seq",
+        )?;
+        let rows = query.query_map(params![agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        let taken = rows.collect::<Result<Vec<_>, _>>()?;
+        Ok((taken.into_iter())
+            .filter_map(|(seq, msg_id, given)| {
+                let seq = u64::try_from(seq).ok()?;
+                let whole = crate::forms::whole_reference(msg_id?.parse().ok()?);
+                let given = given?;
+                (references.iter())
+                    .any(|(reference, at)| *at >= given && whole.starts_with(reference.as_str()))
+                    .then_some(seq)
+            })
+            .collect())
+    }
+
+    /// Whether a path took a kept message that waits for the agent `agent`.
+    pub fn taken_by_paths(&self, agent: &str) -> Result<bool, Error> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM handover WHERE agent = ?1 AND path IS NOT NULL)",
+            params![agent],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The `seq` of each kept message the socket of the Claude Code session `session` took whose
+    /// `msg_id` is one of `msg_ids`, but those left to the hooks.
+    pub fn written_ids(&self, session: &str, msg_ids: &[String]) -> Result<Vec<u64>, Error> {
+        let written = self.written(session, msg_ids)?.into_iter();
+        Ok(
+            (written.filter(|(_, _, path)| path.as_deref() != Some(HOOKS)))
+                .map(|(seq, _, _)| seq)
+                .collect(),
         )
+    }
+
+    /// Each kept message the socket of the Claude Code session `session` took whose `msg_id` is
+    /// one of `msg_ids`: its `seq`, its agent and its path ([`State::pending`]).
+    fn written(
+        &self,
+        session: &str,
+        msg_ids: &[String],
+    ) -> Result<Vec<(u64, String, Option<String>)>, Error> {
+        let mut written = Vec::new();
+        for msg_id in msg_ids {
+            let mut query = self.db.prepare(
+                "SELECT handover.seq, handover.agent, handover.path FROM handover
+                 JOIN kept ON kept.seq = handover.seq
+                 WHERE handover.written = ?1 AND kept.msg_id = ?2",
+            )?;
+            let rows = query.query_map(params![session, msg_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            for row in rows {
+                let (seq, agent, path) = row?;
+                let seq =
+                    u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+                written.push((seq, agent, path));
+            }
+        }
+        Ok(written)
+    }
+
+    /// Records that the session file of the Claude Code session `session` shows the kept messages
+    /// `seqs` that wait for the agent `agent` going to the model: no path takes them again, and
+    /// they wait for the model's own entry, or for the session's end.
+    pub fn shown(&self, session: &str, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET written = ?3, due = ?4 WHERE seq = ?1 AND agent = ?2
+                     AND path IS NOT NULL AND path != 'hooks'",
+                params![sql_seq(*seq)?, agent, session, i64::MAX],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
@@ -3192,8 +3406,8 @@ impl State {
     pub fn end_claude(&self, session: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
-            "UPDATE handover SET failed = 1 WHERE written = ?1",
-            params![session],
+            "UPDATE handover SET failed = 1, due = ?2 WHERE written = ?1",
+            params![session, unix_ms()],
         )?;
         tx.execute(
             "DELETE FROM claude_session WHERE session = ?1",
@@ -3211,37 +3425,32 @@ impl State {
         Ok(())
     }
 
-    /// The `seq` of each kept message that waits for the agent `agent` that a session's socket
-    /// took.
-    pub fn written(&self, agent: &str) -> Result<Vec<u64>, Error> {
-        let written: Vec<(u64, String)> = self.lines(
-            "SELECT seq, written FROM handover WHERE agent = ?1 AND written IS NOT NULL
-             ORDER BY seq",
-            params![agent],
-        )?;
-        Ok(written.into_iter().map(|(seq, _)| seq).collect())
-    }
-
     /// Records that the socket of the Claude Code session `session` takes the kept messages
     /// `messages` that wait for the agent `agent`, and the signal of `signalled` in its line
-    /// `signal`, before they are written to it.
+    /// `signal`, before they are written to it; each waits for its confirmation until `due`, in
+    /// Unix milliseconds.
     pub fn socket_takes(
         &self,
         (session, agent): (&str, &str),
         messages: &[u64],
         (signalled, signal): (&[u64], &str),
+        due: i64,
     ) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         for seq in messages {
             tx.execute(
-                "UPDATE handover SET written = ?3, failed = 0 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, session],
+                "UPDATE handover SET written = ?3, failed = 0, path = 'socket', due = ?4,
+                     given = COALESCE(given, ?5)
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, session, due, unix_ms()],
             )?;
         }
         for seq in signalled {
             tx.execute(
-                "UPDATE handover SET signalled = 1, signal = ?3 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, signal],
+                "UPDATE handover SET signalled = 1, signal = ?3, path = 'socket', due = ?4,
+                     given = COALESCE(given, ?5)
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, signal, due, unix_ms()],
             )?;
         }
         tx.commit()?;
@@ -3254,7 +3463,8 @@ impl State {
         let tx = self.db.unchecked_transaction()?;
         for seq in seqs {
             tx.execute(
-                "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL
+                "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL,
+                     path = NULL, due = NULL
                  WHERE seq = ?1 AND agent = ?2",
                 params![sql_seq(*seq)?, agent],
             )?;
@@ -3264,9 +3474,10 @@ impl State {
     }
 
     /// Records that the Claude Code session `session` said its line `line` did not reach the
-    /// model: the message waits for the other paths, or its signal for the hooks. Once it said so
-    /// of each line of a write, the write's wakes are taken back ([`State::socket_wakes`]).
+    /// model: the message, or its signal, goes by the next path at once. Once it said so of each
+    /// line of a write, the write's wakes are taken back ([`State::socket_wakes`]).
     pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
+        let now = unix_ms();
         let tx = self.db.unchecked_transaction()?;
         let write: Option<String> = tx
             .query_row(
@@ -3295,13 +3506,13 @@ impl State {
             }
         }
         tx.execute(
-            "UPDATE handover SET failed = 1 WHERE written = ?1
+            "UPDATE handover SET failed = 1, due = ?3 WHERE written = ?1 AND path = 'socket'
                  AND seq IN (SELECT seq FROM kept WHERE msg_id = ?2)",
-            params![session, line],
+            params![session, line, now],
         )?;
         tx.execute(
-            "UPDATE handover SET signalled = 0, signal = NULL WHERE signal = ?1",
-            params![line],
+            "UPDATE handover SET signal = NULL, due = ?2 WHERE signal = ?1 AND path = 'socket'",
+            params![line, now],
         )?;
         tx.commit()?;
         Ok(())
@@ -3311,7 +3522,6 @@ impl State {
     /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]),
     /// and the wakes of its write stand. Gives how many it confirms.
     pub fn confirmed(&self, session: &str, msg_ids: &[String]) -> Result<usize, Error> {
-        let mut confirmed = Vec::new();
         for msg_id in msg_ids {
             let write: Option<String> = (self.db)
                 .query_row(
@@ -3326,15 +3536,9 @@ impl State {
                 self.db
                     .execute("DELETE FROM socket_wake WHERE write = ?1", params![write])?;
             }
-            let rows: Vec<(u64, String)> = self.lines(
-                "SELECT handover.seq, handover.agent FROM handover
-                 JOIN kept ON kept.seq = handover.seq
-                 WHERE handover.written = ?1 AND kept.msg_id = ?2",
-                params![session, msg_id],
-            )?;
-            confirmed.extend(rows);
         }
-        for (seq, agent) in &confirmed {
+        let confirmed = self.written(session, msg_ids)?;
+        for (seq, agent, _) in &confirmed {
             self.handed_over(*seq, agent)?;
         }
         Ok(confirmed.len())
@@ -3995,6 +4199,15 @@ impl State {
 /// `seq` as SQLite holds it.
 fn sql_seq(seq: u64) -> Result<i64, Error> {
     i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
+}
+
+/// Now, in Unix milliseconds.
+pub fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Now, in Unix seconds.
@@ -5796,16 +6009,43 @@ pub(crate) mod tests {
         assert_eq!(kept, 0, "a message no one waits for is kept");
     }
 
+    /// A state in the test directory `name`, of a device named `laptop`.
+    fn with_device(name: &str) -> (TestDir, State) {
+        let dir = TestDir::new(name);
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
+            .unwrap();
+        (dir, state)
+    }
+
+    /// A reference confirms a message a path took only from an entry written since the first path
+    /// took it: one an earlier message had, reused, does not.
+    #[test]
+    fn a_reference_confirms_a_message_only_from_an_entry_since_a_path_took_it() {
+        let (_dir, state) = with_device("state-by-reference");
+        let space = space_of_kept();
+        state.add_agent(space, "claude").unwrap();
+        state.write_entries(&[(1, vec![1])]).unwrap();
+        let message = kept(&["claude"]);
+        let sender = DeviceId::from_signing_key(&[4; 32]);
+        state.keep(1, (sender, message.msg_id), &message).unwrap();
+        let reference = crate::forms::whole_reference(message.msg_id)[..4].to_owned();
+        let before = unix_ms();
+        (state.pushed((&[1], &[]), "claude", ("channel", Some(i64::MAX)))).unwrap();
+        let after = unix_ms();
+        let earlier = [(reference.clone(), before - 1)];
+        assert!(state.by_reference("claude", &earlier).unwrap().is_empty());
+        let since = [(reference, after)];
+        assert_eq!(state.by_reference("claude", &since).unwrap(), [1]);
+    }
+
     /// A message the person's run showed can be replied to by the person; one handed over to an
     /// agent, by that agent in its space only; each until its wait ends, after which it is dropped.
     /// A kept reply's `replied` is kept with it, for the person and the message's agent.
     #[test]
     fn shown_and_handed_over_messages_can_be_replied_to_until_their_wait_ends() {
-        let dir = TestDir::new("state-targets");
-        let state = State::open(&dir).unwrap();
-        state
-            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
-            .unwrap();
+        let (_dir, state) = with_device("state-targets");
         let space = space_of_kept();
         state.add_agent(space, "claude").unwrap();
         state.add_agent(space, "codex").unwrap();

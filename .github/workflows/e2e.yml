@@ -24,8 +24,10 @@ on:
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
       - crates/client/src/recv.rs
+      - crates/client/src/resend.rs
       - crates/client/src/state.rs
       - crates/client/src/wait.rs
+      - crates/client/claude-mod/**
       - crates/client/tests/claude_code_e2e/**
       - crates/client/tests/claude_code_hooks/**
       - crates/client/src/test_dir.rs

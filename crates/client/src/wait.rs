@@ -37,7 +37,7 @@ use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::State;
-use crate::{Command, Operation, claude_socket, connection, folders, uploads};
+use crate::{Command, Operation, claude_socket, connection, folders, output, resend, uploads};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -261,12 +261,16 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
 }
 
 /// The helper's sessions: the `skald recv --wait` commands that wait through it, the sessions MCP
-/// servers hold of it ([`hold`]), and the Claude Code sessions it serves ([`claude_socket`]).
+/// servers hold of it ([`hold`]), the `asyncRewake` hooks that wait through it ([`rewakes`]), the
+/// mods that poll it ([`Sessions::polled`]), and the Claude Code sessions it serves
+/// ([`claude_socket`]), whose paths those are ([`crate::resend`]).
 #[derive(Default)]
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
     claude: Option<claude_socket::Served>,
+    /// The mods that polled within [`MOD_POLLS`], by agent and space.
+    mods: BTreeMap<(String, SpaceId), Mod>,
     /// When the last `skald recv --wait` of each agent that ended did, as an [`Instant`] and in
     /// Unix seconds.
     ends: BTreeMap<uploads::Running, (Instant, u64)>,
@@ -290,6 +294,17 @@ struct Waiting {
 
 /// How long a held session whose run failed to take in is left be.
 const REST: Duration = Duration::from_secs(30);
+
+/// How long after its last poll a mod counts as a path of its session: it polls each second.
+const MOD_POLLS: Duration = Duration::from_secs(3);
+
+/// A mod that polls: its session's folder, when it last polled, and whether it is to submit its
+/// prompt.
+struct Mod {
+    folder: PathBuf,
+    polled: Instant,
+    prompt: bool,
+}
 
 thread_local! {
     /// Whether the last run of a held session on this thread failed to take in.
@@ -323,6 +338,10 @@ impl Sessions {
     /// it waits for or failed. A session an MCP server holds starts its agent's session first
     /// ([`hold`]). Whether the helper goes on.
     pub fn start(&mut self, session: Session, dir: &Path) -> bool {
+        if rewakes(&session.operation) {
+            self.rewake(session, dir);
+            return true;
+        }
         let others = self.live().running;
         let (held, agent) = (holds(&session.operation), session.operation.agent.clone());
         let ran = helper::run_for(session, dir, |operation| match held {
@@ -344,11 +363,128 @@ impl Sessions {
         went_on
     }
 
+    /// Has `session`, an `asyncRewake` hook's, wait in its folder's space for what its agent's
+    /// paths give it ([`crate::resend`]); in no space, it ends at once, giving nothing.
+    fn rewake(&mut self, session: Session, dir: &Path) {
+        let space = std::env::set_current_dir(&session.cwd)
+            .ok()
+            .and_then(|()| folders::working_space(dir).ok());
+        let _ = std::env::set_current_dir(dir);
+        match space {
+            Some(space) => self.waiting.push(Waiting {
+                session,
+                space: Some(space.id),
+                due: false,
+                resting: None,
+            }),
+            None => drop(helper::run_for(session, dir, |_| Ok(true))),
+        }
+    }
+
+    /// The poll of a mod, `operation`, in its session's folder `cwd`, by the state in `dir`:
+    /// notes that the mod polled, then prints how many messages wait for its agent and, if no
+    /// turn runs and its paths gave it the prompt, the prompt ([`resend::mod_poll`]).
+    pub fn polled(&mut self, operation: &Operation, cwd: &Path, dir: &Path) -> Result<(), String> {
+        let (Some(agent), Command::Hook { idle, .. }) = (operation.agent()?, &operation.command)
+        else {
+            return Err("only the mod polls the helper".to_owned());
+        };
+        let Ok(space) = folders::working_space(dir) else {
+            return resend::mod_poll(dir, &agent, false);
+        };
+        let polled = (self.mods)
+            .entry((agent.to_string(), space.id))
+            .or_insert_with(|| Mod {
+                folder: cwd.to_path_buf(),
+                polled: Instant::now(),
+                prompt: false,
+            });
+        polled.folder = cwd.to_path_buf();
+        polled.polled = Instant::now();
+        let prompt = *idle && std::mem::take(&mut polled.prompt);
+        resend::mod_poll(dir, &agent, prompt)
+    }
+
+    /// The agents whose sessions have paths the helper holds: a `skald mcp` of Claude Code's, an
+    /// `asyncRewake` hook that waits, a mod that polled within [`MOD_POLLS`].
+    fn holders(&mut self) -> claude_socket::Holders {
+        let mut holders = claude_socket::Holders::new();
+        for waiting in &self.waiting {
+            let operation = &waiting.session.operation;
+            let (channel, rewake) = (channels(operation), rewakes(operation));
+            let (Some(space), Some(agent), true) =
+                (waiting.space, operation.agent.clone(), channel || rewake)
+            else {
+                continue;
+            };
+            let (_, held) = (holders.entry((agent, space)))
+                .or_insert_with(|| (waiting.session.cwd.clone(), resend::Held::default()));
+            held.channel |= channel;
+            held.rewake |= rewake;
+        }
+        self.mods
+            .retain(|_, polled| polled.polled.elapsed() < MOD_POLLS);
+        for (key, polled) in &self.mods {
+            let (_, held) = (holders.entry(key.clone()))
+                .or_insert_with(|| (polled.folder.clone(), resend::Held::default()));
+            held.mods = true;
+        }
+        holders
+    }
+
+    /// Gives each of `pushes` to its agent's paths, by the state in `dir`: the channel events to
+    /// its `skald mcp`, what the `asyncRewake` hook gives to one that waits, which then ends, and
+    /// the prompt to its mod. `None` once a run panicked.
+    fn deliver(&mut self, pushes: claude_socket::Pushes, dir: &Path) -> Option<()> {
+        for (agent, space, pushed) in pushes {
+            if pushed.prompt
+                && let Some(polled) = self.mods.get_mut(&(agent.clone(), space))
+            {
+                polled.prompt = true;
+            }
+            let theirs = |waiting: &Waiting, of: fn(&Operation) -> bool| {
+                waiting.space == Some(space)
+                    && waiting.session.operation.agent.as_deref() == Some(agent.as_str())
+                    && of(&waiting.session.operation)
+            };
+            if !pushed.channel.is_empty()
+                && let Some(at) =
+                    (self.waiting.iter()).position(|waiting| theirs(waiting, channels))
+            {
+                let held = self.waiting.remove(at);
+                let ran = helper::run_for(held.session, dir, |_| {
+                    for event in &pushed.channel {
+                        let line = format!("{}\n", serde_json::json!({ "content": event }));
+                        output::write(output::Stream::Out, line.as_bytes())
+                            .map_err(|err| format!("cannot give a channel event: {err}"))?;
+                    }
+                    Ok(false)
+                });
+                self.again(ran, Some(space))?;
+            }
+            if let Some(given) = &pushed.rewake
+                && let Some(at) = (self.waiting.iter()).position(|waiting| theirs(waiting, rewakes))
+            {
+                let rewake = self.waiting.remove(at);
+                let ran = helper::run_for(rewake.session, dir, |_| {
+                    output::write(output::Stream::Err, given.as_bytes())
+                        .map_err(|err| format!("cannot give the messages: {err}"))?;
+                    Ok(true)
+                });
+                self.again(ran, Some(space))?;
+            }
+        }
+        Some(())
+    }
+
     /// The agents whose sessions wait, each in the space it kept to: of `skald recv --wait` only if
     /// `waits_only`.
     fn agents(&self, waits_only: bool) -> BTreeSet<uploads::Running> {
         (self.waiting.iter())
-            .filter(|waiting| !waits_only || !holds(&waiting.session.operation))
+            .filter(|waiting| {
+                let operation = &waiting.session.operation;
+                !waits_only || !(holds(operation) || rewakes(operation))
+            })
             .filter_map(|waiting| {
                 Some(uploads::Running {
                     space: waiting.space?,
@@ -430,7 +566,9 @@ impl Sessions {
     /// checks the presence after a run or an intake.
     fn looked(&mut self, dir: &Path, before: &mut BTreeSet<uploads::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
-        let claude = (self.claude.as_ref()).is_some_and(claude_socket::Served::looks);
+        let holders = self.holders();
+        let claude =
+            (self.claude.as_ref()).is_some_and(claude_socket::Served::looks) || !holders.is_empty();
         if self.waiting.is_empty() && !claude {
             let mut idle = Watch::default();
             idle.retry_at = self.watch.retry_at;
@@ -446,10 +584,12 @@ impl Sessions {
         if mailbox::linking_came() {
             self.ran();
         }
-        if let Some(claude) = &mut self.claude
-            && claude.look(dir, &came)?
-        {
-            self.watch.start();
+        if let Some(claude) = &mut self.claude {
+            let (ran, pushes) = claude.look(dir, &came, &holders)?;
+            if ran {
+                self.watch.start();
+            }
+            self.deliver(pushes, dir)?;
         }
         if self.waiting.is_empty() {
             return Some((self.claude.as_ref()).is_some_and(claude_socket::Served::serving));
@@ -459,7 +599,10 @@ impl Sessions {
         let (mut runs, mut handed) = (Vec::new(), Vec::new());
         let now = Instant::now();
         for waiting in std::mem::take(&mut self.waiting) {
-            if waiting.resting.is_some_and(|until| now < until) {
+            // An `asyncRewake` hook gets only what its agent's paths give it.
+            if rewakes(&waiting.session.operation)
+                || waiting.resting.is_some_and(|until| now < until)
+            {
                 self.waiting.push(waiting);
             } else if waiting.due {
                 runs.push(waiting);
@@ -576,6 +719,36 @@ fn run_again(session: Session, dir: &Path) -> Ran {
         true => hold(operation, None),
         false => crate::received(operation),
     })
+}
+
+/// Whether `operation` is a session an `asyncRewake` hook has of the helper: `skald hook claude
+/// --wait`.
+pub fn rewakes(operation: &Operation) -> bool {
+    matches!(
+        operation.command,
+        Command::Hook {
+            wait: Some(_),
+            input: Some(_),
+            ..
+        }
+    )
+}
+
+/// Whether `operation` is the poll of a mod: `skald hook claude --mod`.
+pub fn polls(operation: &Operation) -> bool {
+    matches!(operation.command, Command::Hook { mods: true, .. })
+}
+
+/// Whether `operation` is the session that a `skald mcp` of Claude Code holds of the helper, which
+/// gives channel events.
+fn channels(operation: &Operation) -> bool {
+    matches!(
+        &operation.command,
+        Command::Mcp {
+            call: Some(Call::Hold { runtime: Some(runtime) }),
+            ..
+        } if runtime == crate::hook::CLAUDE_CODE
+    )
 }
 
 /// Whether `operation` is the session an MCP server holds of the helper.

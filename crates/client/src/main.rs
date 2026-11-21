@@ -76,6 +76,7 @@ mod recovery_link;
 mod recovery_wraps;
 mod recv;
 mod reply;
+mod resend;
 mod revocations;
 mod secrets;
 mod send;
@@ -97,10 +98,11 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::io::Write as _;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::builder::FalseyValueParser;
 use clap::{Parser, Subcommand};
@@ -973,11 +975,29 @@ enum Command {
     /// follow the delivery settings, skald delivery-modes. A message longer than the limit is
     /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
     /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
-    /// failure, which exits with 1.
+    /// failure, which exits with 1. A message the socket, a channel event of skald mcp, the
+    /// --wait hook or the mod took, which the session does not confirm within 30 seconds, or
+    /// SKALD_RESEND_AFTER seconds, goes by the next of them, then by these hooks and inbox.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
         cli: hook::Cli,
+        /// As Claude Code's asyncRewake hook on SessionStart and Stop: waits up to SECONDS for the
+        /// agent's messages, prints them as the other hooks give them on standard error and exits
+        /// with 2, which starts a turn; with none, it exits with success, printing nothing.
+        #[arg(long, value_name = "SECONDS")]
+        #[serde(default)]
+        wait: Option<u64>,
+        /// As the poll of the mod, a Claude Code plugin: runs without hook input and prints, as
+        /// JSON, how many messages wait for the agent, and, with --idle, which says no turn runs,
+        /// a prompt that asks the agent to call inbox, when the mod is to submit it.
+        #[arg(long = "mod", conflicts_with = "wait")]
+        #[serde(default)]
+        mods: bool,
+        /// With --mod: no turn runs in the session.
+        #[arg(long, requires = "mods")]
+        #[serde(default)]
+        idle: bool,
         /// What the hook input gives.
         #[arg(skip)]
         #[serde(default)]
@@ -1273,8 +1293,11 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
-    if let Command::Hook { cli, .. } = operation.command {
-        return run_hook(operation, cli, one_shot);
+    if let Command::Hook { cli, mods, .. } = operation.command {
+        return match mods {
+            true => mod_poll(operation, one_shot),
+            false => run_hook(operation, cli, one_shot),
+        };
     }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
@@ -1404,13 +1427,22 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
 /// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
-/// what the run gives the session, and exits with 1 on a failure, never 2.
+/// what the run gives the session, and exits with 1 on a failure; 2 only as the `asyncRewake`
+/// hook ([`rewake`]).
 fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
+    let wait = match operation.command {
+        Command::Hook { wait, .. } => wait,
+        _ => None,
+    };
     let cap = std::env::var(hook::CAP_SETTING).ok();
     let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
     };
-    if input.event.is_none() {
+    let waits_on = matches!(
+        input.event,
+        Some(hook::Event::SessionStart | hook::Event::Stop { .. })
+    );
+    if input.event.is_none() || (wait.is_some() && !waits_on) {
         return ExitCode::SUCCESS;
     }
     if input.event == Some(hook::Event::SessionStart) {
@@ -1432,25 +1464,111 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     operation.command = Command::Hook {
         cli,
         input: Some(input),
+        wait,
+        mods: false,
+        idle: false,
     };
-    // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
+    if let Some(seconds) = wait {
+        return rewake(operation, &dir, Duration::from_secs(seconds), one_shot);
+    }
+    given_only(operation, &dir, one_shot)
+}
+
+/// Runs the hook's `operation` by the state in `dir`, through the helper that runs, or one it
+/// starts unless `one_shot`, or here: only the run's output goes to the agent CLI; what else it
+/// says, such as its error, does not. Exits with 1 on a failure.
+fn given_only(operation: Operation, dir: &Path, one_shot: bool) -> ExitCode {
     let given = |stream, bytes: &[u8]| match stream {
         output::Stream::Out => output::direct(stream, bytes),
         output::Stream::Err => Ok(()),
     };
-    let failed = |code| match code == ExitCode::SUCCESS {
-        true => code,
-        false => ExitCode::FAILURE,
-    };
-    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
-        Ok(helper::Route::Helped(code)) => failed(code),
+    match helper::route_into(dir, &operation, (false, !one_shot, false), &mut { given }) {
+        Ok(helper::Route::Helped(code)) if code == ExitCode::SUCCESS => code,
+        Ok(helper::Route::Helped(_)) | Err(_) => ExitCode::FAILURE,
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         },
-        Err(_) => ExitCode::FAILURE,
     }
+}
+
+/// How long the `asyncRewake` hook waits before it tries again once its helper went away.
+const REWAKE_AGAIN: Duration = Duration::from_secs(1);
+
+/// `skald hook claude --wait` as `operation` says, by the state in `dir`: waits through the helper
+/// that runs, or one it starts unless `one_shot`, as the agent `--agent` names or, without it, the
+/// default one, for up to `wait`, until the agent's paths give it messages ([`resend`]); prints them
+/// on standard error and exits with 2, which starts a turn. With none, without a helper, or in a
+/// folder in no space, at once, it exits with success, printing nothing.
+fn rewake(mut operation: Operation, dir: &Path, wait: Duration, one_shot: bool) -> ExitCode {
+    let deadline = Instant::now() + wait;
+    if folders::working_space(dir).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    if operation.agent.is_none() {
+        let Some(agent) = mcp::default_agent(dir, hook::CLAUDE_CODE) else {
+            return ExitCode::SUCCESS;
+        };
+        operation.agent = Some(agent.to_string());
+    }
+    let (give, given) = std::sync::mpsc::channel();
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        loop {
+            let mut said = Vec::new();
+            let mut sink = |stream, bytes: &[u8]| {
+                if stream == output::Stream::Err {
+                    said.extend_from_slice(bytes);
+                }
+                Ok(())
+            };
+            match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut sink) {
+                Ok(helper::Route::Helped(code))
+                    if code == ExitCode::SUCCESS && !said.is_empty() =>
+                {
+                    let _ = give.send(said);
+                    return;
+                }
+                Ok(helper::Route::Here(_)) => return,
+                // The helper went away, or ended the wait giving nothing.
+                _ => std::thread::sleep(REWAKE_AGAIN),
+            }
+        }
+    });
+    match given.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(said) => match std::io::stderr().lock().write_all(&said) {
+            Ok(()) => ExitCode::from(REWAKES),
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::SUCCESS,
+    }
+}
+
+/// The exit code with which the `asyncRewake` hook starts a turn.
+const REWAKES: u8 = 2;
+
+/// `skald hook claude --mod` as `operation` says: runs in the session's folder, the working
+/// directory, as the agent `--agent` names or, without it, the default one, through the helper
+/// that runs, or one it starts unless `one_shot`, or here, which gives no prompt; prints only
+/// what the run gives ([`resend::mod_poll`]).
+fn mod_poll(mut operation: Operation, one_shot: bool) -> ExitCode {
+    let Ok(dir) = state::dir(operation.state_dir.clone()) else {
+        return ExitCode::FAILURE;
+    };
+    let agent = match &operation.agent {
+        Some(_) => operation.agent.clone(),
+        None if dir.join(state::FILE).is_file() => {
+            mcp::default_agent(&dir, hook::CLAUDE_CODE).map(|agent| agent.to_string())
+        }
+        None => None,
+    };
+    let Some(agent) = agent else {
+        println!("{}", serde_json::json!({ "waiting": 0 }));
+        return ExitCode::SUCCESS;
+    };
+    operation.agent = Some(agent);
+    given_only(operation, &dir, one_shot)
 }
 
 /// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
@@ -1903,6 +2021,14 @@ fn performed(operation: Operation) -> Result<(), String> {
                 forms::Form::of(true, json),
             )
         }
+        Command::Hook { mods: true, .. } => {
+            let dir = state::dir(state_dir)?;
+            let Some(agent) = agent else {
+                return Err("skald hook --mod runs only as itself".to_owned());
+            };
+            // Without the helper, no path gives the mod its prompt.
+            resend::mod_poll(&dir, &agent, false)
+        }
         Command::Hook { input, .. } => {
             let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
                 return Err("skald hook runs only as itself".to_owned());
@@ -1916,7 +2042,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             };
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
-                hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                hook::Event::SessionEnd => claude_socket::end(&dir, &agent, &input.session),
                 _ => recv::hook(
                     &dir,
                     key_storage,

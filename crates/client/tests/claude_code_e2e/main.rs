@@ -19,6 +19,9 @@
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
 //!
+//! The sessions of `wake_fallbacks.rs` refuse cross-session messages and get them by Channels, the
+//! `asyncRewake` hook or the mod, which `socket_claude.rs` adds as a test's options say.
+//!
 //! The sessions of `modes.rs` and `inline.rs` run under the person's delivery settings, as the
 //! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
 //! an idle session to wake run on Unix only, where the client writes into the socket.
@@ -42,6 +45,7 @@ mod socket_model;
 mod socket_routing;
 mod socket_sessions;
 mod stub;
+mod wake_fallbacks;
 
 // The processes of a copy of `skald`, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]
