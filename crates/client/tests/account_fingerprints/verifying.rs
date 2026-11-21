@@ -1,5 +1,6 @@
 //! A device marks an account verified only on its person's yes at a terminal, and shows it in
-//! later runs, one-shot and through the helper; a no, a pipe and an agent mark nothing.
+//! later runs, one-shot and through the helper; a no, an input that ends, a pipe and an agent mark
+//! nothing.
 
 use crate::helped::Helped;
 use crate::terminal::Terminal;
@@ -63,6 +64,25 @@ fn a_no_marks_nothing() {
     let declined = answered_at_terminal(&pair.bob.machine, pair.ada(), NO);
 
     pair.assert_shows_adas(&declined.text);
+    pair.assert_unmarked_until_bobs_yes();
+}
+
+/// Bob's terminal input ends at the question for Ada: she is not verified; a yes after it verifies
+/// her.
+#[test]
+fn an_input_that_ends_at_the_question_marks_nothing() {
+    let pair = Pair::new(
+        [4_181_110_001, 4_181_110_002],
+        ["ada-not-verified-on-an-end", "bob-ends-the-input"],
+    );
+
+    let mut terminal = Terminal::start(&pair.bob.machine, &[FINGERPRINT, ACME, pair.ada()]);
+    terminal.wait_for("Ada's fingerprint and a question", |shown| {
+        fingerprints_in(shown).contains(&pair.adas) && shown.contains('?')
+    });
+    terminal.end_input();
+    terminal.finish();
+
     pair.assert_unmarked_until_bobs_yes();
 }
 
