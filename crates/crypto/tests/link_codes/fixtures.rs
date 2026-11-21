@@ -93,3 +93,20 @@ pub fn run(code: &LinkCode, entered: &LinkCode) -> (Isk, Isk) {
     let isk_a = a.finish(&yb, &[]).expect("A takes B's share");
     (isk_a, isk_b)
 }
+
+/// The section `heading` of `docs/protocol/test-vectors.md`, which must have it: its text without
+/// whitespace, in lowercase, so that it holds each hex value it gives.
+#[track_caller]
+pub fn vector_section(heading: &str) -> String {
+    const DOC: &str = include_str!("../../../../docs/protocol/test-vectors.md");
+    let mut lines = DOC.lines().skip_while(|line| *line != heading);
+    assert!(
+        lines.next().is_some(),
+        "test-vectors.md has no section {heading:?}"
+    );
+    lines
+        .take_while(|line| !line.starts_with("## "))
+        .flat_map(str::split_whitespace)
+        .collect::<String>()
+        .to_lowercase()
+}

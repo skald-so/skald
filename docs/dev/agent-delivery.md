@@ -60,7 +60,7 @@ Each path's section answers, for each agent:
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared fixtures, assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the [Claude Code checks before implementation](#claude-code), [`permission claude`](#permission-prompts) and the [Codex permission prompts](#codex-permission-prompts) checks have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the checks before implementation on [Claude Code](#claude-code) and [Codex](#codex), [`permission claude`](#permission-prompts) and the [Codex permission prompts](#codex-permission-prompts) checks have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 - GUI live checks, on the desktop apps and IDE extensions: [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 
 ## Model stub
@@ -819,9 +819,9 @@ A session loads a channel only with `--channels` or `--dangerously-load-developm
 
 ## Checks before implementation
 Live checks to add before the adapters take tasks and run executors ([delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), [queues.md, "Running a task"](../protocol/queues.md#running-a-task)):
-- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over [`codex queue`](#codex-queue).
-- Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
-- A Codex executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment.
+- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over [`codex queue`](#codex-queue) ([findings](#codex)).
+- Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder ([findings](#codex)).
+- A Codex executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment ([findings](#codex)).
 - [Codex permission prompts](#codex-permission-prompts): what tells that a Codex session waits on its own permission prompt.
 
 ### Claude Code
@@ -857,6 +857,51 @@ The executor (`skald_adapters::claude_code`):
 - refuses `read-only` on a Claude Code older than 2.1.328 or of unknown version;
 - keeps of the device's environment only: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `CLAUDE_CONFIG_DIR`; Windows' `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `CLAUDE_CODE_GIT_BASH_PATH`; the proxy's `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, also in lower case, and `NODE_EXTRA_CA_CERTS`; for sign-in, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, every `ANTHROPIC_*`, `AWS_*`, `CLAUDE_CODE_USE_*` and `VERTEX_REGION_*` variable, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`. Names on Windows match in any case;
 - refuses nothing for what still loads: it is Claude Code's own, none of the user's config.
+
+### Codex
+`live-check signal codex [--all] [--real] [--model <model>] [--keep]`, `live-check <executor-read-only|executor-full|executor-clean> codex [--model <model>] [--keep]`; the executor checks run only on the stub.
+- On Windows `live-check` runs `codex.exe` or WinGet's `codex-<arch>-pc-windows-msvc.exe`, else npm's `codex.cmd` script with `node`. The executor checks write their commands in PowerShell, the planted MCP server and hooks run `mark.cmd`, and the sessions get `-c windows.sandbox="unelevated"`. A check that needs a pseudo-terminal or a Unix socket, such as `signal`, says "not on Windows".
+- `signal`: a terminal UI session in a pseudo-terminal with `inbox` and the stub `claim`, as in [Claude Code](#claude-code), their tools approved. After its first turn, `codex queue --thread <id> --message <signal>` brings the fixed line to the idle session; with `--all`, also to a busy one while its first turn's command runs. Passes when the signal reached the model, the model called `inbox` and `claim`, and the message's token reached it only through `inbox`.
+- `executor-read-only`, `executor-full`: `codex exec` with the clean flags below, `--sandbox read-only` or `danger-full-access` and `-C` a temporary folder. Its commands read a file in the folder, write a file in it and one outside it, run `echo`, `curl` a local server and `https://example.com/`, and read a file outside the folder. `read-only` passes when only the read in the folder succeeds; full access passes when all but the public host succeed.
+- `executor-clean`: the config home holds the sign-in, `auth.json` with the placeholder key, an MCP server, a hook in `hooks.json`, an enabled plugin of a local marketplace with a hook and a skill, a rule that forbids a `touch`, a skill and `AGENTS.md`. Three sessions run that `touch` and print a variable: a control without the clean flags, with `--dangerously-bypass-hook-trust` and the variable, which must get all seven; one with only the clean flags; one with the flags and `CODEX_HOME` a folder that holds only `auth.json`. Passes when each signed in from `auth.json` and ran its commands, and the last got nothing planted and no variable.
+
+Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root, run with `--security-opt systempaths=unconfined` so that bubblewrap can mount `/proc`. Windows: Windows 11, Codex 0.154.0 from WinGet.
+
+| Check | macOS, the stub | Linux, the stub | Windows, the stub |
+|---|---|---|---|
+| `live-check signal codex`, also `--all` | pass | pass | not on Windows |
+| `live-check executor-read-only codex` | fail | fail | fail |
+| `live-check executor-full codex` | pass | pass | pass |
+| `live-check executor-clean codex` | pass | pass | pass |
+
+`live-check signal codex --real`, Codex 0.162.1, macOS, the idle session: fail without `--model`, as the API key's project may not use Codex's default model, `gpt-6.1-terra` (403), so nothing reached the model; pass with `--model gpt-5.6-terra`, 1 `claim` call, the token reached the model only in `inbox`'s result; tokens: input 15,736 (cached 55,559), output 201.
+
+What each attempt did:
+
+| Attempt | `read-only`, macOS and Linux | `read-only`, Windows | Full access |
+|---|---|---|---|
+| Read a file in the folder | yes | yes | yes |
+| Write a file in the folder or outside it | no; macOS: "operation not permitted" | no | yes |
+| Run a command | yes | yes | yes |
+| Reach the local server | no; macOS: `curl` exits 7 | yes | yes |
+| Reach the public host | no; macOS: `curl` exits 6 | no | yes |
+| Read a file outside the folder | yes | yes | yes |
+
+Findings:
+- `read-only` blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
+- On Windows, `read-only` needs `windows.sandbox`. Without it, no sandbox stands behind `read-only`, and `codex exec` rejects every command, reads too: "rejected: blocked by policy". With `windows.sandbox="unelevated"`, it blocks writes only: commands, reads outside the folder and the local server all work, while the public host was not reached. The unelevated sandbox asked for no administrator and left `~/.codex` as it was.
+- In Docker's default container, `read-only` runs no command at all, not even the read in the folder: "bwrap: Can't mount proc on /proc: Operation not permitted". The other checks pass there too.
+- Codex runs a command with the session's environment: the control's variable reached `echo`.
+- With the clean flags, only the config home's `AGENTS.md` still reaches the session, on Windows too; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
+
+A Codex executor's flags and environment, from these findings:
+- `codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false -c approval_policy="never" --sandbox <read-only|danger-full-access> -C <folder>`;
+- on Windows, also `-c windows.sandbox="unelevated"`;
+- `CODEX_HOME` a folder of its own that holds only a copy of the user's `auth.json`;
+- no variable of the parent's environment that the sign-in does not need.
+
+Open questions:
+- Codex executors on Windows: the unelevated `read-only` leaves the local network open. Does Skald need `elevated`, which takes an administrator's setup, or another guard for read-only tasks there?
 
 Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 

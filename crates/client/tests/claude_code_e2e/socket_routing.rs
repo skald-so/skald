@@ -35,7 +35,7 @@ fn each_message_reaches_one_session_of_its_own_agent() {
     let solo = Solo::new(4_919_455_001, "ada-socket-e2e-routing");
     let models = [(); 3].map(|()| Model::start(|_| Reply::Done));
     let [older_model, newer_model, api_model] = &models;
-    let Some(_older) = idle_session(&solo, WEB, older_model, Surface::App) else {
+    let Some(older) = idle_session(&solo, WEB, older_model, Surface::App) else {
         return;
     };
     let Some(mut newer) = idle_session(&solo, WEB, newer_model, Surface::App) else {
@@ -50,9 +50,22 @@ fn each_message_reaches_one_session_of_its_own_agent() {
     nudged_unless_socket(&mut newer);
     nudged_unless_socket(&mut api);
 
-    let turn = newer_model.wait_turn_holding(TO_WEB, "api's message in web's newer session");
+    // A failed wait shows each session's hook events: whether its hooks ran, and how they exited.
+    let hooks = || {
+        let sessions = [
+            ("web's older", &older),
+            ("web's newer", &newer),
+            ("api's", &api),
+        ];
+        (sessions.iter())
+            .map(|(name, session)| format!("{name} session's hooks:\n{}", session.hook_events()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let what = "api's message in web's newer session";
+    let turn = newer_model.wait_turn_showing(TO_WEB, what, &hooks);
     assert_own_in(&turn, TO_WEB, to_web, &solo.short(API));
-    let turn = api_model.wait_turn_holding(TO_API, "web's message in api's session");
+    let turn = api_model.wait_turn_showing(TO_API, "web's message in api's session", &hooks);
     assert_own_in(&turn, TO_API, to_api, &solo.short(WEB));
     // The person's `skald recv` shows each `read` once, both maybe in one run.
     let mut shown = shows_read(solo.machine(), to_web);

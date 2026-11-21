@@ -110,6 +110,12 @@ impl Model {
     /// saying `what`. Gives the first such turn.
     #[track_caller]
     pub fn wait_turn_holding(&self, text: &str, what: &str) -> Value {
+        self.wait_turn_showing(text, what, &String::new)
+    }
+
+    /// As [`Model::wait_turn_holding`]; the failure also shows what `shown` gives then.
+    #[track_caller]
+    pub fn wait_turn_showing(&self, text: &str, what: &str, shown: &dyn Fn() -> String) -> Value {
         let deadline = Instant::now() + REACH;
         let mut turns = locked(&self.shared.turns);
         loop {
@@ -117,7 +123,11 @@ impl Model {
                 return turn.clone();
             }
             let left = deadline.saturating_duration_since(Instant::now());
-            assert!(!left.is_zero(), "{what}: no turn held {text:?}");
+            assert!(
+                !left.is_zero(),
+                "{what}: no turn held {text:?}\n{}",
+                shown()
+            );
             turns = (self.shared.changed.wait_timeout(turns, left))
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .0;

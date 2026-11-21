@@ -61,6 +61,8 @@ Agents cannot change or list the settings.
 The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and keeps nothing. Without a confirmation, the message goes again by a fallback, and repeats are dropped.
 
 ## What you need to do
-- Only `skald connect`: it sets up Claude Code and Codex itself.
+- `skald connect`: it sets up Claude Code and Codex itself.
+- To set up Claude Code yourself, install [Skald's plugin](../README.md#claude-code-plugin) after `skald`: it gives each session the MCP server, the hooks and a skill with the rules for Skald's messages. Without `skald`, it does nothing.
+- The plugin is that of the latest stable release. Claude Code updates it only with auto-update on: in `/plugin`, Marketplaces, `skald`. Without it: `claude plugin marketplace update skald`, then `claude plugin update skald@skald`.
 - In Codex, approve Skald's hooks in Review hooks in the app and VS Code, or with `/hooks` in the terminal, and again after an update changes them.
 - In Claude Code's bypass mode, nothing: Skald passes the socket token itself.
