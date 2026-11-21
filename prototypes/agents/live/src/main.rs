@@ -145,8 +145,11 @@ fn main() -> ExitCode {
             };
             ended(gui_run::queue(Path::new(work), cli))
         }
+        ["gui-result", work, "--keep"] => {
+            ended(permission_gui::codex_gui_result(Path::new(work), true))
+        }
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
-        ["gui-result", work] => ended(permission_gui::codex_gui_result(Path::new(work))),
+        ["gui-result", work] => ended(permission_gui::codex_gui_result(Path::new(work), false)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -252,7 +255,7 @@ fn usage() -> ExitCode {
          live-check gui-add <check-dir>\n       \
          live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
-         live-check gui-result <check-dir> [<token>]\n       \
+         live-check gui-result <check-dir> [<token>|--keep]\n       \
          live-check gui-permission <claude-desktop|claude-vscode>\n       \
          live-check gui-permission-link <check-dir>\n       \
          live-check gui-permission-result <check-dir>\n       \

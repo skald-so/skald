@@ -920,18 +920,19 @@ fn permission_gui_check(
     (tmp, work, project)
 }
 
-/// Runs `live-check <command> <work>` with `home` and `tmp`: it fails without hook runs, then
-/// passes once `runs` are the check's and `written`, if any, is in `work`. Returns the lines it
+/// Runs `live-check <command> <work> <flags>` with `home` and `tmp`: it fails without hook runs,
+/// then passes once `runs` are the check's and `written`, if any, is in `work`. Returns the lines it
 /// then printed.
 fn permission_gui_result(
     home: &Path,
     tmp: &Path,
     command: &str,
     work: &str,
+    flags: &[&str],
     runs: &str,
     written: Option<&str>,
 ) -> Vec<String> {
-    let result = || live_check_in(home, tmp, &[command, work]);
+    let result = || live_check_in(home, tmp, &[&[command, work], flags].concat());
     let nothing = result();
     assert_eq!(nothing.status.code(), Some(1), "{}", stderr(&nothing));
     fs::write(Path::new(work).join("hook-runs.jsonl"), runs).unwrap();
@@ -967,6 +968,7 @@ fn gui_permission_prepares_a_check_whose_result_reads_the_hook_runs() {
         tmp.path(),
         "gui-permission-result",
         &work,
+        &[],
         PERMISSION_RUNS,
         None,
     );
@@ -1171,11 +1173,24 @@ fn gui_permission_hook_prepares_a_codex_check_whose_result_reads_the_hook_runs()
         })
         .collect();
     let written = Some("prompted.txt");
-    let lines = permission_gui_result(home.path(), tmp.path(), "gui-result", &work, &runs, written);
+    let lines = permission_gui_result(
+        home.path(),
+        tmp.path(),
+        "gui-result",
+        &work,
+        &["--keep"],
+        &runs,
+        written,
+    );
     assert_eq!(lines.len(), 7, "{lines:?}");
     assert_eq!(lines[0], version);
     assert_eq!(lines[3], "  codex-vscode, session_id: pass — the session's");
     assert_eq!(lines[6], "permission-hook on codex-vscode: pass");
+    assert!(Path::new(&work).is_dir(), "--keep deleted {work}");
+
+    let (_, deleted) = succeeded(home.path(), tmp.path(), &["gui-result", &work]);
+    assert_eq!(deleted, lines);
+    assert!(!Path::new(&work).exists(), "{work} stays");
 }
 
 #[test]

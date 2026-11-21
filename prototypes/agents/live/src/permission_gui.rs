@@ -3,7 +3,8 @@
 //! for VS Code: `gui-permission` prepares the check, `gui-permission-link` opens the desktop app's
 //! `needs-input` link and `gui-permission-result` reads what the session recorded. On the Codex
 //! desktop app and Codex for VS Code, `gui permission-hook` prepares the check of the
-//! `PermissionRequest` hook and `gui-result` without a token reads its hook runs.
+//! `PermissionRequest` hook and `gui-result` without a token reads its hook runs, then deletes the
+//! check's directory unless `--keep` is given.
 
 use std::fs;
 use std::io;
@@ -118,11 +119,14 @@ pub fn codex_gui(surface: Surface) -> Result<bool> {
 }
 
 /// Prints the output of the Codex GUI check in `work`: the surface's version, what its hook runs
-/// tell and the verdict.
-pub fn codex_gui_result(work: &Path) -> Result<bool> {
+/// tell and the verdict; then deletes `work` unless `keep`, as nothing clears `~/Library/Caches`.
+pub fn codex_gui_result(work: &Path, keep: bool) -> Result<bool> {
     let (lines, pass) = codex_permission::gui_result(work)?;
     for line in lines {
         println!("{line}");
+    }
+    if !keep {
+        fs::remove_dir_all(work)?;
     }
     Ok(pass)
 }
