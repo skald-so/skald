@@ -497,6 +497,27 @@ enum Command {
         #[arg(value_name = "PERIOD", value_parser = history_period)]
         period: u64,
     },
+    /// Makes a member of a space this device follows an admin, on a device of an admin of it, by the
+    /// space's next roster revision, which the device signs as skald create-channel does.
+    MakeAdmin {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The member's handle, as skald members shows it.
+        #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: String,
+    },
+    /// Hands this account's admin rights in a space this device follows to a member of it, on a
+    /// device of an admin of it: the space's next roster revision, which the device signs as skald
+    /// create-channel does, makes the member an admin, if it is not one, and this account a member.
+    HandOverAdmin {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The member's handle, as skald members shows it.
+        #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: String,
+    },
     /// Lists the channels of a space this device follows, as its last accepted roster revision gives
     /// them: each one's ID and its members' handles, and the devices in its group as this device
     /// holds it, or that this device is not in it. It first accepts the revisions the server has.
@@ -994,6 +1015,8 @@ impl Command {
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::SetHistoryPeriod { .. } => Some("set-history-period"),
+            Command::MakeAdmin { .. } => Some("make-admin"),
+            Command::HandOverAdmin { .. } => Some("hand-over-admin"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
@@ -1036,6 +1059,8 @@ impl Command {
                 | Command::AddToChannel { .. }
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
+                | Command::MakeAdmin { .. }
+                | Command::HandOverAdmin { .. }
                 | Command::Address
         )
     }
@@ -1737,6 +1762,16 @@ fn performed(operation: Operation) -> Result<(), String> {
             (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
+        ),
+        Command::MakeAdmin { space, handle } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::MakeAdmin(handle),
+        ),
+        Command::HandOverAdmin { space, handle } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::HandOver(handle),
         ),
         Command::Channels { space } => synced(
             state_dir,
