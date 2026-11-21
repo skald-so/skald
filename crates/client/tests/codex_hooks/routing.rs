@@ -170,37 +170,51 @@ fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
         }
         let id = 4_927_012_010 + u64::try_from(at).expect("a small number");
         let codex = Codex::new(id, &format!("ada-codex-through-{shell}"));
-        assert_helper_lives_with_the_session(&codex, false, |hook| {
-            let mut command = Command::new(shell);
-            command.args(args);
-            if shell == "cmd" {
-                command.arg(hook.get_program()).args(hook.get_args());
-            } else {
-                let quoted = |text: &std::ffi::OsStr| {
-                    format!("'{}'", text.to_string_lossy().replace('\'', "''"))
-                };
-                let words: Vec<String> = std::iter::once(hook.get_program())
-                    .chain(hook.get_args())
-                    .map(quoted)
-                    .collect();
-                command.arg(format!("& {}", words.join(" ")));
-            }
-            settings_of(&hook, &mut command);
-            // A shell needs the system's settings, which the stand-in Codex does not pass on.
-            for name in [
-                "SystemRoot",
-                "windir",
-                "PATH",
-                "TEMP",
-                "TMP",
-                "PSModulePath",
-            ] {
-                if let Some(value) = std::env::var_os(name) {
-                    command.env(name, value);
+        let trace = std::env::temp_dir().join(format!("skald-trace-{shell}-{id}.log"));
+        let _ = std::fs::remove_file(&trace);
+        let traced = trace.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_helper_lives_with_the_session(&codex, false, |hook| {
+                let mut command = Command::new(shell);
+                command.args(args);
+                if shell == "cmd" {
+                    command.arg(hook.get_program()).args(hook.get_args());
+                } else {
+                    let quoted = |text: &std::ffi::OsStr| {
+                        format!("'{}'", text.to_string_lossy().replace('\'', "''"))
+                    };
+                    let words: Vec<String> = std::iter::once(hook.get_program())
+                        .chain(hook.get_args())
+                        .map(quoted)
+                        .collect();
+                    command.arg(format!("& {}", words.join(" ")));
                 }
-            }
-            command
-        });
+                settings_of(&hook, &mut command);
+                // A shell needs the system's settings, which the stand-in Codex does not pass on.
+                for name in [
+                    "SystemRoot",
+                    "windir",
+                    "PATH",
+                    "TEMP",
+                    "TMP",
+                    "PSModulePath",
+                ] {
+                    if let Some(value) = std::env::var_os(name) {
+                        command.env(name, value);
+                    }
+                }
+                command.env("SKALD_TRACE", &traced);
+                command
+            });
+        }));
+        println!(
+            "TRACE {shell} ok={}:\n{}",
+            result.is_ok(),
+            std::fs::read_to_string(&trace).unwrap_or_default()
+        );
+        if let Err(panic) = result {
+            std::panic::resume_unwind(panic);
+        }
     }
 }
 

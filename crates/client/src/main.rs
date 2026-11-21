@@ -92,6 +92,7 @@ mod test_dir;
 #[cfg(test)]
 mod test_dir_tests;
 mod tls;
+mod trace;
 mod update;
 mod uploads;
 mod wait;
@@ -1230,6 +1231,11 @@ fn history_period(given: &str) -> Result<u64, String> {
 const HOST_NAME: &str = "SKALD_HOST_NAME";
 
 fn main() -> ExitCode {
+    trace::line(&format!(
+        "start args={:?} chain={:?}",
+        std::env::args().skip(1).collect::<Vec<_>>(),
+        codex::chain()
+    ));
     let cli = Cli::parse();
     let one_shot = cli.one_shot;
     if let Some(seconds) = cli.websocket_retry {
@@ -1269,9 +1275,10 @@ fn main() -> ExitCode {
     if let Command::Helper { idle } = operation.command {
         let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
         let settings = (operation.key_storage, operation.speaks, operation.timeout);
-        return exit(
-            state::dir(operation.state_dir).and_then(|dir| helper::serve(&dir, idle, settings)),
-        );
+        let served =
+            state::dir(operation.state_dir).and_then(|dir| helper::serve(&dir, idle, settings));
+        trace::line(&format!("helper end {served:?}"));
+        return exit(served);
     }
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
@@ -1280,7 +1287,9 @@ fn main() -> ExitCode {
         return match cli {
             hook::Cli::Claude => run_hook(operation, cli, one_shot, None),
             hook::Cli::Codex => {
-                patiently(move |gate| run_hook(operation, cli, one_shot, Some(gate)))
+                let code = patiently(move |gate| run_hook(operation, cli, one_shot, Some(gate)));
+                trace::line(&format!("hook end {code:?}"));
+                code
             }
         };
     }
@@ -1432,6 +1441,10 @@ fn run_hook(
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         input.session.process = codex::parent();
+        trace::line(&format!(
+            "hook event={event:?} process={:?}",
+            input.session.process
+        ));
     } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
@@ -1493,6 +1506,7 @@ fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) ->
 fn codex_here(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
     let timeout = operation.timeout;
     let ran = output::into(given(gate), || here(operation));
+    trace::line(&format!("codex_here ran={} starts={starts}", ran.is_ok()));
     if starts {
         helper::start(dir, timeout);
     }
