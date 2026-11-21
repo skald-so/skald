@@ -11,17 +11,19 @@ use serde_json::{Value, json};
 use skald_crypto::{SigningKey, sign_anchors};
 use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, Roster, SpaceId, Unknown};
 
-use crate::anchors::held;
-use crate::cloud::Cloud;
-use crate::devices::second_machine;
-use crate::fixtures::fronted;
-use crate::front::Front;
-use crate::kit::{create_space, latest, received, rosters};
-use crate::machine::{Finished, Machine};
-use crate::talk::ADA_HOST;
-use crate::world::{
-    ACME, Person, World, holds_word, next_by, next_with, plain_lines, serve_revisions, spaces,
-    store, warnings,
+use crate::{
+    anchors::held,
+    cloud::Cloud,
+    devices::second_machine,
+    fixtures::fronted,
+    front::Front,
+    kit::{create_space, latest, received, rosters},
+    machine::{Finished, Machine},
+    talk::ADA_HOST,
+    world::{
+        ACME, Person, World, holds_word, next_by, next_with, plain_lines, serve_revisions, spaces,
+        store, warnings,
+    },
 };
 
 /// The host names of Ada's second machine and of her third device, their certificates' `name`.
