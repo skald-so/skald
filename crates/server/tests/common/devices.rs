@@ -131,6 +131,7 @@ impl Device {
             issuer: None,
             issued: 1_794_000_000,
             ssh: None,
+            github: None,
             name: self.name.clone(),
             unknown: Unknown::default(),
         }

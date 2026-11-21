@@ -935,6 +935,7 @@ mod tests {
                     issuer: issuer.map(|by| device(&keys[by])),
                     issued: 1_800_000_000,
                     ssh: None,
+                    github: None,
                     name: format!("device-{at}"),
                     unknown: Unknown::default(),
                 };

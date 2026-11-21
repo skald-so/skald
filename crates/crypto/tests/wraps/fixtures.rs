@@ -40,6 +40,7 @@ fn issued(seed: u8, kind: DeviceKind, hpke: [u8; 32], issuer: Option<u8>) -> Cer
         issuer: issuer.map(device_id),
         issued: NOW,
         ssh: None,
+        github: None,
         name: format!("Device {seed}"),
         unknown: Unknown::default(),
     };

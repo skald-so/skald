@@ -6,10 +6,11 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `0123-4567-89AB`; the backup seals that master private key with that recovery key under the nonce `000102…0b`, the 12 bytes 00 to 0b.
+- The `ssh` of the certificate with an SSH signature is genuine: by the Ed25519 SSH key of the secret key "TEST 1024" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, over the certificate's `account`, `device` and `signing`; the certificate's own signatures are placeholders.
 - The presence value is genuine: signed by Alice's device's key "TEST 1" and sealed under the presence key of the history key `000102…0f`, the 16 bytes 00 to 0f.
 - The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), a [presence value](agents.md#presence), and an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), and an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -42,6 +43,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Revocation by the master key](#revocation-by-the-master-key)
 - [Account record](#account-record)
 - [Master backup](#master-backup)
+- [Certificate with an SSH signature](#certificate-with-an-ssh-signature)
 - [Anchors object](#anchors-object)
 - [Link object](#link-object)
 - [Link code keys](#link-code-keys)
@@ -713,6 +715,43 @@ a2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d0065904015840
 ```hex
 824c000102030405060708090a0b58306018c931902d0d3ae029f3b84e7e56e8
 5d313c4f166791cd6efa885903232a04a46589aaac9da21c4761296231b759d3
+```
+
+## Certificate with an SSH signature
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: 1,
+    4: h'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+    5: h'2222222222222222222222222222222222222222222222222222222222222222',
+    7: 1762819200,
+    8: h'53534853494700000001000000330000000b7373682d6564323535313900000020278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e00000008736b616c642e736f0000000000000006736861353132000000530000000b7373682d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43677d743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe93100f5f9c090dbbc9d0b30505',
+    9: "Laptop",
+    10: 583231
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
+  h'a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5'
+]
+```
+
+```hex
+83590136a90150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025019ac5f78493882
+3586a6c5809a18f6dd0301045820d75a980182b10ab7d54bfed3c964073a0ee1
+72f3daa62325af021a68f707511a055820222222222222222222222222222222
+2222222222222222222222222222222222071a69127c800858b2535348534947
+00000001000000330000000b7373682d6564323535313900000020278117fc14
+4c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e0000000873
+6b616c642e736f0000000000000006736861353132000000530000000b737368
+2d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43677d
+743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe93
+100f5f9c090dbbc9d0b3050509664c6170746f700a1a0008e63f58405a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5840a5a5
+a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5
+a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5
 ```
 
 ## Anchors object
