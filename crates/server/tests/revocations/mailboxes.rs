@@ -3,7 +3,7 @@
 
 use std::thread;
 
-use skald_proto::{DeviceId, PROTOCOL_VERSION, ServerStatus};
+use skald_proto::{DeviceId, ServerStatus};
 
 use crate::common::devices::Device;
 use crate::fixture::Fixture;
@@ -47,10 +47,7 @@ fn a_revoked_devices_entries_expire_and_their_senders_get_expired_for_report_tru
     let f = Fixture::new(3_131_320_301);
     let t = &f.team;
     let laptop = t.bob.laptop.id;
-    let other = t.flow.stand.instance(&[], &[]);
-    let mut alice = Link::stating(&other, &t.flow, &t.alice, PROTOCOL_VERSION);
-    alice.sync(0);
-    assert_eq!(alice.catch_up(), []);
+    let (_other, mut alice) = Link::elsewhere(&t.flow, &t.alice);
     let acked = store_to(&mut alice, &f, laptop, 1, true);
     let reported = store_to(&mut alice, &f, laptop, 2, true);
     let unreported = store_to(&mut alice, &f, laptop, 1, false);

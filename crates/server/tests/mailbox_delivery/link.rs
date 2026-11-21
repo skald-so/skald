@@ -114,6 +114,19 @@ impl Link {
         }
     }
 
+    /// The connection of `person`'s certified laptop to a new instance of `flow`'s server, which
+    /// states cursor 0 in its first `sync` and gets nothing in catch-up; with the instance, which
+    /// stops once dropped. The tests of delivering a mailbox make none.
+    #[allow(dead_code)]
+    #[track_caller]
+    pub fn elsewhere(flow: &DeviceFlow, person: &Person) -> (Server, Self) {
+        let other = flow.stand.instance(&[], &[]);
+        let mut link = Self::stating(&other, flow, person, PROTOCOL_VERSION);
+        link.sync(0);
+        assert_eq!(link.catch_up(), [], "catch-up on another instance");
+        (other, link)
+    }
+
     /// The connection of `person`'s certified laptop, which states `cursor` in its first `sync`
     /// and checks that catch-up sends `expected`.
     #[track_caller]
