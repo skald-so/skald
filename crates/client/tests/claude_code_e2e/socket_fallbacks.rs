@@ -29,7 +29,7 @@ const ECHO_PLANTED: &str = "echo planted-secret-0d9e4c7a21b6f358";
 
 /// Starts a session of web as the apps run it, with `options`, gives it [`START`], and waits until
 /// its turn ended.
-fn idle_web(solo: &Solo, model: &Model, options: Options) -> Option<Session> {
+pub fn idle_web(solo: &Solo, model: &Model, options: Options) -> Option<Session> {
     let claude = claude_code()?;
     let place = (solo.machine(), solo.dir(WEB));
     let mut session = Session::start_with(

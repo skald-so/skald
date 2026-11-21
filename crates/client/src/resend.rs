@@ -8,17 +8,20 @@
 //! - the `asyncRewake` hook, `skald hook claude --wait`, which then starts a turn;
 //! - the mod, which, while no turn runs, submits only [`MOD_PROMPT`], never a message's text.
 //!
-//! Each gives an `own` message as its line, within the hooks' limit ([`hook::fitted`]), and a
-//! message below `own` only as the signal ([`hook::SIGNAL`]). A message a path took waits for its
-//! confirmation there ([`crate::claude_socket::Scan`]) until a timeout, [`RESEND_SETTING`] or
-//! [`RESEND_AFTER`], and goes by the next path then, or at once on a receipt that says it did not
-//! reach the model; after the last it waits for the hooks and `inbox`, which give a signal again.
+//! Each gives an `own` message, or one under `inline`, as its line, within the hooks' limit
+//! ([`hook::fitted`]), and any other only as the signal ([`hook::SIGNAL`]), as the person's delivery
+//! settings say ([`crate::delivery`]), which may hold a message no path took back to the end of a
+//! window of `batch`, or leave it to `inbox` under `pull`. Each counts one wake for each channel
+//! whose messages it takes. A message a path took waits for its confirmation there
+//! ([`crate::claude_socket::Scan`]) until a timeout, [`RESEND_SETTING`] or [`RESEND_AFTER`], and
+//! goes by the next path then, or at once on a receipt that says it did not reach the model; after
+//! the last it waits for the hooks and `inbox`, which give a signal again.
 //! A signal goes again so until the agent calls `inbox`. While a path waits for its confirmation,
 //! the hooks and `inbox` do not give an `own` message ([`State::for_agent`]); one the session file
 //! shows going to the model goes by no other path ([`State::shown`]). The timeouts live in the
 //! local state, so a helper that restarts goes on with them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::Duration;
 
@@ -27,11 +30,12 @@ use serde_json::json;
 use skald_proto::{MessageId, Name, SpaceId};
 
 use crate::devices::text;
-use crate::forms::References;
+use crate::forms::{self, Form, References};
 use crate::output::{self, Stream};
+use crate::recv::Goes;
 use crate::spaces::Follower;
 use crate::state::{self, HOOKS, Pending, State};
-use crate::{claude_socket, folders, groups, hook, recv};
+use crate::{claude_socket, folders, hook, recv};
 
 /// The setting of how long a message a path took waits for its confirmation, in seconds; the
 /// helper takes it from the command that starts it.
@@ -120,6 +124,9 @@ pub struct Pushed {
     pub prompt: bool,
     /// When, in Unix milliseconds, the next message a path took times out, if any does.
     pub next: Option<i64>,
+    /// When, in Unix milliseconds, the first window of `batch` that holds back a message no path
+    /// took ends, if one does: a run then pushes it.
+    pub batch: Option<u64>,
 }
 
 /// What resending does with a waiting message now.
@@ -165,16 +172,38 @@ fn next_due<'p>(pending: impl IntoIterator<Item = &'p Pending>) -> Option<i64> {
         .min()
 }
 
-/// A waiting message, opened: its `seq`, and its line and `msg_id` if it is at `own`.
+/// A waiting message a path takes now, opened: its `seq`, its channel, and its line if it goes in
+/// as its text.
 struct Opened {
     seq: u64,
-    own: Option<(String, MessageId)>,
+    channel: Option<String>,
+    own: Option<Text>,
+}
+
+/// The line of a message that goes in as its text, its `msg_id`, and whether it is `inline`, after
+/// the warning line.
+struct Text {
+    line: String,
+    msg_id: MessageId,
+    inline: bool,
+}
+
+impl Text {
+    /// Its line as a push path gives it alone, within the limit.
+    fn fitted(&self, references: &References) -> String {
+        let line = match self.inline {
+            true => format!("{}\n{}", forms::DATA_WARNING, self.line),
+            false => self.line.clone(),
+        };
+        hook::fitted(&line, &references.of(self.msg_id))
+    }
 }
 
 /// Gives each kept message that waits for `agent` in `space` to the next path its session has:
-/// the socket, by its registration in the state; the paths the helper holds, as `held` says. A
-/// path takes what it gives for `resend`. What it gives the paths the helper holds goes into
-/// `pushed`. Hands nothing over: a confirmation, the hooks or `inbox` do. Gives 0.
+/// the socket, by its registration in the state; the paths the helper holds, as `held` says; one no
+/// path took only once the delivery settings push it ([`recv::pushed`]). A path takes what it gives
+/// for `resend`. What it gives the paths the helper holds goes into `pushed`. Hands nothing over: a
+/// confirmation, the hooks or `inbox` do. Gives 0.
 pub fn hand_over(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
@@ -214,7 +243,15 @@ pub fn hand_over(
         return Ok(0);
     }
     let references = References::new(state.kept_ids().map_err(text)?);
+    let (opened, batch) = opened(follower, space, &ways, &references)?;
+    pushed.batch = batch;
     for (way, taken) in ways {
+        let opened: Vec<&Opened> = (taken.iter())
+            .filter_map(|waiting| opened.get(&waiting.seq))
+            .collect();
+        if opened.is_empty() {
+            continue;
+        }
         let to = To {
             state,
             agent: agent_name,
@@ -223,22 +260,18 @@ pub fn hand_over(
         };
         let given = match way {
             Way::Mod => {
-                let seqs: Vec<u64> = taken.iter().map(|waiting| waiting.seq).collect();
+                let seqs: Vec<u64> = opened.iter().map(|each| each.seq).collect();
                 (state.pushed((&seqs, &[]), agent_name, (way.name(), Some(due)))).map_err(text)?;
+                state.count_wakes(&channels(&opened)).map_err(text)?;
                 pushed.prompt = true;
                 true
             }
-            _ => {
-                let opened = opened(follower, &taken, &references)?;
-                match way {
-                    Way::Socket => {
-                        let session = socket.as_ref().expect("a socket path has a session");
-                        to_socket(&to, session, &opened)?
-                    }
-                    Way::Channel => to_channel(&to, &opened, pushed)?,
-                    _ => to_rewake(&to, &opened, pushed)?,
-                }
+            Way::Socket => {
+                let session = socket.as_ref().expect("a socket path has a session");
+                to_socket(&to, session, &opened)?
             }
+            Way::Channel => to_channel(&to, &opened, pushed)?,
+            Way::Rewake => to_rewake(&to, &opened, pushed)?,
         };
         if given {
             next = Some(next.map_or(due, |next| next.min(due)));
@@ -266,27 +299,55 @@ fn live_socket(
     Ok(None)
 }
 
-/// Opens each of `taken`; one that does not open waits for the hooks, which warn of it.
+/// Opens each message of `ways`; one that does not open waits for the hooks, which warn of it.
+/// Of those no path took, keeps those the delivery settings push now, as they say for them alone
+/// ([`recv::pushed`]); gives when the first window of `batch` that holds one back ends.
 fn opened(
     follower: &Follower,
-    taken: &[&Pending],
+    space: SpaceId,
+    ways: &BTreeMap<Way, Vec<&Pending>>,
     references: &References,
-) -> Result<Vec<Opened>, String> {
-    let key = groups::inbox_key(follower)?;
-    Ok((taken.iter())
-        .filter_map(|waiting| {
-            let opened = key.open(follower.this, &recv::kept_item(waiting.seq), &waiting.line)?;
-            let (line, msg_id) = recv::own_line(&opened, references);
-            Some(Opened {
-                seq: waiting.seq,
-                own: msg_id.map(|msg_id| (line, msg_id)),
-            })
+) -> Result<(BTreeMap<u64, Opened>, Option<u64>), String> {
+    let (fresh, again): (Vec<&Pending>, Vec<&Pending>) =
+        (ways.values().flatten()).partition(|waiting| waiting.path.is_none());
+    let sealed = |taken: Vec<&Pending>| {
+        (taken.into_iter())
+            .map(|waiting| (waiting.seq, waiting.line.clone()))
+            .collect::<Vec<_>>()
+    };
+    let fresh = recv::pushed(follower, space, sealed(fresh))?;
+    let again = recv::pushed(follower, space, sealed(again))?;
+    let opened = (fresh.messages.into_iter().chain(again.messages))
+        .map(|message| {
+            let (line, _) = recv::kept_line(&message.opened, Form::Short, references);
+            let own = match (message.goes, message.msg_id) {
+                (Goes::Own | Goes::Inline, Some(msg_id)) => Some(Text {
+                    line,
+                    msg_id,
+                    inline: message.goes == Goes::Inline,
+                }),
+                _ => None,
+            };
+            let opened = Opened {
+                seq: message.seq,
+                channel: message.channel,
+                own,
+            };
+            (message.seq, opened)
         })
-        .collect())
+        .collect();
+    Ok((opened, fresh.due))
 }
 
-/// The `seq`s of the `own` messages of `opened`, and of those below `own`.
-fn split(opened: &[Opened]) -> (Vec<u64>, Vec<u64>) {
+/// The channels of `opened`.
+fn channels(opened: &[&Opened]) -> BTreeSet<String> {
+    (opened.iter())
+        .filter_map(|each| each.channel.clone())
+        .collect()
+}
+
+/// The `seq`s of the messages of `opened` that go in as their text, and of the others.
+fn split(opened: &[&Opened]) -> (Vec<u64>, Vec<u64>) {
     let own = (opened.iter()).filter(|each| each.own.is_some());
     let below = (opened.iter()).filter(|each| each.own.is_none());
     (
@@ -305,10 +366,11 @@ struct To<'a> {
 }
 
 /// Writes `opened` into the socket of `session`, the agent's, with [`claude_socket::write`]: each
-/// `own` message as its line, those below `own` as one signal. Each is recorded as the socket's
-/// before the write, and as before it if the write fails, which ends the registration. Gives
-/// whether it wrote.
-fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[Opened]) -> Result<bool, String> {
+/// message that goes in as its text as its line, the others as one signal. Each is recorded as the
+/// socket's before the write, and as before it if the write fails, which ends the registration; a
+/// write counts its wakes unless the session says none of its lines reached the model
+/// ([`State::socket_wakes`]). Gives whether it wrote.
+fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[&Opened]) -> Result<bool, String> {
     let To {
         state,
         agent,
@@ -317,12 +379,7 @@ fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[Opened]) -> Resu
     } = *to;
     let mut lines: Vec<(String, String)> = (opened.iter())
         .filter_map(|each| each.own.as_ref())
-        .map(|(line, msg_id)| {
-            (
-                msg_id.to_string(),
-                hook::fitted(line, &references.of(*msg_id)),
-            )
-        })
+        .map(|own| (own.msg_id.to_string(), own.fitted(references)))
         .collect();
     let (own, below) = split(opened);
     let signal = MessageId::generate().to_string();
@@ -340,16 +397,18 @@ fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[Opened]) -> Resu
         state.end_claude(&session.session).map_err(text)?;
         return Ok(false);
     }
+    let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
+    (state.socket_wakes(&session.session, &ids, &channels(opened))).map_err(text)?;
     Ok(true)
 }
 
-/// Gives `opened` to the agent's `skald mcp` as channel events: each `own` message as its line,
-/// those below `own` as one signal. Gives whether it gave any.
-fn to_channel(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, String> {
+/// Gives `opened` to the agent's `skald mcp` as channel events: each message that goes in as its
+/// text as its line, the others as one signal. Gives whether it gave any.
+fn to_channel(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let (own, below) = split(opened);
     let mut events: Vec<String> = (opened.iter())
         .filter_map(|each| each.own.as_ref())
-        .map(|(line, msg_id)| hook::fitted(line, &to.references.of(*msg_id)))
+        .map(|own| own.fitted(to.references))
         .collect();
     if !below.is_empty() {
         events.push(hook::SIGNAL.to_owned());
@@ -359,19 +418,25 @@ fn to_channel(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, S
     }
     let path = (Way::Channel.name(), Some(to.due));
     (to.state.pushed((&own, &below), to.agent, path)).map_err(text)?;
+    (to.state.count_wakes(&channels(opened))).map_err(text)?;
     pushed.channel.extend(events);
     Ok(true)
 }
 
 /// Gives what of `opened` fits within the hooks' limit to the agent's `asyncRewake` hook
 /// ([`hook::plain`]). Gives whether it gave any.
-fn to_rewake(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, String> {
+fn to_rewake(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let waiting: Vec<hook::Waiting> = (opened.iter())
         .map(|each| match &each.own {
-            Some((line, msg_id)) => hook::Waiting::Own {
+            Some(own) if own.inline => hook::Waiting::Inline {
                 seq: each.seq,
-                line: line.clone(),
-                reference: to.references.of(*msg_id),
+                line: own.line.clone(),
+                reference: to.references.of(own.msg_id),
+            },
+            Some(own) => hook::Waiting::Own {
+                seq: each.seq,
+                line: own.line.clone(),
+                reference: to.references.of(own.msg_id),
             },
             None => hook::Waiting::Below {
                 seq: each.seq,
@@ -386,6 +451,10 @@ fn to_rewake(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, St
     (to.state
         .pushed((&given.handed, &given.signalled), to.agent, path))
     .map_err(text)?;
+    let woken: Vec<&Opened> = (opened.iter().copied())
+        .filter(|each| given.handed.contains(&each.seq) || given.signalled.contains(&each.seq))
+        .collect();
+    (to.state.count_wakes(&channels(&woken))).map_err(text)?;
     pushed.rewake = Some(given.output);
     Ok(true)
 }

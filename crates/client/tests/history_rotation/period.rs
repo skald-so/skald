@@ -3,8 +3,7 @@
 //! command on the device of a member that is no admin, each sending nothing; with the answer to the
 //! revision lost, the next run leaves one revision with the change.
 
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use skald_crypto::accept_next;
 use skald_proto::{ChannelMember, Mode, Role, Roster, SpaceId};
@@ -14,16 +13,18 @@ use crate::aged::{
     assert_one_commit_each, epochs,
 };
 use crate::cloud::Cloud;
-use crate::edits::{SPACE_CHANGE, assert_refused, assert_refused_as_no_admin, last_two};
+use crate::edits::{
+    SPACE_CHANGE, assert_refused, assert_refused_as_no_admin, last_two, run_losing_the_answer,
+};
 use crate::fixtures::fronted;
 use crate::front::Front;
-use crate::kit::{channels, create_space, latest, received, rosters};
+use crate::kit::{create_space, latest, received, rosters};
 use crate::machine::{Finished, Machine};
 use crate::relay::Lose;
 use crate::talk::{ADA_HOST, BOB_HOST, Talk};
 use crate::world::{
     ACME, MEMBER, Person, assert_role, members, next_by, next_with, run, set_role, space_certs,
-    stale_once, store, store_request,
+    stale_once, store,
 };
 
 /// The command that sets the period.
@@ -217,20 +218,9 @@ fn one_revision_after_its_answer_is_lost(how: Lose, id: u64, login: &str) {
     let cloud = &world.cloud;
     let ada = world.sign_up(id, login, ADA_HOST);
     let space = create_space(cloud, &ada, ACME).id;
-    let held = rosters(cloud, &ada.token, space).len();
-    let request = store_request(space);
-    cloud.relay.lose_answer(&request, how);
 
-    let started = ada.machine.start(&[SET_HISTORY_PERIOD, ACME, "2d"]);
-    match how {
-        // It may try again itself and finish.
-        Lose::Close => drop(started.finish()),
-        Lose::Withhold => cloud.kill_once_lost(started, &request),
-    }
-    // Signed again a second later, a revision has another timestamp, and so other bytes.
-    thread::sleep(Duration::from_millis(1100));
-    assert_eq!(cloud.relay.lost(), 1, "{request} lost no answer");
-    channels(&ada.machine, ACME);
+    let args = [SET_HISTORY_PERIOD, ACME, "2d"];
+    let held = run_losing_the_answer(cloud, (space, ACME), &ada, &args, how);
 
     let (previous, next) = last_two(cloud, &ada.token, space, held);
     assert_period(cloud, (&previous, &next), &ada, 2 * DAY);

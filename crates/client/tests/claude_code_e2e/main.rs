@@ -21,11 +21,19 @@
 //!
 //! The sessions of `wake_fallbacks.rs` refuse cross-session messages and get them by Channels, the
 //! `asyncRewake` hook or the mod, which `socket_claude.rs` adds as a test's options say.
+//!
+//! The sessions of `modes.rs` and `inline.rs` run under the person's delivery settings, as the
+//! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
+//! an idle session to wake run on Unix only, where the client writes into the socket.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
+mod delivery;
+mod inline;
+#[cfg(unix)]
+mod modes;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;

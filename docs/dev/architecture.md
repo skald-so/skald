@@ -62,6 +62,10 @@
 
 ## Membership
 - **Roster:** a space's members with their roles and master keys, its service agents and its channels; members' devices come from their certificate chains. An admin's device, a client or a linked browser, signs every change; clients reject a change without a valid signature.
+- **Roles:**
+  - only an admin's device changes a role: `skald make-admin` makes a member an admin; `skald hand-over-admin` also makes this account a member, in the same revision;
+  - a device linked with the recovery key is an admin's device wherever its account is an admin;
+  - the server cannot change a role or sign a revision: when a space's only admin loses every device and the recovery key, its members make a new space and still read the old one's history.
 - **Space policy:** the most rights a task from another account or a service agent gets without the approval of the machine's user, the history key rotation period, and the most waking delivery mode per sender trust level. An admin's device signs it; clients reject a policy without a valid signature.
 - **Handle:** a space creator's handle is its account's username, as the server gives it when the space is created.
 - **Personal space:**

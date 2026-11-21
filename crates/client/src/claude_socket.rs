@@ -13,7 +13,8 @@
 //!   registered session that still runs ([`write`]), after an auth line with the token, through the
 //!   session's relay where it runs (`crate::claude_relay`), so a session that bypasses permission
 //!   prompts takes it too: an `own` message as its line, a message below `own` only as the signal
-//!   (`crate::recv`).
+//!   or, under `inline`, as its line, as the delivery settings say, which may hold it back to the
+//!   end of a window of `batch`, when the helper runs again (`crate::recv`, [`crate::delivery`]).
 //! - What a socket took counts as handed over, and its `read` goes, only once the session file
 //!   confirms it: an entry that went to the model holds its `msg_id`, and a later entry is the
 //!   model's own, not an API error ([`Scan`]). The helper reads the file while the session runs,
@@ -469,6 +470,9 @@ pub struct Served {
     held: Holders,
     /// When, in Unix milliseconds, the first message a path took times out, if any does.
     next: Option<i64>,
+    /// Of each agent and space whose last run held messages back under `batch`, its folder and
+    /// when the first such window ends ([`resend::Pushed::batch`]).
+    batches: BTreeMap<(String, SpaceId), (PathBuf, Instant)>,
 }
 
 /// A registered session the helper serves: its reply address, its file's reading, and when its
@@ -588,6 +592,7 @@ impl Served {
             failed: None,
             held: Holders::new(),
             next: None,
+            batches: BTreeMap::new(),
         }
     }
 
@@ -604,16 +609,16 @@ impl Served {
     /// Whether the next look has anything to do: a session is registered, or may be, or a message
     /// a path took waits for its timeout.
     pub fn looks(&self) -> bool {
-        self.due || self.reload || self.serving() || self.next.is_some()
+        self.due || self.reload || self.serving() || self.next.is_some() || !self.batches.is_empty()
     }
 
     /// Serves the sessions registered in the state in `dir`, and those whose paths the helper
     /// holds, `held`, `came` what came on the connection: ends those whose socket is gone or takes
     /// no connection; records the receipts that came and what the session files show and confirm;
-    /// then, for each agent that has a confirmation, a session that ended, a path that came or a
-    /// message whose timeout passed, whose space `came` concerns, or for each after a command ran,
-    /// runs as the agent ([`recv::to_sessions`]). Gives whether it ran, and what the runs gave the
-    /// paths the helper holds; `None` once a run panicked.
+    /// then, for each agent that has a confirmation, a session that ended, a path that came, a
+    /// message whose timeout passed or a window of `batch` that ended, whose space `came` concerns,
+    /// or for each after a command ran, runs as the agent ([`recv::to_sessions`]). Gives whether
+    /// it ran, and what the runs gave the paths the helper holds; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came, held: &Holders) -> Option<(bool, Pushes)> {
         let mut due = std::mem::take(&mut self.due);
         if (self.next).is_some_and(|next| crate::state::unix_ms() >= next) {
@@ -625,6 +630,14 @@ impl Served {
         if due || std::mem::take(&mut self.reload) {
             runs.extend(self.load(dir));
         }
+        let now = Instant::now();
+        self.batches.retain(|key, (folder, at)| {
+            let ended = *at <= now;
+            if ended {
+                runs.insert(key.clone(), folder.clone());
+            }
+            !ended
+        });
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut gone = Vec::new();
         let mut state = None;
@@ -668,6 +681,17 @@ impl Served {
                     self.failed = None;
                     if let Some(next) = pushed.next {
                         self.next = Some(self.next.map_or(next, |first| first.min(next)));
+                    }
+                    let key = (agent.clone(), *space);
+                    match pushed.batch {
+                        Some(at) => {
+                            let wait = at.saturating_sub(crate::state::unix_millis());
+                            let at = Instant::now() + Duration::from_millis(wait);
+                            self.batches.insert(key, (folder.clone(), at));
+                        }
+                        None => {
+                            self.batches.remove(&key);
+                        }
                     }
                     pushes.push((agent.clone(), *space, pushed));
                 }

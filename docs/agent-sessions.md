@@ -1,6 +1,6 @@
 # Delivery to agent sessions
 
-Skald delivers messages and tasks to an agent session you already have open, even when you type nothing. This is the default mode, `now`; the other modes: [Device to agent](protocol/delivery.md#device-to-agent).
+Skald delivers messages and tasks to an agent session you already have open, even when you type nothing. This is the default mode, `now`; the others: [Delivery settings](#delivery-settings).
 
 ## Claude Code
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
@@ -47,8 +47,20 @@ Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A 
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
-- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender.
+- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender. With `inline`: [Delivery settings](#delivery-settings).
 - **A task** always arrives as a signal, and the agent takes it from the queue itself.
+
+## Delivery settings
+You set them on the device, per channel and sender trust level, `own`, `peer` or `service`, in the folder of the channel's space:
+
+- `skald set-delivery-mode <channel> <level> <mode>`: how a message wakes the session.
+  - `now`, the default: at once.
+  - `batch --window 5m`: the level's messages of the channel wait until the window, opened by the first of them, ends, then arrive together.
+  - `pull`: never; they wait for `inbox` or the agent's `skald recv`, and no hook gives them.
+- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
+- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket, a fallback or a hook, counts one in each channel they came in.
+
+Agents cannot change or list the settings.
 
 ## How Skald knows a message was read
 The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and `#<ref>` references and keeps nothing; where it has not registered the session, as on Windows, the `Stop` hook reads its own session's file. Without a confirmation, the message goes again by the next fallback, and repeats are dropped.

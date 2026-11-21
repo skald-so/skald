@@ -206,6 +206,7 @@ A recipient device drops, without a receipt:
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
   - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
+  - `inline`, the device user's setting per channel and level, `peer` or `service`: the device puts the text into the session at once, labelled as data from its sender, so the agent needs no `inbox` call. It counts as handed over as an `own` text does.
 - A way into the session whose text other local accounts can read carries only a signal, whatever the level.
 - What the device puts into a session at once stays within the agent CLI's limit, such as Claude Code's hook output limit of 10,000 characters. Messages that do not fit wait for the next handover; one longer than the limit is cut and ends with how to read it whole: `inbox` with its reference.
 - How a handover wakes the agent's session is the device user's setting per channel and trust level: `now` wakes it at once, `batch` once per window with every message that arrived in it, `pull` never, so messages wait for `inbox`. The default is `now`.
