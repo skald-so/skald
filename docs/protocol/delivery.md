@@ -75,7 +75,7 @@ timestamp = uint       ; seconds since the Unix epoch
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
 - `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
-- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
+- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS, and for a space it does not follow, the anchors objects ([membership.md](membership.md#anchors)). It is not a mailbox entry: on connecting, the client fetches what it missed.
 - `link-notice`: a device of the account has opened a run to be linked ([membership.md](membership.md#link-code)); the client fetches the account's waiting devices over HTTPS (`getWaitingDevices` in the OpenAPI spec). Like `space-notice`, it is not a mailbox entry. Only connections of device sessions get it.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
