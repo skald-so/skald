@@ -726,6 +726,7 @@ fn certify(follower: &mut Follower, admin: &Keys, keys: &Keys, name: &str) -> Re
         issuer: Some(follower.this),
         issued: now(),
         ssh: None,
+        github: None,
         name: name.to_owned(),
         unknown: Unknown::default(),
     };

@@ -567,12 +567,13 @@ pub fn members(machine: &Machine, space: &str) -> Finished {
     shown
 }
 
-/// Fails unless `shown` shows `handle` with the role `role` and never with the other role.
+/// Fails unless `shown`, a run of `skald members`, lists `handle` with the role `role` and never
+/// with the other role. The list is on standard output: on standard error, a run that accepts a
+/// role change names the signer's handle beside another member's new role.
 pub fn assert_role(shown: &Finished, handle: &Name, role: &str) {
     let other = if role == ADMIN { MEMBER } else { ADMIN };
-    let lines = plain_lines(shown);
-    let of_handle: Vec<&String> = lines
-        .iter()
+    let of_handle: Vec<&str> = (shown.stdout.lines())
+        .filter(|line| !line.to_lowercase().contains(WARNING))
         .filter(|line| words(line).contains(&handle.as_str()))
         .collect();
     assert!(
