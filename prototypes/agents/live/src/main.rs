@@ -4,6 +4,7 @@
 
 mod app;
 mod before_run;
+mod codex_before_run;
 mod codex_permission_run;
 mod gui_run;
 mod permission_gui;
@@ -19,6 +20,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use agent_live::before::Before;
+use agent_live::codex_before;
 use agent_live::codex_permission::Candidate;
 use agent_live::gui::{GuiPath, Surface};
 use agent_live::hook::{self, Hook};
@@ -64,14 +66,8 @@ fn main() -> ExitCode {
             };
             ended(wake_run::wake(wake, &options))
         }
-        [name, "claude", options @ ..] if Before::parse(name).is_some() => {
-            let (Some(check), Some(options)) = (
-                Before::parse(name),
-                Options::parse(options).filter(|options| !options.all),
-            ) else {
-                return usage();
-            };
-            ended(before_run::run(check, &options))
+        [name, agent, options @ ..] if Before::parse(name).is_some() => {
+            before_check(name, agent, options)
         }
         ["ack", agent, options @ ..] => agent_check(agent, options, read_run::ack),
         ["transcript", agent, options @ ..] => agent_check(agent, options, read_run::transcript),
@@ -196,6 +192,21 @@ fn check(options: &[&str], run: impl FnOnce(&Options) -> Result<bool>) -> ExitCo
     }
 }
 
+/// The check before implementation `name` on the agent named `agent` with `options`; the usage
+/// for an option the check does not take or another agent.
+fn before_check(name: &str, agent: &str, options: &[&str]) -> ExitCode {
+    let (Some(check), Some(options)) = (Before::parse(name), Options::parse(options)) else {
+        return usage();
+    };
+    match Agent::parse(agent) {
+        Some(Agent::Claude) if !options.all => ended(before_run::run(check, &options)),
+        Some(Agent::Codex) if codex_before::takes(check, &options) => {
+            ended(codex_before_run::run_check(check, &options))
+        }
+        _ => usage(),
+    }
+}
+
 /// The check `run` of the agent named `agent` with `options`; the usage for anything else.
 fn agent_check(
     agent: &str,
@@ -240,6 +251,8 @@ fn usage() -> ExitCode {
          live-check <ack|transcript> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check resend claude [--all] [--model <model>] [--keep]\n       \
          live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]\n       \
+         live-check signal codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check <executor-read-only|executor-full|executor-clean> codex [--model <model>] [--keep]\n       \
          live-check limits <claude|codex> [--keep]\n       \
          live-check status-line claude [--model <model>] [--keep]\n       \
          live-check gui <inbox|post-tool-use|stop> <claude-desktop|claude-vscode> [--busy]\n       \

@@ -88,6 +88,7 @@ mod sign_out;
 mod spaces;
 mod state;
 mod stateless;
+mod tasks;
 #[cfg(test)]
 mod test_dir;
 #[cfg(test)]
@@ -669,6 +670,48 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Lists the tasks of a channel, by default the default channel of the working directory's
+    /// space, or of one of its queues: each with its #<ref>, ID, queue, state, its holder's
+    /// progress while claimed or its reason while dead, and its attempts. As an agent, only the
+    /// tasks it enqueued, in the space of its folder, with no ID.
+    Tasks {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// Only the tasks of the queue of this name.
+        #[arg(long, value_name = "NAME")]
+        queue: Option<String>,
+        /// Says each task as a JSON object on a line of its own, with every field: task, ref,
+        /// channel, queue, queue_name, state, progress, reason, attempts, claim_device, the
+        /// device of its last claim, deadline and device, the addressee's.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restarts a dead task of a channel, by default the default channel of the working
+    /// directory's space: it is queued again with attempts 0. Only for a task of your account or
+    /// as an admin of the space.
+    RestartTask {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The task: its #<ref>, as skald tasks shows it, or its ID.
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
+    /// Cancels a queued, claimed or dead task of a channel, by default the default channel of the
+    /// working directory's space; the device holding it loses its claim. Only for a task of your
+    /// account or as an admin of the space.
+    CancelTask {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The task: its #<ref>, as skald tasks shows it, or its ID.
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
     /// Claims one task from a queue of a channel, by default the default queue of the default
     /// channel of the working directory's space; as an agent, only in the space of the agent's
     /// folder. It first accepts the space's latest roster revisions and goes through the mailbox
@@ -1074,6 +1117,8 @@ impl Command {
             Command::CreateQueue { .. } => Some("create-queue"),
             Command::ChangeQueue { .. } => Some("change-queue"),
             Command::DeleteQueue { .. } => Some("delete-queue"),
+            Command::RestartTask { .. } => Some("restart-task"),
+            Command::CancelTask { .. } => Some("cancel-task"),
             Command::ExcludeDevice { .. } => Some("exclude-device"),
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
@@ -1107,6 +1152,9 @@ impl Command {
                 | Command::ChangeQueue { .. }
                 | Command::DeleteQueue { .. }
                 | Command::Enqueue { .. }
+                | Command::Tasks { .. }
+                | Command::RestartTask { .. }
+                | Command::CancelTask { .. }
                 | Command::Claim { .. }
                 | Command::Extend { .. }
                 | Command::Complete { .. }
@@ -1648,6 +1696,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                     | Command::Agents { json: true, .. }
                     | Command::Queues { json: true, .. }
                     | Command::Enqueue { json: true, .. }
+                    | Command::Tasks { json: true, .. }
                     | Command::Claim { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
@@ -1944,6 +1993,26 @@ fn performed(operation: Operation) -> Result<(), String> {
                 |run| queues::enqueue(run, &given, agent.as_ref()),
             )
         }
+        Command::Tasks {
+            channel,
+            queue,
+            json,
+        } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel.as_deref(), agent.is_some()),
+            |run| tasks::list(run, queue.as_deref(), json, agent.as_ref()),
+        ),
+        Command::RestartTask { channel, task } => (tasks::Change::Restart).run(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel, task),
+        ),
+        Command::CancelTask { channel, task } => (tasks::Change::Cancel).run(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel, task),
+        ),
         Command::Claim {
             channel,
             queue,
@@ -2159,6 +2228,25 @@ fn queue_command(
         channel,
         agent,
     })
+}
+
+impl tasks::Change {
+    /// Makes this change to the task `task` names in `channel`, if given, by the state in
+    /// `state_dir`, its secrets in `storage`, with `settings`, its protocol versions and timeout; a
+    /// change is the person's.
+    fn run(
+        self,
+        state_dir: Option<PathBuf>,
+        (storage, settings): (secrets::Storage, (VersionRange, Duration)),
+        (channel, task): (Option<String>, String),
+    ) -> Result<(), String> {
+        queue_command(
+            state_dir,
+            (storage, settings),
+            (channel.as_deref(), false),
+            |run| tasks::change(run, &task, self),
+        )
+    }
 }
 
 /// Ends the claim of `task` with `text` as `ending` says ([`claims::end`]), on the state in

@@ -2,13 +2,14 @@
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
 //! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
 //! for the hooks, [`queue`] for `codex queue`, [`app_server`] for the Codex app-server and
-//! [`limits`] for the subscription limits, [`before`] for the Claude Code checks before
-//! implementation; [`gui`] prepares and judges the checks on the desktop apps and IDE extensions.
-//! The binary only starts the CLIs and reads their output.
+//! [`limits`] for the subscription limits, [`before`] and [`codex_before`] for the Claude Code and
+//! Codex checks before implementation; [`gui`] prepares and judges the checks on the desktop apps
+//! and IDE extensions. The binary only starts the CLIs and reads their output.
 
 pub mod app_server;
 pub mod before;
 pub mod channel;
+pub mod codex_before;
 pub mod codex_permission;
 pub mod gui;
 pub mod hook;
@@ -18,6 +19,8 @@ pub mod queue;
 pub mod read;
 mod stub;
 pub mod wake;
+#[cfg(windows)]
+mod windows;
 
 use std::fs;
 use std::io;
@@ -30,7 +33,7 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 pub use stub::{
-    AckWith, Call, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, PROMPTED, QUICK, Request, Response,
+    AckWith, Call, Cue, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, PROMPTED, QUICK, Request, Response,
     SHELL, Stub, StubLog, held,
 };
 
@@ -71,7 +74,10 @@ impl Agent {
     /// environment that [`Agent::replaces_sign_in`] names, so off the stub it runs on the owner's
     /// sign-in.
     pub fn command(self) -> Command {
-        self.command_for(self.cli())
+        let (program, script) = cli_program(self.cli());
+        let mut command = self.command_for(program);
+        command.args(script);
+        command
     }
 
     /// A command that runs `program` in the CLI's environment, such as a prototype that runs the
@@ -185,20 +191,29 @@ impl Agent {
         Ok(args)
     }
 
+    /// The variable that sets the CLI's config home and that home, made empty in `home` if it was
+    /// not there. The CLI writes into its config home whenever it starts, Codex even for
+    /// `--version`.
+    pub fn config_home(self, home: &Path) -> io::Result<(&'static str, PathBuf)> {
+        let (var, dir) = match self {
+            Self::Claude => ("CLAUDE_CONFIG_DIR", home.join(".claude")),
+            Self::Codex => ("CODEX_HOME", home.join(".codex")),
+        };
+        fs::create_dir_all(&dir)?;
+        Ok((var, dir))
+    }
+
     /// The CLI's environment on the model stub at `stub`: only `path` as `PATH`, `home` as `HOME`
     /// with an empty config home in it, the stub's address and the placeholder key. The CLI finds
-    /// no sign-in there and no credential but the placeholder.
+    /// no sign-in there and no credential but the placeholder. On Windows it also gets the system's
+    /// variables and `home` as `USERPROFILE`.
     pub fn environment(
         self,
         home: &Path,
         stub: &str,
         path: &str,
     ) -> io::Result<Vec<(String, String)>> {
-        let (config_var, config_dir) = match self {
-            Self::Claude => ("CLAUDE_CONFIG_DIR", home.join(".claude")),
-            Self::Codex => ("CODEX_HOME", home.join(".codex")),
-        };
-        fs::create_dir_all(&config_dir)?;
+        let (config_var, config_dir) = self.config_home(home)?;
         let mut env = vec![
             ("PATH", path.to_owned()),
             ("HOME", home.to_string_lossy().into_owned()),
@@ -211,6 +226,8 @@ impl Agent {
             ]),
             Self::Codex => env.push((STUB_KEY, PLACEHOLDER.to_owned())),
         }
+        #[cfg(windows)]
+        env.extend(windows::environment(home));
         Ok(env
             .into_iter()
             .map(|(name, value)| (name.to_owned(), value))
@@ -420,16 +437,22 @@ fn codex_config(stub: Option<&str>) -> Vec<String> {
         "model_reasoning_effort=\"low\"".to_owned(),
     ];
     if let Some(stub) = stub {
-        let provider = "model_providers.stub";
-        config.extend([
-            "model_provider=\"stub\"".to_owned(),
-            format!("{provider}.name=\"stub\""),
-            format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
-            format!("{provider}.env_key=\"{STUB_KEY}\""),
-            format!("{provider}.wire_api=\"responses\""),
-        ]);
+        config.extend(codex_stub_provider(stub));
     }
     config
+}
+
+/// The config values of a Codex model provider that sends the placeholder key to the model stub
+/// at `stub`.
+pub(crate) fn codex_stub_provider(stub: &str) -> Vec<String> {
+    let provider = "model_providers.stub";
+    vec![
+        "model_provider=\"stub\"".to_owned(),
+        format!("{provider}.name=\"stub\""),
+        format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
+        format!("{provider}.env_key=\"{STUB_KEY}\""),
+        format!("{provider}.wire_api=\"responses\""),
+    ]
 }
 
 /// The `-c` value that makes `command` Codex's command hook for `event`. A `-c` value is TOML; a
@@ -600,10 +623,15 @@ impl<'a> Options<'a> {
 
     /// The model stub of a session, started with `script`; none with `--real`.
     pub fn stub(&self, script: &'static [Call]) -> io::Result<Option<Stub>> {
+        self.cued_stub(script, None)
+    }
+
+    /// As [`Options::stub`], with `cue` ([`Stub::start_cued`]).
+    pub fn cued_stub(&self, script: &'static [Call], cue: Option<Cue>) -> io::Result<Option<Stub>> {
         if self.real {
             Ok(None)
         } else {
-            Stub::start(script).map(Some)
+            Stub::start_cued(script, cue).map(Some)
         }
     }
 
@@ -620,9 +648,19 @@ impl<'a> Options<'a> {
 /// The `inbox` server's binary, next to `live-check`.
 pub const INBOX_BIN: &str = "agent-inbox";
 
+/// The program that starts the CLI `name`, and the script it runs, if any: `name`, found on
+/// `PATH`.
+#[cfg(not(windows))]
+fn cli_program(name: &str) -> (PathBuf, Option<PathBuf>) {
+    (PathBuf::from(name), None)
+}
+
+#[cfg(windows)]
+use windows::cli_program;
+
 /// The binary `name` of the workspace next to `live-check`, the binary `exe`.
 pub fn binary(exe: &Path, name: &str) -> Result<PathBuf, String> {
-    let binary = exe.with_file_name(name);
+    let binary = exe.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if binary.exists() {
         Ok(binary)
     } else {
@@ -1808,6 +1846,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn tells_why_a_session_failed() {
         use std::os::unix::process::ExitStatusExt;

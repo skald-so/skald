@@ -4,9 +4,10 @@
 # 0.40.5 and tagged v0.40.5 or not released yet, with PRs squash-merged since, their titles their
 # commits. GitHub is a stand-in, script/lib/github-api-stub.mjs.
 #   - The next release sets one version for every crate of the workspace, in Cargo.toml and
-#     Cargo.lock, and adds a section to CHANGELOG.md under `## [Unreleased]`, in the format of the
-#     v0.1.0 section, with every PR merged since the last vX.Y.Z tag, whatever it changes, once
-#     each, and not the Release PRs' commits; past sections stay as they are.
+#     Cargo.lock, and for the Claude Code plugin, in its manifest, and adds a section to CHANGELOG.md
+#     under `## [Unreleased]`, in the format of the v0.1.0 section, with every PR merged since the
+#     last vX.Y.Z tag, whatever it changes, once each, and not the Release PRs' commits; past
+#     sections stay as they are.
 #   - The version: "Release" in docs/dev/infrastructure.md. In 0.x a breaking change bumps the minor
 #     version and any other PR the patch version; from 1.0 a breaking change the major, a feature the
 #     minor. A version set by hand that is newer than the last release stays; so does the version
@@ -106,10 +107,10 @@ update() {
 }
 
 # expect_release <case> <version>: script/release-update printed <version>; every crate in $dir is at
-# it, in Cargo.toml and Cargo.lock, which changed in nothing else; it changed CHANGELOG.md and no
-# other file. False when it failed.
+# it, in Cargo.toml and Cargo.lock, which changed in nothing else, and so is the plugin's manifest; it
+# changed CHANGELOG.md and no other file. False when it failed.
 expect_release() {
-  local found changed
+  local found changed others
   if [[ $status != 0 ]]; then
     fail "$1: script/release-update exited $status: $(tail -n 5 "$tmp/update.log")"
     return 1
@@ -122,9 +123,11 @@ expect_release() {
   locked "$tmp/before/Cargo.lock" "$2" | cmp -s - "$dir/Cargo.lock" ||
     fail "$1: Cargo.lock is not the one before with every crate at $2"
   changed=$(git -C "$dir" status --porcelain --untracked-files=all | cut -c4-)
+  [[ $(jq -r .version "$dir/$plugin_manifest") == "$2" ]] ||
+    fail "$1: the plugin's manifest is at $(jq -r .version "$dir/$plugin_manifest"), not $2"
   grep -qx CHANGELOG.md <<<"$changed" || fail "$1: CHANGELOG.md is unchanged"
-  ! grep -vxE 'CHANGELOG\.md|Cargo\.toml|Cargo\.lock' <<<"$changed" >/dev/null ||
-    fail "$1: it changed other files: $(grep -vxE 'CHANGELOG\.md|Cargo\.toml|Cargo\.lock' <<<"$changed" | paste -sd ' ' -)"
+  others=$(grep -vxFe CHANGELOG.md -e Cargo.toml -e Cargo.lock -e "$plugin_manifest" <<<"$changed" || true)
+  [[ -z $others ]] || fail "$1: it changed other files: $(paste -sd ' ' - <<<"$others")"
 }
 
 # expect_nothing <case>: script/release-update exited 1 and changed nothing.
@@ -403,14 +406,14 @@ expect_pr() {
   (cd "$dir" && script/release-update >/dev/null 2>&1) || fail "$1: script/release-update fails in $dir"
   {
     echo "$sha"
-    for file in Cargo.toml Cargo.lock CHANGELOG.md; do
+    for file in Cargo.toml Cargo.lock CHANGELOG.md "$plugin_manifest"; do
       echo "$file $(base64 <"$dir/$file" | tr -d '\n')"
     done
   } >"$tmp/expected-commit"
   jq -r '.[0].body | fromjson | .variables.input | .expectedHeadOid,
     (.fileChanges.additions[] | "\(.path) \(.contents)")' <<<"$commits" >"$tmp/commit"
   cmp -s "$tmp/expected-commit" "$tmp/commit" ||
-    fail "$1: the commit is not on $sha with Cargo.toml, Cargo.lock and CHANGELOG.md for $2"
+    fail "$1: the commit is not on $sha with Cargo.toml, Cargo.lock, CHANGELOG.md and the plugin's manifest for $2"
   git -C "$dir" checkout --quiet -- .
 }
 

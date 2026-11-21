@@ -22,10 +22,11 @@ use crate::fixtures::{CHANNEL, hex};
 use crate::machine::{Finished, Machine};
 use crate::played::Played;
 use crate::queuing::{
-    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks_path,
+    default_queue, enqueued, proved_with, queues_path, refers_to_task, run_in, tasks_path,
     the_one_task,
 };
 use crate::senders::{LAPTOP_AGENT, Senders};
+use crate::states;
 use crate::talk::Talk;
 use crate::world::{Person, now};
 
@@ -42,14 +43,9 @@ pub const RETRY_FLAG: &str = "--retry";
 pub const JSON_FLAG: &str = "--json";
 
 /// The states, progress and reasons of a task as the server gives them.
-pub const QUEUED: &str = "queued";
-pub const CLAIMED: &str = "claimed";
-pub const DONE: &str = "done";
-pub const DEAD: &str = "dead";
-pub const CANCELLED: &str = "cancelled";
-pub const STARTED: &str = "started";
-pub const AWAITING_APPROVAL: &str = "awaiting-approval";
-pub const FAILED: &str = "failed";
+pub use crate::states::{
+    AWAITING_APPROVAL, CANCELLED, CLAIMED, DEAD, DONE, FAILED, QUEUED, STARTED,
+};
 
 /// What a claim with no task says, and what a command on a lost claim says.
 pub const NO_TASK: &str = "no task";
@@ -490,23 +486,21 @@ pub fn read(
     at: (SpaceId, ChannelId),
     (queue, task): (QueueId, TaskId),
 ) -> Read {
-    let path = format!("{}/{task}", tasks_path(at, queue));
-    let (status, body) = proved(cloud, person, ("GET", &path), None);
-    assert_eq!(status, 200, "GET {path}: {body}");
-    let text = |value: &Value| value.as_str().map(str::to_owned);
-    let claim = (body.get("claim").filter(|claim| !claim.is_null())).map(|claim| Held {
-        claim_id: (text(&claim["claim_id"]).and_then(|id| id.parse().ok()))
-            .unwrap_or_else(|| panic!("no claim ID in {body}")),
-        generation: (claim["generation"].as_u64())
-            .unwrap_or_else(|| panic!("no generation in {body}")),
-        device: (text(&claim["device"]).and_then(|id| id.parse().ok()))
-            .unwrap_or_else(|| panic!("no device in {body}")),
+    let read = states::read(cloud, person, (at, queue), task);
+    assert!(!read.state.is_empty(), "no state in {read:?}");
+    let claim = (read.claim.as_ref()).map(|(claim_id, generation, device)| {
+        assert!(*generation >= 1, "no generation in {read:?}");
+        Held {
+            claim_id: (claim_id.parse()).unwrap_or_else(|_| panic!("no claim ID in {read:?}")),
+            generation: *generation,
+            device: (device.parse()).unwrap_or_else(|_| panic!("no device in {read:?}")),
+        }
     });
     Read {
-        state: text(&body["state"]).unwrap_or_else(|| panic!("no state in {body}")),
-        progress: text(&body["progress"]),
-        reason: text(&body["reason"]),
-        attempts: (body["attempts"].as_u64()).unwrap_or_else(|| panic!("no attempts in {body}")),
+        state: read.state,
+        progress: read.progress,
+        reason: read.reason,
+        attempts: read.attempts,
         claim,
     }
 }

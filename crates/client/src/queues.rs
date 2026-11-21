@@ -69,7 +69,7 @@ impl Mode {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Queue {
     id: String,
-    name: String,
+    pub name: String,
     mode: Mode,
     lease: u64,
     max_attempts: u64,
@@ -250,7 +250,7 @@ pub fn queues_path((space, channel): (SpaceId, ChannelId)) -> String {
 }
 
 /// The proof of a request of `follower`'s device.
-fn proof(follower: &mut Follower) -> Result<String, String> {
+pub fn proof(follower: &mut Follower) -> Result<String, String> {
     let keys = follower.keys()?;
     (follower.connection)
         .request_proof(&follower.token, follower.this, keys.signing())
@@ -272,7 +272,7 @@ pub fn proved_json(
 }
 
 /// The queues of the channel `at` the server gives `follower`'s device, by name.
-fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Queue>, String> {
+pub fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Queue>, String> {
     let proof = proof(follower)?;
     let answer = (follower.connection)
         .get_proved(&queues_path(at), (&follower.token, &proof))

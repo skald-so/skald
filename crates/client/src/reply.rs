@@ -138,7 +138,7 @@ pub fn given(message: &str) -> Result<Given, String> {
 }
 
 /// What `message` names, as [`given`] takes it, if anything.
-fn named(message: &str) -> Option<Given> {
+pub fn named(message: &str) -> Option<Given> {
     let trimmed = message.trim();
     if let Ok(msg_id) = trimmed.parse::<MessageId>() {
         return Some(Given::Id(msg_id));

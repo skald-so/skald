@@ -94,7 +94,8 @@ mod wraps;
 
 // Ada's agents, as the tests of handing messages over have them, with the messages of the tests of
 // gap detection; what an agent reads, as the tests of compact output have it; the senders of the
-// tests of trust levels; the queue commands and requests of the tests of queues.
+// tests of trust levels; the queue commands and requests of the tests of queues; the task states
+// and reads of the tests of task states.
 #[path = "../agent_handover/agents.rs"]
 mod agents;
 #[path = "../gap_detection/gaps.rs"]
@@ -105,6 +106,8 @@ mod lines;
 mod queuing;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
+#[path = "../task_states/states.rs"]
+mod states;
 
 // The member service agent of the tests of service members, with the commands and secrets of the
 // tests of service agents.
