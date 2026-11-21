@@ -18,6 +18,7 @@ use crate::pages::{
     NewOnPage, Opener, Opening, assert_gone, assert_holds_none, confirm_on_page, link_on_page,
     request,
 };
+use crate::revocations::account_certs;
 use crate::world::{GLOBEX, World, create, plain_lines, run, spaces};
 
 /// The host name of Ada's new machine, its certificate's `name`.
@@ -136,9 +137,7 @@ fn a_new_device_links_through_the_pages_on_both_sides() {
     }
 
     // The certificate, the device list and the spaces.
-    let certs: Vec<_> = (cloud.devices(&ada.token).into_iter())
-        .filter_map(|device| device.cert)
-        .collect();
+    let certs = account_certs(cloud, &ada.token);
     let valid = check_valid_device(&ada.master, &certs, &[], new.device);
     let body = valid
         .expect("a certificate valid against the master key")

@@ -8,12 +8,13 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
 use skald_crypto::check_valid_device;
-use skald_proto::{Cbor as _, Cert, DeviceKind, Role};
+use skald_proto::{Cbor as _, DeviceKind, Role};
 
 use crate::anchors::held;
 use crate::cloud::Cloud;
 use crate::linking::{NewDevice, forms, holds, link};
 use crate::machine::{DEVICES, NOT_LINKED};
+use crate::revocations::account_certs;
 use crate::world::{
     ACME, GLOBEX, Person, WARNING, World, create, lines_naming, members, next_by, plain_lines, run,
     space_certs, space_id, spaces, store, warnings,
@@ -27,15 +28,6 @@ fn devices(person: &Person) -> crate::machine::Finished {
     let shown = run(&person.machine, &[DEVICES]);
     assert!(shown.success, "{shown:?}");
     shown
-}
-
-/// The certificates of the devices of the account of the session `token`, from the server.
-fn certs(cloud: &Cloud, token: &str) -> Vec<Cert> {
-    cloud
-        .devices(token)
-        .into_iter()
-        .filter_map(|device| device.cert)
-        .collect()
 }
 
 /// Fails unless the anchors object of `new`, a device of `first`'s account, is at the revisions of
@@ -88,7 +80,7 @@ fn a_device_linked_with_a_code_is_certified_by_the_linked_one_and_follows_its_sp
     let laptop = new.into_person(cloud, &ada);
 
     // The certificate.
-    let held_certs = certs(cloud, &ada.token);
+    let held_certs = account_certs(cloud, &ada.token);
     let cert = check_valid_device(&ada.master, &held_certs, &[], laptop.device)
         .expect("the new device's certificate is valid against the master key");
     let body = cert.body();

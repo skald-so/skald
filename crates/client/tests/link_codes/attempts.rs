@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::linking::{
     EXPIRED, HELLO, LIFETIME_SETTING, LINK, NEW_CODE, NewDevice, OWN_DEVICE, RELAYED, THREE_TIMES,
-    YES, codes_in, link_failing, other_code, says, typed, waiting,
+    YES, codes_in, link_failing, other_code, says, typed, until_not_waiting, waiting,
 };
 use crate::machine::Machine;
 use crate::terminal::Terminal;
@@ -109,11 +109,7 @@ fn a_code_expires_and_a_fresh_one_links() {
 
     new.run()
         .wait_for("that the code expired", |shown| says(shown, &[EXPIRED]));
-    let deadline = Instant::now() + crate::cloud::WAIT;
-    while waiting(cloud, &ada, new.device) {
-        assert!(Instant::now() < deadline, "the expired code's run is open");
-        thread::sleep(Duration::from_millis(100));
-    }
+    until_not_waiting(cloud, &ada, new.device);
     link_failing(&ada, &typed(&code));
 
     let fresh = new.fresh_code();

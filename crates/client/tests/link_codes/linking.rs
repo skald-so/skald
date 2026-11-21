@@ -160,16 +160,12 @@ impl NewDevice {
         approve(world, first, &mut run, grants);
         run.wait_for("a link code", |shown| !codes_in(shown).is_empty());
         let token = cloud.last_token();
-        let new: Vec<DeviceId> = ids(&cloud.devices(&token))
-            .into_iter()
-            .filter(|device| !known.contains(device))
-            .collect();
-        assert_eq!(new.len(), 1, "the new device: {new:?}");
+        let device = cloud.new_device(&token, &known);
         NewDevice {
             machine,
             host,
             token,
-            device: new[0],
+            device,
             started,
             runs: 0,
             run: Some(run),
@@ -195,16 +191,9 @@ impl NewDevice {
     /// opened so far, and the account's sessions see it waiting. `first` is a linked device.
     #[track_caller]
     pub fn open_run(&mut self, cloud: &Cloud, first: &Person) {
-        let deadline = Instant::now() + WAIT;
         let next = self.runs + 1;
-        while cloud.count_sent(self.started, HELLO) < next || !waiting(cloud, first, self.device) {
-            assert!(
-                Instant::now() < deadline,
-                "no run {next} of the new device: {}",
-                self.shown()
-            );
-            thread::sleep(Duration::from_millis(50));
-        }
+        let (device, started) = (self.device, self.started);
+        until_run_open(cloud, first, device, (started, next), || self.shown());
         self.runs = next;
     }
 
@@ -243,11 +232,7 @@ impl NewDevice {
     /// The person on this machine, once its certificate is on the server, as a test of `first`'s
     /// account uses it.
     pub fn into_person(self, cloud: &Cloud, first: &Person) -> Person {
-        let cert = cloud
-            .devices(&self.token)
-            .into_iter()
-            .find(|device| device.id == self.device)
-            .and_then(|device| device.cert)
+        let cert = (cloud.cert(&self.token, self.device))
             .expect("the new device's certificate on the server");
         let holders = self.machine.files_holding(&self.token);
         Person {
@@ -284,6 +269,34 @@ pub fn waiting(cloud: &Cloud, first: &Person, device: DeviceId) -> bool {
 
 /// The account's devices with an open run.
 const RELAYED_WAITING: &str = "/account/links/waiting";
+
+/// Waits for up to [`WAIT`] until run `run` of the code of `device`, a new device of `first`'s
+/// account, is open: `device` sent `run` hellos since `started`, and the account's sessions see it
+/// waiting. `shown` gives what `device` showed so far.
+#[track_caller]
+pub fn until_run_open(
+    cloud: &Cloud,
+    first: &Person,
+    device: DeviceId,
+    (started, run): (Instant, usize),
+    mut shown: impl FnMut() -> String,
+) {
+    let deadline = Instant::now() + WAIT;
+    while cloud.count_sent(started, HELLO) < run || !waiting(cloud, first, device) {
+        assert!(Instant::now() < deadline, "no run {run}: {}", shown());
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Waits for up to [`WAIT`] until the server holds no open run of `device` for `first`'s account.
+#[track_caller]
+pub fn until_not_waiting(cloud: &Cloud, first: &Person, device: DeviceId) {
+    let deadline = Instant::now() + WAIT;
+    while waiting(cloud, first, device) {
+        assert!(Instant::now() < deadline, "the run of {device} is open");
+        thread::sleep(Duration::from_millis(100));
+    }
+}
 
 /// `skald link` on `first`'s machine at a terminal, started; gives it once it said to enter only a
 /// code of the person's own device.
