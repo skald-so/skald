@@ -18,6 +18,7 @@ use sqlx::{Connection, PgConnection, PgPool};
 mod accounts;
 mod anchors;
 mod attachments;
+mod claims;
 mod connections;
 mod delivery;
 mod device_certs;
@@ -185,8 +186,9 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries, deletes history past its retention and ended link runs, and listens to the other
-/// instances on that database in tasks on the Tokio runtime it is called on.
+/// entries, deletes history past its retention and ended link runs, applies tasks' lease ends and
+/// deadlines, and listens to the other instances on that database in tasks on the Tokio runtime it
+/// is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
@@ -206,6 +208,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         send_rate.map(|rate| rate.window),
     ));
     tokio::spawn(link_runs::sweep(db.clone()));
+    tokio::spawn(claims::run(db.clone(), settings.history_retention));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
@@ -426,6 +429,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/claims",
+            post(claims::claim).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/channels/{channel}/queues/{queue}/tasks",
             get(queues::tasks)
                 .post(queues::enqueue)
@@ -434,6 +441,30 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}",
             get(queues::task).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/cancel",
+            post(claims::change::<{ claims::CANCEL }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/complete",
+            post(claims::act::<{ claims::COMPLETE }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/extend",
+            post(claims::act::<{ claims::EXTEND }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/fail",
+            post(claims::act::<{ claims::FAIL }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/release",
+            post(claims::act::<{ claims::RELEASE }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/restart",
+            post(claims::change::<{ claims::RESTART }>).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/devices",
