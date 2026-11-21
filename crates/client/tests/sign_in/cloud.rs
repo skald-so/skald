@@ -590,8 +590,7 @@ impl Cloud {
     /// as [`Cloud::signed_in`] signs it in; gives it and what its sign-in printed.
     pub fn first_machine(&self, page: &Page, user: &User, host: &str) -> (Machine, Finished) {
         let machine = Machine::new().with_host_name(host);
-        let first = [machine::FIRST_DEVICE, machine::YES];
-        let finished = self.signed_in(page, &machine, user, &first);
+        let finished = self.signed_in(page, &machine, user, &[]);
         (machine, finished)
     }
 

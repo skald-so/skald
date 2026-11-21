@@ -17,13 +17,13 @@
 //! machine with a copy of every file under its root, as in the tests of revoking devices.
 //!
 //! Until devices are linked by a link code, a test links a second machine of Ada's account by hand,
-//! as the link will: the machine signs in as no first device, so its device is registered and waits
+//! as the link will: the machine signs in to the account, so its device is registered and waits
 //! for linking; the test certifies that device with the keys of Ada's first machine and sets the
 //! certificate up in the server's database; then it writes the certificate, the pinned master key
 //! and each space as the first machine accepted it, its latest revision, into the second machine's
 //! local state. The second machine then joins the account's channels by itself.
 //!
-//! The CLI, as these tests use it: `skald sign-in --first-device no`, `skald recv`, `skald send`,
+//! The CLI, as these tests use it: `skald sign-in`, `skald recv`, `skald send`,
 //! `skald revoke-device` and `skald history`, as the tests of signing in, channel messages,
 //! revoking devices and reading the history use them; and `SKALD_CLOCK_OFFSET`, as the tests of
 //! scheduled rotation use it.

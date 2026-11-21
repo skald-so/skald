@@ -6,7 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::cloud::GIVE_MASTER;
-use crate::machine::{DEVICES, FIRST_DEVICE, Machine, NO, RUN_LIMIT, YES};
+use crate::machine::{DEVICES, Machine, RUN_LIMIT};
 use crate::terminal::{Shown, Terminal};
 use crate::{
     LINK_CODE, approve, assert_quiet, backup, bytes_hold_key, first_at_terminal, held, holds_key,
@@ -63,7 +63,7 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
         .iter()
         .map(|machine| {
             let grants = cloud.grants().len();
-            let args = sign_in(&cloud, &[FIRST_DEVICE, YES]);
+            let args = sign_in(&cloud, &[]);
             let mut run = Terminal::start(machine, &args);
             approve(&cloud, &page, &ada, &mut run, grants);
             run
@@ -101,7 +101,7 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
     }
 
     let mark = cloud.relay.mark();
-    let args = sign_in(&cloud, &[FIRST_DEVICE, YES]);
+    let args = sign_in(&cloud, &[]);
     let again = until_link_code(Terminal::start(loser_machine, &args));
     assert_quiet(&cloud, "the refused machine's next sign-in", &again.text);
     let devices = loser_machine.start(&[DEVICES]).finish();
@@ -118,10 +118,10 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
 }
 
 /// Whether `text`, what a machine that waits for linking printed at a terminal, says on a line that
-/// the recovery key links it too, with `skald sign-in --first-device no --with-recovery-key`.
+/// the recovery key links it too, with `skald sign-in --with-recovery-key`.
 fn offers_the_recovery_key(text: &str) -> bool {
     text.lines()
-        .any(|line| line.contains("skald sign-in --first-device no --with-recovery-key"))
+        .any(|line| line.contains("skald sign-in --with-recovery-key"))
 }
 
 /// A second machine of the account gets no recovery key: it shows none and says none waits, at
@@ -139,16 +139,13 @@ fn a_second_machine_of_the_account_gets_no_recovery_key() {
     let second = Machine::new().with_host_name("ada-second");
 
     let grants = cloud.grants().len();
-    let mut run = Terminal::start(&second, &sign_in(&cloud, &[FIRST_DEVICE, NO]));
+    let mut run = Terminal::start(&second, &sign_in(&cloud, &[]));
     approve(&cloud, &page, &ada, &mut run, grants);
     let signed_in = until_link_code(run);
 
     assert_quiet(&cloud, "the second machine's sign-in", &signed_in.text);
     assert!(!holds_key(&signed_in.text, &key), "{signed_in:?}");
-    let again = until_link_code(Terminal::start(
-        &second,
-        &sign_in(&cloud, &[FIRST_DEVICE, NO]),
-    ));
+    let again = until_link_code(Terminal::start(&second, &sign_in(&cloud, &[])));
     assert_quiet(&cloud, "its next sign-in", &again.text);
     for (what, shown) in [("its sign-in", &signed_in), ("its next sign-in", &again)] {
         assert!(offers_the_recovery_key(&shown.text), "{what}: {shown:?}");
@@ -177,8 +174,12 @@ fn on_an_account_made_before_recovery_keys_sign_in_says_it_has_no_recovery_key()
     let page = browser.page();
     let ada = cloud.user(4_170_103_003, "ada-recovery-old-standin");
     let old = Machine::new().with_host_name("ada-old");
-    // Its result does not matter: the account has no master key yet.
-    drop(cloud.signed_in(&page, &old, &ada, &[FIRST_DEVICE, NO]));
+    // With the recovery key, it registers and creates no master key; its result does not matter:
+    // the account has no master key yet.
+    let grants = cloud.grants().len();
+    let mut run = Terminal::start(&old, &sign_in(&cloud, &["--with-recovery-key"]));
+    approve(&cloud, &page, &ada, &mut run, grants);
+    drop(run.finish());
     let token = cloud.last_token();
     let account = cloud.account_of(&token);
     assert_eq!(held(&cloud, &token).master, None, "a master key");
@@ -189,7 +190,7 @@ fn on_an_account_made_before_recovery_keys_sign_in_says_it_has_no_recovery_key()
     ));
     assert_eq!(held(&cloud, &token).master, Some(master));
 
-    let again = until_link_code(Terminal::start(&old, &sign_in(&cloud, &[FIRST_DEVICE, NO])));
+    let again = until_link_code(Terminal::start(&old, &sign_in(&cloud, &[])));
 
     assert!(
         again.text.to_lowercase().contains("no recovery key"),
@@ -198,7 +199,7 @@ fn on_an_account_made_before_recovery_keys_sign_in_says_it_has_no_recovery_key()
     assert_eq!(keys_in(&again.text), Vec::<String>::new(), "{again:?}");
     let new = Machine::new().with_host_name("ada-new");
     let grants = cloud.grants().len();
-    let mut run = Terminal::start(&new, &sign_in(&cloud, &[FIRST_DEVICE, NO]));
+    let mut run = Terminal::start(&new, &sign_in(&cloud, &[]));
     approve(&cloud, &page, &ada, &mut run, grants);
     let fresh = until_link_code(run);
     assert!(

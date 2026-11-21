@@ -22,7 +22,7 @@ use std::path::PathBuf;
 
 use browser::Browser;
 use cloud::Cloud;
-use machine::{FIRST_DEVICE, Machine, SIGN_OUT, YES};
+use machine::{Machine, SIGN_OUT};
 use relay::Lose;
 
 /// Without the server's answer, sign-out fails and keeps the token, so the machine can retry; the
@@ -67,9 +67,6 @@ fn sign_out_never_signed_in_says_so() {
     assert_eq!(machine.files(), Vec::<PathBuf>::new());
 }
 
-/// The arguments that sign the account's first device in.
-const FIRST: [&str; 2] = [FIRST_DEVICE, YES];
-
 /// Runs `skald sign-out` on `machine`; fails unless it succeeds.
 fn sign_out(machine: &Machine) {
     let finished = machine.start(&[SIGN_OUT]).finish();
@@ -102,12 +99,12 @@ fn device_without_an_account_takes_its_next_sign_ins_and_refuses_another() {
         .execute("UPDATE device SET account = NULL", [])
         .expect("forget the device's account");
 
-    let again = cloud.signed_in(&browser.page(), &machine, &ada, &FIRST);
+    let again = cloud.signed_in(&browser.page(), &machine, &ada, &[]);
     assert!(again.success, "{again:?}");
     assert_eq!(device_account(&machine), Some(account.clone()));
     sign_out(&machine);
 
-    let refused = cloud.signed_in(&browser.page(), &machine, &bob, &FIRST);
+    let refused = cloud.signed_in(&browser.page(), &machine, &bob, &[]);
     assert!(!refused.success, "{refused:?}");
     assert!(
         refused

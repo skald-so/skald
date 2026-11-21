@@ -53,7 +53,7 @@ pub use at_terminal::{
 };
 use browser::{APPROVE, Browser};
 use cloud::{Cloud, unb64};
-use machine::{FIRST_DEVICE, Machine, YES};
+use machine::Machine;
 use serde_json::Value;
 use skald_proto::AccountId;
 use terminal::{Shown, Terminal};
@@ -192,20 +192,20 @@ pub fn opens_the_backup(cloud: &Cloud, machine: &Machine, token: &str, key: &[u8
     seed
 }
 
-/// The person's `skald sign-in --server <cloud> --first-device yes` on `machine` at a terminal, once
+/// The person's `skald sign-in --server <cloud>` on `machine` at a terminal, once
 /// signed in: gives the recovery key it shows, read as [`written_down`] reads it.
 #[track_caller]
 pub fn key_at_sign_in(cloud: &Cloud, machine: &Machine) -> [u8; 12] {
-    let run = Terminal::start(machine, &sign_in(cloud, &[FIRST_DEVICE, YES]));
+    let run = Terminal::start(machine, &sign_in(cloud, &[]));
     written_down(run).0
 }
 
-/// Runs `skald sign-in --server <cloud> --first-device yes`, with `before` the arguments before it,
+/// Runs `skald sign-in --server <cloud>`, with `before` the arguments before it,
 /// on `machine` at a terminal, once signed in; fails unless it succeeds, shows no recovery key and
 /// says none waits. Gives what it printed.
 #[track_caller]
 pub fn quiet_sign_in(cloud: &Cloud, machine: &Machine, before: &[&str]) -> String {
-    let args = [before, &sign_in(cloud, &[FIRST_DEVICE, YES])[..]].concat();
+    let args = [before, &sign_in(cloud, &[])[..]].concat();
     let shown = Terminal::start(machine, &args).finish();
     assert!(shown.success, "{shown:?}");
     assert_quiet(cloud, "skald sign-in", &shown.text);

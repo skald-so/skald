@@ -26,7 +26,7 @@
 //! padding, each once. The relay rewrites it, as a compromised server would. The table `accounts`,
 //! whose `record` and `backup` a test sets.
 //!
-//! The CLI, as these tests use it: `skald sign-in --first-device no --with-recovery-key`, `skald
+//! The CLI, as these tests use it: `skald sign-in --with-recovery-key`, `skald
 //! recv`, `skald send`, `skald history` and `skald add-rule`, as the tests of linking with the
 //! recovery key, channel messages, reading the history and handing messages to agents use them;
 //! `SKALD_CLOCK_OFFSET`, as the tests of scheduled rotation use it. A warning is a line saying

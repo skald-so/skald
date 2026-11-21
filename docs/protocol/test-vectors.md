@@ -48,6 +48,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Anchors object](#anchors-object)
 - [Link object](#link-object)
 - [Link code keys](#link-code-keys)
+- [Link code without a session](#link-code-without-a-session)
 - [Presence value](#presence-value)
 - [Queue key pair](#queue-key-pair)
 - [Sealed task](#sealed-task)
@@ -836,6 +837,12 @@ The request and grant keys of the ISK of draft-irtf-cfrg-cpace-21, Appendix B.3.
 - Grant key: `f59082ca8b39050a140e5a40d4bc616b`
 - Sealed with the request key: `1ac64ce7dc7b6554503c135dc7ce92240353fc905792016f23a2a16c7e79f0`
 - Sealed with the grant key: `d04b154ed6d577f0279c06f14cd70c537cc273da51bdb2cd700312b5337e81`
+
+## Link code without a session
+
+The CPace CI of a run with the pairing `PQRSTU` ([Link code](membership.md#link-code)): `["skald link code", h'505152535455']`. Hex.
+
+- CI: `826f736b616c64206c696e6b20636f646546505152535455`
 
 ## Presence value
 

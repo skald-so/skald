@@ -1,6 +1,8 @@
 //! `agent-socket` hands messages to a stand-in for a session's inbox socket and records the
 //! receipts the stand-in sends to its reply address.
 
+#![cfg(unix)] // Its stand-ins are shell scripts or Unix sockets.
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;

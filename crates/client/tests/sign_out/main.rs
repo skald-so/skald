@@ -33,10 +33,7 @@ use std::path::PathBuf;
 
 use browser::Browser;
 use cloud::{Cloud, Device, GIVE_MASTER, REGISTER, certified, ids};
-use machine::{
-    DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, SERVER, SIGN_IN, SIGN_OUT,
-    THIS_DEVICE, YES,
-};
+use machine::{DEVICES, Finished, Machine, NOT_LINKED, SERVER, SIGN_IN, SIGN_OUT, THIS_DEVICE};
 use skald_github_stand_in::User;
 use skald_proto::{Cert, DeviceId};
 
@@ -107,7 +104,7 @@ fn setup(user: (u64, &str)) -> (Cloud, Browser, Ada) {
 /// A second machine of Ada's account, signed in and waiting for linking, and its session token.
 fn second_machine(cloud: &Cloud, browser: &Browser, ada: &Ada) -> (Machine, String) {
     let second = Machine::new().with_host_name("ada-second");
-    cloud.signed_in(&browser.page(), &second, &ada.user, &[FIRST_DEVICE, NO]);
+    cloud.signed_in(&browser.page(), &second, &ada.user, &[]);
     let token = token_of(cloud, &second).expect("the second machine's session");
     assert_ne!(token, ada.token);
     (second, token)
@@ -234,12 +231,7 @@ fn assert_refused(cloud: &Cloud, token: &str) {
 /// account's one device with its certificate as before, kept on the machine and listed as linked.
 fn sign_in_again(cloud: &Cloud, browser: &Browser, ada: &Ada) {
     let since = cloud.relay.mark();
-    let again = cloud.signed_in(
-        &browser.page(),
-        &ada.machine,
-        &ada.user,
-        &[FIRST_DEVICE, YES],
-    );
+    let again = cloud.signed_in(&browser.page(), &ada.machine, &ada.user, &[]);
     assert!(again.success, "{again:?}");
     assert!(again.shown().contains(&ada.user.login), "{again:?}");
     let token = token_of(cloud, &ada.machine).expect("a new session token");
@@ -301,9 +293,7 @@ fn signing_one_machine_out_leaves_the_accounts_other_sessions_working() {
 
     let grants = cloud.grants().len();
     let mark = cloud.relay.mark();
-    let again = second
-        .start(&[SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, NO])
-        .finish();
+    let again = second.start(&[SIGN_IN, SERVER, &cloud.url]).finish();
     assert!(again.shown().contains(&ada.user.login), "{again:?}");
     assert_eq!(cloud.grants().len(), grants, "a new code: {again:?}");
     let bearer = format!("\nauthorization: bearer {}", second_token.to_lowercase());
@@ -340,7 +330,7 @@ fn device_waiting_for_linking_resumes_without_a_certificate() {
     sign_out(&second);
     assert_refused(&cloud, &second_token);
     let mark = cloud.relay.mark();
-    cloud.signed_in(&browser.page(), &second, &ada.user, &[FIRST_DEVICE, NO]);
+    cloud.signed_in(&browser.page(), &second, &ada.user, &[]);
 
     let token = token_of(&cloud, &second).expect("a new session token");
     assert_ne!(token, second_token);
@@ -365,7 +355,7 @@ fn signing_in_with_another_account_is_refused_and_the_device_keeps_its_own() {
     let mark = cloud.relay.mark();
     let tokens = cloud.tokens().len();
 
-    let refused = cloud.signed_in(&browser.page(), &ada.machine, &bob, &[FIRST_DEVICE, YES]);
+    let refused = cloud.signed_in(&browser.page(), &ada.machine, &bob, &[]);
 
     assert!(!refused.success, "{refused:?}");
     let given = cloud.tokens();

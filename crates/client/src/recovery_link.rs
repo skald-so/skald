@@ -76,7 +76,7 @@ pub struct NewDevice<'a> {
 }
 
 /// The run that sends again what a run with the recovery key signed and did not send.
-const AGAIN: &str = "the next skald sign-in --first-device no --with-recovery-key";
+const AGAIN: &str = "the next skald sign-in --with-recovery-key";
 
 /// What the run says when it stops: nothing is signed but what it says it signed.
 fn refused(why: &str) -> sign_in::Error {
@@ -164,7 +164,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
             return Err(sign_in::Error::Recovery(
                 "the account has as many devices as it may on this server, so the server does not \
                  store this device's certificate. Name a device stolen, or revoke one on a linked \
-                 device, then run skald sign-in --first-device no --with-recovery-key again"
+                 device, then run skald sign-in --with-recovery-key again"
                     .to_owned(),
             ));
         }
