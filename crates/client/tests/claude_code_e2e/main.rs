@@ -12,13 +12,28 @@
 //! send`; Bob joins `clienta` by a fixture revision and his agent review sends from his machine.
 //! A session's `skald mcp` and hooks run as the machine's runs do, as `--agent <agent>` or without
 //! it.
+//!
+//! The sessions of `socket_sessions.rs`, `socket_routing.rs` and `socket_fallbacks.rs` get
+//! messages over Claude Code's cross-session socket: `skald hook claude` is also their
+//! `SessionStart` and `SessionEnd` hook (`socket_claude.rs`), on a stub that answers each turn by
+//! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
+//! the client does not write to, they get them by the hooks.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
 mod sessions;
+mod socket_claude;
+mod socket_fallbacks;
+mod socket_model;
+mod socket_routing;
+mod socket_sessions;
 mod stub;
+
+// The processes of a copy of `skald`, as the tests of the helper have them.
+#[path = "../helper/helped.rs"]
+mod helped;
 
 // The hook handler's command, its runs and Ada's and Bob's agents, as the tests of the hook handler
 // have them.

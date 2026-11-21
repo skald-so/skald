@@ -37,7 +37,7 @@ use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::State;
-use crate::{Command, Operation, connection, folders, uploads};
+use crate::{Command, Operation, claude_socket, connection, folders, uploads};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -260,12 +260,13 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
     (stop, thread)
 }
 
-/// The helper's sessions: the `skald recv --wait` commands that wait through it, and the
-/// sessions MCP servers hold of it ([`hold`]).
+/// The helper's sessions: the `skald recv --wait` commands that wait through it, the sessions MCP
+/// servers hold of it ([`hold`]), and the Claude Code sessions it serves ([`claude_socket`]).
 #[derive(Default)]
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
+    claude: Option<claude_socket::Served>,
     /// When the last `skald recv --wait` of each agent that ended did, as an [`Instant`] and in
     /// Unix seconds.
     ends: BTreeMap<uploads::Running, (Instant, u64)>,
@@ -313,6 +314,11 @@ pub enum Ran {
 }
 
 impl Sessions {
+    /// Serves the registered Claude Code sessions too, its runs with `settings`.
+    pub fn serve_claude(&mut self, settings: claude_socket::Settings) {
+        self.claude = Some(claude_socket::Served::new(settings));
+    }
+
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
     /// it waits for or failed. A session an MCP server holds starts its agent's session first
     /// ([`hold`]). Whether the helper goes on.
@@ -402,13 +408,17 @@ impl Sessions {
         for waiting in &mut self.waiting {
             waiting.due = true;
         }
+        if let Some(claude) = &mut self.claude {
+            claude.ran();
+        }
     }
 
-    /// Drops the sessions whose command went away; runs `skald recv` again, with the state in
-    /// `dir`, for each other one that a command ran since, or for each once a `link-notice` came,
-    /// and takes in what came for each one it may concern, handing each its own. Gives whether a
-    /// session waits, which after a run or a handover the next look tells; `None` once a run or
-    /// the intake panicked.
+    /// Drops the sessions whose command went away; serves the Claude Code sessions with what
+    /// came ([`claude_socket::Served::look`]); runs `skald recv` again, with the state in `dir`,
+    /// for each other one that a command ran since, or for each once a `link-notice` came, and
+    /// takes in what came for each one it may concern, handing each its own. Gives whether a
+    /// session waits or a Claude Code session is served, which after a run or a handover the next
+    /// look tells; `None` once a run or the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         let mut before = self.agents(true);
         let looked = self.looked(dir, &mut before);
@@ -420,7 +430,8 @@ impl Sessions {
     /// checks the presence after a run or an intake.
     fn looked(&mut self, dir: &Path, before: &mut BTreeSet<uploads::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
-        if self.waiting.is_empty() {
+        let claude = (self.claude.as_ref()).is_some_and(claude_socket::Served::looks);
+        if self.waiting.is_empty() && !claude {
             let mut idle = Watch::default();
             idle.retry_at = self.watch.retry_at;
             self.watch = idle;
@@ -434,6 +445,14 @@ impl Sessions {
         // Each session's run says the devices that wait for linking.
         if mailbox::linking_came() {
             self.ran();
+        }
+        if let Some(claude) = &mut self.claude
+            && claude.look(dir, &came)?
+        {
+            self.watch.start();
+        }
+        if self.waiting.is_empty() {
+            return Some((self.claude.as_ref()).is_some_and(claude_socket::Served::serving));
         }
         let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());

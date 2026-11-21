@@ -31,6 +31,9 @@ mod admin;
 mod agents;
 mod anchors;
 mod channels;
+#[cfg(unix)]
+mod claude_relay;
+mod claude_socket;
 mod clock;
 mod connection;
 mod copies;
@@ -792,15 +795,17 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// PostToolUse and Stop. It reads the hook input on standard input and runs in its folder, as
-    /// the agent --agent names or, without it, the agent the session's skald mcp registers by
-    /// default. It gives the agent's waiting messages to the session as additional context, each
-    /// once, within the CLI's hook output limit, 10,000 characters: a message from the person's
-    /// own devices as its line, as skald recv shows it; for those from others, only a line that
-    /// tells the agent to call inbox. A message longer than the limit is cut, and skald recv
-    /// #<ref> shows it whole. Stop continues the turn with them, up to the CLI's cap of
-    /// continuations in a row. It prints nothing while nothing waits, and on a failure, which
-    /// exits with 1.
+    /// SessionStart, SessionEnd, PostToolUse and Stop. It reads the hook input on standard input
+    /// and runs in its folder, as the agent --agent names or, without it, the agent the session's
+    /// skald mcp registers by default. SessionStart registers the session with the helper, which
+    /// writes the agent's messages into the session's cross-session socket as they come, and
+    /// SessionEnd ends that. PostToolUse and Stop give the agent's waiting messages to the session
+    /// as additional context, each once, within the CLI's hook output limit, 10,000 characters: a
+    /// message from the person's own devices as its line, as skald recv shows it; for those from
+    /// others, only a line that tells the agent to call inbox. A message longer than the limit is
+    /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
+    /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
+    /// failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -814,8 +819,8 @@ enum Command {
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
     /// state goes through it, and each skald recv --wait waits through it. Only this OS account
-    /// reaches it. It exits after an idle time with no command or wait, on sign-out, and for a
-    /// command of a newer skald.
+    /// reaches it. It exits after an idle time with no command, wait or registered Claude Code
+    /// session, on sign-out, and for a command of a newer skald.
     Helper {
         /// How long it waits idle before it exits, in seconds, for tests [default: 600].
         #[arg(long, env = "SKALD_HELPER_IDLE", value_name = "SECONDS", hide = true)]
@@ -1076,9 +1081,9 @@ fn main() -> ExitCode {
     }
     if let Command::Helper { idle } = operation.command {
         let idle = idle.map_or(helper::IDLE, |seconds| Duration::from_secs(seconds.get()));
+        let settings = (operation.key_storage, operation.speaks, operation.timeout);
         return exit(
-            state::dir(operation.state_dir)
-                .and_then(|dir| helper::serve(&dir, idle, operation.timeout)),
+            state::dir(operation.state_dir).and_then(|dir| helper::serve(&dir, idle, settings)),
         );
     }
     if let Command::Link { browser } = operation.command {
@@ -1218,11 +1223,17 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 /// what the run gives the session, and exits with 1 on a failure, never 2.
 fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
     let cap = std::env::var(hook::CAP_SETTING).ok();
-    let Ok(input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
+    let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
     };
     if input.event.is_none() {
         return ExitCode::SUCCESS;
+    }
+    if input.event == Some(hook::Event::SessionStart) {
+        let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
+        input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
+        input.session.token =
+            setting(hook::TOKEN_SETTING).and_then(|token| token.into_string().ok());
     }
     if std::env::set_current_dir(&input.cwd).is_err() {
         return ExitCode::FAILURE;
@@ -1635,13 +1646,17 @@ fn performed(operation: Operation) -> Result<(), String> {
             let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
                 return Ok(());
             };
-            recv::hook(
-                &dir,
-                key_storage,
-                (speaks, timeout),
-                &agent,
-                (event, input.cap),
-            )
+            match event {
+                hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
+                hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                _ => recv::hook(
+                    &dir,
+                    key_storage,
+                    (speaks, timeout),
+                    &agent,
+                    (event, input.cap, &input.session),
+                ),
+            }
         }
         Command::Recv { json, .. } => state::dir(state_dir).and_then(|dir| {
             recv::run(

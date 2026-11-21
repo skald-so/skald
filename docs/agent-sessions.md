@@ -9,6 +9,8 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 | Claude app | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
 | VS Code | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
 
+Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, the session gets its messages by the hooks and `inbox`.
+
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
 |---|---|---|---|
@@ -33,7 +35,8 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 
 ## Claude Code hooks
-- Claude Code runs `skald hook claude` as its `PostToolUse` and `Stop` hooks, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
+- Claude Code runs `skald hook claude` as its `SessionStart`, `SessionEnd`, `PostToolUse` and `Stop` hooks, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
+- `SessionStart` registers the session's cross-session socket with Skald, and `SessionEnd` ends it; both print nothing.
 - While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
 - They print nothing while nothing waits.
 

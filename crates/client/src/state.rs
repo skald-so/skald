@@ -542,6 +542,25 @@ const MIGRATIONS: &[&str] = &[
         expires INTEGER CHECK (expires >= 0),
         agents TEXT
     ) STRICT;",
+    // Claude Code sessions over their cross-session socket ([`crate::claude_socket`]): each
+    // session a `SessionStart` hook registered, by Claude Code's session ID, in the order of
+    // registration, with its agent, the agent's space and folder, its socket, its token and its
+    // session file; and, of each kept message that waits for an agent, the session whose socket
+    // took it, while it waits for the session file to confirm it, whether a receipt of the
+    // session's said it did not reach the model, and the ID of the socket line of its signal.
+    "CREATE TABLE claude_session (
+        position INTEGER PRIMARY KEY,
+        session TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        socket TEXT NOT NULL,
+        token TEXT,
+        file TEXT NOT NULL
+    ) STRICT;
+    ALTER TABLE handover ADD COLUMN written TEXT;
+    ALTER TABLE handover ADD COLUMN failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1));
+    ALTER TABLE handover ADD COLUMN signal TEXT;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -844,6 +863,24 @@ pub struct ReadDue {
     pub addressee: String,
     pub status: ReceiptStatus,
     pub reason: Option<String>,
+}
+
+/// A Claude Code session a `SessionStart` hook registered ([`crate::claude_socket`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClaudeSession {
+    /// Its place in the order of registration.
+    pub position: u64,
+    /// Claude Code's session ID.
+    pub session: String,
+    pub space: SpaceId,
+    pub agent: String,
+    /// The agent's folder, where the session runs.
+    pub folder: PathBuf,
+    /// Its cross-session socket, and the token that makes a line its own child's.
+    pub socket: PathBuf,
+    pub token: Option<String>,
+    /// Its session file.
+    pub file: PathBuf,
 }
 
 /// A kept message that waits for the person's decision for the agent `agent`, by its entry's
@@ -2731,7 +2768,7 @@ impl State {
 
     /// The kept messages that wait for the agent `agent` in the space `space`, by `seq`, each with
     /// its sealed line, once those whose wait ended by `now`, in Unix seconds, are dropped for
-    /// every agent.
+    /// every agent; but those a session's socket took that wait for its confirmation.
     pub fn for_agent(
         &self,
         space: SpaceId,
@@ -2748,7 +2785,9 @@ impl State {
         tx.commit()?;
         self.lines(
             "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
-             WHERE kept.space = ?1 AND handover.agent = ?2 ORDER BY kept.seq",
+             WHERE kept.space = ?1 AND handover.agent = ?2
+                 AND (handover.written IS NULL OR handover.failed = 1)
+             ORDER BY kept.seq",
             params![space.to_string(), agent],
         )
     }
@@ -2797,6 +2836,173 @@ impl State {
             params![sql_seq(seq)?, agent],
         )?;
         Ok(())
+    }
+
+    /// Registers the Claude Code session `session`, after every other, in place of its earlier
+    /// registration, if any.
+    pub fn register_claude(&self, session: &ClaudeSession) -> Result<(), Error> {
+        let text = |path: &Path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
+        };
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "DELETE FROM claude_session WHERE session = ?1",
+            params![session.session],
+        )?;
+        tx.execute(
+            "INSERT INTO claude_session (session, space, agent, folder, socket, token, file)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                session.session,
+                session.space.to_string(),
+                session.agent,
+                text(&session.folder)?,
+                text(&session.socket)?,
+                session.token,
+                text(&session.file)?,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The registered Claude Code sessions, in the order of registration.
+    pub fn claude_sessions(&self) -> Result<Vec<ClaudeSession>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT position, session, space, agent, folder, socket, token, file
+             FROM claude_session ORDER BY position",
+        )?;
+        let rows = query.query_map([], |row| {
+            let text = |at| row.get::<_, String>(at);
+            let texts = [text(1)?, text(2)?, text(3)?, text(4)?, text(5)?, text(7)?];
+            Ok((
+                row.get::<_, i64>(0)?,
+                texts,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (position, [session, space, agent, folder, socket, file], token) = row?;
+            let malformed = || Error::Malformed(format!("the Claude Code session {session}"));
+            Ok(ClaudeSession {
+                position: u64::try_from(position).map_err(|_| malformed())?,
+                space: space.parse().map_err(|_| malformed())?,
+                session,
+                agent,
+                folder: folder.into(),
+                socket: socket.into(),
+                token,
+                file: file.into(),
+            })
+        })
+        .collect()
+    }
+
+    /// Ends the registration of the Claude Code session `session`: what its socket took and its
+    /// file did not confirm waits for the other paths.
+    pub fn end_claude(&self, session: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE handover SET failed = 1 WHERE written = ?1",
+            params![session],
+        )?;
+        tx.execute(
+            "DELETE FROM claude_session WHERE session = ?1",
+            params![session],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` of each kept message that waits for the agent `agent` that a session's socket
+    /// took.
+    pub fn written(&self, agent: &str) -> Result<Vec<u64>, Error> {
+        let written: Vec<(u64, String)> = self.lines(
+            "SELECT seq, written FROM handover WHERE agent = ?1 AND written IS NOT NULL
+             ORDER BY seq",
+            params![agent],
+        )?;
+        Ok(written.into_iter().map(|(seq, _)| seq).collect())
+    }
+
+    /// Records that the socket of the Claude Code session `session` takes the kept messages
+    /// `messages` that wait for the agent `agent`, and the signal of `signalled` in its line
+    /// `signal`, before they are written to it.
+    pub fn socket_takes(
+        &self,
+        (session, agent): (&str, &str),
+        messages: &[u64],
+        (signalled, signal): (&[u64], &str),
+    ) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in messages {
+            tx.execute(
+                "UPDATE handover SET written = ?3, failed = 0 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, session],
+            )?;
+        }
+        for seq in signalled {
+            tx.execute(
+                "UPDATE handover SET signalled = 1, signal = ?3 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, signal],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that a write of the kept messages `seqs` that wait for the agent `agent`, or of
+    /// their signal, to a session's socket failed: they wait as before it.
+    pub fn socket_failed(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that the Claude Code session `session` said its line `line` did not reach the
+    /// model: the message waits for the other paths, or its signal for the hooks.
+    pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE handover SET failed = 1 WHERE written = ?1
+                 AND seq IN (SELECT seq FROM kept WHERE msg_id = ?2)",
+            params![session, line],
+        )?;
+        tx.execute(
+            "UPDATE handover SET signalled = 0, signal = NULL WHERE signal = ?1",
+            params![line],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that the session file of the Claude Code session `session` confirms the messages
+    /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]).
+    /// Gives how many it confirms.
+    pub fn confirmed(&self, session: &str, msg_ids: &[String]) -> Result<usize, Error> {
+        let mut confirmed = Vec::new();
+        for msg_id in msg_ids {
+            let rows: Vec<(u64, String)> = self.lines(
+                "SELECT handover.seq, handover.agent FROM handover
+                 JOIN kept ON kept.seq = handover.seq
+                 WHERE handover.written = ?1 AND kept.msg_id = ?2",
+                params![session, msg_id],
+            )?;
+            confirmed.extend(rows);
+        }
+        for (seq, agent) in &confirmed {
+            self.handed_over(*seq, agent)?;
+        }
+        Ok(confirmed.len())
     }
 
     /// Sets the `Stop` continuations in a row of the session of the agent `agent` in the space

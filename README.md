@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks, and its cross-session socket.
 - Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -88,7 +88,7 @@ skald allow-sender <agent> <sender>         # put an address or a member's handl
 skald inbound-modes                         # each agent's mode and allowlist in the working directory's space
 skald held                                  # accept or refuse each message an agent in hold keeps for you, at a terminal
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
-skald hook claude                           # the handler of Claude Code's PostToolUse and Stop hooks
+skald hook claude                           # the handler of Claude Code's hooks
 ```
 
 - `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
