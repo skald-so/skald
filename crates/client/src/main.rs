@@ -107,7 +107,6 @@ use std::time::Duration;
 use clap::builder::FalseyValueParser;
 use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
-use device::First;
 use person::Person;
 use serde::{Deserialize, Serialize};
 use skald_proto::{DeviceId, VersionRange};
@@ -219,20 +218,22 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: String,
     },
-    /// Signs this machine in to the server: its person approves a code in a browser on any device.
-    /// Run again, checks the session with the server and says which account it is signed in to.
+    /// Signs this machine in to the server: it opens the server's sign-in page with its code filled
+    /// in, in the browser BROWSER names or the system's default, and prints the page's link for a
+    /// browser on any device; its person approves the code there. Run again, checks the session
+    /// with the server and says which account it is signed in to.
     ///
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
-    /// registers the device. The account's first device creates the account's master key, issues
-    /// its own certificate with it and signs the account's personal space as its admin; any other
-    /// device waits for linking. Run by its person at a terminal, it shows a link code to type into
+    /// registers the device. On an account the server reports no master key for, the device is the
+    /// account's first: it creates the account's master key, issues its own certificate with it and
+    /// signs the account's personal space as its admin; on any other, the device waits for
+    /// linking. Run by its person at a terminal, it shows a link code to type into
     /// skald link on a linked device of the account, and exits once that device linked it; Enter
     /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
     /// others add it to channels, on the server, here and on each skald send and skald recv.
     ///
     /// With --browser, as its person or as an agent, it asks its person on a local page it opens in
-    /// the browser instead: whether this is the first device, and the link codes or the recovery
-    /// key it shows. Its output holds neither.
+    /// the browser instead: the link codes or the recovery key it shows. Its output holds neither.
     ///
     /// With --with-recovery-key, a device that waits for linking links with the account's recovery
     /// key instead, only as its person at a terminal, who types the key there without echo. It
@@ -247,14 +248,11 @@ enum Command {
         /// http://localhost:8080.
         #[arg(long, value_name = "URL")]
         server: String,
-        /// Whether this is the account's first device, for scripts [default: ask].
-        #[arg(long, value_name = "ANSWER")]
-        first_device: Option<Answer>,
         /// The device's name, 1 to 64 bytes, set at its first sign-in [default: the host name].
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
-        /// Links this device, not the account's first, with the account's recovery key, typed at
-        /// the terminal.
+        /// Links this device with the account's recovery key, typed at the terminal; on an account
+        /// without a master key, creates none.
         #[arg(long)]
         with_recovery_key: bool,
         /// Asks its person on a local page it opens in the browser: the program BROWSER names, or
@@ -1227,23 +1225,15 @@ impl InChannel {
 
 /// The devices `skald sign-in --with-recovery-key` names, by the IDs given to `--stolen`,
 /// `--lost`, `--keep` and `--keep-revoked`; refused, before it connects, unless its person runs it
-/// at a terminal, `person_at_terminal`, as no first device.
+/// at a terminal, `person_at_terminal`.
 fn recovery_named(
     person_at_terminal: bool,
-    first_device: Option<Answer>,
     [stolen, lost, keep, keep_revoked]: [&[String]; 4],
 ) -> Result<recovery_link::Named, String> {
     if !person_at_terminal {
         return Err(
             "skald reads the recovery key only from its person typing it at a terminal, never \
              from a pipe, an argument or the environment, and not as an agent; nothing is signed"
-                .to_owned(),
-        );
-    }
-    if matches!(first_device, Some(Answer::Yes)) {
-        return Err(
-            "the account's first device has no recovery key to link with: run skald sign-in \
-             --first-device no --with-recovery-key"
                 .to_owned(),
         );
     }
@@ -1696,7 +1686,6 @@ fn performed(operation: Operation) -> Result<(), String> {
         Command::Status { server } => status(&server, speaks, timeout),
         Command::SignIn {
             server,
-            first_device,
             name,
             with_recovery_key,
             stolen,
@@ -1711,7 +1700,6 @@ fn performed(operation: Operation) -> Result<(), String> {
                 .then(|| {
                     recovery_named(
                         agent.is_none() && link_code::at_terminal(),
-                        first_device,
                         [&stolen, &lost, &keep, &keep_revoked],
                     )
                 })
@@ -1731,12 +1719,6 @@ fn performed(operation: Operation) -> Result<(), String> {
                 };
                 let options = sign_in::Options {
                     storage: key_storage,
-                    first: match first_device {
-                        Some(Answer::Yes) => First::Yes,
-                        Some(Answer::No) => First::No,
-                        None if recovery.is_some() => First::No,
-                        None => First::Ask,
-                    },
                     name,
                     host_name,
                     person,
