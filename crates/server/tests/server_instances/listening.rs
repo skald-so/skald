@@ -1,13 +1,14 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
-//! they missed: entries, notices, a device that started waiting for linking and the close of an
-//! ended session's or a revoked device's connections. It also notices a listening connection that
+//! they missed: entries, notices, a device that started waiting for linking, the close of an
+//! ended session's or a revoked device's connections, and an account's deletion. It also notices a listening connection that
 //! goes silent, and takes no connection before it first listens.
 
 use std::time::Duration;
 
+use skald_proto::{PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::protocol::frame::coding::CloseCode;
 
-use crate::common::Closed;
+use crate::common::{Closed, delete_url};
 use crate::common::device_flow::text;
 use crate::common::devices::assert_taken;
 use crate::fixture::Fixture;
@@ -100,6 +101,42 @@ fn a_revision_run_sign_out_and_revocation_an_instance_missed_reach_it_once_it_li
     // The connection of another session and device stays.
     assert_eq!(carol.closed_within(CLOSE), None);
     drop((bob, carol, dave));
+    drop(listening);
+}
+
+/// While an instance does not listen, carol deletes her account through another. Once it listens
+/// again, it closes carol's connection with the reason `account-deleted` and sends bob's the notice
+/// of `acme`, which keeps her account.
+#[test]
+fn an_account_deletion_an_instance_missed_reaches_it_once_it_listens_again() {
+    let fixture = Fixture::new(3_121_290_131);
+    let t = &fixture.team;
+    let role = Role::create(fixture.db());
+    let listening = role.instance(&fixture);
+    let mut carol = watch(&listening, &fixture, &t.carol);
+    let mut bob = watch(&listening, &fixture, &t.bob);
+
+    role.set_login(false);
+    role.end_listening();
+    let url = format!("{}/account", t.flow.stand.server.base());
+    let authorization = format!("Bearer {}", t.carol.session.token());
+    let version = PROTOCOL_VERSION.to_string();
+    let headers = [
+        ("authorization", authorization.as_str()),
+        (VERSION_HEADER, version.as_str()),
+    ];
+    let deleted = delete_url(&url, &headers);
+    assert_eq!(deleted.status, 204, "{}", text(&deleted));
+    role.set_login(true);
+
+    assert_eq!(bob.notice_within(RELISTEN), t.space);
+    bob.assert_quiet();
+    let account_deleted = Some(Closed::Frame(
+        CloseCode::Policy,
+        "account-deleted".to_owned(),
+    ));
+    assert_eq!(carol.closed_within(WAKE), account_deleted);
+    drop((bob, carol));
     drop(listening);
 }
 

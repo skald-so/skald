@@ -37,7 +37,8 @@ pub(crate) enum Refusal {
     NoSignInMethod,
     /// The account's last sign-in method, which is never removed.
     LastSignInMethod,
-    /// The web session's sign-in is older than the server allows for what it asks.
+    /// The session's sign-in is older than the server allows for what it asks: linking or removing a
+    /// sign-in method, or deleting the account.
     SignInTooOld,
     /// A KeyPackage that fails the checks, for the reason it holds.
     KeyPackage(String),
@@ -154,7 +155,7 @@ impl IntoResponse for Refusal {
                 StatusCode::FORBIDDEN,
                 "sign-in-too-old",
                 "Sign in again",
-                "The web session's sign-in is older than the server allows for this: sign in again first.",
+                "The session's sign-in is older than the server allows for this: sign in again first.",
             ),
             Refusal::KeyPackage(detail) => {
                 problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)

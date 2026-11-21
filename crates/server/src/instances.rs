@@ -38,6 +38,8 @@ const CHECK_WAIT: Duration = Duration::from_secs(2);
 pub(crate) struct Instance {
     id: Arc<str>,
     latest: Arc<Mutex<HashMap<SpaceId, i64>>>,
+    /// The latest count of member deletions of each space it knows of.
+    deletions: Arc<Mutex<HashMap<SpaceId, i64>>>,
     listened: Arc<watch::Sender<bool>>,
 }
 
@@ -50,6 +52,7 @@ impl Instance {
         Instance {
             id: id.into(),
             latest: Arc::default(),
+            deletions: Arc::default(),
             listened: Arc::new(watch::Sender::new(false)),
         }
     }
@@ -67,15 +70,22 @@ impl Instance {
 
     /// Records that `space` has the revision `revision`.
     pub(crate) fn record(&self, space: SpaceId, revision: i64) {
-        let mut latest = self.latest.lock().expect("the latest revisions");
-        let known = latest.entry(space).or_default();
-        *known = (*known).max(revision);
+        raise(&self.latest, space, revision);
     }
 
     /// Whether this instance knows of the revision `revision` of `space`, or a later one.
     fn knows(&self, space: SpaceId, revision: i64) -> bool {
-        let latest = self.latest.lock().expect("the latest revisions");
-        latest.get(&space).is_some_and(|known| *known >= revision)
+        known(&self.latest, space, revision)
+    }
+
+    /// Records that `space` has had `deletions` member deletions.
+    pub(crate) fn record_deletions(&self, space: SpaceId, deletions: i64) {
+        raise(&self.deletions, space, deletions);
+    }
+
+    /// Whether this instance knows of `deletions` member deletions of `space`, or more.
+    fn knows_deletions(&self, space: SpaceId, deletions: i64) -> bool {
+        known(&self.deletions, space, deletions)
     }
 
     /// Tells the other instances of `events` on `conn`, once its transaction commits.
@@ -97,6 +107,19 @@ impl Instance {
     }
 }
 
+/// Raises the count of `space` in `counts` to `count`.
+fn raise(counts: &Mutex<HashMap<SpaceId, i64>>, space: SpaceId, count: i64) {
+    let mut counts = counts.lock().expect("the counts of spaces");
+    let known = counts.entry(space).or_default();
+    *known = (*known).max(count);
+}
+
+/// Whether the count of `space` in `counts` is `count` or more.
+fn known(counts: &Mutex<HashMap<SpaceId, i64>>, space: SpaceId, count: i64) -> bool {
+    let counts = counts.lock().expect("the counts of spaces");
+    counts.get(&space).is_some_and(|known| *known >= count)
+}
+
 /// What an instance tells the others.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Event {
@@ -112,8 +135,9 @@ pub(crate) enum Event {
     Revoked(DeviceId),
     /// The device's account is deleted.
     Deleted(DeviceId),
-    /// The members of the space's latest revision get a notice of it.
-    Notice(SpaceId),
+    /// An account of the space's latest revision is deleted, the space's member deletion with this
+    /// number; the members of that revision get a notice of it.
+    Deletion(SpaceId, i64),
 }
 
 impl Event {
@@ -129,7 +153,7 @@ impl Event {
             }
             Self::Revoked(device) => format!("{id} revoked {device}"),
             Self::Deleted(device) => format!("{id} deleted {device}"),
-            Self::Notice(space) => format!("{id} notice {space}"),
+            Self::Deletion(space, deletions) => format!("{id} deletion {space} {deletions}"),
         }
     }
 
@@ -147,7 +171,9 @@ impl Event {
             ("session", session, None) => Self::SessionEnded(URL_SAFE_NO_PAD.decode(session).ok()?),
             ("revoked", device, None) => Self::Revoked(device.parse().ok()?),
             ("deleted", device, None) => Self::Deleted(device.parse().ok()?),
-            ("notice", space, None) => Self::Notice(space.parse().ok()?),
+            ("deletion", space, Some(deletions)) => {
+                Self::Deletion(space.parse().ok()?, deletions.parse().ok()?)
+            }
             _ => return None,
         };
         words.next().is_none().then_some((instance, event))
@@ -223,9 +249,20 @@ async fn open(instance: &Instance, local: &Local) -> Result<PgListener, sqlx::Er
         .into_iter()
         .map(|(space, revision)| (space.parse().expect("a stored space ID"), revision))
         .collect();
-    catch_up(instance, local, &latest).await?;
+    let deletions: Vec<(String, i64)> =
+        sqlx::query_as("SELECT id::text, member_deletions FROM spaces WHERE member_deletions > 0")
+            .fetch_all(&local.db)
+            .await?;
+    let deletions: Vec<(SpaceId, i64)> = deletions
+        .into_iter()
+        .map(|(space, count)| (space.parse().expect("a stored space ID"), count))
+        .collect();
+    catch_up(instance, local, &latest, &deletions).await?;
     for (space, revision) in latest {
         instance.record(space, revision);
+    }
+    for (space, count) in deletions {
+        instance.record_deletions(space, count);
     }
     Ok(listener)
 }
@@ -253,10 +290,13 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
         Event::SessionEnded(session) => local.connections.end_session(&session),
         Event::Revoked(device) => local.connections.end_device(device),
         Event::Deleted(device) => local.connections.end_deleted(device),
-        Event::Notice(space) => match latest_members(&local.db, space).await {
-            Ok(accounts) => local.notices.notify(accounts, space),
-            Err(err) => error_reports::background_failed("read a space's members", &err),
-        },
+        Event::Deletion(space, deletions) => {
+            instance.record_deletions(space, deletions);
+            match latest_members(&local.db, space).await {
+                Ok(accounts) => local.notices.notify(accounts, space),
+                Err(err) => error_reports::background_failed("read a space's members", &err),
+            }
+        }
     }
 }
 
@@ -296,16 +336,36 @@ pub(crate) async fn latest_members(
 }
 
 /// Sends `local`'s connections what the other instances may have told while `instance` did not
-/// listen: wakes each device's connections, closes each connection whose session has ended or whose
-/// device is revoked, and sends each connected account the notices of the revisions in `latest`,
-/// the latest of each space, that the instance does not know, all of them before it first listens,
-/// and a `link-notice` if it has an open run of a link code.
+/// listen: wakes each device's connections; closes each connection whose device's account is
+/// deleted, then each whose session has ended or whose device is revoked; sends each connected
+/// account the notices of the revisions in `latest`, the latest of each space, and of the counts of
+/// member deletions in `deletions`, that the instance does not know, all of them before it first
+/// listens; and a `link-notice` if it has an open run of a link code.
 async fn catch_up(
     instance: &Instance,
     local: &Local,
     latest: &[(SpaceId, i64)],
+    deletions: &[(SpaceId, i64)],
 ) -> Result<(), sqlx::Error> {
     local.wakers.wake_all();
+    let devices: Vec<String> = local
+        .connections
+        .devices()
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    let deleted: Vec<(String,)> = sqlx::query_as(
+        "SELECT d.id::text FROM devices d JOIN accounts a ON a.id = d.account_id
+         WHERE d.id = ANY($1::text[]::uuid[]) AND a.deleted_at IS NOT NULL",
+    )
+    .bind(&devices)
+    .fetch_all(&local.db)
+    .await?;
+    for (device,) in deleted {
+        local
+            .connections
+            .end_deleted(device.parse().expect("a stored device ID"));
+    }
     let sessions = local.connections.sessions();
     let live: Vec<(Vec<u8>,)> = sqlx::query_as(
         "SELECT token_hash FROM sessions WHERE token_hash = ANY($1)
@@ -319,12 +379,6 @@ async fn catch_up(
             local.connections.end_session(&session);
         }
     }
-    let devices: Vec<String> = local
-        .connections
-        .devices()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
     let revoked: Vec<(String,)> = sqlx::query_as(
         "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked",
     )
@@ -358,7 +412,20 @@ async fn catch_up(
     .bind(&accounts)
     .fetch_all(&local.db)
     .await?;
-    for (space, account) in notified {
+    let missed: Vec<String> = deletions
+        .iter()
+        .filter(|(space, count)| !instance.knows_deletions(*space, *count))
+        .map(|(space, _)| space.to_string())
+        .collect();
+    let deleted_in: Vec<(String, String)> = sqlx::query_as(
+        "SELECT space_id::text, account_id::text FROM space_access
+         WHERE space_id = ANY($1::uuid[]) AND account_id = ANY($2::uuid[])",
+    )
+    .bind(missed)
+    .bind(&accounts)
+    .fetch_all(&local.db)
+    .await?;
+    for (space, account) in notified.into_iter().chain(deleted_in) {
         local.notices.notify(
             [account.parse().expect("a stored account ID")],
             space.parse().expect("a stored space ID"),
@@ -378,6 +445,7 @@ mod tests {
         Instance {
             id: "a1".into(),
             latest: Arc::default(),
+            deletions: Arc::default(),
             listened: Arc::new(watch::Sender::new(false)),
         }
     }
@@ -393,7 +461,7 @@ mod tests {
             Event::SessionEnded(vec![0, 15, 16, 255]),
             Event::Revoked(device),
             Event::Deleted(device),
-            Event::Notice(space),
+            Event::Deletion(space, 3),
         ] {
             let payload = event.payload(&instance());
             assert_eq!(Event::parse(&payload), Some(("a1", event)), "{payload}");
@@ -421,8 +489,10 @@ mod tests {
             format!("a1 revoked {device} more"),
             "a1 deleted nodevice".to_owned(),
             format!("a1 deleted {device} more"),
-            "a1 notice nospace".to_owned(),
-            format!("a1 notice {space} more"),
+            format!("a1 deletion {space}"),
+            "a1 deletion nospace 3".to_owned(),
+            format!("a1 deletion {space} three"),
+            format!("a1 deletion {space} 3 more"),
             format!("a1 later {device}"),
         ] {
             assert_eq!(Event::parse(&payload), None, "{payload}");
@@ -442,6 +512,25 @@ mod tests {
         assert!(!instance.knows(second, 1));
         instance.clone().record(first, 3);
         assert!(instance.knows(first, 3), "a clone shares what it records");
+    }
+
+    #[test]
+    fn an_instance_knows_the_deletions_up_to_the_latest_it_recorded_apart_from_revisions() {
+        let instance = instance();
+        let (first, second) = (SpaceId::from_bytes([1; 16]), SpaceId::from_bytes([2; 16]));
+        instance.record(first, 5);
+        assert!(!instance.knows_deletions(first, 1));
+        instance.record_deletions(first, 2);
+        instance.record_deletions(first, 1);
+        assert!(instance.knows_deletions(first, 2));
+        assert!(!instance.knows_deletions(first, 3));
+        assert!(!instance.knows_deletions(second, 1));
+        assert!(!instance.knows(first, 6));
+        instance.clone().record_deletions(first, 3);
+        assert!(
+            instance.knows_deletions(first, 3),
+            "a clone shares what it records"
+        );
     }
 
     #[test]

@@ -152,7 +152,8 @@ pub(crate) async fn delete(State(state): State<AppState>, headers: HeaderMap) ->
     for device in deleted.devices {
         state.connections.end_deleted(device);
     }
-    for (space, members) in deleted.noticed {
+    for (space, deletions, members) in deleted.noticed {
+        state.instance.record_deletions(space, deletions);
         state.notices.notify(members, space);
     }
     Ok(StatusCode::NO_CONTENT.into_response())
@@ -164,9 +165,9 @@ struct Deleted {
     statuses: crate::delivery::Statuses,
     /// Its devices, whose connections close.
     devices: Vec<DeviceId>,
-    /// The spaces it shared, each with the accounts of its latest revision, whose connections get a
-    /// notice of it.
-    noticed: Vec<(SpaceId, Vec<AccountId>)>,
+    /// The spaces it shared, each with its count of member deletions and the accounts of its latest
+    /// revision, whose connections get a notice of it.
+    noticed: Vec<(SpaceId, i64, Vec<AccountId>)>,
 }
 
 /// Deletes `account`, whose `spaces` none blocks, on `conn`, in its transaction, and tells the
@@ -238,9 +239,17 @@ async fn erase(
         .bind(&shared)
         .execute(&mut *conn)
         .await?;
+    let counted: Vec<(String, i64)> = sqlx::query_as(
+        "UPDATE spaces SET member_deletions = member_deletions + 1
+         WHERE id = ANY($1::text[]::uuid[]) RETURNING id::text, member_deletions",
+    )
+    .bind(&shared)
+    .fetch_all(&mut *conn)
+    .await?;
     let mut noticed = Vec::new();
-    for space in &spaces.stay {
-        noticed.push((*space, latest_members(&mut *conn, *space).await?));
+    for (space, deletions) in counted {
+        let space: SpaceId = space.parse().expect("a stored space ID");
+        noticed.push((space, deletions, latest_members(&mut *conn, space).await?));
     }
     let devices: Vec<(String,)> =
         sqlx::query_as("SELECT id::text FROM devices WHERE account_id = $1::uuid")
@@ -252,7 +261,11 @@ async fn erase(
         .map(|(device,)| device.parse().expect("a stored device ID"))
         .collect();
     let events: Vec<Event> = (devices.iter().copied().map(Event::Deleted))
-        .chain(spaces.stay.iter().copied().map(Event::Notice))
+        .chain(
+            noticed
+                .iter()
+                .map(|(space, deletions, _)| Event::Deletion(*space, *deletions)),
+        )
         .collect();
     state.instance.tell(conn, &events).await?;
     Ok(Deleted {
