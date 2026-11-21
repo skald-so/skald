@@ -107,6 +107,7 @@ mod tests {
             issuer: None,
             issued: 1,
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: Default::default(),
         }

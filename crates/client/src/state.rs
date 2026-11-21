@@ -573,6 +573,36 @@ const MIGRATIONS: &[&str] = &[
         queue TEXT NOT NULL,
         record BLOB NOT NULL
     ) STRICT",
+    // Delivery settings ([`crate::delivery`]): when the device kept each message, in Unix
+    // milliseconds, none for one an older client kept; the mode, `now`, `batch` with its window in
+    // seconds, or `pull`, and the text setting, `signal` or `inline`, the person set for each
+    // channel and sender trust level; the wakes the device caused in each channel; and, until the
+    // session confirms one of them or says none reached the model, the lines of each write to a
+    // Claude Code session's socket and the channels whose wake it counted.
+    "ALTER TABLE kept ADD COLUMN came INTEGER CHECK (came >= 0);
+    CREATE TABLE delivery_setting (
+        channel TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('own', 'peer', 'service')),
+        mode TEXT NOT NULL DEFAULT 'now' CHECK (mode IN ('now', 'batch', 'pull')),
+        window INTEGER CHECK (window >= 1),
+        text TEXT NOT NULL DEFAULT 'signal' CHECK (text IN ('signal', 'inline')),
+        PRIMARY KEY (channel, level)
+    ) STRICT;
+    CREATE TABLE channel_wakes (
+        channel TEXT PRIMARY KEY,
+        wakes INTEGER NOT NULL CHECK (wakes >= 0)
+    ) STRICT;
+    CREATE TABLE socket_line (
+        line TEXT NOT NULL,
+        session TEXT NOT NULL,
+        write TEXT NOT NULL,
+        PRIMARY KEY (session, line)
+    ) STRICT;
+    CREATE TABLE socket_wake (
+        write TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        PRIMARY KEY (write, channel)
+    ) STRICT;",
     // Key changes the server makes ([`crate::kept_certs`], [`crate::follow::master_warnings`]): the
     // certificate of each device the device trusted, in CBOR, the first it trusted first, then each
     // of another body that passes the proof check; of each such device given with another
@@ -921,6 +951,20 @@ pub struct Held {
     pub space: SpaceId,
     pub taken: u64,
     pub line: Vec<u8>,
+}
+
+/// A delivery setting the person set for a channel and sender trust level, as the device keeps it
+/// ([`crate::delivery`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeliverySetting {
+    pub channel: String,
+    /// `own`, `peer` or `service`.
+    pub level: String,
+    /// `now`, `batch` or `pull`, and the window of `batch`, in seconds.
+    pub mode: String,
+    pub window: Option<u64>,
+    /// `signal` or `inline`.
+    pub text: String,
 }
 
 /// An agent's inbound mode in a space, as the device keeps it, and the senders on its allowlist.
@@ -2848,6 +2892,139 @@ impl State {
             .collect()
     }
 
+    /// Sets the delivery mode of the sender trust level `level` in the channel `channel` to `mode`,
+    /// with `window`, in seconds, for `batch`.
+    pub fn set_delivery_mode(
+        &self,
+        channel: ChannelId,
+        level: &str,
+        mode: &str,
+        window: Option<u64>,
+    ) -> Result<(), Error> {
+        let window = window.map(sql_u64).transpose()?;
+        self.db.execute(
+            "INSERT INTO delivery_setting (channel, level, mode, window) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT DO UPDATE SET mode = excluded.mode, window = excluded.window",
+            params![channel.to_string(), level, mode, window],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the text setting of the sender trust level `level` in the channel `channel` to `text`.
+    pub fn set_delivery_text(
+        &self,
+        channel: ChannelId,
+        level: &str,
+        text: &str,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO delivery_setting (channel, level, text) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO UPDATE SET text = excluded.text",
+            params![channel.to_string(), level, text],
+        )?;
+        Ok(())
+    }
+
+    /// The delivery settings the person set, by channel and level.
+    pub fn delivery_settings(&self) -> Result<Vec<DeliverySetting>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel, level, mode, window, text FROM delivery_setting")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                [row.get::<_, String>(0)?, row.get(1)?, row.get(2)?],
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let ([channel, level, mode], window, text) = row?;
+            let window = (window.map(u64::try_from).transpose())
+                .map_err(|_| Error::Malformed(format!("the window of {channel}")))?;
+            Ok(DeliverySetting {
+                channel,
+                level,
+                mode,
+                window,
+                text,
+            })
+        })
+        .collect()
+    }
+
+    /// Counts one wake in each of `channels`.
+    pub fn count_wakes(&self, channels: &BTreeSet<String>) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for channel in channels {
+            tx.execute(
+                "INSERT INTO channel_wakes (channel, wakes) VALUES (?1, 1)
+                 ON CONFLICT DO UPDATE SET wakes = wakes + 1",
+                params![channel],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Counts one wake in each of `channels` for a write of the lines `lines` to the socket of the
+    /// Claude Code session `session`, under an ID of its own; the session saying that none of them
+    /// reached the model takes it back ([`State::not_taken`]).
+    pub fn socket_wakes(
+        &self,
+        session: &str,
+        lines: &[String],
+        channels: &BTreeSet<String>,
+    ) -> Result<(), Error> {
+        let write = MessageId::generate().to_string();
+        let tx = self.db.unchecked_transaction()?;
+        for line in lines {
+            tx.execute(
+                "INSERT OR REPLACE INTO socket_line (line, session, write) VALUES (?1, ?2, ?3)",
+                params![line, session, write],
+            )?;
+        }
+        for channel in channels {
+            tx.execute(
+                "INSERT OR IGNORE INTO socket_wake (write, channel) VALUES (?1, ?2)",
+                params![write, channel],
+            )?;
+            tx.execute(
+                "INSERT INTO channel_wakes (channel, wakes) VALUES (?1, 1)
+                 ON CONFLICT DO UPDATE SET wakes = wakes + 1",
+                params![channel],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The wakes the device caused in each channel that has any.
+    pub fn wakes(&self) -> Result<BTreeMap<String, u64>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel, wakes FROM channel_wakes")?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|row| {
+            let (channel, wakes) = row?;
+            Ok((channel, u64::try_from(wakes).unwrap_or(0)))
+        })
+        .collect()
+    }
+
+    /// When the device kept each kept message in the space `space`, by `seq`, in Unix
+    /// milliseconds; 0 for one an older client kept.
+    pub fn kept_came(&self, space: SpaceId) -> Result<BTreeMap<u64, u64>, Error> {
+        let came: Vec<(u64, i64)> = self.lines(
+            "SELECT seq, COALESCE(came, 0) FROM kept WHERE space = ?1",
+            params![space.to_string()],
+        )?;
+        Ok((came.into_iter())
+            .map(|(seq, came)| (seq, u64::try_from(came).unwrap_or(0)))
+            .collect())
+    }
+
     /// The kept messages the person's run has yet to show, by `seq`, each with its sealed line.
     pub fn for_person(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
         self.lines(
@@ -3022,6 +3199,14 @@ impl State {
             "DELETE FROM claude_session WHERE session = ?1",
             params![session],
         )?;
+        tx.execute(
+            "DELETE FROM socket_line WHERE session = ?1",
+            params![session],
+        )?;
+        tx.execute(
+            "DELETE FROM socket_wake WHERE write NOT IN (SELECT write FROM socket_line)",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -3079,9 +3264,36 @@ impl State {
     }
 
     /// Records that the Claude Code session `session` said its line `line` did not reach the
-    /// model: the message waits for the other paths, or its signal for the hooks.
+    /// model: the message waits for the other paths, or its signal for the hooks. Once it said so
+    /// of each line of a write, the write's wakes are taken back ([`State::socket_wakes`]).
     pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
+        let write: Option<String> = tx
+            .query_row(
+                "SELECT write FROM socket_line WHERE session = ?1 AND line = ?2",
+                params![session, line],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(write) = write {
+            tx.execute(
+                "DELETE FROM socket_line WHERE session = ?1 AND line = ?2",
+                params![session, line],
+            )?;
+            let left: i64 = tx.query_row(
+                "SELECT count(*) FROM socket_line WHERE write = ?1",
+                params![write],
+                |row| row.get(0),
+            )?;
+            if left == 0 {
+                tx.execute(
+                    "UPDATE channel_wakes SET wakes = wakes - 1 WHERE wakes > 0
+                     AND channel IN (SELECT channel FROM socket_wake WHERE write = ?1)",
+                    params![write],
+                )?;
+                tx.execute("DELETE FROM socket_wake WHERE write = ?1", params![write])?;
+            }
+        }
         tx.execute(
             "UPDATE handover SET failed = 1 WHERE written = ?1
                  AND seq IN (SELECT seq FROM kept WHERE msg_id = ?2)",
@@ -3096,11 +3308,24 @@ impl State {
     }
 
     /// Records that the session file of the Claude Code session `session` confirms the messages
-    /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]).
-    /// Gives how many it confirms.
+    /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]),
+    /// and the wakes of its write stand. Gives how many it confirms.
     pub fn confirmed(&self, session: &str, msg_ids: &[String]) -> Result<usize, Error> {
         let mut confirmed = Vec::new();
         for msg_id in msg_ids {
+            let write: Option<String> = (self.db)
+                .query_row(
+                    "SELECT write FROM socket_line WHERE session = ?1 AND line = ?2",
+                    params![session, msg_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(write) = write {
+                self.db
+                    .execute("DELETE FROM socket_line WHERE write = ?1", params![write])?;
+                self.db
+                    .execute("DELETE FROM socket_wake WHERE write = ?1", params![write])?;
+            }
             let rows: Vec<(u64, String)> = self.lines(
                 "SELECT handover.seq, handover.agent FROM handover
                  JOIN kept ON kept.seq = handover.seq
@@ -3779,6 +4004,15 @@ pub fn unix_now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
+/// Now, in Unix milliseconds.
+pub fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 /// Keeps the message of the inbox entry `seq` for the person and the agents `kept` names, in `tx`;
 /// it waits for them `kept.wait` after the device wrote the entry, or after now if it did not
 /// record when.
@@ -3786,9 +4020,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
          SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
-             ?7, ?8, ?9
+             ?7, ?8, ?9, ?10
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -3800,7 +4034,8 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             kept.channel.to_string(),
             kept.target,
             // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
-            i64::try_from(kept.hops).unwrap_or(i64::MAX)
+            i64::try_from(kept.hops).unwrap_or(i64::MAX),
+            sql_u64(unix_millis())?
         ],
     )?;
     if let Some(replied) = &kept.replied {
@@ -4181,10 +4416,10 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     let msg_id = msg_id.to_string();
     let now = sql_u64(unix_now())?;
     let kept = tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
-         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops FROM own_message
-         WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
-        params![msg_id, now],
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
+         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops, ?3
+         FROM own_message WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
+        params![msg_id, now, sql_u64(unix_millis())?],
     )?;
     if kept > 0 {
         // Each agent of the device in its space the message is for, but its sender and those
@@ -4422,6 +4657,46 @@ pub(crate) mod tests {
         (state.db)
             .query_row(&format!("PRAGMA {name}"), [], |row| row.get(column))
             .unwrap()
+    }
+
+    /// One message is the line of a write to each of two sessions; each counts a wake in `c`.
+    fn written_to_two_sessions() -> State {
+        let state = State::in_memory().unwrap();
+        let line = ["m".to_owned()];
+        let channels = BTreeSet::from(["c".to_owned()]);
+        state.socket_wakes("a", &line, &channels).unwrap();
+        state.socket_wakes("b", &line, &channels).unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 2);
+        state
+    }
+
+    #[test]
+    fn a_line_both_sessions_refuse_takes_back_both_writes_wakes() {
+        let state = written_to_two_sessions();
+        state.not_taken("a", "m").unwrap();
+        state.not_taken("b", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 0);
+    }
+
+    #[test]
+    fn a_line_one_session_confirms_keeps_its_wake_and_the_other_s_refusal_takes_back_its_own() {
+        let state = written_to_two_sessions();
+        state.confirmed("a", &["m".to_owned()]).unwrap();
+        state.not_taken("b", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
+        state.not_taken("a", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
+    }
+
+    #[test]
+    fn of_two_writes_to_one_session_a_refused_one_takes_back_its_wake_beside_a_confirmed_one() {
+        let state = State::in_memory().unwrap();
+        let channels = BTreeSet::from(["c".to_owned()]);
+        (state.socket_wakes("a", &["m1".to_owned()], &channels)).unwrap();
+        (state.socket_wakes("a", &["m2".to_owned()], &channels)).unwrap();
+        state.confirmed("a", &["m1".to_owned()]).unwrap();
+        state.not_taken("a", "m2").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
     }
 
     #[test]

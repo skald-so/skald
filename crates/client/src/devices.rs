@@ -490,6 +490,7 @@ mod tests {
                 issuer,
                 issued: 1_800_000_000,
                 ssh: None,
+                github: None,
                 name: name.to_owned(),
                 unknown: Unknown::default(),
             };
