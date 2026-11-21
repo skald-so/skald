@@ -18,6 +18,9 @@
 //! `SessionStart` and `SessionEnd` hook (`socket_claude.rs`), on a stub that answers each turn by
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
+//!
+//! The sessions of `wake_fallbacks.rs` refuse cross-session messages and get them by Channels, the
+//! `asyncRewake` hook or the mod, which `socket_claude.rs` adds as a test's options say.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -30,6 +33,7 @@ mod socket_model;
 mod socket_routing;
 mod socket_sessions;
 mod stub;
+mod wake_fallbacks;
 
 // The processes of a copy of `skald`, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]
