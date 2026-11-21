@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
 use skald_proto::{
-    AccountId, ChannelId, DeviceId, MessageId, ReceiptStatus, Scheme, SpaceId, WrapRecipient,
+    AccountId, ChannelId, DeviceId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId, TaskId,
+    WrapRecipient,
 };
 
 use crate::gaps::{Counters, Source};
@@ -561,6 +562,17 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE handover ADD COLUMN written TEXT;
     ALTER TABLE handover ADD COLUMN failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1));
     ALTER TABLE handover ADD COLUMN signal TEXT;",
+    // The tasks the device enqueued that the server has not answered yet, in the order they went
+    // in, by task ID, with their space, channel and queue and the `queued-task` every upload of
+    // each carries.
+    "CREATE TABLE task_outbox (
+        position INTEGER PRIMARY KEY,
+        task TEXT NOT NULL UNIQUE,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        queue TEXT NOT NULL,
+        record BLOB NOT NULL
+    ) STRICT",
     // Resending (`crate::resend`): the path that last took each kept message that waits for
     // an agent, `socket`, `channel`, `rewake` or `mod`, or `hooks` once the paths are done, none
     // before the first; and until when, in Unix milliseconds, it waits for its confirmation there.
@@ -971,6 +983,17 @@ pub struct HistoryOutgoing {
     pub channel: ChannelId,
     /// Its bytes, as they are uploaded every time.
     pub entry: Vec<u8>,
+}
+
+/// A task the device enqueued, as it waits for the server's answer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskOutgoing {
+    pub task: TaskId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub queue: QueueId,
+    /// Its `queued-task`, as it is uploaded every time.
+    pub record: Vec<u8>,
 }
 
 /// What a step on the MLS state writes with the state it saves, in the same transaction.
@@ -3762,6 +3785,67 @@ impl State {
         )?;
         Ok(())
     }
+
+    /// Keeps `outgoing`, a task enqueued as `agent`, if any, until the server answers it; the
+    /// agent's next message or task counts only the `hops` of what is handed to it from now on, as
+    /// a message it sends does.
+    pub fn keep_task(&self, outgoing: &TaskOutgoing, agent: Option<&str>) -> Result<(), Error> {
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let space = outgoing.space.to_string();
+        tx.execute(
+            "INSERT INTO task_outbox (task, space, channel, queue, record)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                outgoing.task.to_string(),
+                space,
+                outgoing.channel.to_string(),
+                outgoing.queue.to_string(),
+                outgoing.record
+            ],
+        )?;
+        if let Some(agent) = agent {
+            tx.execute(
+                "DELETE FROM agent_hops WHERE space = ?1 AND agent = ?2",
+                params![space, agent],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The tasks that wait for the server's answer, in the order they were kept.
+    pub fn task_outbox(&self) -> Result<Vec<TaskOutgoing>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT task, space, channel, queue, record FROM task_outbox ORDER BY position",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                [row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?],
+                row.get(4)?,
+            ))
+        })?;
+        let rows: Vec<([String; 4], Vec<u8>)> = rows.collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(|([task, space, channel, queue], record)| {
+                Ok(TaskOutgoing {
+                    task: id("task ID", &task)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    queue: id("queue ID", &queue)?,
+                    record,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes the task `task` out of the outbox: the server answered it.
+    pub fn remove_task(&self, task: TaskId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM task_outbox WHERE task = ?1",
+            params![task.to_string()],
+        )?;
+        Ok(())
+    }
 }
 
 /// `seq` as SQLite holds it.
@@ -5231,26 +5315,64 @@ pub(crate) mod tests {
         assert_eq!(state.channel_counter(channel).unwrap(), 2);
     }
 
+    /// The state in `dir` of a device that keeps, as entries 1, 2 and on, a message for `claude`
+    /// with each of `hops`.
+    fn keeping_hops(dir: &TestDir, hops: &[u64]) -> State {
+        let state = State::open(dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        for (seq, &hops) in (1..).zip(hops) {
+            state
+                .write_entries(&[(seq, vec![u8::try_from(seq).unwrap()])])
+                .unwrap();
+            let mut kept = kept(&["claude"]);
+            kept.hops = hops;
+            state.keep(seq, (sender, kept.msg_id), &kept).unwrap();
+        }
+        state
+    }
+
+    /// A task waits in the outbox, in order and across a reopening, until it is taken out; one
+    /// enqueued as an agent restarts the agent's count of `hops` in its space, one of the person's
+    /// changes no count.
+    #[test]
+    fn tasks_wait_in_order_until_answered_and_restart_the_agent_s_hops() {
+        let dir = TestDir::new("state-task-outbox");
+        let state = keeping_hops(&dir, &[3]);
+        let space = space_of_kept();
+        state.handed_over(1, "claude").unwrap();
+        let task = |byte| TaskOutgoing {
+            task: TaskId::generate(),
+            space,
+            channel: ChannelId::generate(),
+            queue: QueueId::generate(),
+            record: vec![byte; 3],
+        };
+        let (first, second, third) = (task(1), task(2), task(3));
+        assert_eq!(state.task_outbox().unwrap(), []);
+
+        state.keep_task(&first, None).unwrap();
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(3));
+        state.keep_task(&second, Some("claude")).unwrap();
+        assert_eq!(state.handed_hops(space, "claude").unwrap(), None);
+        state.keep_task(&third, Some("codex")).unwrap();
+        assert!(state.keep_task(&first, None).is_err(), "a task kept twice");
+        state.remove_task(second.task).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.task_outbox().unwrap(), [first, third]);
+    }
+
     /// The highest `hops` handed over to an agent in a space counts until the device sends a
     /// message as that agent there; the person's messages and another agent's leave it, and a
     /// `hops` past what SQLite holds counts as the highest it holds.
     #[test]
     fn handed_hops_are_the_highest_handed_over_since_the_agent_s_last_message() {
         let dir = TestDir::new("state-hops");
-        let state = State::open(&dir).unwrap();
-        state
-            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
-            .unwrap();
-        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let state = keeping_hops(&dir, &[7, 3, u64::MAX]);
         let (space, other) = (space_of_kept(), SpaceId::generate());
-        state
-            .write_entries(&[(1, vec![1]), (2, vec![2]), (3, vec![3])])
-            .unwrap();
-        for (seq, hops) in [(1, 7), (2, 3), (3, u64::MAX)] {
-            let mut kept = kept(&["claude"]);
-            kept.hops = hops;
-            state.keep(seq, (sender, kept.msg_id), &kept).unwrap();
-        }
         let channel = ChannelId::generate();
         let sends = |counter: u64, (space, agent): (SpaceId, Option<&str>)| {
             let message = Counted {
