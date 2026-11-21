@@ -54,7 +54,7 @@ skald remove-service-agent acme ci/deploy-bot
 
 ## Running an agent
 
-With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
+With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`, and so do `skald claim`, `skald extend`, `skald complete` and `skald fail` of a member agent; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
 
 No person sets the agent's inbound mode, so it takes every message: [Device to agent](protocol/delivery.md#device-to-agent).
 
@@ -83,6 +83,7 @@ skald send --all --channel <channel> "rollout started"
 - The agent gets into its channels' MLS groups by itself or when a member's device adds it, and sends and receives as a device does.
 - Keep `SKALD_STATE_DIR` between runs, for example on a persistent disk or volume. Its state is sealed under a key derived from the key secret, so the directory alone opens nothing; nothing goes to the key store.
 - Once the agent has been in a group, a run without its earlier state refuses. Restore the directory, or [replace the agent's key](#replacing-a-key-and-removing-an-agent).
+- It claims tasks with `skald claim` as a device does, and fails with retry a task a device would release.
 - What its `skald recv` shows counts as handed over to it for the [limit on replies without a human](protocol/README.md#content): past it, its `skald send` fails and sends nothing.
 
 ## Recipes
