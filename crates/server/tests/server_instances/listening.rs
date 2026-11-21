@@ -1,15 +1,18 @@
 //! An instance whose listening connection drops listens again, then sends its connections what
-//! they missed: entries, notices, a device that started waiting for linking and the close of an
-//! ended session's or a revoked device's connections. It also notices a listening connection that
-//! goes silent, and takes no connection before it first listens.
+//! they missed: entries, notices, a device that started waiting for linking, the close of an
+//! ended session's or a revoked device's connections, and an account's deletion; no notice it sent
+//! before. It also notices a listening connection that goes silent, and takes no connection before
+//! it first listens.
 
 use std::time::Duration;
 
+use skald_proto::{PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::protocol::frame::coding::CloseCode;
 
-use crate::common::Closed;
+use crate::api::Person;
 use crate::common::device_flow::text;
 use crate::common::devices::assert_taken;
+use crate::common::{Closed, Server, delete_url};
 use crate::fixture::Fixture;
 use crate::instances::{CLOSE, RELISTEN, Role, WAKE, sender, store, watch};
 use crate::link::{Entry, messages};
@@ -17,6 +20,7 @@ use crate::link_kit::{fresh_session, hello};
 use crate::proxy::Proxy;
 use crate::rosters::{member, next};
 use crate::watch::Watch;
+use crate::wire::Socket;
 
 #[test]
 fn entries_stored_while_an_instance_did_not_listen_reach_its_connections_once_it_listens_again() {
@@ -101,6 +105,90 @@ fn a_revision_run_sign_out_and_revocation_an_instance_missed_reach_it_once_it_li
     assert_eq!(carol.closed_within(CLOSE), None);
     drop((bob, carol, dave));
     drop(listening);
+}
+
+/// While an instance does not listen, carol deletes her account through another. Once it listens
+/// again, it closes carol's connection with the reason `account-deleted` and sends bob's the notice
+/// of `acme`, which keeps her account; once it listens again after that, no notice of it.
+#[test]
+fn an_account_deletion_an_instance_missed_reaches_it_once_it_listens_again() {
+    let fixture = Fixture::new(3_121_290_131);
+    let t = &fixture.team;
+    let role = Role::create(fixture.db());
+    let listening = role.instance(&fixture);
+    let mut carol = watch(&listening, &fixture, &t.carol);
+    let mut bob = watch(&listening, &fixture, &t.bob);
+    let mut alice = sender(&t.flow.stand.server, &fixture, &t.alice);
+
+    role.set_login(false);
+    role.end_listening();
+    delete_account(&t.flow.stand.server, &t.carol);
+    role.set_login(true);
+
+    assert_eq!(bob.notice_within(RELISTEN), t.space);
+    bob.assert_quiet();
+    let account_deleted = Some(Closed::Frame(
+        CloseCode::Policy,
+        "account-deleted".to_owned(),
+    ));
+    assert_eq!(carol.closed_within(WAKE), account_deleted);
+    relisten_quietly(&role, &fixture, &mut alice, &mut bob, 1);
+    drop((bob, carol, alice));
+    drop(listening);
+}
+
+/// Once an instance knows of a member deletion, it sends no notice of it when it listens again:
+/// carol's, told by another instance, nor dave's, through itself.
+#[test]
+fn an_instance_that_listens_again_sends_no_notice_of_a_deletion_it_knew_of() {
+    let fixture = Fixture::new(3_121_290_141);
+    let t = &fixture.team;
+    let first = &t.flow.stand.server;
+    let mut alice = sender(first, &fixture, &t.alice);
+    let role = Role::create(fixture.db());
+    let listening = role.instance(&fixture);
+    let mut bob = watch(&listening, &fixture, &t.bob);
+
+    delete_account(first, &t.carol);
+    assert_eq!(bob.notice_within(WAKE), t.space, "carol's deletion");
+    relisten_quietly(&role, &fixture, &mut alice, &mut bob, 1);
+    delete_account(&listening, &t.dave);
+    assert_eq!(bob.notice_within(WAKE), t.space, "dave's deletion");
+    relisten_quietly(&role, &fixture, &mut alice, &mut bob, 2);
+    drop((bob, alice));
+    drop(listening);
+}
+
+/// `person`'s device session deletes its account through `server`.
+#[track_caller]
+fn delete_account(server: &Server, person: &Person) {
+    let url = format!("{}/account", server.base());
+    let authorization = format!("Bearer {}", person.session.token());
+    let version = PROTOCOL_VERSION.to_string();
+    let headers = [
+        ("authorization", authorization.as_str()),
+        (VERSION_HEADER, version.as_str()),
+    ];
+    let deleted = delete_url(&url, &headers);
+    assert_eq!(deleted.status, 204, "{}", text(&deleted));
+}
+
+/// `role`'s instance stops listening, alice's `sender` stores an envelope to bob's laptop, and the
+/// instance listens again: `bob` gets it, the `seq`th, and then nothing, no notice again.
+#[track_caller]
+fn relisten_quietly(
+    role: &Role,
+    fixture: &Fixture,
+    sender: &mut Socket,
+    bob: &mut Watch,
+    seq: u64,
+) {
+    role.set_login(false);
+    role.end_listening();
+    let (_, missed) = store(sender, fixture, fixture.team.bob.laptop.id);
+    role.set_login(true);
+    assert_eq!(bob.entry_within(RELISTEN), Entry::Message(seq, missed));
+    bob.assert_quiet();
 }
 
 /// How long a proved connection waits for its instance to listen.

@@ -544,50 +544,71 @@ pub fn write_config(
             )
         }
         Agent::Codex => {
-            // TOML; a JSON string or array of strings is valid TOML.
-            let mut config = format!(
-                "model = {}\nmodel_reasoning_effort = \"low\"\n",
-                json!(CODEX_MODEL)
-            );
-            if path == GuiPath::Read {
-                // A dotted key, before any table: it runs once a person trusts it.
-                let source = source.to_string_lossy();
-                let command = binaries.hook_with(&["--confirm", "--codex", &source]);
-                config.push_str(&format!("{}\n", codex_hook("Stop", &command)));
-            }
-            match path {
-                GuiPath::Inbox | GuiPath::Read => config.push_str(&format!(
+            let server = || {
+                format!(
                     "\n[mcp_servers.{SERVER}]\ncommand = {}\nargs = {}\n\
                      # Without it, Codex asks a person to approve each call.\n\
                      default_tools_approval_mode = \"approve\"\n",
                     json!(binaries.inbox),
                     json!([source]),
-                )),
-                // A dotted key, as `-c` takes it: it runs once a person trusts it in Review hooks.
+                )
+            };
+            // A hook is a dotted key, as `-c` takes it, before any table: it runs once a person
+            // trusts it in Review hooks.
+            let (top, tables) = match path {
+                GuiPath::Inbox => (vec![], server()),
+                GuiPath::Read => {
+                    let source = source.to_string_lossy();
+                    let command = binaries.hook_with(&["--confirm", "--codex", &source]);
+                    (vec![codex_hook("Stop", &command)], server())
+                }
                 GuiPath::Hook(hook) => {
                     let command = binaries.hook_command(Agent::Codex, source);
-                    config.push_str(&format!("{}\n", codex_hook(hook.event(), &command)));
+                    (vec![codex_hook(hook.event(), &command)], String::new())
                 }
                 // The message comes from outside the session.
-                GuiPath::Queue => {}
+                GuiPath::Queue => (vec![], String::new()),
                 GuiPath::Channel | GuiPath::Wake(_) => unreachable!("checked above"),
-            }
-            // The session gets no tools of the user's MCP servers and plugins: one of the servers
-            // asked macOS for automation access in Codex for VS Code. That extension still starts
-            // the servers to list their status, which ignores `enabled = false`.
-            config.push_str("\n[features]\nplugins = false\n");
-            for name in &binaries.user_mcp_servers {
-                if name != SERVER {
-                    config.push_str(&format!(
-                        "\n[mcp_servers.{}]\nenabled = false\n",
-                        json!(name)
-                    ));
-                }
-            }
-            fs::create_dir_all(project.join(".codex"))?;
-            fs::write(project.join(".codex/config.toml"), config)
+            };
+            write_codex_config(
+                project,
+                &codex_config(&top, &tables, &binaries.user_mcp_servers),
+            )
         }
     }
+}
+
+/// The project config of a Codex GUI check: [`CODEX_MODEL`] at low effort, the keys `top`, then the
+/// `tables`; no plugins, and no tools of the user's MCP servers `user_mcp_servers` but the check's
+/// own. TOML: a JSON string or array of strings is valid TOML.
+pub fn codex_config(top: &[String], tables: &str, user_mcp_servers: &[String]) -> String {
+    let mut config = format!(
+        "model = {}\nmodel_reasoning_effort = \"low\"\n",
+        json!(CODEX_MODEL)
+    );
+    for key in top {
+        config.push_str(&format!("{key}\n"));
+    }
+    config.push_str(tables);
+    // The session gets no tools of the user's MCP servers and plugins: one of the servers asked
+    // macOS for automation access in Codex for VS Code. That extension still starts the servers to
+    // list their status, which ignores `enabled = false`.
+    config.push_str("\n[features]\nplugins = false\n");
+    for name in user_mcp_servers {
+        if name != SERVER {
+            config.push_str(&format!(
+                "\n[mcp_servers.{}]\nenabled = false\n",
+                json!(name)
+            ));
+        }
+    }
+    config
+}
+
+/// Writes `config` as the Codex config of `project`, the only file that configures the surface.
+pub fn write_codex_config(project: &Path, config: &str) -> io::Result<()> {
+    fs::create_dir_all(project.join(".codex"))?;
+    fs::write(project.join(".codex/config.toml"), config)
 }
 
 /// A prepared GUI check: what the developer or reviewer needs to drive the surface.

@@ -253,11 +253,11 @@ fn person_thread(socket: &Path, project: &Path) -> Result<Option<String>> {
 }
 
 /// An app-server the check runs on a Unix socket; dropping it stops it.
-struct Server(Child);
+pub(crate) struct Server(Child);
 
 impl Server {
     /// Starts `codex <args>` in `files.project` with `env`; its output goes to `files.dir`.
-    fn start(args: &[String], files: &Files, env: &Env) -> Result<Self> {
+    pub(crate) fn start(args: &[String], files: &Files, env: &Env) -> Result<Self> {
         let mut command = Agent::Codex.command();
         env.apply(&mut command);
         let child = command
@@ -271,7 +271,7 @@ impl Server {
     }
 
     /// Waits up to 10 s for the app-server to listen on `socket`.
-    fn wait_for(&mut self, socket: &Path) -> Result<()> {
+    pub(crate) fn wait_for(&mut self, socket: &Path) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(10);
         while !socket.exists() {
             if Instant::now() > deadline || self.0.try_wait()?.is_some() {
