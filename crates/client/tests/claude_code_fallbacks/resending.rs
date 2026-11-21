@@ -1,9 +1,9 @@
 //! Resending: a message goes by the session's first path, in the order socket, Channels,
 //! `asyncRewake`; without a confirmation within the timeout, by the next; after the last it waits
 //! for the hooks and `inbox`. A signal the agent does not follow with `inbox` goes again. One
-//! confirmation ends it, and a message the session file already shows, queued too, goes by no
-//! other path; the hooks and `inbox` give a message only after the last path. A helper killed while a message waits for its timeout leaves it to be resent, and `read` of it
-//! goes once.
+//! confirmation ends it, and a message the session file already shows, queued too, goes by no other
+//! path; the hooks and `inbox` give a message only after the last path. A helper killed while a
+//! message waits for its timeout leaves it to be resent, and `read` of it goes once.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -93,12 +93,13 @@ fn nearly(timeout: u64) -> Duration {
 /// What api says to web; it is nowhere else.
 const ORDER_SAYS: &str = "resend test: api asks web, which never takes it in";
 
-/// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. web's `skald mcp`
-/// and its `asyncRewake` hook run. api sends web a message; the socket gets its line. For a second more, no channel event comes and the hook still
-/// runs. Then, once the timeout passed, one channel event, the message's line from api at `own`,
-/// while the hook still runs; once it passed again, the hook exits with 2, its standard error the
-/// line. Then web's `PostToolUse` gives the line, and the person's `skald recv` shows `read` of it
-/// once. The socket got it once, and `skald mcp` sent one event.
+/// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. web's `skald
+/// mcp` and its `asyncRewake` hook run. api sends web a message; the socket gets its line. For a
+/// second more, no channel event comes and the hook still runs. Then, once the timeout passed, one
+/// channel event, the message's line from api at `own`, while the hook still runs; once it passed
+/// again, the hook exits with 2, its standard error the line. Then web's `PostToolUse` gives the
+/// line, and the person's `skald recv` shows `read` of it once. The socket got it once, and `skald
+/// mcp` sent one event.
 #[test]
 fn a_message_goes_by_the_socket_then_channels_then_async_rewake_then_the_hooks() {
     let ada = Ada::new(4_919_521_001, "ada-resend-in-order");
@@ -281,9 +282,9 @@ fn a_signal_the_agent_follows_with_inbox_goes_no_more() {
 const KILLED_SAYS: &str = "resend test: api asks web as the helper dies";
 
 /// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. api sends web a
-/// message; once the socket has it, the helper is killed. web's `PostToolUse`, run until it gives something, gives the message's line from api at
-/// `own`; the person's `skald recv` shows `read` of it once; the socket got it once, and the next
-/// `PostToolUse` prints nothing.
+/// message; once the socket has it, the helper is killed. web's `PostToolUse`, run until it gives
+/// something, gives the message's line from api at `own`; the person's `skald recv` shows `read` of
+/// it once; the socket got it once, and the next `PostToolUse` prints nothing.
 #[test]
 fn a_helper_killed_while_a_message_waits_for_its_timeout_leaves_it_to_be_resent_once() {
     let ada = Ada::new(4_919_526_001, "ada-resend-helper-killed");
