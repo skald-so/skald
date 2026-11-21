@@ -28,8 +28,14 @@
 //     whose failure fails the job: every test of the client, none left out (the client is a binary,
 //     which has no doctests);
 //   - the job writes .cargo/config.toml only by copying to it a Cargo config file of the repository
-//     that sets only optimization levels: debug assertions and overflow checks stay as Cargo.toml
-//     sets them;
+//     that sets only optimization levels, and sets no NEXTEST_PROFILE, NEXTEST_RETRIES,
+//     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: debug assertions and overflow checks
+//     stay as Cargo.toml sets them, and nextest runs its default profile;
+//   - .config/nextest.toml sets no default-filter, which would leave tests out, and no retries,
+//     which would pass a flaky test;
+//   - each test that calls alone() itself matches an override of .config/nextest.toml,
+//     `package(<package>) & binary(<binary>) & test(=<path>)`, that sets threads-required =
+//     'num-test-threads': under nextest, alone() holds back no other test's process;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
@@ -451,6 +457,61 @@ for (const line of steps.flatMap((step) => commands(step.run)).filter((line) => 
   if (settings.length === 0 || !settings.every((l) => /^opt-level\s*=\s*("[sz]"|[0-3])$/.test(l))) {
     fail(`job ${key} writes .cargo/config.toml other than by a copy of a Cargo config file of the repository that sets only optimization levels: ${line.trim()}`);
   }
+}
+// Environment that changes the build's settings or nextest's profile and retries: in the
+// workflow's, the job's or a step's env, or set by a step's script.
+const overriding = /^(NEXTEST_PROFILE|NEXTEST_RETRIES|CARGO_PROFILE_\w+|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS)$/;
+for (const name of [ci.env, job.env, ...steps.map((step) => step.env)].flatMap((env) => Object.keys(env ?? {}))) {
+  if (overriding.test(name)) fail(`job ${key} sets ${name}, which changes how its tests are built or run`);
+}
+for (const line of steps.flatMap((step) => commands(step.run))) {
+  const named = line.match(/\b(NEXTEST_PROFILE|NEXTEST_RETRIES|CARGO_PROFILE_\w+|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS)\b/);
+  if (named) fail(`a step of job ${key} names ${named[1]}, which changes how its tests are built or run: ${line.trim()}`);
+}
+
+// .config/nextest.toml: every test runs, once.
+const nextestFile = path.join(root, '.config/nextest.toml');
+const nextest = fs.existsSync(nextestFile) ? fs.readFileSync(nextestFile, 'utf8') : '';
+for (const setting of ['default-filter', 'retries']) {
+  if (new RegExp(`^\\s*${setting}\\s*=`, 'm').test(nextest)) fail(`.config/nextest.toml sets ${setting}: the client's tests on Windows would not all run, or not once`);
+}
+// The tests that run alone under nextest: <package> <binary> <path> of each override that sets
+// threads-required = 'num-test-threads' with filters of that one form, joined by |.
+const aloneUnderNextest = new Set(
+  nextest
+    .split(/^\[\[profile\.default\.overrides\]\]\s*$/m)
+    .slice(1)
+    .map((block) => block.split(/^\[/m)[0])
+    .filter((block) => /^\s*threads-required\s*=\s*'num-test-threads'\s*$/m.test(block))
+    .flatMap((block) => (block.match(/^\s*filter\s*=\s*'([^']*)'\s*$/m)?.[1] ?? '').split('|'))
+    .map((term) => term.trim().match(/^\(?package\(([\w-]+)\) & binary\((\w+)\) & test\(=([\w:]+)\)\)?$/))
+    .filter(Boolean)
+    .map(([, pkg, binary, test]) => `${pkg} ${binary} ${test}`),
+);
+// The tests of the crates' integration test targets that call alone() themselves, as nextest names
+// them: <package> <binary> <module path>::<function>.
+const callers = [];
+for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
+  const testsDir = path.join(root, 'crates', crate, 'tests');
+  const manifest = path.join(root, 'crates', crate, 'Cargo.toml');
+  if (!fs.existsSync(testsDir) || !fs.existsSync(manifest)) continue;
+  const pkg = fs.readFileSync(manifest, 'utf8').match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+  for (const file of fs.readdirSync(testsDir, { recursive: true }).filter((f) => f.endsWith('.rs'))) {
+    const parts = file.split(path.sep);
+    const binary = parts.length === 1 ? parts[0].slice(0, -3) : parts[0];
+    const modules = parts.length === 1 ? [] : parts.slice(1).map((part) => part.replace(/\.rs$/, '')).filter((part, i, all) => !(i === all.length - 1 && (part === 'main' || part === 'mod')));
+    const text = fs.readFileSync(path.join(testsDir, file), 'utf8');
+    for (const [, name, body] of text.matchAll(/^#\[test\]\n(?:#\[[^\n]*\]\n)*(?:pub )?fn (\w+)\([^)]*\)[^{]*\{([\s\S]*?)^\}$/gm)) {
+      if (/(^|[^\w.])alone\(\)/.test(body)) callers.push(`${pkg} ${binary} ${[...modules, name].join('::')}`);
+    }
+  }
+}
+const defined = fs.readdirSync(path.join(root, 'crates'), { recursive: true })
+  .filter((f) => f.endsWith('.rs') && f.split(path.sep).includes('tests'))
+  .some((f) => /^pub fn alone\(\)/m.test(fs.readFileSync(path.join(root, 'crates', f), 'utf8')));
+if (defined && callers.length === 0) fail('alone() is defined, but this check finds no test that calls it');
+for (const caller of callers) {
+  if (!aloneUnderNextest.has(caller)) fail(`${caller} calls alone(), and no override of .config/nextest.toml runs it alone: package(…) & binary(…) & test(=…) with threads-required = 'num-test-threads'`);
 }
 
 // The server's URL: in the step's or the job's env, or set in PowerShell before the tests run.

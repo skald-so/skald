@@ -294,8 +294,7 @@ jobs:
           Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
       # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
-      # tests of all the client's test binaries at once, each in a process of its own, 8 at a time
-      # on the runner's 4 CPUs.
+      # tests of all the client's test binaries at once, each in a process of its own.
       - name: Test the client
         shell: pwsh
         env:
