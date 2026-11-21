@@ -40,7 +40,7 @@ fn each_clean_epoch_is_wrapped_to_the_recovery_key_of_each_member_account_with_a
     let (space, channel) = talk.at();
     let members = [talk.ada.device, talk.played[0].device(), carol.device()];
     group(talk.cloud(), &talk.ada.token, space, channel).assert_is(4, &members);
-    let recovery = recovery_hpke(&key);
+    let recovery = recovery_hpke(&key, talk.ada.account);
     let ada = talk.ada.account;
     for epoch in [1, 2, 4] {
         assert_wrapped_to_recovery(&mut talk, (ada, &recovery), epoch);

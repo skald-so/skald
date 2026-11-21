@@ -321,8 +321,8 @@ pub fn master_request(account: AccountId, master: &Key, cert: &[u8]) -> Value {
     };
     let record = sign_account(&body, &master.key).expect("an account record");
     let backup = MasterBackup {
-        enc: [0xe0; 32],
-        ct: vec![0xc0; 48],
+        nonce: [0xe0; 12],
+        ct: [0xc0; 48],
     };
     json!({
         "master": b64(&master.public()),

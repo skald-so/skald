@@ -1,5 +1,6 @@
-//! The recovery key's HPKE key pair: `DeriveKeyPair(recovery key)` of DHKEM(X25519, HKDF-SHA256)
-//! (RFC 9180, §7.1.3), `docs/protocol/membership.md`, "Account".
+//! The recovery key's HPKE key pair: `DeriveKeyPair` of DHKEM(X25519, HKDF-SHA256) (RFC 9180,
+//! §7.1.3) of the IKM Argon2id derives from the recovery key, `docs/protocol/membership.md`,
+//! "Account".
 
 use crate::common::{hex, hex32};
 use crate::fixtures::{RECOVERY, recovery_key};

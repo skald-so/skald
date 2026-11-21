@@ -8,3 +8,4 @@
 #                release's tag; the boundary is crossed when it exits 0
 # A change that needs a new stack adds its entry and its note.
 docs/self-host.md#from-a-release-without-account-recovery ! git cat-file -e "$last_release:crates/server/migrations/20270101000000_master_backup.sql"
+docs/self-host.md#from-a-release-with-long-recovery-keys ! git show "$last_release:crates/crypto/Cargo.toml" | grep -q '^argon2 '

@@ -21,8 +21,8 @@ mod trust;
 mod wrap;
 
 pub use account::{
-    AccountError, RecoveryKey, RecoveryKeyError, check_account, open_master_backup,
-    seal_master_backup, seal_master_backup_with_ephemeral, sign_account,
+    AccountError, PASTE_END, PASTE_START, Recovered, RecoveryKey, RecoveryKeyError, check_account,
+    new_recovery, new_recovery_with_nonce, open_recovery, sign_account,
 };
 pub use anchors::{check_anchors, check_link, sign_anchors, sign_link};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue, passes_proof_check};
