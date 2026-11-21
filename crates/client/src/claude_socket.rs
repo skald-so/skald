@@ -13,7 +13,8 @@
 //!   registered session that still runs ([`write`]), after an auth line with the token, through the
 //!   session's relay where it runs (`crate::claude_relay`), so a session that bypasses permission
 //!   prompts takes it too: an `own` message as its line, a message below `own` only as the signal
-//!   (`crate::recv`).
+//!   or, under `inline`, as its line, as the delivery settings say, which may hold it back to the
+//!   end of a window of `batch`, when the helper runs again (`crate::recv`, [`crate::delivery`]).
 //! - What a socket took counts as handed over, and its `read` goes, only once the session file
 //!   confirms it: an entry that went to the model holds its `msg_id`, and a later entry is the
 //!   model's own, not an API error ([`Scan`]). The helper reads the file while the session runs,
@@ -301,6 +302,9 @@ pub struct Served {
     live: BTreeMap<String, Live>,
     /// When the last run failed, if it did.
     failed: Option<Instant>,
+    /// Of each agent whose last run held messages back under `batch`, its folder and when the
+    /// first such window ends ([`recv::due`]).
+    batches: BTreeMap<String, (PathBuf, Instant)>,
 }
 
 /// A registered session the helper serves: its reply address, its file's reading, and when its
@@ -380,6 +384,7 @@ impl Served {
             reload: true,
             live: BTreeMap::new(),
             failed: None,
+            batches: BTreeMap::new(),
         }
     }
 
@@ -395,14 +400,15 @@ impl Served {
 
     /// Whether the next look has anything to do: a session is registered, or may be.
     pub fn looks(&self) -> bool {
-        self.due || self.reload || self.serving()
+        self.due || self.reload || self.serving() || !self.batches.is_empty()
     }
 
     /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
     /// ends those whose socket is gone or takes no connection; records the receipts that came and
     /// what the session files confirm; then, for each agent that has a confirmation or a session
-    /// that ended, whose space `came` concerns, or for each after a command ran, runs as the agent
-    /// ([`recv::to_sessions`]). Gives whether it ran; `None` once a run panicked.
+    /// that ended, whose space `came` concerns, whose window of `batch` ended, or for each after a
+    /// command ran, runs as the agent ([`recv::to_sessions`]). Gives whether it ran; `None` once a
+    /// run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         let due = std::mem::take(&mut self.due);
         // A run for the agent of each session that ended issues what its file confirmed.
@@ -410,6 +416,14 @@ impl Served {
         if due || std::mem::take(&mut self.reload) {
             runs.extend(self.load(dir));
         }
+        let now = Instant::now();
+        self.batches.retain(|agent, (folder, at)| {
+            let ended = *at <= now;
+            if ended {
+                runs.insert(agent.clone(), folder.clone());
+            }
+            !ended
+        });
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut gone = Vec::new();
         let mut state = None;
@@ -474,9 +488,10 @@ impl Served {
             .collect()
     }
 
-    /// Runs as `agent` in its `folder`, its output dropped, then goes back to `dir`: whether the
-    /// run did not fail; `None` if it panicked.
-    fn run(&self, dir: &Path, folder: &Path, agent: &str) -> Option<bool> {
+    /// Runs as `agent` in its `folder`, its output dropped, then goes back to `dir`, noting when
+    /// a window of `batch` it held messages back for ends: whether the run did not fail; `None` if
+    /// it panicked.
+    fn run(&mut self, dir: &Path, folder: &Path, agent: &str) -> Option<bool> {
         let Ok(agent) = crate::agents::name(agent) else {
             return Some(false);
         };
@@ -491,7 +506,22 @@ impl Served {
             )
         }));
         let _ = std::env::set_current_dir(dir);
-        ran.ok().map(|ran| ran.is_ok())
+        let ran = ran.ok().map(|ran| ran.is_ok());
+        if ran == Some(true) {
+            match recv::due() {
+                Some(at) => {
+                    let wait =
+                        Duration::from_millis(at.saturating_sub(crate::state::unix_millis()));
+                    let at = Instant::now() + wait;
+                    self.batches
+                        .insert(agent.as_str().to_owned(), (folder.to_owned(), at));
+                }
+                None => {
+                    self.batches.remove(agent.as_str());
+                }
+            }
+        }
+        ran
     }
 }
 

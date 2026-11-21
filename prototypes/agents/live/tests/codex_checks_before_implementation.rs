@@ -909,7 +909,8 @@ fn the_codex_items_of_checks_before_implementation_link_to_their_findings() {
     let items: Vec<&str> = report
         .lines()
         .take_while(|line| !line.starts_with("### "))
-        .filter(|line| line.starts_with("- "))
+        // An item that opens with a link to its own section has its findings there.
+        .filter(|line| line.starts_with("- ") && !line.starts_with("- ["))
         .collect();
     assert!(!items.is_empty(), "no items:\n{report}");
     for item in items {

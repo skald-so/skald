@@ -131,7 +131,8 @@ pub struct SignInSettings {
     pub google: Option<OidcSettings>,
     /// How long a sign-in's `state` works.
     pub state_lifetime: Duration,
-    /// How recent a web session's sign-in has to be to start a link or remove a sign-in method.
+    /// How recent a session's sign-in has to be to start a link or remove a sign-in method, as a web
+    /// session, or to delete the account.
     pub link_age: Duration,
     /// How long a device flow's codes work.
     pub device_code_lifetime: Duration,

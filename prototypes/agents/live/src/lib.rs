@@ -10,6 +10,7 @@ pub mod app_server;
 pub mod before;
 pub mod channel;
 pub mod codex_before;
+pub mod codex_permission;
 pub mod gui;
 pub mod hook;
 pub mod limits;
