@@ -12,6 +12,7 @@ use crate::agents::{Agents, CLAUDE, CODEX};
 use crate::cloud::WAIT;
 use crate::helped::{Helped, with_client_b};
 use crate::presence::assert_between;
+use crate::relay::count_heads;
 use crate::talk::Talk;
 use crate::values::{
     EXPIRES_IN, acme_channels, ada_s_body, ada_s_value, await_in_each, await_value,
@@ -40,12 +41,7 @@ fn await_together(
     loop {
         let sent = talk.cloud().relay.sent_since(since);
         let counts: Vec<usize> = (ats.iter())
-            .map(|at| {
-                let request = upload_request(*at).to_lowercase();
-                (sent.iter())
-                    .filter(|sent| sent.head.starts_with(&request))
-                    .count()
-            })
+            .map(|at| count_heads(&sent, &upload_request(*at)))
             .collect();
         if counts[0] > before && counts.iter().all(|count| *count == counts[0]) {
             return counts[0];
