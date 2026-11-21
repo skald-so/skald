@@ -81,6 +81,7 @@ use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::output::{self, Stream};
+use crate::queues;
 use crate::receipts;
 use crate::reply;
 use crate::secrets;
@@ -372,6 +373,7 @@ fn received(
     // The entries go out on the outbox's connection, which then gets the mailbox.
     let flushed = std::mem::replace(&mut link.mailbox, delivered.mailbox.take());
     history::upload(&mut follower, &mut link, scope);
+    queues::upload_received(&mut follower, scope);
     let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
