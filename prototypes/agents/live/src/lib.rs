@@ -1838,6 +1838,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn tells_why_a_session_failed() {
         use std::os::unix::process::ExitStatusExt;

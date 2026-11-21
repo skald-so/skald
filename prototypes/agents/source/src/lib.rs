@@ -768,12 +768,15 @@ mod tests {
         assert!(source.records("../x").is_err());
         assert_eq!(fs::read_dir(dir.path().join(TMP)).unwrap().count(), 0);
         // A record that cannot be written is an error, not one recorded already.
-        use std::os::unix::fs::PermissionsExt;
-        let records = dir.path().join(RECORDS).join(id);
-        fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
-        let locked = source.record(id, "ack", None);
-        fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
-        assert_eq!(locked.unwrap_err().kind(), ErrorKind::PermissionDenied);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let records = dir.path().join(RECORDS).join(id);
+            fs::set_permissions(&records, fs::Permissions::from_mode(0o500)).unwrap();
+            let locked = source.record(id, "ack", None);
+            fs::set_permissions(&records, fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(locked.unwrap_err().kind(), ErrorKind::PermissionDenied);
+        }
     }
 
     #[test]
@@ -806,6 +809,7 @@ mod tests {
         assert!(source.requeue(&["nope".to_owned()]).is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn registers_the_session_for_the_user_only() {
         use std::os::unix::fs::PermissionsExt;

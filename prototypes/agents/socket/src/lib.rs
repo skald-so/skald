@@ -202,7 +202,7 @@ impl Drop for Receipts {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))] // The tests need a Unix socket.
 mod tests {
     use std::thread;
 

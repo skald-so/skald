@@ -2,7 +2,6 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output};
 use std::thread;
@@ -83,7 +82,12 @@ pub fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 /// Writes `script` to `path` as an executable file, such as a stand-in for a CLI.
 pub fn write_executable(path: &Path, script: &str) {
     fs::write(path, script).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    // Windows has no mode bits: a stand-in runs there by its extension.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 }
 
 /// A command's stderr as text.

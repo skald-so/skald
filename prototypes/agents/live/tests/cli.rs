@@ -1,5 +1,7 @@
 //! `live-check`'s commands, without running an agent CLI.
 
+#![cfg(unix)] // Its stand-ins are shell scripts or Unix sockets.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
