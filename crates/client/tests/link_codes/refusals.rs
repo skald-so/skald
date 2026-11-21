@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::cloud::Cloud;
 use crate::linking::{HELLO, LINK, RELAYED, approve, codes_in, says};
-use crate::machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN};
+use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::terminal::Terminal;
 use crate::world::{AGENT, World};
 
@@ -24,7 +24,7 @@ fn relayed_since(cloud: &Cloud, since: Instant) -> Vec<String> {
         .collect()
 }
 
-/// Ada's new machine signs in through a pipe as no first device: it shows no code and sends no
+/// Ada's new machine signs in through a pipe: it shows no code and sends no
 /// hello. `skald link` on her first machine through a pipe, given a code and `yes` on its input,
 /// fails, says it needs a terminal, and sends no request to the link code relay.
 #[test]
@@ -35,12 +35,7 @@ fn through_a_pipe_no_code_is_shown_or_taken() {
     let since = cloud.relay.mark();
 
     let machine = Machine::new().with_host_name("ada-laptop");
-    let signed_in = cloud.signed_in(
-        &world.browser.page(),
-        &machine,
-        &ada.user,
-        &[FIRST_DEVICE, NO],
-    );
+    let signed_in = cloud.signed_in(&world.browser.page(), &machine, &ada.user, &[]);
     assert!(signed_in.success, "{signed_in:?}");
     assert_eq!(
         codes_in(&signed_in.shown()),
@@ -94,7 +89,7 @@ fn with_only_its_output_at_a_terminal_no_code_is_taken() {
     assert_eq!(relayed_since(cloud, since), Vec::<String>::new());
 }
 
-/// `skald --agent builder sign-in --first-device no` at a terminal on Ada's new machine: once its
+/// `skald --agent builder sign-in` at a terminal on Ada's new machine: once its
 /// sign-in is approved, it exits with success, shows no code and sends no hello.
 #[test]
 fn an_agent_signing_in_at_a_terminal_shows_no_code() {
@@ -105,15 +100,7 @@ fn an_agent_signing_in_at_a_terminal_shows_no_code() {
 
     let machine = Machine::new().with_host_name("ada-laptop");
     let grants = cloud.grants().len();
-    let args = [
-        AGENT,
-        "builder",
-        SIGN_IN,
-        SERVER,
-        &cloud.url,
-        FIRST_DEVICE,
-        NO,
-    ];
+    let args = [AGENT, "builder", SIGN_IN, SERVER, &cloud.url];
     let mut run = Terminal::start(&machine, &args);
     approve(&world, &ada, &mut run, grants);
     let shown = run.finish();

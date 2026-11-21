@@ -4,7 +4,7 @@
 
 use crate::browser::APPROVE;
 use crate::cloud::shown_grant;
-use crate::machine::{FIRST_DEVICE, Machine, SERVER, SIGN_IN, YES};
+use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::tls::Ca;
 use crate::world::{Person, World};
 
@@ -54,7 +54,7 @@ pub fn signed_up(
     let (cloud, page) = (&world.cloud, world.browser.page());
     let grants = cloud.grants().len();
     let user = cloud.user(id, login);
-    let args = [SIGN_IN, SERVER, cloud.public.as_str(), FIRST_DEVICE, YES];
+    let args = [SIGN_IN, SERVER, cloud.public.as_str()];
     let mut signing_in = machine.start(&args);
     let grant = shown_grant(cloud, &mut signing_in, grants);
     cloud.decide(&page, &user, &grant, APPROVE);

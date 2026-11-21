@@ -143,3 +143,34 @@ pub fn ask(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const QUESTION: &str = "Link it to this account?";
+
+    fn asked(input: &str) -> (Option<bool>, String) {
+        let mut output = Vec::new();
+        let answer = ask(&mut input.as_bytes(), &mut output, QUESTION).expect("asked");
+        (answer, String::from_utf8(output).expect("UTF-8"))
+    }
+
+    #[test]
+    fn question_takes_yes_or_no_and_asks_again_otherwise() {
+        for (input, answer) in [
+            ("yes\n", Some(true)),
+            ("Y\n", Some(true)),
+            (" no \n", Some(false)),
+            ("n", Some(false)),
+            ("maybe\nyes\n", Some(true)),
+            ("", None),
+            ("maybe\n", None),
+        ] {
+            let (got, shown) = asked(input);
+            assert_eq!(got, answer, "{input:?}");
+            assert!(shown.contains(QUESTION), "{shown}");
+        }
+        assert!(asked("maybe\nno\n").1.contains("Please answer yes or no."));
+    }
+}
