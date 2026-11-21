@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use agent_live::SENDER;
-use agent_testing::write_executable;
+use agent_testing::{snapshot, write_executable};
 use serde_json::{Value, json};
 
 /// The new checks, each run as `live-check <check> codex`.
@@ -357,28 +357,6 @@ fn user_home(home: &Path) {
     fs::write(codex.join("hooks.json"), r#"{"hooks":{}}"#).unwrap();
     fs::write(codex.join("AGENTS.md"), "The user's own instructions.\n").unwrap();
     fs::write(codex.join("auth.json"), r#"{"auth_mode":"chatgpt"}"#).unwrap();
-}
-
-/// Every path under `root`, relative to it, with the contents of each file; `None` for a directory.
-fn snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    fn walk(root: &Path, at: &Path, into: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
-        let Ok(entries) = fs::read_dir(at) else {
-            return;
-        };
-        for entry in entries.map(Result::unwrap) {
-            let path = entry.path();
-            let key = path.strip_prefix(root).unwrap().to_path_buf();
-            if entry.file_type().unwrap().is_dir() {
-                into.insert(key, None);
-                walk(root, &path, into);
-            } else {
-                into.insert(key, Some(fs::read(&path).unwrap_or_default()));
-            }
-        }
-    }
-    let mut found = BTreeMap::new();
-    walk(root, root, &mut found);
-    found
 }
 
 /// The invocations the stand-in recorded in `record`.

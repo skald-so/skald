@@ -1,8 +1,9 @@
 //! Fixtures, assertions and recorded exchanges the delivery prototypes' tests share.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -277,4 +278,27 @@ impl Exchange {
             .unwrap()
             .to_owned()
     }
+}
+
+/// Every path under `root`, relative to it, with the contents of each file; `None` for a
+/// directory. A missing `root` has none.
+pub fn snapshot(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn walk(root: &Path, at: &Path, into: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let Ok(entries) = fs::read_dir(at) else {
+            return;
+        };
+        for entry in entries.map(Result::unwrap) {
+            let path = entry.path();
+            let key = path.strip_prefix(root).unwrap().to_path_buf();
+            if entry.file_type().unwrap().is_dir() {
+                into.insert(key, None);
+                walk(root, &path, into);
+            } else {
+                into.insert(key, Some(fs::read(&path).unwrap_or_default()));
+            }
+        }
+    }
+    let mut found = BTreeMap::new();
+    walk(root, root, &mut found);
+    found
 }
