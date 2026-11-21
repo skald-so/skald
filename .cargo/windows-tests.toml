@@ -1,0 +1,17 @@
+# Cargo settings for the client's tests on Windows (.github/workflows/ci.yml), on top of Cargo.toml:
+# the dependencies and the crates whose code the tests spend their CPU in, the server's, the
+# cryptography's and the protocol's, optimized. The CPU of a test run drops to about a fifth, and
+# the tests, CPU-bound on the runner's 4 CPUs, run several times faster. Only optimization levels
+# change: debug assertions and overflow checks stay on.
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.skald-server]
+opt-level = 1
+
+[profile.dev.package.skald-crypto]
+opt-level = 1
+
+[profile.dev.package.skald-proto]
+opt-level = 1

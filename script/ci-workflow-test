@@ -24,9 +24,10 @@
 //     checkout keeps no credentials, and a job's token reads contents at most.
 // And the job that runs the client's tests on Windows:
 //   - one job of a PR into dev runs `cargo nextest run -p skald-client --locked --no-fail-fast`,
-//     with no other option but --test-threads, on a windows-2025 runner, in a step that may run and
-//     whose failure fails the job: every test of the client, none left out (the client is a binary,
-//     which has no doctests);
+//     with no other option but --test-threads and --config with a file of the repository that sets
+//     only optimization levels, on a windows-2025 runner, in a step that may run and whose failure
+//     fails the job: every test of the client, none left out (the client is a binary, which has no
+//     doctests), with debug assertions and overflow checks as Cargo.toml sets them;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
@@ -420,9 +421,23 @@ if (testStep.if !== undefined) fail(`the test step of job ${key} has a condition
 const tests = commands(testStep.run).filter((line) => cargoTest(line));
 if (tests.length !== 1) fail(`the test step of job ${key} runs cargo nextest run ${tests.length} times, not once`);
 const args = cargoTest(tests[0] ?? '') ?? [];
-// The options but --test-threads <n>, which changes only how many tests run at once.
-const threads = args.indexOf('--test-threads');
-const options = threads >= 0 && /^[1-9][0-9]*$/.test(args[threads + 1] ?? '') ? args.toSpliced(threads, 2) : args;
+// The options but --test-threads <n>, which changes only how many tests run at once, and
+// --config <file>, a Cargo config file of the repository whose settings are all opt-level.
+let options = args;
+const threads = options.indexOf('--test-threads');
+if (threads >= 0 && /^[1-9][0-9]*$/.test(options[threads + 1] ?? '')) options = options.toSpliced(threads, 2);
+const config = options.indexOf('--config');
+if (config >= 0) {
+  const file = path.join(root, options[config + 1] ?? '');
+  const settings = fs.existsSync(file) && file.endsWith('.toml') && file.startsWith(root + path.sep)
+    ? fs.readFileSync(file, 'utf8').split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#') && !line.startsWith('['))
+    : [];
+  if (settings.length > 0 && settings.every((line) => /^opt-level\s*=\s*("?[0-3sz]"?)$/.test(line))) {
+    options = options.toSpliced(config, 2);
+  } else {
+    fail(`job ${key} runs its tests with --config ${options[config + 1]}, not a Cargo config file of the repository that sets only optimization levels`);
+  }
+}
 if (options.join(' ') !== '-p skald-client --locked --no-fail-fast') {
   fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
 }
