@@ -507,6 +507,7 @@ mod tests {
                     issuer: issuer.map(|at| device(&keys[at])),
                     issued: 1_800_000_000,
                     ssh: None,
+                    github: None,
                     name: "laptop".to_owned(),
                     unknown: Unknown::default(),
                 };
@@ -578,6 +579,7 @@ mod tests {
             issuer: Some(ada.device(0)),
             issued: 1_800_000_000,
             ssh: None,
+            github: None,
             name: "forged".to_owned(),
             unknown: Unknown::default(),
         };

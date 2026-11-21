@@ -40,6 +40,7 @@ fn exclude_device_passes_over_a_certificate_of_the_device_made_up_on_another_mem
         issuer: None,
         issued: now(),
         ssh: None,
+        github: None,
         name: BOB_HOST.to_owned(),
         unknown: Unknown::default(),
     };

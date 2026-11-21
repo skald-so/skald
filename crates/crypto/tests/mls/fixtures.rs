@@ -27,6 +27,7 @@ pub fn admitted() -> &'static [Cert] {
                     issuer: None,
                     issued: NOW,
                     ssh: None,
+                    github: None,
                     unknown: Unknown::default(),
                 };
                 issue(&body, &signing_key(MASTER), &key).expect("a test device's certificate")
