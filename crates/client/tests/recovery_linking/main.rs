@@ -1,14 +1,14 @@
 //! Linking a new device with the recovery key (`docs/protocol/membership.md`, "Linking a device",
-//! "Anchors", "Revocation" and "Device checks"). The new device, signed in at a terminal
-//! to an account with a master key, reads the recovery key there without echo and pins the account's master key only
-//! from an account record and a master backup that opens in PSK mode with that key. It issues its
-//! own certificate with the master key, shows the account's devices, revoked or not, then revokes
-//! with the master key the devices its user names stolen, stores its certificate, starts from the
-//! anchors of the devices no master-key revocation marks as stolen, revokes with its own key the
-//! devices its user names lost, and keeps neither key. Against a `skald-server` with GitHub sign-in
-//! through the stand-in, behind the recording relay of the sign-in tests, which the tests use as a
-//! proxy that sees and changes what goes through; the person's terminal is a pseudo-terminal, or a
-//! pseudo-console on Windows, and a test plays the person in headless Chrome.
+//! "Anchors", "Revocation" and "Device checks"). The new device, signed in at a terminal to an
+//! account with a master key, reads the recovery key there without echo and pins the account's
+//! master key only from an account record and a master backup that opens in PSK mode with that key.
+//! It issues its own certificate with the master key, shows the account's devices, revoked or not,
+//! then revokes with the master key the devices its user names stolen, stores its certificate,
+//! starts from the anchors of the devices no master-key revocation marks as stolen, revokes with
+//! its own key the devices its user names lost, and keeps neither key. Against a `skald-server`
+//! with GitHub sign-in through the stand-in, behind the recording relay of the sign-in tests, which
+//! the tests use as a proxy that sees and changes what goes through; the person's terminal is a
+//! pseudo-terminal, or a pseudo-console on Windows, and a test plays the person in headless Chrome.
 //!
 //! Ada's account is made by her first machine at a terminal, which shows its recovery key; her
 //! other machines are linked by hand, each certified with the keys of the machine that links it, as

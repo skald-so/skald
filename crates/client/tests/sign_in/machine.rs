@@ -1,7 +1,7 @@
 //! A machine without a browser: `skald` runs with an empty environment ([`bare_skald`]), `BROWSER`
-//! naming no program, a `PATH` with nothing on it and a home, a state directory and a temporary directory of its own, all under
-//! one directory that is removed on drop, in one-shot mode ([`ONE_SHOT`]). Several machines run on
-//! one this way.
+//! naming no program, a `PATH` with nothing on it and a home, a state directory and a temporary
+//! directory of its own, all under one directory that is removed on drop, in one-shot mode
+//! ([`ONE_SHOT`]). Several machines run on one this way.
 
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]

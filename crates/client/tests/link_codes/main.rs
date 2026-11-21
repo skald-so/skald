@@ -1,14 +1,14 @@
 //! Linking a new device with a link code (`docs/protocol/membership.md`, "Linking a device", "Link
 //! code" and "Device checks"). The new device, signed in at a terminal to an account with a master
-//! key, shows a code; its person types the code into `skald link` on a linked `client` device of the account at
-//! a terminal and confirms the new device's name and kind. The two run CPace through the server's
-//! relay, which never sees the code; the linked device issues the new device's certificate and a
-//! link object, and the new device stores its certificate, pins the master key, starts from the
-//! link's anchors, pins the personal space and gets into the account's channels. The server refuses
-//! a certificate over the devices limit. Against a `skald-server` with GitHub sign-in through the
-//! stand-in, behind the relay of the sign-in tests, which the tests use as a proxy that sees and
-//! changes what goes through. Messages, the history and played devices are as in the tests of the
-//! channel history.
+//! key, shows a code; its person types the code into `skald link` on a linked `client` device of
+//! the account at a terminal and confirms the new device's name and kind. The two run CPace through
+//! the server's relay, which never sees the code; the linked device issues the new device's
+//! certificate and a link object, and the new device stores its certificate, pins the master key,
+//! starts from the link's anchors, pins the personal space and gets into the account's channels.
+//! The server refuses a certificate over the devices limit. Against a `skald-server` with GitHub
+//! sign-in through the stand-in, behind the relay of the sign-in tests, which the tests use as a
+//! proxy that sees and changes what goes through. Messages, the history and played devices are as
+//! in the tests of the channel history.
 //!
 //! The CLI, as these tests use it, besides what the tests of signing in, spaces, channels, devices
 //! and the history use:

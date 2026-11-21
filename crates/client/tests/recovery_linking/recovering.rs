@@ -115,7 +115,8 @@ pub fn play(
     }
 }
 
-/// The arguments of `skald <before> sign-in --server <cloud> --with-recovery-key`, then each of `named`'s options with its device.
+/// The arguments of `skald <before> sign-in --server <cloud> --with-recovery-key`, then each of
+/// `named`'s options with its device.
 pub fn recovery_args(cloud: &Cloud, before: &[&str], named: &[(&str, DeviceId)]) -> Vec<String> {
     let mut args: Vec<String> = before.iter().map(|arg| (*arg).to_owned()).collect();
     args.extend([SIGN_IN, SERVER, &cloud.url, WITH_RECOVERY_KEY].map(str::to_owned));

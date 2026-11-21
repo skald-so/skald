@@ -1,8 +1,6 @@
 //! `skald sign-in` opens the verification page with its code filled in, through a file only its
 //! user reads, and prints one fallback line with the link.
 
-use std::fs;
-
 use crate::browser::{APPROVE, CODE_FIELD, SIGN_IN_GITHUB, SUBMIT};
 use crate::cloud::shown_grant;
 use crate::machine::{SERVER, SIGN_IN};
@@ -40,7 +38,7 @@ fn sign_in_opens_the_verification_page_with_its_code_through_a_file_only_its_use
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
-        let mode = fs::metadata(&file)
+        let mode = std::fs::metadata(&file)
             .expect("the opened file")
             .permissions()
             .mode();
