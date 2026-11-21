@@ -47,14 +47,15 @@ pub fn first_at_terminal(
     run
 }
 
-/// Every string in `text` in the shown form of a recovery key, 52 characters of the base32
-/// alphabet of RFC 4648, §6, in groups of four joined by `-`, each once, in order.
+/// Every string in `text` in the shown form of a recovery key, 3 groups of 4 characters of
+/// Crockford's base32 joined by `-`, each once, in order.
 pub fn keys_in(text: &str) -> Vec<String> {
+    const LENGTH: usize = 14;
     let chars: Vec<char> = text.chars().collect();
-    let digit = |c: char| c.is_ascii_uppercase() || ('2'..='7').contains(&c);
+    let digit = |c: char| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c);
     let mut found: Vec<String> = Vec::new();
     for start in 0..chars.len() {
-        let Some(window) = chars.get(start..start + 64) else {
+        let Some(window) = chars.get(start..start + LENGTH) else {
             break;
         };
         let shaped = window.iter().enumerate().all(
@@ -62,10 +63,11 @@ pub fn keys_in(text: &str) -> Vec<String> {
                 if at % 5 == 4 { *c == '-' } else { digit(*c) }
             },
         );
-        let bounded = |c: Option<&char>| c.is_none_or(|c| !(digit(*c) || *c == '-'));
+        let bounded =
+            |c: Option<&char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == '-'));
         if shaped
             && bounded(start.checked_sub(1).and_then(|at| chars.get(at)))
-            && bounded(chars.get(start + 64))
+            && bounded(chars.get(start + LENGTH))
         {
             let key: String = window.iter().collect();
             if !found.contains(&key) {

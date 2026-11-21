@@ -5,7 +5,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - Each vector but [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task), [Queue key object](#queue-key-object), [Invite key](#invite-key) and [Invite link](#invite-link) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
-- The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
+- The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `0123-4567-89AB`; the backup seals that master private key with that recovery key under the nonce `000102…0b`, the 12 bytes 00 to 0b.
 - The `ssh` of the certificate with an SSH signature is genuine: by the Ed25519 SSH key of the secret key "TEST 1024" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, over the certificate's `account`, `device` and `signing`; the certificate's own signatures are placeholders.
 - The presence value is genuine: signed by Alice's device's key "TEST 1" and sealed under the presence key of the history key `000102…0f`, the 16 bytes 00 to 0f.
 - The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
@@ -694,34 +694,33 @@ b1e1583b84bd49c7051a69127c8006815042592ce391c8869ebdf88dff1cbfc2
   <<{
     1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
     2: h'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
-    3: h'b1f1b840de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b',
+    3: h'888e5e2ea2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d00659',
     4: 1
   }>>,
-  h'd38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe47440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01'
+  h'125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06'
 ]
 ```
 
 ```hex
 82585ba40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025820d75a980182b10a
-b7d54bfed3c964073a0ee172f3daa62325af021a68f707511a035820b1f1b840
-de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b04015840
-d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
-7440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01
+b7d54bfed3c964073a0ee172f3daa62325af021a68f707511a035820888e5e2e
+a2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d0065904015840
+125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd
+52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06
 ```
 
 ## Master backup
 
 ```cbor-diag
 [
-  h'0ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b0471c91b',
-  h'0ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44'
+  h'000102030405060708090a0b',
+  h'6018c931902d0d3ae029f3b84e7e56e85d313c4f166791cd6efa885903232a04a46589aaac9da21c4761296231b759d3'
 ]
 ```
 
 ```hex
-8258200ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b04
-71c91b58300ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376
-adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44
+824c000102030405060708090a0b58306018c931902d0d3ae029f3b84e7e56e8
+5d313c4f166791cd6efa885903232a04a46589aaac9da21c4761296231b759d3
 ```
 
 ## Certificate with an SSH signature

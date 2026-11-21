@@ -1,19 +1,17 @@
 //! A device linked with the recovery key keeps neither the recovery key nor the master private
 //! key, and sends neither.
 
-use skald_crypto::RecoveryKey;
-
 use crate::keys;
 use crate::machine::{KEY_STORAGE, Machine};
 use crate::system::Entry;
 use crate::world::World;
 use crate::{ADA_HOST, Ada, LOST, NEW_HOST, master_private_key, recovered, shows_key, sign_up};
 
-/// Whether `bytes` hold `ada`'s recovery key, as bytes or in its shown form, or `master`, the
-/// master private key.
+/// Whether `bytes` hold `ada`'s recovery key, as its characters or in its shown form, or `master`,
+/// the master private key.
 fn holds_a_key(bytes: &[u8], ada: &Ada, master: &[u8; 32]) -> bool {
-    let key = RecoveryKey::parse(&ada.key).expect("a recovery key");
-    keys::holds(bytes, &*key.to_bytes())
+    let key: String = ada.key.split('-').collect();
+    keys::holds(bytes, key.as_bytes())
         || keys::holds(bytes, master)
         || shows_key(&String::from_utf8_lossy(bytes), &ada.key)
 }

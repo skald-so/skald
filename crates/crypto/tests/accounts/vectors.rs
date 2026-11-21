@@ -1,16 +1,15 @@
 //! The vectors of `docs/protocol/test-vectors.md`, "Account record" and "Master backup", which
 //! decode and encode back to the published bytes. The record, at revision 1, is that of the
-//! account of the other vectors, its master key RFC 8032's "TEST 1" key and its recovery key the 32
-//! bytes 00 to 1f. The backup seals that master private key to that recovery key with the
-//! ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of RFC 9180, Appendix A.1.2, so its bytes
-//! are fixed: sealing with that ephemeral key gives them byte for byte, and they open as "Account"
-//! says.
+//! account of the other vectors, its master key RFC 8032's "TEST 1" key and its recovery key
+//! `0123-4567-89AB`. The backup seals that master private key with that recovery key under the
+//! nonce of the 12 bytes 00 to 0b, so its bytes are fixed: the code under test gives them byte for
+//! byte with that nonce, and they open as "Account" says.
 
-use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, open_master_backup};
+use skald_crypto::{RecoveryKey, SigningKey, new_recovery_with_nonce, open_recovery, sign_account};
 use skald_proto::{AccountBody, AccountId, AccountRecord, Cbor, MasterBackup};
 
 use crate::common::{hex, hex32};
-use crate::fixtures::{open_as_specified, recovery_public};
+use crate::fixtures::{derived, open_as_specified};
 
 const DOC: &str = include_str!("../../../../docs/protocol/test-vectors.md");
 
@@ -19,10 +18,10 @@ const ACCOUNT: &str = "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5e9";
 /// RFC 8032, §7.1, "TEST 1": the secret key and its public key.
 const MASTER_SECRET: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
 const MASTER_PUBLIC: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
-/// The recovery key: 32 bytes 00 to 1f.
-const RECOVERY: &str = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
-/// RFC 9180, Appendix A.1.2: `ikmE`.
-const EPHEMERAL: &str = "78628c354e46f3e169bd231be7b2ff1c77aa302460a26dbfa15515684c00130b";
+/// The recovery key, in its shown form.
+const RECOVERY: &str = "0123-4567-89AB";
+/// The backup's nonce: the 12 bytes 00 to 0b.
+const NONCE: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 
 fn account() -> AccountId {
     ACCOUNT.parse().expect("an account ID")
@@ -43,18 +42,32 @@ fn published(name: &str) -> Vec<u8> {
     hex(block)
 }
 
+/// The vectors' record and backup: those the published bytes encode.
+fn vectors() -> (AccountRecord, MasterBackup) {
+    let record = published("Account record");
+    let backup = published("Master backup");
+    let decoded = (
+        AccountRecord::from_cbor(&record).expect("the record vector decodes"),
+        MasterBackup::from_cbor(&backup).expect("the backup vector decodes"),
+    );
+    assert_eq!(decoded.0.to_cbor(), record, "the record, byte for byte");
+    assert_eq!(decoded.1.to_cbor(), backup, "the backup, byte for byte");
+    decoded
+}
+
+/// The record names the account, "TEST 1" and the recovery HPKE key the recovery key derives on
+/// it; the backup opens, as "Account" says, to the private key "TEST 1" and with the code under
+/// test to it and to that recovery HPKE key.
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn the_test_vectors_have_an_account_record() {
-    let encoded = published("Account record");
+fn the_test_vectors_are_derived_and_sealed_as_the_spec_says() {
+    let (record, backup) = vectors();
+    let (aead, recovery_public) = derived(RECOVERY, account());
 
-    let record = AccountRecord::from_cbor(&encoded).expect("the vector decodes");
-
-    assert_eq!(record.to_cbor(), encoded, "byte for byte");
     let body = record.body();
     assert_eq!(body.account, account());
     assert_eq!(body.master, hex32(MASTER_PUBLIC));
-    assert_eq!(body.recovery, recovery_public(&hex32(RECOVERY)));
+    assert_eq!(body.recovery, recovery_public);
     assert_eq!(body.revision, 1);
     let alone = AccountBody::from_cbor(record.body_bytes()).expect("the body decodes");
     assert_eq!(
@@ -62,42 +75,27 @@ fn the_test_vectors_have_an_account_record() {
         record.body_bytes(),
         "the body, byte for byte"
     );
-}
-
-#[cfg_attr(not(target_arch = "wasm32"), test)]
-#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn the_test_vectors_have_a_master_backup_that_opens_as_the_spec_says() {
-    let encoded = published("Master backup");
-
-    let backup = MasterBackup::from_cbor(&encoded).expect("the vector decodes");
-
-    assert_eq!(backup.to_cbor(), encoded, "byte for byte");
-    assert_eq!(
-        backup.enc,
-        HpkeKey::from_recovery_key(&hex32(EPHEMERAL)).public_key(),
-        "enc is the public key of DeriveKeyPair(ikmE)"
-    );
-    let opened = open_as_specified(&backup.enc, &backup.ct, &hex32(RECOVERY), account());
+    assert_eq!(backup.nonce, NONCE);
+    let opened = open_as_specified(&backup, &aead, account());
     assert_eq!(opened, Some(hex(MASTER_SECRET)));
-    let recovery = RecoveryKey::from_bytes(&hex32(RECOVERY));
-    let key = open_master_backup(&backup, &recovery, account(), &hex32(MASTER_PUBLIC))
-        .expect("the vector opens with its recovery key");
-    assert_eq!(key.public_key(), hex32(MASTER_PUBLIC));
+    let recovery = RecoveryKey::parse(RECOVERY).expect("a recovery key");
+    let recovered =
+        open_recovery(&record, &backup, &recovery).expect("the vector opens with its recovery key");
+    assert_eq!(*recovered.master.to_bytes(), hex32(MASTER_SECRET));
+    assert_eq!(recovered.hpke.public_key(), recovery_public);
 }
 
+/// The code under test makes the vectors byte for byte with their nonce.
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
-fn a_backup_sealed_with_the_vectors_ephemeral_key_matches_it_byte_for_byte() {
+fn a_recovery_made_with_the_vectors_nonce_matches_them_byte_for_byte() {
     let master = SigningKey::from_bytes(&hex32(MASTER_SECRET));
     assert_eq!(master.public_key(), hex32(MASTER_PUBLIC));
-    let recovery = RecoveryKey::from_bytes(&hex32(RECOVERY));
+    let recovery = RecoveryKey::parse(RECOVERY).expect("a recovery key");
 
-    let sealed = skald_crypto::seal_master_backup_with_ephemeral(
-        &master,
-        &recovery,
-        account(),
-        &hex32(EPHEMERAL),
-    );
+    let (body, backup) = new_recovery_with_nonce(&master, &recovery, account(), NONCE);
 
-    assert_eq!(sealed.to_cbor(), published("Master backup"));
+    let record = sign_account(&body, &master).expect("a valid record");
+    assert_eq!(record.to_cbor(), published("Account record"));
+    assert_eq!(backup.to_cbor(), published("Master backup"));
 }

@@ -46,12 +46,12 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2"]
 
 [dev-dependencies]
 # History entries a compromised device seals as skald-crypto never would, such as one whose body
-# names another channel.
+# names another channel; the master backup opened with the recovery key a run shows, apart from the
+# code under test, with argon2 and hpke.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 axum = "0.8.9"
 curve25519-dalek = "5"
-# The master backup opened with the recovery key a run shows, apart from the code under test.
-hkdf = "0.13"
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "x25519"] }
 # A device the members do not admit, which joins a channel's group by an external Commit.
 mls-rs = "0.57.1"

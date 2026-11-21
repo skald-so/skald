@@ -131,7 +131,7 @@ mod tests {
         let account = AccountId::generate();
         let master = SigningKey::generate();
         let other = SigningKey::generate();
-        let key = |seed| HpkeKey::from_recovery_key(&[seed; 32]).public_key();
+        let key = |seed| HpkeKey::from_ikm(&[seed; 32]).public_key();
         let first = record(account, &master, (key(1), 1), &master);
         let second = record(account, &master, (key(2), 2), &master);
         let tied = record(account, &master, (key(3), 2), &master);
