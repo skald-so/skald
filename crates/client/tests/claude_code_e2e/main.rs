@@ -22,6 +22,9 @@
 //! The sessions of `modes.rs` and `inline.rs` run under the person's delivery settings, as the
 //! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
 //! an idle session to wake run on Unix only, where the client writes into the socket.
+//!
+//! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
+//! marketplace of this checkout, and nothing else of Skald's.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -31,6 +34,7 @@ mod delivery;
 mod inline;
 #[cfg(unix)]
 mod modes;
+mod plugin;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;
