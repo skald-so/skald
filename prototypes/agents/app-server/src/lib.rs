@@ -9,7 +9,6 @@
 
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio as Pipe};
 use std::sync::Arc;
@@ -20,6 +19,7 @@ use std::time::Duration;
 
 use agent_inbox::render;
 use agent_source::Source;
+use agent_source::unix_socket::UnixStream;
 use serde_json::{Value, json};
 use tungstenite::WebSocket;
 

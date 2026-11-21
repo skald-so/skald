@@ -5,7 +5,7 @@
 
 use skald_crypto::Isk;
 
-use crate::fixtures::{draft, hex};
+use crate::fixtures::{draft, hex, vector_section};
 
 /// The fixed ISK: the draft's ISK_IR.
 fn vector_isk() -> Isk {
@@ -20,7 +20,6 @@ const PLAINTEXT: &[u8] = b"skald link test";
 const REQUEST_SEALED: &str = "1ac64ce7dc7b6554503c135dc7ce92240353fc905792016f23a2a16c7e79f0";
 const GRANT_SEALED: &str = "d04b154ed6d577f0279c06f14cd70c537cc273da51bdb2cd700312b5337e81";
 
-const DOC: &str = include_str!("../../../../docs/protocol/test-vectors.md");
 /// The section of the doc that gives the keys.
 const SECTION: &str = "## Link code keys";
 
@@ -35,16 +34,7 @@ fn the_keys_of_the_fixed_isk_are_the_vectors() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_test_vectors_give_the_keys_of_the_fixed_isk() {
-    let mut lines = DOC.lines().skip_while(|line| *line != SECTION);
-    assert!(
-        lines.next().is_some(),
-        "test-vectors.md has no section {SECTION:?}"
-    );
-    let section: String = lines
-        .take_while(|line| !line.starts_with("## "))
-        .flat_map(str::split_whitespace)
-        .collect::<String>()
-        .to_lowercase();
+    let section = vector_section(SECTION);
     for (what, value) in [
         ("the ISK", draft::ISK),
         ("the request key", REQUEST_KEY),

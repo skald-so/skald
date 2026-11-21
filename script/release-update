@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Writes the next release into this checkout of dev, which has its history and tags: the version in
-# [workspace.package] of Cargo.toml and for every workspace crate in Cargo.lock, and its section in
-# CHANGELOG.md under `## [Unreleased]`, made by the git-cliff of script/lib/release.sh with cliff.toml.
+# [workspace.package] of Cargo.toml, for every workspace crate in Cargo.lock and in the Claude Code
+# plugin's manifest, and its section in CHANGELOG.md under `## [Unreleased]`, made by the git-cliff
+# of script/lib/release.sh with cliff.toml.
 # Prints the version. Exits 1 and changes nothing when there is nothing to release: no PR merged
 # since the last release tag, or the version tagged already; 2 on an error. The rule: "Release" in
 # docs/dev/infrastructure.md. script/release-pr runs it; script/release-pr-test tests it.
@@ -72,6 +73,7 @@ section=$(cliff --unreleased --tag "v$version" | sed -e '/./,$!d')
 
 SECTION=$section awk '{ print } $0 == "## [Unreleased]" { print ""; print ENVIRON["SECTION"] }' \
   "$root/CHANGELOG.md" >"$tmp/CHANGELOG.md"
-set_version "$root" "$version" || error "Cargo.toml has no version in [workspace.package]"
+set_version "$root" "$version" ||
+  error "Cargo.toml has no version in [workspace.package], or $plugin_manifest is not a JSON object"
 cat "$tmp/CHANGELOG.md" >"$root/CHANGELOG.md"
 echo "$version"

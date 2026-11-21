@@ -175,7 +175,11 @@ impl Check<'_> {
                     // A Unix socket's path has at most 103 bytes on macOS: the watcher connects
                     // through a shorter link.
                     let short = self.work.join(format!("{name}.sock"));
+                    #[cfg(unix)]
                     std::os::unix::fs::symlink(socket, &short)?;
+                    // Off Unix the session, in a pseudo-terminal, never starts.
+                    #[cfg(not(unix))]
+                    let _ = socket;
                     watcher = Some(Watcher::start(short, watch.clone()));
                 }
                 None => eprintln!(

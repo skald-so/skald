@@ -71,8 +71,21 @@ pub(crate) enum Refusal {
     DeviceCertified,
     /// A hello whose `session` another device's run of the account holds.
     LinkSessionTaken,
-    /// No such open run of the session's account.
+    /// No such open run of the session's account, or of the run's token.
     NoLinkRun,
+    /// No open run without a session that the session's account may pair has the pairing.
+    NoPairing,
+    /// The run's token sent as many later messages as it may: the number it holds.
+    TooManyLinkMessages(i32),
+    /// The account entered as many pairings the server does not hold as it may of late.
+    TooManyPairings,
+    /// A challenge for a device's session the server did not issue for the device, an expired one,
+    /// or one another request used.
+    ChallengeRefused,
+    /// A signature that does not verify with the device's signing key.
+    SignatureRefused,
+    /// A revoked device.
+    DeviceRevoked,
     /// A grant the server does not take, for the reason it holds.
     Grant(String),
     /// No such service token of the space.
@@ -236,7 +249,45 @@ impl IntoResponse for Refusal {
                 StatusCode::NOT_FOUND,
                 "no-link-run",
                 "No such link run",
-                "The session's account has no open run with this session: it ended or never opened.",
+                "No open run that this request reaches has this session: it ended or never opened.",
+            ),
+            Refusal::NoPairing => problem(
+                StatusCode::NOT_FOUND,
+                "no-link-run",
+                "No such link run",
+                "No open run that this account may pair has this pairing.",
+            ),
+            Refusal::TooManyLinkMessages(limit) => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many-link-messages",
+                "Too many link messages",
+                &format!("The run's token sent as many later messages as it may: {limit}."),
+            ),
+            Refusal::TooManyPairings => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many-pairings",
+                "Too many pairings",
+                "The account entered too many pairings the server does not hold: try again later.",
+            ),
+            Refusal::ChallengeRefused => problem(
+                bad,
+                "challenge-refused",
+                "Challenge refused",
+                "The server did not issue this challenge for the device, it expired, or another \
+                 request used it.",
+            ),
+            Refusal::SignatureRefused => problem(
+                bad,
+                "signature-refused",
+                "Signature refused",
+                "The signature does not verify with the device's signing key over the server's \
+                 origin.",
+            ),
+            Refusal::DeviceRevoked => problem(
+                StatusCode::FORBIDDEN,
+                "device-revoked",
+                "Device revoked",
+                "The device is revoked.",
             ),
             Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
             Refusal::NoServiceToken => problem(

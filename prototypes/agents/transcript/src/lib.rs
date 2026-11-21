@@ -261,15 +261,18 @@ mod tests {
         let (_dir, path) = written(&CLAUDE.replace(ID, "x"));
         assert!(read_seen(Agent::Claude, &path, &ids()).unwrap().is_empty());
         // A file that exists but cannot be read is an error, unlike one not written yet.
-        use std::os::unix::fs::PermissionsExt;
-        let (_dir, path) = written(CLAUDE);
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
-        let unreadable = read_seen(Agent::Claude, &path, &ids());
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-        assert_eq!(
-            unreadable.unwrap_err().kind(),
-            io::ErrorKind::PermissionDenied
-        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let (_dir, path) = written(CLAUDE);
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+            let unreadable = read_seen(Agent::Claude, &path, &ids());
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            assert_eq!(
+                unreadable.unwrap_err().kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
         let missing = path.with_file_name("none.jsonl");
         assert!(
             read_seen(Agent::Claude, &missing, &ids())

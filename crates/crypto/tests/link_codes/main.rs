@@ -2,7 +2,8 @@
 //! shown form and its entry; CPACE-RISTR255-SHA512 as initiator and responder, checked against the
 //! test vectors of draft-irtf-cfrg-cpace-21, Appendix B.3, and against `pakery-cpace`, another
 //! implementation of the draft; the request and grant keys of a run's ISK, with the vector of
-//! `docs/protocol/test-vectors.md`; and the link messages in `skald-proto`.
+//! `docs/protocol/test-vectors.md`; runs of a new device without a session, with their pairing;
+//! and the link messages in `skald-proto`.
 //!
 //! The interfaces, as these tests use them, in `skald-crypto`:
 //! - `LinkCode::generate()`: a fresh code. `LinkCode::from_entry(&str)`: an entry read as "Link
@@ -20,6 +21,12 @@
 //!   &scalar, prs, ci, sid, ad, &share, peer_ad)` with the scalar given.
 //! - Shares are 32 bytes. `finish` and the responses are `Err` for a share that does not decode or
 //!   a K that is the identity.
+//! - `LinkPairing::generate()`, `LinkPairing::from_entry(&str)`, `as_str()` and `Display`: a run's
+//!   pairing, 6 characters. `LinkEntry::from_entry(&str)`: `Code(LinkCode)` for 6 characters,
+//!   `Paired { pairing, code }` for 12. `LinkCode::shown_with(&self, &pairing)`: the 12 characters
+//!   in three groups of four. `LinkCode::initiate_paired(&self, &pairing, &session)` and
+//!   `LinkCode::respond_paired(&self, &pairing, &session, &share)`: `initiate` and `respond` with
+//!   the pairing's CI.
 //! - `Isk::from_bytes(&[u8; 64])`, `Isk::to_bytes()`: the ISK and its 64 bytes.
 //!   `Isk::request_key()` and `Isk::grant_key()`: its `LinkKey`s. `LinkKey::to_bytes()`: its 16
 //!   bytes. `LinkKey::seal(self, plaintext)`: `sealed`, the key spent. `LinkKey::open(sealed)`: the
@@ -37,5 +44,6 @@ mod codes;
 mod cross_check;
 mod keys;
 mod messages;
+mod pairings;
 mod runs;
 mod vectors;

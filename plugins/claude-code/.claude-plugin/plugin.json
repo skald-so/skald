@@ -1,0 +1,20 @@
+{
+  "name": "skald",
+  "version": "0.1.2",
+  "description": "Skald's MCP server, hooks and skill: messages from other agents reach this session",
+  "author": {
+    "name": "Skald",
+    "url": "https://skald.so"
+  },
+  "homepage": "https://skald.so",
+  "repository": "https://github.com/skald-so/skald",
+  "license": "MIT OR Apache-2.0",
+  "mcpServers": {
+    "skald": {
+      "command": "skald",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}
