@@ -1,6 +1,7 @@
 //! `skald remove-member`, `skald exclude-device`, `skald add-to-channel`, `skald
-//! remove-from-channel` and `skald set-history-period`: an admin's device changes a space's members
-//! or its policy's `history` by the next roster revision, which it signs, checks as its members
+//! remove-from-channel`, `skald set-history-period`, `skald make-admin` and `skald
+//! hand-over-admin`: an admin's device changes a space's members, their roles or its policy's
+//! `history` by the next roster revision, which it signs, checks as its members
 //! accept it, and writes and sends as [`crate::spaces`] says (`docs/protocol/membership.md`,
 //! "Roster" and "Policy"). It then brings the groups of the space's channels in line with it
 //! ([`crate::groups`]): it removes the devices no longer admitted, adds a new channel member's
@@ -8,7 +9,9 @@
 //! period.
 
 use skald_crypto::check_device;
-use skald_proto::{Cert, ChannelId, ChannelMember, DeviceId, Member, NonEmpty, RosterBody};
+use skald_proto::{
+    AccountId, Cert, ChannelId, ChannelMember, DeviceId, Member, NonEmpty, Role, RosterBody,
+};
 
 use crate::connection::printable;
 use crate::follow::Own;
@@ -31,6 +34,11 @@ pub enum Edit {
     RemoveFromChannel { channel: String, handle: String },
     /// Sets the policy's `history` to these seconds, at least a day.
     HistoryPeriod(u64),
+    /// Makes the member of this handle an admin.
+    MakeAdmin(String),
+    /// Makes the member of this handle an admin, if it is not one, and the device's account a
+    /// member.
+    HandOver(String),
 }
 
 /// Makes `edit` in `synced`, a space the device follows: by the next revision, signed by the
@@ -161,7 +169,39 @@ fn make(
             body.policy.history = *seconds;
             Ok(format!("Set the history period to {period}"))
         }
+        Edit::MakeAdmin(handle) => {
+            let account = member(body, handle)?.account;
+            if !set_role(body, account, Role::Admin) {
+                return Err(format!("{handle} is an admin of the space {space} already"));
+            }
+            Ok(format!("Made {handle} an admin"))
+        }
+        Edit::HandOver(handle) => {
+            let account = member(body, handle)?.account;
+            if account == own.account {
+                return Err(format!(
+                    "{handle} is this device's own account; hand the admin rights to another member"
+                ));
+            }
+            set_role(body, account, Role::Admin);
+            set_role(body, own.account, Role::Member);
+            Ok(format!("Handed the admin rights to {handle}"))
+        }
     }
+}
+
+/// Gives the member of `account` in `body` the role `role`; whether that changed its role.
+fn set_role(body: &mut RosterBody, account: AccountId, role: Role) -> bool {
+    let mut members = body.members.clone().into_vec();
+    let Some(member) = members.iter_mut().find(|member| member.account == account) else {
+        return false;
+    };
+    if member.role == role {
+        return false;
+    }
+    member.role = role;
+    body.members = NonEmpty::from_vec(members).expect("the space keeps its members");
+    true
 }
 
 /// `seconds` as whole days, or else as whole hours, or else as seconds.
@@ -203,7 +243,6 @@ mod tests {
     use super::*;
     use crate::spaces::tests::{cert as certify, channel, first, member};
     use skald_crypto::SigningKey;
-    use skald_proto::AccountId;
 
     /// Ada's `acme` with Bob a member, its default channel with both and a channel with Ada; the
     /// certificate of a device of Bob's, chained to Bob's master key, and that device's key; Ada's
@@ -283,6 +322,25 @@ mod tests {
         let mut expected = body.clone();
         expected.policy.history = 36 * 3_600;
         assert_eq!(set, expected);
+
+        let made = edited(Edit::MakeAdmin("bob".to_owned()));
+        let mut expected = body.clone();
+        set_role(&mut expected, bob, Role::Admin);
+        assert_eq!(made, expected);
+        assert_eq!(made.member(ada.account).unwrap().role, Role::Admin);
+
+        let handed = edited(Edit::HandOver("bob".to_owned()));
+        set_role(&mut expected, ada.account, Role::Member);
+        assert_eq!(handed, expected);
+        let mut handed_to_admin = made.clone();
+        make(
+            &mut handed_to_admin,
+            &Edit::HandOver("bob".to_owned()),
+            own,
+            certs,
+        )
+        .unwrap();
+        assert_eq!(handed_to_admin, expected);
     }
 
     /// A period reads as whole days, hours or seconds.
@@ -318,8 +376,14 @@ mod tests {
             handle: handle.to_owned(),
         };
         let same = Edit::HistoryPeriod(body.policy.history);
-        let cases: [(&RosterBody, Edit, &str); 10] = [
+        let mut made = body.clone();
+        set_role(&mut made, cert.body().account, Role::Admin);
+        let cases: [(&RosterBody, Edit, &str); 14] = [
             (&body, same, "already"),
+            (&made, Edit::MakeAdmin("bob".to_owned()), "already"),
+            (&body, Edit::MakeAdmin("carol".to_owned()), "no member"),
+            (&body, Edit::HandOver("carol".to_owned()), "no member"),
+            (&body, Edit::HandOver("ada".to_owned()), "own account"),
             (&body, Edit::RemoveMember("carol".to_owned()), "no member"),
             (&body, Edit::RemoveMember("ada".to_owned()), "own account"),
             (&body, Edit::Exclude("laptop".to_owned()), "no device id"),

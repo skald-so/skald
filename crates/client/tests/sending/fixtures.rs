@@ -140,6 +140,7 @@ pub fn add_device_of_kind(
         issuer,
         issued: now(),
         ssh: None,
+        github: None,
         name: name.to_owned(),
         unknown: Unknown::default(),
     };

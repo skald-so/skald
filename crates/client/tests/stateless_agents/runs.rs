@@ -8,7 +8,8 @@
 //! - a run whose GroupInfo request fails, so it cannot check a message's sender, fails and acks
 //!   nothing, so the next run shows the message;
 //! - every command but `skald send` and `skald recv` without `--agent` or `--wait` refuses, leaving
-//!   nothing on the machine's disk.
+//!   nothing on the machine's disk;
+//! - it keeps nothing to tell a role change once by, so it tells of none.
 //!
 //! As a proxy that blocks WebSocket or streaming would (`transport_fallback/main.rs`), the relay
 //! answers `GET /ws`, and `GET /mailbox/events`, with `403 Forbidden` and no problem details.
@@ -17,7 +18,7 @@ use crate::fixtures::send;
 use crate::kit::RECV;
 use crate::member::JSON;
 use crate::scene::{Scene, killed_when, shown_with};
-use crate::world::ACME;
+use crate::world::{ACME, ADMIN, run, words};
 
 /// What Ada says; none is anywhere else.
 const ADA_SAYS: [&str; 2] = [
@@ -35,6 +36,35 @@ const POLL_HEAD: &str = "post /mailbox/poll";
 
 /// An ack over HTTPS, as its line starts.
 const ACK: &str = "POST /mailbox/ack";
+
+/// Ada's `skald make-admin acme <bob>` makes Bob an admin by a revision after the agent's anchor.
+/// Each of two runs of the agent accepts that revision anew, and neither shows a line holding Bob's
+/// handle, `admin` and Ada's handle.
+#[test]
+fn a_run_tells_of_no_role_change() {
+    let scene = Scene::new(
+        [3_135_764_001, 3_135_764_002],
+        ["ada-stateless-roles-standin", "bob-stateless-roles-standin"],
+    );
+    let (ada, bob) = (scene.ada(), scene.bob());
+    let made = run(&ada.machine, &["make-admin", ACME, bob.handle.as_str()]);
+    assert!(made.success, "{made:?}");
+
+    for _ in 0..2 {
+        let got = scene.agent.received();
+
+        let told: Vec<String> = (got.shown().lines())
+            .filter(|line| {
+                let held = words(line);
+                held.contains(&bob.handle.as_str())
+                    && held.contains(&ADMIN)
+                    && held.contains(&ada.handle.as_str())
+            })
+            .map(str::to_owned)
+            .collect();
+        assert!(told.is_empty(), "a role change told: {got:?}");
+    }
+}
 
 /// Ada says `text` in the channel; fails unless her send succeeds.
 #[track_caller]

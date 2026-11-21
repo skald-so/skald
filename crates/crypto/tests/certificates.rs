@@ -110,6 +110,7 @@ fn body(device: u8, kind: DeviceKind, issuer: Option<u8>) -> CertBody {
         issuer: issuer.map(id),
         issued: 1_762_819_200,
         ssh: None,
+        github: None,
         name: format!("Device {device}"),
         unknown: Unknown::default(),
     }
@@ -362,11 +363,11 @@ fn a_client_device_issues_every_kind() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_body_is_checked_as_the_bytes_it_came_in() {
-    // A body with a field of a later version: key 10, after the known keys 1 to 9.
+    // A body with a field of a later version: key 11, after the known keys 1 to 10.
     let mut bytes = body(A, DeviceKind::Client, None).to_cbor();
     assert_eq!(bytes[0], 0xa7, "a map of 7 fields");
     bytes[0] = 0xa8;
-    bytes.extend([0x0a, 0x63, b'n', b'e', b'w']);
+    bytes.extend([0x0b, 0x63, b'n', b'e', b'w']);
     let cert = cert_of(
         &bytes,
         &signature(MASTER, CERT, &bytes),

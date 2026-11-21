@@ -29,6 +29,7 @@ fn body_for(seed: u8, kind: DeviceKind, issuer: Option<u8>, account: u8) -> Cert
         issuer: issuer.map(device_id),
         issued: 0,
         ssh: None,
+        github: None,
         name: "Test".to_owned(),
         unknown: Unknown::default(),
     }
