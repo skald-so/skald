@@ -2426,7 +2426,8 @@ pub(crate) mod tests {
     }
 
     /// A change that sets the role of a member a later revision lacks does not apply to it, saying
-    /// the member is gone, by its handle, and naming that revision; one whose members are all in it does.
+    /// the member is gone, by its handle, and naming that revision; one whose members are all in
+    /// it does.
     #[test]
     fn role_change_of_a_member_gone_from_a_later_revision_does_not_apply() {
         let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
