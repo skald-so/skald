@@ -266,36 +266,36 @@ pub fn revocation(
     Revocation::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
-/// The account record of [`account`] at revision 1: its master key "TEST 1", its recovery HPKE
-/// key `DeriveKeyPair` of the 32 bytes 00 to 1f, signed by "TEST 1".
+/// The account record of [`account`] at revision 1: its master key "TEST 1", the recovery HPKE key
+/// of the recovery key `0123-4567-89AB`, signed by "TEST 1".
 fn account_record() -> AccountRecord {
     let body = AccountBody {
         account: account(),
         master: hex(KEY_1).try_into().unwrap(),
-        recovery: hex("b1f1b840de7a3241b02748cf9b05b74dc8c5e8451298738817bd76aa8ebe8c2b")
+        recovery: hex("888e5e2ea2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d00659")
             .try_into()
             .unwrap(),
         revision: 1,
         unknown: Unknown::default(),
     };
     let signature = hex(
-        "d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
-         7440b0119e58628732add7f9ad417bb32fc4d62b6c41f1843701ba14d778ac01",
+        "125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd
+         52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06",
     );
     AccountRecord::from_parts(body.to_cbor(), signature.try_into().unwrap()).unwrap()
 }
 
-/// The master private key "TEST 1" sealed to the recovery key 00 to 1f on [`account`], with the
-/// ephemeral key pair `DeriveKeyPair(ikmE)` of RFC 9180, Appendix A.1.2.
+/// The master private key "TEST 1" sealed with the recovery key `0123-4567-89AB` on [`account`],
+/// under the nonce of the 12 bytes 00 to 0b.
 fn master_backup() -> MasterBackup {
     MasterBackup {
-        enc: hex("0ad0950d9fb9588e59690b74f1237ecdf1d775cd60be2eca57af5a4b0471c91b")
-            .try_into()
-            .unwrap(),
+        nonce: hex("000102030405060708090a0b").try_into().unwrap(),
         ct: hex(
-            "0ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376adc97b8c6c
-             fd6dfd3e6ec094b32961bb7fc2b97e44",
-        ),
+            "6018c931902d0d3ae029f3b84e7e56e85d313c4f166791cd6efa885903232a04
+             a46589aaac9da21c4761296231b759d3",
+        )
+        .try_into()
+        .unwrap(),
     }
 }
 

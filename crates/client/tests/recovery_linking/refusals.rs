@@ -1,11 +1,13 @@
 //! What a device linked with the recovery key refuses: a key that does not open the master backup,
-//! and a master key the server gives without a record it signed and a backup that opens in PSK mode
-//! with the recovery key. It signs nothing then.
+//! and a master key the server gives without a record it signed and a backup that opens with the
+//! recovery key. It signs nothing then.
 
+use aes_gcm::aead::{Aead as _, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::Value;
-use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, sign_account};
+use skald_crypto::{RecoveryKey, SigningKey, sign_account};
 use skald_proto::{AccountRecord, Cbor as _, MasterBackup};
 
 use crate::cloud::ASK_MASTER;
@@ -17,9 +19,6 @@ use crate::{
     ADA_HOST, Ada, LOST, NEW_HOST, NO_RECOVERY_KEY, assert_links_later, assert_signed_nothing,
     recover, sign_up,
 };
-
-/// The master backup's HPKE `info`, as the spec fixes it.
-const BACKUP_INFO: &[u8] = b"skald master backup";
 
 /// Ada's new machine links with `key` naming her first device lost; fails unless the run fails and
 /// no machine signed anything. Gives the machine.
@@ -79,8 +78,8 @@ fn a_wrong_recovery_key_is_refused() {
 }
 
 /// The server gives another master key, with a record it signed naming the account's recovery HPKE
-/// key and a backup of its private key sealed to that key in base mode, which needs no recovery
-/// key to make. The run fails, signs nothing and keeps none of it. Once the server's answer is
+/// key and a backup of its private key sealed as "Account" says under an AES-256-GCM key of its
+/// own, as it can without the recovery key. The run fails, signs nothing and keeps none of it. Once the server's answer is
 /// given as it is, a later run on that machine links it.
 #[test]
 fn a_master_backup_sealed_without_the_recovery_key_is_refused() {
@@ -94,10 +93,20 @@ fn a_master_backup_sealed_without_the_recovery_key_is_refused() {
         body.master = forged_public;
         let master = SigningKey::from_bytes(&seed);
         let record = sign_account(&body, &master).expect("an account record");
-        let account = body.account.as_bytes();
-        let (enc, ct) =
-            HpkeKey::seal(&body.recovery, BACKUP_INFO, account, &seed).expect("a sealed backup");
-        let backup = MasterBackup { enc, ct };
+        let nonce = [0x5a; 12];
+        let ct = Aes256Gcm::new(&[0x4b; 32].into())
+            .encrypt(
+                &Nonce::from(nonce),
+                Payload {
+                    msg: &seed,
+                    aad: body.account.as_bytes(),
+                },
+            )
+            .expect("a sealed backup");
+        let backup = MasterBackup {
+            nonce,
+            ct: ct.try_into().expect("the key and the tag"),
+        };
         serde_json::json!({
             "master": b64(&forged_public),
             "record": b64(&record.to_cbor()),

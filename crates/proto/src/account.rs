@@ -1,7 +1,6 @@
 //! The account record and the master backup: `docs/protocol/membership.md`, "Account".
 
 use crate::cbor::{self, Codec, DecodeError, Item, MapOut, Unknown};
-use crate::envelope::{decode_sealed, encode_sealed};
 use crate::id::AccountId;
 use crate::signed::{Signed, SignedBody};
 
@@ -62,26 +61,26 @@ impl Codec for AccountBody {
 
 cbor::cbor!(AccountBody);
 
-/// The master private key sealed to the recovery key.
+/// The master private key sealed with the AEAD key of the recovery key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MasterBackup {
-    /// The HPKE encapsulated key.
-    pub enc: [u8; 32],
-    /// The 32-byte master private key, sealed.
-    pub ct: Vec<u8>,
+    /// The AES-256-GCM nonce.
+    pub nonce: [u8; 12],
+    /// The 32-byte master private key, sealed: the key and the 16-byte tag.
+    pub ct: [u8; 48],
 }
 
 impl Codec for MasterBackup {
     fn encode(&self) -> Vec<u8> {
-        encode_sealed(&self.enc, &self.ct)
+        cbor::array([cbor::bytes(&self.nonce), cbor::bytes(&self.ct)])
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        let (enc, ct) = decode_sealed(
-            item,
-            ["master-backup", "master-backup.enc", "master-backup.ct"],
-        )?;
-        Ok(Self { enc, ct })
+        let [nonce, ct] = item.tuple("master-backup")?;
+        Ok(Self {
+            nonce: nonce.fixed("master-backup.nonce")?,
+            ct: ct.fixed("master-backup.ct")?,
+        })
     }
 }
 

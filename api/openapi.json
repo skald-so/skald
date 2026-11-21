@@ -9973,7 +9973,7 @@
             "$ref": "#/components/schemas/AccountRecord"
           },
           "backup": {
-            "description": "The master backup, sealed to the recovery key the account record names.",
+            "description": "The master backup, sealed with the recovery key of the account record.",
             "$ref": "#/components/schemas/MasterBackup"
           }
         },

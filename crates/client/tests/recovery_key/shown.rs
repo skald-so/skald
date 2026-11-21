@@ -50,7 +50,7 @@ fn other_commands(machine: &Machine) -> Vec<(&'static str, String)> {
 /// Fails unless, once `key` was shown, `skald sign-in` at a terminal and the other commands on
 /// `machine` neither show it nor say a key waits.
 #[track_caller]
-fn assert_gone(cloud: &Cloud, machine: &Machine, key: &[u8; 32]) {
+fn assert_gone(cloud: &Cloud, machine: &Machine, key: &[u8; 12]) {
     let again = quiet_sign_in(cloud, machine, &[]);
     assert!(!holds_key(&again, key), "{again}");
     for (what, text) in other_commands(machine) {

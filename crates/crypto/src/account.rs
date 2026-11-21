@@ -3,73 +3,57 @@
 
 use std::fmt;
 
-use hkdf::Hkdf;
-use hpke::aead::AesGcm128;
-use hpke::kdf::HkdfSha256;
-use hpke::kem::X25519HkdfSha256;
-use hpke::{Deserializable as _, Kem, OpModeR, OpModeS, PskBundle, Serializable as _};
-use sha2::Sha256;
+use aes_gcm::aead::{Aead as _, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
 use skald_proto::{
-    ACCOUNT_LABEL, AccountBody, AccountId, AccountRecord, Cbor, DecodeError, MasterBackup,
+    ACCOUNT_LABEL, AccountBody, AccountId, AccountRecord, Cbor, DecodeError, MasterBackup, Unknown,
 };
 use zeroize::Zeroizing;
 
-use crate::hpke::Fixed;
+use crate::hpke::HpkeKey;
 use crate::sign::{SigningKey, random_secret, verify};
 
-/// `info` and `psk_id` of the master backup's seal.
-const BACKUP_INFO: &[u8] = b"skald master backup";
-/// `info` of the derivation of the master backup's PSK.
-const PSK_INFO: &[u8] = b"skald master backup psk";
-/// The base32 alphabet of RFC 4648, §6.
-const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-/// The characters of a recovery key's shown form, without `-`.
-const DIGITS: usize = 52;
+/// Crockford's base32 alphabet, in the order of its values.
+const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// The characters of a recovery key, and of each group of its shown form.
+const DIGITS: usize = 12;
+const GROUP: usize = 4;
+/// A terminal's bracketed-paste markers, removed whole from an input.
+const PASTE_MARKERS: [&str; 2] = ["\x1b[200~", "\x1b[201~"];
+/// What comes before the account ID in the salt of the recovery key's derivation.
+const SALT_PREFIX: &[u8] = b"skald recovery";
+/// Argon2id's memory in KiB, passes and lanes: "Account".
+const ARGON2_MEMORY: u32 = 262_144;
+const ARGON2_PASSES: u32 = 8;
+const ARGON2_LANES: u32 = 1;
 
-/// The KEM of the suite.
-type Dhkem = X25519HkdfSha256;
-
-/// An account's recovery key: 32 bytes, zeroed on drop and never shown but by [`RecoveryKey::shown`].
-pub struct RecoveryKey(Zeroizing<[u8; 32]>);
+/// An account's recovery key: 12 characters of Crockford's base32, zeroed on drop and never shown
+/// but by [`RecoveryKey::shown`].
+pub struct RecoveryKey(Zeroizing<[u8; DIGITS]>);
 
 impl RecoveryKey {
-    /// A new key from the cryptographically secure generator of the operating system, or in WASM
-    /// of the browser or Node.js.
+    /// A new key of 60 bits from the cryptographically secure generator of the operating system,
+    /// or in WASM of the browser or Node.js.
     ///
     /// # Panics
     /// If the random generator fails.
     pub fn generate() -> Self {
-        Self(random_secret())
+        let random = random_secret();
+        let mut bits = Zeroizing::new(u64::from_le_bytes(random[..8].try_into().expect("8 bytes")));
+        let mut key = Zeroizing::new([0; DIGITS]);
+        for digit in key.iter_mut() {
+            *digit = ALPHABET[usize::try_from(*bits & 0x1f).expect("5 bits")];
+            *bits >>= 5;
+        }
+        Self(key)
     }
 
-    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-        Self(Zeroizing::new(*bytes))
-    }
-
-    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
-        self.0.clone()
-    }
-
-    /// The text a person writes down: base32 of RFC 4648, §6, without padding, in groups of four
-    /// characters joined by `-`.
+    /// The text a person writes down: its 12 characters in 3 groups of 4 joined by `-`.
     pub fn shown(&self) -> Zeroizing<String> {
-        let mut digits = Zeroizing::new(Vec::with_capacity(DIGITS));
-        let (mut bits, mut count) = (0u16, 0);
-        for byte in self.0.iter() {
-            bits = (bits << 8) | u16::from(*byte);
-            count += 8;
-            while count >= 5 {
-                count -= 5;
-                digits.push(ALPHABET[usize::from((bits >> count) & 0x1f)]);
-            }
-            bits &= (1 << count) - 1;
-        }
-        if count > 0 {
-            digits.push(ALPHABET[usize::from((bits << (5 - count)) & 0x1f)]);
-        }
-        let mut shown = Zeroizing::new(String::with_capacity(DIGITS + DIGITS / 4));
-        for (at, digit) in digits.iter().enumerate() {
-            if at > 0 && at % 4 == 0 {
+        let mut shown = Zeroizing::new(String::with_capacity(DIGITS + DIGITS / GROUP));
+        for (at, digit) in self.0.iter().enumerate() {
+            if at > 0 && at % GROUP == 0 {
                 shown.push('-');
             }
             shown.push(char::from(*digit));
@@ -77,47 +61,56 @@ impl RecoveryKey {
         shown
     }
 
-    /// The key a person typed: its shown form in any case, with or without spaces and `-`.
+    /// The key a person typed or pasted: in any case, O read as 0 and I and L as 1; a terminal's
+    /// bracketed-paste markers removed whole and every other character outside the alphabet
+    /// skipped.
     ///
     /// # Errors
-    /// [`RecoveryKeyError`] if, without spaces and `-`, it is not 52 characters of the alphabet that
-    /// encode 32 bytes.
+    /// [`RecoveryKeyError`] unless exactly 12 characters of the alphabet are left.
     pub fn parse(input: &str) -> Result<Self, RecoveryKeyError> {
-        let mut key = Zeroizing::new([0; 32]);
-        let (mut bits, mut count, mut read, mut at) = (0u16, 0, 0, 0);
-        for c in input.chars().filter(|c| !matches!(c, ' ' | '-')) {
-            let value = u8::try_from(c.to_ascii_uppercase())
-                .ok()
-                .and_then(|c| ALPHABET.iter().position(|digit| *digit == c))
-                .ok_or(RecoveryKeyError)?;
-            read += 1;
-            if read > DIGITS {
-                return Err(RecoveryKeyError);
-            }
-            bits = (bits << 5) | u16::try_from(value).expect("a base32 digit");
-            count += 5;
-            if count >= 8 {
-                count -= 8;
-                key[at] = u8::try_from(bits >> count).expect("a byte");
-                at += 1;
-                bits &= (1 << count) - 1;
+        let mut unmarked = Zeroizing::new(input.to_owned());
+        for marker in PASTE_MARKERS {
+            if unmarked.contains(marker) {
+                unmarked = Zeroizing::new(unmarked.replace(marker, ""));
             }
         }
-        // 52 digits hold 32 bytes and 4 bits more, which are zero.
-        if read != DIGITS || bits != 0 {
+        let mut key = Zeroizing::new([0; DIGITS]);
+        let mut read = 0;
+        for c in unmarked.chars() {
+            let digit = match c.to_ascii_uppercase() {
+                'O' => b'0',
+                'I' | 'L' => b'1',
+                c => match u8::try_from(c) {
+                    Ok(c) if ALPHABET.contains(&c) => c,
+                    _ => continue,
+                },
+            };
+            *key.get_mut(read).ok_or(RecoveryKeyError)? = digit;
+            read += 1;
+        }
+        if read != DIGITS {
             return Err(RecoveryKeyError);
         }
         Ok(Self(key))
     }
 
-    /// The backup's PSK: `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup
-    /// psk", L = 32)`.
-    fn psk(&self) -> Zeroizing<[u8; 32]> {
-        let mut psk = Zeroizing::new([0; 32]);
-        Hkdf::<Sha256>::new(Some(b""), self.0.as_ref())
-            .expand(PSK_INFO, psk.as_mut())
-            .expect("32 bytes of HKDF-SHA256");
-        psk
+    /// Argon2id of the key on `account`, as "Account" says: the AEAD key of the master backup and
+    /// the recovery HPKE key pair.
+    fn derive(&self, account: AccountId) -> Derived {
+        let params = Params::new(ARGON2_MEMORY, ARGON2_PASSES, ARGON2_LANES, Some(64))
+            .expect("the spec's Argon2id parameters");
+        let mut salt = Vec::with_capacity(SALT_PREFIX.len() + 16);
+        salt.extend_from_slice(SALT_PREFIX);
+        salt.extend_from_slice(account.as_bytes());
+        let mut out = Zeroizing::new([0; 64]);
+        Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+            .hash_password_into(self.0.as_ref(), &salt, out.as_mut())
+            .expect("Argon2id of the spec's lengths");
+        let (aead, ikm) = out.split_at(32);
+        Derived {
+            aead: Zeroizing::new(aead.try_into().expect("32 bytes")),
+            hpke: HpkeKey::from_ikm(ikm.try_into().expect("32 bytes")),
+        }
     }
 }
 
@@ -133,11 +126,125 @@ pub struct RecoveryKeyError;
 
 impl fmt::Display for RecoveryKeyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("not a recovery key: 13 groups of four letters A to Z and digits 2 to 7")
+        f.write_str("not a recovery key: 12 letters and digits")
     }
 }
 
 impl std::error::Error for RecoveryKeyError {}
+
+/// What the recovery key derives on an account.
+struct Derived {
+    /// The AES-256-GCM key of the master backup.
+    aead: Zeroizing<[u8; 32]>,
+    /// The recovery HPKE key pair.
+    hpke: HpkeKey,
+}
+
+impl Derived {
+    fn cipher(&self) -> Aes256Gcm {
+        Aes256Gcm::new((&*self.aead).into())
+    }
+}
+
+/// What a master backup opened with the recovery key gives: the master key and the recovery HPKE
+/// key pair.
+pub struct Recovered {
+    pub master: SigningKey,
+    pub hpke: HpkeKey,
+}
+
+impl fmt::Debug for Recovered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Recovered(..)")
+    }
+}
+
+/// The body of the account record of `master` and `recovery` on `account`, revision 1, and the
+/// master backup that seals `master` with `recovery`, as "Account" says: one derivation, a random
+/// nonce.
+///
+/// # Panics
+/// If the random generator fails.
+pub fn new_recovery(
+    master: &SigningKey,
+    recovery: &RecoveryKey,
+    account: AccountId,
+) -> (AccountBody, MasterBackup) {
+    let mut nonce = [0; 12];
+    getrandom::fill(&mut nonce).expect("the random generator failed");
+    new_recovery_with_nonce(master, recovery, account, nonce)
+}
+
+/// [`new_recovery`] with the backup's `nonce`, for a test vector.
+pub fn new_recovery_with_nonce(
+    master: &SigningKey,
+    recovery: &RecoveryKey,
+    account: AccountId,
+    nonce: [u8; 12],
+) -> (AccountBody, MasterBackup) {
+    let derived = recovery.derive(account);
+    let sealed = derived
+        .cipher()
+        .encrypt(
+            &Nonce::from(nonce),
+            Payload {
+                msg: master.to_bytes().as_ref(),
+                aad: account.as_bytes(),
+            },
+        )
+        .expect("32 bytes within AES-GCM's length bound");
+    let body = AccountBody {
+        account,
+        master: master.public_key(),
+        recovery: derived.hpke.public_key(),
+        revision: 1,
+        unknown: Unknown::default(),
+    };
+    let ct = sealed.try_into().expect("the key and the tag");
+    (body, MasterBackup { nonce, ct })
+}
+
+/// The master key and the recovery HPKE key pair `backup` holds for the account of `record`,
+/// opened with `recovery`: one derivation. The caller checks `record` itself.
+///
+/// # Errors
+/// [`AccountError::Open`] if `backup` does not open with `recovery` on the record's account;
+/// [`AccountError::Key`] if it opens to something other than the private key of the record's
+/// `master`, or the derived recovery HPKE key is not the record's `recovery`.
+pub fn open_recovery(
+    record: &AccountRecord,
+    backup: &MasterBackup,
+    recovery: &RecoveryKey,
+) -> Result<Recovered, AccountError> {
+    let body = record.body();
+    let derived = recovery.derive(body.account);
+    let opened = Zeroizing::new(
+        derived
+            .cipher()
+            .decrypt(
+                &Nonce::from(backup.nonce),
+                Payload {
+                    msg: &backup.ct,
+                    aad: body.account.as_bytes(),
+                },
+            )
+            .map_err(|_| AccountError::Open)?,
+    );
+    let secret: Zeroizing<[u8; 32]> = Zeroizing::new(
+        opened
+            .as_slice()
+            .try_into()
+            .map_err(|_| AccountError::Key)?,
+    );
+    let master = SigningKey::from_bytes(&secret);
+    if master.public_key() != body.master || derived.hpke.public_key() != body.recovery {
+        return Err(AccountError::Key);
+    }
+    Ok(Recovered {
+        master,
+        hpke: derived.hpke,
+    })
+}
 
 /// The account record of `body`, signed by `master`, the account's master key.
 ///
@@ -176,7 +283,8 @@ pub enum AccountError {
     Signature,
     /// The backup does not open with the recovery key on the account.
     Open,
-    /// The backup opens to a key other than the master key.
+    /// The backup opens to a key other than the master key, or the recovery key derives another
+    /// recovery HPKE key than the record's.
     Key,
 }
 
@@ -186,126 +294,12 @@ impl fmt::Display for AccountError {
             Self::Master => "the account record names another master key",
             Self::Signature => "the account record's signature does not verify with the master key",
             Self::Open => "the master backup does not open with the recovery key",
-            Self::Key => "the master backup holds another key than the master key",
+            Self::Key => {
+                "the master backup holds another key than the master key, or the account record \
+                 names another recovery key"
+            }
         })
     }
 }
 
 impl std::error::Error for AccountError {}
-
-/// `master`, the account's master key, sealed to `recovery` on `account`: HPKE in PSK mode,
-/// single-shot, to `DeriveKeyPair(recovery)`, as "Account" says. Each seal takes a new ephemeral
-/// key.
-///
-/// # Panics
-/// If the random generator fails.
-pub fn seal_master_backup(
-    master: &SigningKey,
-    recovery: &RecoveryKey,
-    account: AccountId,
-) -> MasterBackup {
-    seal(
-        master,
-        recovery,
-        account,
-        |mode, recipient, plaintext, aad| {
-            hpke::single_shot_seal::<AesGcm128, HkdfSha256, Dhkem>(
-                mode,
-                recipient,
-                BACKUP_INFO,
-                plaintext,
-                aad,
-            )
-        },
-    )
-}
-
-/// [`seal_master_backup`] with the ephemeral key pair `DeriveKeyPair(ephemeral)`, for a test
-/// vector.
-pub fn seal_master_backup_with_ephemeral(
-    master: &SigningKey,
-    recovery: &RecoveryKey,
-    account: AccountId,
-    ephemeral: &[u8; 32],
-) -> MasterBackup {
-    seal(
-        master,
-        recovery,
-        account,
-        |mode, recipient, plaintext, aad| {
-            hpke::single_shot_seal_with_rng::<AesGcm128, HkdfSha256, Dhkem>(
-                mode,
-                recipient,
-                BACKUP_INFO,
-                plaintext,
-                aad,
-                &mut Fixed(Some(*ephemeral)),
-            )
-        },
-    )
-}
-
-type Sealed = Result<(<Dhkem as Kem>::EncappedKey, Vec<u8>), hpke::HpkeError>;
-
-fn seal(
-    master: &SigningKey,
-    recovery: &RecoveryKey,
-    account: AccountId,
-    single_shot: impl FnOnce(&OpModeS<'_, Dhkem>, &<Dhkem as Kem>::PublicKey, &[u8], &[u8]) -> Sealed,
-) -> MasterBackup {
-    let (_, recipient) = Dhkem::derive_keypair(recovery.0.as_ref());
-    let psk = recovery.psk();
-    let mode = OpModeS::Psk(PskBundle::new(psk.as_ref(), BACKUP_INFO).expect("a PSK and its ID"));
-    let (enc, ct) = single_shot(
-        &mode,
-        &recipient,
-        master.to_bytes().as_ref(),
-        account.as_bytes(),
-    )
-    .expect("a seal to a derived key");
-    MasterBackup {
-        enc: enc.to_bytes().into(),
-        ct,
-    }
-}
-
-/// The master key `backup` holds for `account`, opened with `recovery`: it must be `master`, the
-/// master public key.
-///
-/// # Errors
-/// [`AccountError::Open`] if it does not open in PSK mode with `recovery` on `account`;
-/// [`AccountError::Key`] if it opens to something other than `master`'s private key.
-pub fn open_master_backup(
-    backup: &MasterBackup,
-    recovery: &RecoveryKey,
-    account: AccountId,
-    master: &[u8; 32],
-) -> Result<SigningKey, AccountError> {
-    let (key, _) = Dhkem::derive_keypair(recovery.0.as_ref());
-    let psk = recovery.psk();
-    let mode = OpModeR::Psk(PskBundle::new(psk.as_ref(), BACKUP_INFO).expect("a PSK and its ID"));
-    let enc =
-        <Dhkem as Kem>::EncappedKey::from_bytes(&backup.enc).map_err(|_| AccountError::Open)?;
-    let opened = Zeroizing::new(
-        hpke::single_shot_open::<AesGcm128, HkdfSha256, Dhkem>(
-            &mode,
-            &key,
-            &enc,
-            BACKUP_INFO,
-            &backup.ct,
-            account.as_bytes(),
-        )
-        .map_err(|_| AccountError::Open)?,
-    );
-    let secret: Zeroizing<[u8; 32]> = Zeroizing::new(
-        opened
-            .as_slice()
-            .try_into()
-            .map_err(|_| AccountError::Key)?,
-    );
-    let opened = SigningKey::from_bytes(&secret);
-    if opened.public_key() != *master {
-        return Err(AccountError::Key);
-    }
-    Ok(opened)
-}

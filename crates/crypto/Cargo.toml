@@ -6,15 +6,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Seals history links and entries.
+# Seals history links and entries, and the master backup.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 # The link codes' CPace, on ristretto255.
 curve25519-dalek = "5"
+# The recovery key's derivation: `docs/protocol/membership.md`, "Account".
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
-# The master backup's PSK, and the link codes' request and grant keys.
+# The link codes' request and grant keys.
 hkdf = "0.13"
 # Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }

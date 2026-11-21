@@ -87,8 +87,10 @@ mod terminal;
 
 use std::time::Instant;
 
-use skald_crypto::{DeviceCheckError, RecoveryKey, check_valid_device, open_master_backup};
-use skald_proto::{Cbor as _, DeviceId, MasterBackup, Revocation, Role, Roster, SpaceId};
+use skald_crypto::{DeviceCheckError, RecoveryKey, check_valid_device, open_recovery};
+use skald_proto::{
+    AccountRecord, Cbor as _, DeviceId, MasterBackup, Revocation, Role, Roster, SpaceId,
+};
 
 use anchors::ANCHORS_REQUEST;
 use cloud::{Cloud, certified, unb64};
@@ -212,12 +214,19 @@ pub fn master_private_key(cloud: &Cloud, ada: &Ada) -> [u8; 32] {
     let person = &ada.person;
     let (status, body) = cloud.get_as("/account/master", &person.token);
     assert_eq!(status, 200, "GET /account/master: {body}");
+    let record = body["record"].as_str().expect("an account record");
+    let record = AccountRecord::from_cbor(&unb64(record)).expect("a record that decodes");
     let backup = body["backup"].as_str().expect("a master backup");
     let backup = MasterBackup::from_cbor(&unb64(backup)).expect("a master backup that decodes");
     let key = RecoveryKey::parse(&ada.key).expect("a recovery key");
-    let master = open_master_backup(&backup, &key, person.account, &person.master)
-        .expect("the backup opens with the recovery key");
-    *master.to_bytes()
+    let recovered =
+        open_recovery(&record, &backup, &key).expect("the backup opens with the recovery key");
+    assert_eq!(
+        recovered.master.public_key(),
+        person.master,
+        "the master key"
+    );
+    *recovered.master.to_bytes()
 }
 
 /// Bob, GitHub user `id` with `login`, signs up; Ada's first machine creates `acme` and signs its

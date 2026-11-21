@@ -1,8 +1,8 @@
 //! The account record and the master backup the server holds, read as
 //! `docs/protocol/membership.md`, "Account", says, apart from the code under test: a CBOR reader
-//! for what they hold, the recovery key's shown form, and the backup opened in PSK mode.
+//! for what they hold, the recovery key's shown form, its derivation, and the backup opened.
 
-use skald_crypto::{HpkeKey, SigningKey};
+use skald_crypto::SigningKey;
 use skald_proto::AccountId;
 
 pub use crate::master_backup::shown_form;
@@ -134,31 +134,32 @@ impl Record {
     }
 }
 
-/// The bytes of the recovery key `shown`, in its shown form: base32 of RFC 4648, §6, in groups of
-/// four joined by `-`.
+/// The characters of the recovery key `shown`, in its shown form: 3 groups of 4 characters of
+/// Crockford's base32 joined by `-`.
 #[track_caller]
-pub fn key_bytes(shown: &str) -> [u8; 32] {
-    let digits: String = shown.split('-').collect();
-    crate::master_backup::base32(&digits)
-        .and_then(|bytes| bytes.try_into().ok())
-        .unwrap_or_else(|| panic!("{shown:?} is not 32 bytes in base32"))
+pub fn key_digits(shown: &str) -> [u8; 12] {
+    crate::master_backup::digits(shown)
+        .unwrap_or_else(|| panic!("{shown:?} is not a recovery key in its shown form"))
 }
 
-/// The recovery HPKE public key of `key`: `DeriveKeyPair(key)`.
-pub fn recovery_public(key: &[u8; 32]) -> [u8; 32] {
-    HpkeKey::from_recovery_key(key).public_key()
+/// The recovery HPKE public key the recovery key of the characters `key` derives on `account`.
+pub fn recovery_public(key: &[u8; 12], account: AccountId) -> [u8; 32] {
+    let (_, ikm) = crate::master_backup::derive(key, account.as_bytes());
+    crate::master_backup::recovery_public(&ikm)
 }
 
-/// The master private key the backup `bytes` of `account` opens to with the recovery key `key`, as
-/// "Account" seals it; `None` if it does not open.
-pub fn open(bytes: &[u8], key: &[u8; 32], account: AccountId) -> Option<[u8; 32]> {
+/// The master private key the backup `bytes` of `account` opens to with the recovery key of the
+/// characters `key`, as "Account" seals it; `None` if it does not open.
+pub fn open(bytes: &[u8], key: &[u8; 12], account: AccountId) -> Option<[u8; 32]> {
     let Some(Item::Array(parts)) = item(bytes) else {
         panic!("a master backup is a CBOR array: {bytes:?}");
     };
-    let [Item::Bytes(enc), Item::Bytes(ct)] = &parts[..] else {
-        panic!("a master backup is [enc, ct]: {parts:?}");
+    let [Item::Bytes(nonce), Item::Bytes(ct)] = &parts[..] else {
+        panic!("a master backup is [nonce, ct]: {parts:?}");
     };
-    let opened = crate::master_backup::open(enc, ct, key, account.as_bytes())?;
+    let nonce: [u8; 12] = nonce.as_slice().try_into().expect("a 12-byte nonce");
+    let (aead, _) = crate::master_backup::derive(key, account.as_bytes());
+    let opened = crate::master_backup::open(ct, &aead, &nonce, account.as_bytes())?;
     opened.try_into().ok()
 }
 

@@ -83,7 +83,7 @@ fn of_two_first_machines_at_once_the_refused_one_keeps_and_shows_no_recovery_key
     let (winner, loser) = (showing[0], 1 - showing[0]);
     let keys_shown = keys_in(&shown[winner].text);
     assert_eq!(keys_shown.len(), 1, "{shown:?}");
-    let key = backup::key_bytes(&keys_shown[0]);
+    let key = backup::key_digits(&keys_shown[0]);
     let token = cloud.last_token();
     opens_the_backup(&cloud, &machines[winner], &token, &key);
     assert_quiet(&cloud, "the refused machine", &shown[loser].text);

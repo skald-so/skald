@@ -46,7 +46,7 @@ mod wrapped;
 // The modules the tests of the channel history share (`history_common/mod.rs`); the helpers of the
 // tests of the history on new devices, scheduled rotation, reading the history, history entries
 // and history wraps; the terminal and signing in there of the tests of the recovery key, and
-// linking with it of the tests of linking with the recovery key.
+// linking with it of the tests of linking with the recovery key; the recovery key's derivation.
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
@@ -60,6 +60,8 @@ mod devices;
 mod entries;
 #[path = "../recovery_key/grants.rs"]
 mod grants;
+#[path = "../../../crypto/tests/common/master_backup.rs"]
+mod master_backup;
 #[path = "../history_reading/reading.rs"]
 mod reading;
 #[path = "../recovery_linking/recovering.rs"]
@@ -70,7 +72,7 @@ mod terminal;
 mod wraps;
 
 use serde_json::Value;
-use skald_crypto::{HistoryKey, HpkeKey, RecoveryKey};
+use skald_crypto::{HistoryKey, HpkeKey};
 use skald_proto::{
     AccountId, Cbor as _, ChannelId, DeviceId, HistoryWrap, MasterBackup, Role, SpaceId,
     WrapRecipient,
@@ -104,16 +106,12 @@ pub fn talk_with_key(ids: &[u64], logins: &[&str], role: Role) -> (Talk, String)
     (talk, key)
 }
 
-/// The 32 bytes of the recovery key `shown`, in its shown form.
-pub fn recovery_bytes(shown: &str) -> [u8; 32] {
-    *RecoveryKey::parse(shown)
-        .expect("a recovery key")
-        .to_bytes()
-}
-
-/// The recovery HPKE key pair of the recovery key `shown`, in its shown form.
-pub fn recovery_hpke(shown: &str) -> HpkeKey {
-    HpkeKey::from_recovery_key(&recovery_bytes(shown))
+/// The recovery HPKE key pair the recovery key `shown`, in its shown form, derives on `account`, as
+/// "Account" says.
+pub fn recovery_hpke(shown: &str, account: AccountId) -> HpkeKey {
+    let digits = master_backup::digits(shown).expect("a recovery key in its shown form");
+    let (_, ikm) = master_backup::derive(&digits, account.as_bytes());
+    HpkeKey::from_ikm(&ikm)
 }
 
 /// Ada, with her recovery key `key`, links a new machine with it at a terminal, naming each of
@@ -234,8 +232,8 @@ pub fn without_record(cloud: &Cloud, account: AccountId) {
 /// with a master backup of the spec's form.
 pub fn with_record(cloud: &Cloud, account: AccountId, record: &[u8]) {
     let backup = MasterBackup {
-        enc: [0xe0; 32],
-        ct: vec![0xc0; 48],
+        nonce: [0xe0; 12],
+        ct: [0xc0; 48],
     };
     cloud.execute(&format!(
         "UPDATE accounts SET record = '\\x{}'::bytea, backup = '\\x{}'::bytea
