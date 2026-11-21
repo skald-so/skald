@@ -24,6 +24,11 @@
 //! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
 //!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
 //!   helper knows the agent runs and does not exit idle under it ([`crate::uploads`]).
+//! - It declares Claude Code's channel capability, [`CHANNEL_CAPABILITY`]. For Claude Code, the
+//!   session it holds is a path of resending ([`crate::resend`]): what the helper gives it goes to
+//!   the client as channel events, [`CHANNEL_EVENT`], each with its text as `content`, once the
+//!   client is initialized. Claude Code takes them only where the person started it with the
+//!   development channel flag, and acknowledges none.
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -36,11 +41,13 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
-    ContentBlock, DiscoverResult, Implementation, InitializeRequestParams, InitializeResult,
-    JsonRpcMessage, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
-    ServerConfig, Tool,
+    ContentBlock, CustomNotification, DiscoverResult, ExperimentalCapabilities, Implementation,
+    InitializeRequestParams, InitializeResult, JsonObject, JsonRpcMessage, ListToolsResult,
+    PaginatedRequestParams, RequestId, ServerCapabilities, ServerConfig, ServerNotification, Tool,
 };
-use rmcp::service::{NotificationContext, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{
+    NotificationContext, Peer, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage,
+};
 use rmcp::transport::{IntoTransport, Transport};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
@@ -368,6 +375,7 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
         agent: Mutex::new(agent),
         pending: Arc::clone(&pending),
         holding: AtomicBool::new(false),
+        initialized: Arc::new(AtomicBool::new(false)),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -488,6 +496,48 @@ impl Settings {
     }
 }
 
+/// The capability of a channel server, under `experimental`, and the notification of its events.
+pub const CHANNEL_CAPABILITY: &str = "claude/channel";
+pub const CHANNEL_EVENT: &str = "notifications/claude/channel";
+
+/// How long a channel event waits for the client's initialization at most.
+const BEFORE_INITIALIZED: Duration = Duration::from_secs(30);
+
+/// Where the channel events of a session go: its client, on the server's runtime, once it is
+/// initialized.
+#[derive(Clone)]
+struct Channel {
+    peer: Peer<RoleServer>,
+    runtime: tokio::runtime::Handle,
+    initialized: Arc<AtomicBool>,
+}
+
+impl Channel {
+    /// Sends the client a channel event of each line of `bytes`, a JSON object with its text as
+    /// `content`, once it is initialized.
+    fn give(&self, bytes: &[u8]) -> io::Result<()> {
+        let waiting = std::time::Instant::now();
+        while !self.initialized.load(AtomicOrdering::SeqCst)
+            && waiting.elapsed() < BEFORE_INITIALIZED
+        {
+            thread::sleep(Duration::from_millis(50));
+        }
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let Ok(event) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let params = json!({ "content": event["content"] });
+            let event = CustomNotification::new(CHANNEL_EVENT, Some(params));
+            let sent = (self.runtime).block_on(
+                self.peer
+                    .send_notification(ServerNotification::CustomNotification(event)),
+            );
+            sent.map_err(|err| io::Error::other(format!("cannot send a channel event: {err}")))?;
+        }
+        Ok(())
+    }
+}
+
 /// How long the session held of the helper waits before it tries again after its helper went
 /// away, and after it found none to hold.
 const HOLD_AGAIN: Duration = Duration::from_secs(1);
@@ -495,14 +545,18 @@ const HOLD_LATER: Duration = Duration::from_secs(10);
 
 /// Holds a session of the helper of `settings`' state for the server's whole run, as `agent`, its
 /// agent CLI `runtime`, starting the helper when none runs; ends once the helper ends the session,
-/// as in a folder in no space. What the helper's run of it says goes to the server's standard
-/// error.
-fn hold(settings: &Settings, agent: &Name, runtime: Option<String>) {
+/// as in a folder in no space. What the helper's run of it gives goes to `channel` as events, if
+/// given; what it says, to the server's standard error.
+fn hold(settings: &Settings, agent: &Name, runtime: Option<String>, channel: Option<Channel>) {
     let Ok(dir) = state::dir(settings.state_dir.clone()) else {
         return;
     };
     let operation = settings.operation(Call::Hold { runtime }, agent);
-    let mut said = |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    let mut said = |stream: Stream, bytes: &[u8]| match (stream, &channel) {
+        (Stream::Out, Some(channel)) => channel.give(bytes),
+        (Stream::Out, None) => Ok(()),
+        (Stream::Err, _) => io::stderr().lock().write_all(bytes),
+    };
     loop {
         match helper::route_into(&dir, &operation, (false, true, true), &mut said) {
             Ok(Route::Helped(_)) => return,
@@ -536,6 +590,8 @@ struct Server {
     pending: Pending,
     /// Whether it holds a session of the helper ([`hold`]).
     holding: AtomicBool,
+    /// Whether the client is initialized, for the channel events ([`Channel`]).
+    initialized: Arc<AtomicBool>,
 }
 
 impl Server {
@@ -551,7 +607,8 @@ impl Server {
 
     /// Registers the session's agent, by the client named `client`, before the server answers;
     /// says why on its standard error if that fails, and the first tool call registers it then.
-    async fn register(&self, client: &str) {
+    /// Channel events go to the client on `peer` ([`Channel`]).
+    async fn register(&self, client: &str, peer: &Peer<RoleServer>) {
         let Some(agent) = self.agent(client) else {
             return;
         };
@@ -567,9 +624,14 @@ impl Server {
         }
         if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
             let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
+            let channel = (runtime.as_deref() == Some(crate::hook::CLAUDE_CODE)).then(|| Channel {
+                peer: peer.clone(),
+                runtime: tokio::runtime::Handle::current(),
+                initialized: Arc::clone(&self.initialized),
+            });
             let agent = self.agent(client);
             if let Some(agent) = agent {
-                thread::spawn(move || hold(&settings, &agent, runtime));
+                thread::spawn(move || hold(&settings, &agent, runtime, channel));
             }
         }
     }
@@ -622,7 +684,12 @@ impl Server {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
+        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        capabilities.experimental = Some(ExperimentalCapabilities::from([(
+            CHANNEL_CAPABILITY.to_owned(),
+            JsonObject::new(),
+        )]));
+        let mut info = ServerConfig::new(capabilities);
         info.server_info = Implementation::new("skald", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -633,7 +700,8 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
-        self.register(&request.client_info.name).await;
+        self.register(&request.client_info.name, &context.peer)
+            .await;
         self.negotiate_initialize(&request)
     }
 
@@ -643,9 +711,13 @@ impl ServerHandler for Server {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
-        self.register(&client_of(&context)).await;
+        self.register(&client_of(&context), &context.peer).await;
         let versions = self.supported_protocol_versions().into_owned();
         Ok(DiscoverResult::from_server_info(versions, self.get_info()))
+    }
+
+    async fn on_initialized(&self, _context: NotificationContext<RoleServer>) {
+        self.initialized.store(true, AtomicOrdering::SeqCst);
     }
 
     async fn list_tools(
@@ -1105,6 +1177,7 @@ mod tests {
             agent: Mutex::new(None),
             pending: Pending::default(),
             holding: AtomicBool::new(false),
+            initialized: Arc::default(),
         };
 
         let info = server.get_info();

@@ -38,14 +38,14 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use serde::Deserialize;
 use serde_json::json;
-use skald_proto::{Name, VersionRange};
+use skald_proto::{Name, SpaceId, VersionRange};
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
 
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::state::{ClaudeSession, State};
-use crate::{folders, hook, output, recv, secrets};
+use crate::{folders, hook, output, recv, resend, secrets};
 
 /// The statuses of the receipts that say a line did not reach the model.
 const FAILING: [&str; 5] = ["held", "expired", "refused", "dropped", "denied"];
@@ -86,24 +86,42 @@ pub fn register(dir: &Path, agent: &Name, session: &hook::Session) -> Result<(),
 }
 
 /// Ends the registration of the session `session` names, once its file confirmed what it can.
-pub fn end(dir: &Path, session: &hook::Session) -> Result<(), String> {
+pub fn end(dir: &Path, agent: &Name, session: &hook::Session) -> Result<(), String> {
     let Some(id) = &session.id else {
         return Ok(());
     };
     let state = State::open(dir).map_err(text)?;
-    confirm(&state, id).map_err(text)?;
+    confirm(&state, agent, session).map_err(text)?;
     state.end_claude(id).map_err(text)
 }
 
-/// Records what the file of the registered session `session`, if it is one, confirms of what its
-/// socket took, reading it whole.
-pub fn confirm(state: &State, session: &str) -> Result<(), crate::state::Error> {
-    let registered = state.claude_sessions()?;
-    let Some(registered) = registered.iter().find(|each| each.session == session) else {
+/// Records what the file of `session`, a session of `agent`, confirms, reading it whole: of a
+/// registered session, its registered file, of what its socket took and what the other paths took;
+/// otherwise, once a path took a message for `agent`, the file its hook input names, of what the
+/// paths took, by the references it names.
+pub fn confirm(
+    state: &State,
+    agent: &Name,
+    session: &hook::Session,
+) -> Result<(), crate::state::Error> {
+    let Some(id) = &session.id else {
         return Ok(());
     };
-    let confirmed = Scan::default().read(&registered.file);
-    state.confirmed(session, &confirmed)?;
+    let registered = state.claude_sessions()?;
+    let mut scan = Scan::default();
+    if let Some(registered) = registered.iter().find(|each| each.session == *id) {
+        let confirmed = scan.read(&registered.file);
+        state.confirmed(id, &confirmed)?;
+        confirmed_references(state, &registered.agent, &scan.references())?;
+        return Ok(());
+    }
+    let Some(file) = &session.file else {
+        return Ok(());
+    };
+    if state.taken_by_paths(agent.as_str())? {
+        scan.read(file);
+        confirmed_references(state, agent.as_str(), &scan.references())?;
+    }
     Ok(())
 }
 
@@ -192,11 +210,18 @@ fn failing(line: &str) -> Option<String> {
 }
 
 /// A reading of a session file, from where the last one ended: the `msg_id`s of the entries that
-/// went to the model whose model's own entry has not come yet.
+/// went to the model, and the references (`#<ref>`) their text names, whose model's own entry has
+/// not come yet.
 #[derive(Default)]
 pub struct Scan {
     offset: u64,
     seen: BTreeSet<String>,
+    seen_references: BTreeSet<String>,
+    /// The references the model got since they were last taken ([`Scan::references`]).
+    references: Vec<String>,
+    /// The `msg_id`s and references that went to the model since they were last taken, whose
+    /// model's own entry has not come yet ([`Scan::shown`]).
+    shown: (Vec<String>, Vec<String>),
 }
 
 /// A session file's entry, as far as a confirmation needs.
@@ -212,6 +237,8 @@ struct Entry {
     origin: Option<Origin>,
     #[serde(default)]
     attachment: Option<Attachment>,
+    #[serde(default)]
+    message: Option<Said>,
 }
 
 /// A queued line that went to the model during a turn, as the turn's attachment.
@@ -221,6 +248,8 @@ struct Attachment {
     kind: String,
     #[serde(default)]
     origin: Option<Origin>,
+    #[serde(default)]
+    prompt: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize)]
@@ -229,12 +258,48 @@ struct Origin {
     msg_id: Option<String>,
 }
 
+/// What a user entry says.
+#[derive(Deserialize)]
+struct Said {
+    #[serde(default)]
+    content: serde_json::Value,
+}
+
+/// The text of `content`, a user entry's or an attachment's: a string, or the text blocks of a
+/// list; empty for a tool's result.
+fn text_of(content: &serde_json::Value) -> String {
+    match content {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Array(blocks) => (blocks.iter())
+            .filter(|block| block["type"] == "text")
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// The references `text` names as `#<ref>`: each word of `#` and at least
+/// [`crate::forms::SHORTEST`] characters of a reference's alphabet.
+pub fn references(text: &str) -> Vec<String> {
+    (text.split(|c: char| c != '#' && !c.is_ascii_alphanumeric()))
+        .filter_map(|word| word.strip_prefix('#'))
+        .filter(|word| {
+            word.len() >= crate::forms::SHORTEST
+                && word
+                    .bytes()
+                    .all(|byte| crate::forms::BASE32.contains(&byte))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 impl Scan {
     /// Reads the whole lines `file` got since; gives the `msg_id` of each message the model got:
     /// one an entry that went to the model holds, a user entry or, for a line queued during a
     /// turn, its attachment, once a later entry is the model's own, a reply, a tool call or
-    /// reasoning, not an API error. A file that is gone or shorter is read again
-    /// from its start.
+    /// reasoning, not an API error. The references such entries name are confirmed so too
+    /// ([`Scan::references`]). A file that is gone or shorter is read again from its start.
     pub fn read(&mut self, file: &Path) -> Vec<String> {
         let mut confirmed = Vec::new();
         let Ok(mut opened) = File::open(file) else {
@@ -262,6 +327,21 @@ impl Scan {
         confirmed
     }
 
+    /// Takes the references the model got since this was last asked.
+    pub fn references(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.references)
+    }
+
+    /// Takes the `msg_id`s and references that went to the model since this was last asked, whose
+    /// model's own entry has not come yet.
+    pub fn shown(&mut self) -> (Vec<String>, Vec<String>) {
+        let (ids, references) = std::mem::take(&mut self.shown);
+        let ids = ids.into_iter().filter(|id| self.seen.contains(id));
+        let references =
+            (references.into_iter()).filter(|reference| self.seen_references.contains(reference));
+        (ids.collect(), references.collect())
+    }
+
     fn entry(&mut self, line: &[u8], confirmed: &mut Vec<String>) {
         let Ok(entry) = serde_json::from_slice::<Entry>(line) else {
             return;
@@ -269,19 +349,32 @@ impl Scan {
         if entry.sidechain {
             return;
         }
-        let origin = match entry.kind.as_str() {
-            "user" => entry.origin,
-            "attachment" => (entry.attachment)
-                .filter(|attachment| attachment.kind == "queued_command")
-                .and_then(|attachment| attachment.origin),
+        let (origin, text) = match entry.kind.as_str() {
+            "user" => (
+                entry.origin,
+                entry.message.map(|said| text_of(&said.content)),
+            ),
+            "attachment" => match entry.attachment {
+                Some(attachment) if attachment.kind == "queued_command" => {
+                    (attachment.origin, attachment.prompt.as_ref().map(text_of))
+                }
+                _ => (None, None),
+            },
             "assistant" if !entry.api_error => {
                 confirmed.extend(std::mem::take(&mut self.seen));
-                None
+                self.references
+                    .extend(std::mem::take(&mut self.seen_references));
+                (None, None)
             }
-            _ => None,
+            _ => (None, None),
         };
         if let Some(msg_id) = origin.and_then(|origin| origin.msg_id) {
+            self.shown.0.push(msg_id.clone());
             self.seen.insert(msg_id);
+        }
+        for reference in references(&text.unwrap_or_default()) {
+            self.shown.1.push(reference.clone());
+            self.seen_references.insert(reference);
         }
     }
 }
@@ -289,6 +382,13 @@ impl Scan {
 /// The settings of the helper's runs for the sessions: where the secrets are, the protocol
 /// versions and the request timeout.
 pub type Settings = (secrets::Storage, VersionRange, Duration);
+
+/// The agents whose sessions have paths the helper holds ([`resend::Held`]), each in its space,
+/// with its session's folder.
+pub type Holders = BTreeMap<(String, SpaceId), (PathBuf, resend::Held)>;
+
+/// What a look gave each agent's paths the helper holds, with the agent and its space.
+pub type Pushes = Vec<(String, SpaceId, resend::Pushed)>;
 
 /// The sessions the helper serves.
 pub struct Served {
@@ -301,6 +401,10 @@ pub struct Served {
     live: BTreeMap<String, Live>,
     /// When the last run failed, if it did.
     failed: Option<Instant>,
+    /// The paths the helper held at the last look.
+    held: Holders,
+    /// When, in Unix milliseconds, the first message a path took times out, if any does.
+    next: Option<i64>,
 }
 
 /// A registered session the helper serves: its reply address, its file's reading, and when its
@@ -370,6 +474,44 @@ impl Live {
         }
         failed
     }
+
+    /// Records in `state` what came of its session since the last look: the failing receipts,
+    /// what its file shows going to the model and what it confirms. Gives whether any came.
+    fn record(&mut self, state: &State) -> bool {
+        let (id, agent) = (&self.session.session, &self.session.agent);
+        let failed = self.receipts();
+        let confirmed = self.scan.read(&self.session.file);
+        let references = self.scan.references();
+        let (shown, shown_references) = self.scan.shown();
+        for line in &failed {
+            let _ = state.not_taken(id, line);
+        }
+        let mut came = !failed.is_empty();
+        if !shown.is_empty() || !shown_references.is_empty() {
+            let mut seqs = state
+                .by_reference(agent, &shown_references)
+                .unwrap_or_default();
+            seqs.extend(state.written_ids(id, &shown).unwrap_or_default());
+            let _ = state.shown(id, &seqs, agent);
+        }
+        came |= state.confirmed(id, &confirmed).is_ok_and(|count| count > 0);
+        came |= confirmed_references(state, agent, &references).is_ok_and(|count| count > 0);
+        came
+    }
+}
+
+/// Records that the model of a session of `agent` got the messages whose `references` its file
+/// names: each is handed over to it. Gives how many.
+fn confirmed_references(
+    state: &State,
+    agent: &str,
+    references: &[String],
+) -> Result<usize, crate::state::Error> {
+    let seqs = state.by_reference(agent, references)?;
+    for seq in &seqs {
+        state.handed_over(*seq, agent)?;
+    }
+    Ok(seqs.len())
 }
 
 impl Served {
@@ -380,6 +522,8 @@ impl Served {
             reload: true,
             live: BTreeMap::new(),
             failed: None,
+            held: Holders::new(),
+            next: None,
         }
     }
 
@@ -388,23 +532,30 @@ impl Served {
         self.due = true;
     }
 
-    /// Whether a session is registered, as of the last look.
+    /// Whether a session is registered, or the helper holds a path, as of the last look.
     pub fn serving(&self) -> bool {
-        !self.live.is_empty()
+        !self.live.is_empty() || !self.held.is_empty()
     }
 
-    /// Whether the next look has anything to do: a session is registered, or may be.
+    /// Whether the next look has anything to do: a session is registered, or may be, or a message
+    /// a path took waits for its timeout.
     pub fn looks(&self) -> bool {
-        self.due || self.reload || self.serving()
+        self.due || self.reload || self.serving() || self.next.is_some()
     }
 
-    /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
-    /// ends those whose socket is gone or takes no connection; records the receipts that came and
-    /// what the session files confirm; then, for each agent that has a confirmation or a session
-    /// that ended, whose space `came` concerns, or for each after a command ran, runs as the agent
-    /// ([`recv::to_sessions`]). Gives whether it ran; `None` once a run panicked.
-    pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
-        let due = std::mem::take(&mut self.due);
+    /// Serves the sessions registered in the state in `dir`, and those whose paths the helper
+    /// holds, `held`, `came` what came on the connection: ends those whose socket is gone or takes
+    /// no connection; records the receipts that came and what the session files show and confirm;
+    /// then, for each agent that has a confirmation, a session that ended, a path that came or a
+    /// message whose timeout passed, whose space `came` concerns, or for each after a command ran,
+    /// runs as the agent ([`recv::to_sessions`]). Gives whether it ran, and what the runs gave the
+    /// paths the helper holds; `None` once a run panicked.
+    pub fn look(&mut self, dir: &Path, came: &Came, held: &Holders) -> Option<(bool, Pushes)> {
+        let mut due = std::mem::take(&mut self.due);
+        if (self.next).is_some_and(|next| crate::state::unix_ms() >= next) {
+            self.next = None;
+            due = true;
+        }
         // A run for the agent of each session that ended issues what its file confirmed.
         let mut runs = BTreeMap::new();
         if due || std::mem::take(&mut self.reload) {
@@ -414,26 +565,19 @@ impl Served {
         let mut gone = Vec::new();
         let mut state = None;
         for (id, live) in &mut self.live {
+            let key = (live.session.agent.clone(), live.session.space);
             if !live.runs() {
                 gone.push(id.clone());
-                runs.insert(live.session.agent.clone(), live.session.folder.clone());
+                runs.insert(key, live.session.folder.clone());
                 continue;
             }
-            let session = &live.session;
-            let failed = live.receipts();
-            let confirmed = live.scan.read(&session.file);
-            let mut ran = due || (retry && came.concerns(Some(session.space)));
-            if !failed.is_empty() || !confirmed.is_empty() {
-                let Some(state) = opened(&mut state, dir) else {
-                    continue;
-                };
-                for line in &failed {
-                    let _ = state.not_taken(id, line);
-                }
-                ran |= state.confirmed(id, &confirmed).is_ok_and(|count| count > 0);
-            }
+            let mut ran = due || (retry && came.concerns(Some(key.1)));
+            let Some(state) = opened(&mut state, dir) else {
+                continue;
+            };
+            ran |= live.record(state);
             if ran {
-                runs.insert(session.agent.clone(), session.folder.clone());
+                runs.insert(key, live.session.folder.clone());
             }
         }
         for id in gone {
@@ -443,20 +587,37 @@ impl Served {
             self.live.remove(&id);
         }
         drop(state);
-        for (agent, folder) in &runs {
-            match self.run(dir, folder, agent)? {
-                true => self.failed = None,
-                false => self.failed = Some(Instant::now()),
+        for (key, (folder, paths)) in held {
+            let changed = self.held.get(key) != Some(&(folder.clone(), *paths));
+            if due || changed || (retry && came.concerns(Some(key.1))) {
+                runs.insert(key.clone(), folder.clone());
+            }
+        }
+        self.held = held.clone();
+        let mut pushes = Vec::new();
+        for ((agent, space), folder) in &runs {
+            let paths = (self.held.get(&(agent.clone(), *space)))
+                .map(|(_, paths)| *paths)
+                .unwrap_or_default();
+            match self.run(dir, folder, agent, paths)? {
+                Some(pushed) => {
+                    self.failed = None;
+                    if let Some(next) = pushed.next {
+                        self.next = Some(self.next.map_or(next, |first| first.min(next)));
+                    }
+                    pushes.push((agent.clone(), *space, pushed));
+                }
+                None => self.failed = Some(Instant::now()),
             }
             // A run ends a registration whose socket does not take a write.
             self.reload = true;
         }
-        Some(!runs.is_empty())
+        Some((!runs.is_empty(), pushes))
     }
 
     /// Takes the registrations from the state in `dir`, keeping what it has of each it served;
-    /// gives the agent and folder of each it served that ended.
-    fn load(&mut self, dir: &Path) -> Vec<(String, PathBuf)> {
+    /// gives the agent, space and folder of each it served that ended.
+    fn load(&mut self, dir: &Path) -> Vec<((String, SpaceId), PathBuf)> {
         let Ok(registered) = State::open(dir).and_then(|state| state.claude_sessions()) else {
             return Vec::new();
         };
@@ -470,15 +631,25 @@ impl Served {
                 .insert(id, kept.unwrap_or_else(|| Live::new(session)));
         }
         (live.into_values())
-            .map(|ended| (ended.session.agent, ended.session.folder))
+            .map(|ended| {
+                let session = ended.session;
+                ((session.agent, session.space), session.folder)
+            })
             .collect()
     }
 
-    /// Runs as `agent` in its `folder`, its output dropped, then goes back to `dir`: whether the
-    /// run did not fail; `None` if it panicked.
-    fn run(&self, dir: &Path, folder: &Path, agent: &str) -> Option<bool> {
+    /// Runs as `agent` in its `folder`, by the paths `held` the helper holds, its output dropped,
+    /// then goes back to `dir`: what the run gave the paths, `None` if it failed; `None` if it
+    /// panicked.
+    fn run(
+        &self,
+        dir: &Path,
+        folder: &Path,
+        agent: &str,
+        held: resend::Held,
+    ) -> Option<Option<resend::Pushed>> {
         let Ok(agent) = crate::agents::name(agent) else {
-            return Some(false);
+            return Some(None);
         };
         let (storage, speaks, timeout) = self.settings;
         let ran = panic::catch_unwind(AssertUnwindSafe(|| {
@@ -486,12 +657,13 @@ impl Served {
                 |_, _| Ok(()),
                 || {
                     std::env::set_current_dir(folder).map_err(|err| err.to_string())?;
-                    recv::to_sessions(dir, storage, (speaks, timeout), &agent)
+                    let held = (held, resend::resend_after());
+                    recv::to_sessions(dir, storage, (speaks, timeout), &agent, held)
                 },
             )
         }));
         let _ = std::env::set_current_dir(dir);
-        ran.ok().map(|ran| ran.is_ok())
+        ran.ok().map(Result::ok)
     }
 }
 

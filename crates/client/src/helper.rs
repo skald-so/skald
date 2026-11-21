@@ -630,7 +630,7 @@ enum Served {
     Nothing,
     /// An operation ran.
     Ran,
-    /// A session joined, its first run done.
+    /// A session joined, its first run done, or a mod polled: nothing a session waits for ran.
     Joined,
     /// The helper exits; it says goodbye on the stream, if any, once its socket is closed.
     Exit(Option<UnixStream>),
@@ -675,7 +675,25 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
     uploads::remember(uploads::Settings::of(&operation));
-    if operation.command.waits() || wait::holds(&operation) {
+    if wait::polls(&operation) {
+        let cwd = request.cwd;
+        let polled = on_behalf(&stream, dir, &cwd, || {
+            sessions.polled(&operation, &cwd, dir).map(|()| true)
+        });
+        let code = match polled {
+            Some(Outcome::Done(code)) => code,
+            _ => return Served::Nothing,
+        };
+        let mut answer = stream;
+        let _ = send(&mut answer, Kind::Code, &[code]);
+        // A poll keeps the helper running but runs nothing that a session waits for.
+        return if code == PANICKED {
+            Served::Exit(None)
+        } else {
+            Served::Joined
+        };
+    }
+    if operation.command.waits() || wait::holds(&operation) || wait::rewakes(&operation) {
         let session = Session {
             stream,
             cwd: request.cwd,

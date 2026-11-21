@@ -2,8 +2,8 @@
 // Tests .github/workflows/e2e.yml, which runs the e2e tests of the client and of the adapters
 // against the latest Claude Code:
 //   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_relay.rs,
-//     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, recv.rs, state.rs and wait.rs of the
-//     client, and crates/adapters), its e2e or hook tests, a module the e2e tests take by #[path]
+//     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, recv.rs, resend.rs, state.rs and
+//     wait.rs of the client, its claude-mod, and crates/adapters), its e2e or hook tests, a module the e2e tests take by #[path]
 //     or include!, found by following them from claude_code_e2e/main.rs and
 //     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
 //     it;
@@ -89,8 +89,10 @@ for (const changed of [
   'crates/client/src/main.rs',
   'crates/client/src/mcp.rs',
   'crates/client/src/recv.rs',
+  'crates/client/src/resend.rs',
   'crates/client/src/state.rs',
   'crates/client/src/wait.rs',
+  'crates/client/claude-mod/hooks/mod.js',
   'crates/client/tests/claude_code_hooks/hooks.rs',
   'crates/client/tests/claude_code_hooks/inputs/stop.json',
   'crates/adapters/src/lib.rs',

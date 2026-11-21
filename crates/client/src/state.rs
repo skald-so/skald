@@ -561,6 +561,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE handover ADD COLUMN written TEXT;
     ALTER TABLE handover ADD COLUMN failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1));
     ALTER TABLE handover ADD COLUMN signal TEXT;",
+    // Resending (`crate::resend`): the path that last took each kept message that waits for
+    // an agent, `socket`, `channel`, `rewake` or `mod`, or `hooks` once the paths are done, none
+    // before the first; and until when, in Unix milliseconds, it waits for its confirmation there.
+    "ALTER TABLE handover ADD COLUMN path TEXT;
+    ALTER TABLE handover ADD COLUMN due INTEGER;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -863,6 +868,24 @@ pub struct ReadDue {
     pub addressee: String,
     pub status: ReceiptStatus,
     pub reason: Option<String>,
+}
+
+/// The path of a kept message that resending left to the hooks and `inbox` ([`State::pushed`]).
+pub const HOOKS: &str = "hooks";
+
+/// A kept message that waits for an agent, as resending sees it ([`State::pending`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Pending {
+    pub seq: u64,
+    /// Its sealed line.
+    pub line: Vec<u8>,
+    pub msg_id: Option<MessageId>,
+    /// The path that last took it, if any, and until when, in Unix milliseconds, it waits for its
+    /// confirmation there.
+    pub path: Option<String>,
+    pub due: Option<i64>,
+    /// Whether its signal went, for a message below `own`.
+    pub signalled: bool,
 }
 
 /// A Claude Code session a `SessionStart` hook registered ([`crate::claude_socket`]).
@@ -2768,13 +2791,27 @@ impl State {
 
     /// The kept messages that wait for the agent `agent` in the space `space`, by `seq`, each with
     /// its sealed line, once those whose wait ended by `now`, in Unix seconds, are dropped for
-    /// every agent; but those a session's socket took that wait for its confirmation.
+    /// every agent; but the `own` ones a path that pushes took while they wait for their
+    /// confirmation there ([`State::pending`]).
     pub fn for_agent(
         &self,
         space: SpaceId,
         agent: &str,
         now: u64,
     ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        self.drop_ended(now)?;
+        self.lines(
+            "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2
+                 AND NOT (handover.path IN ('socket', 'channel', 'rewake')
+                     AND handover.due > ?3 AND handover.signalled = 0)
+             ORDER BY kept.seq",
+            params![space.to_string(), agent, unix_ms()],
+        )
+    }
+
+    /// Drops the kept messages whose wait ended by `now`, in Unix seconds, for every agent.
+    fn drop_ended(&self, now: u64) -> Result<(), Error> {
         let now = i64::try_from(now).unwrap_or(i64::MAX);
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
@@ -2783,13 +2820,149 @@ impl State {
         )?;
         drop_done(&tx)?;
         tx.commit()?;
-        self.lines(
-            "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
+        Ok(())
+    }
+
+    /// Each kept message that waits for the agent `agent` in the space `space`, by `seq`, once
+    /// those whose wait ended by `now`, in Unix seconds, are dropped: its sealed line, `msg_id`,
+    /// and where resending has it ([`Pending`]).
+    pub fn pending(&self, space: SpaceId, agent: &str, now: u64) -> Result<Vec<Pending>, Error> {
+        self.drop_ended(now)?;
+        let mut query = self.db.prepare(
+            "SELECT kept.seq, kept.line, kept.msg_id, handover.path, handover.due,
+                 handover.signalled
+             FROM kept JOIN handover ON handover.seq = kept.seq
              WHERE kept.space = ?1 AND handover.agent = ?2
-                 AND (handover.written IS NULL OR handover.failed = 1)
              ORDER BY kept.seq",
-            params![space.to_string(), agent],
-        )
+        )?;
+        let rows = query.query_map(params![space.to_string(), agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, line, msg_id, path, due, signalled) = row?;
+            Ok(Pending {
+                seq: u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?,
+                line,
+                msg_id: msg_id.and_then(|msg_id| msg_id.parse().ok()),
+                path,
+                due,
+                signalled: signalled == 1,
+            })
+        })
+        .collect()
+    }
+
+    /// How many kept messages wait for the agent `agent` in the space `space`.
+    pub fn waiting(&self, space: SpaceId, agent: &str) -> Result<u64, Error> {
+        let count: i64 = self.db.query_row(
+            "SELECT count(*) FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2 AND kept.expires > ?3",
+            params![
+                space.to_string(),
+                agent,
+                i64::try_from(unix_now()).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )?;
+        Ok(u64::try_from(count).unwrap_or_default())
+    }
+
+    /// Records that `path` took the kept messages `seqs` that wait for the agent `agent`, each to
+    /// wait for its confirmation there until `due`, in Unix milliseconds; those of `signalled`,
+    /// below `own`, by their signal. `hooks`, with no `due`, leaves them to the hooks and `inbox`,
+    /// which give the signal again.
+    pub fn pushed(
+        &self,
+        (seqs, signalled): (&[u64], &[u64]),
+        agent: &str,
+        (path, due): (&str, Option<i64>),
+    ) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs.iter().chain(signalled) {
+            let signal = match path {
+                HOOKS => 0,
+                _ => i64::from(signalled.contains(seq)),
+            };
+            tx.execute(
+                "UPDATE handover SET path = ?3, due = ?4, signalled = ?5 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, path, due, signal],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` of each kept message that waits for the agent `agent`, which a path took, whose
+    /// reference ([`crate::forms::whole_reference`]) starts with one of `references`, each of at
+    /// least [`crate::forms::SHORTEST`] characters.
+    pub fn by_reference(&self, agent: &str, references: &[String]) -> Result<Vec<u64>, Error> {
+        let references: Vec<&String> = (references.iter())
+            .filter(|reference| reference.len() >= crate::forms::SHORTEST)
+            .collect();
+        if references.is_empty() {
+            return Ok(Vec::new());
+        }
+        let taken: Vec<(u64, Option<String>)> = self.lines(
+            "SELECT handover.seq, kept.msg_id FROM handover JOIN kept ON kept.seq = handover.seq
+             WHERE handover.agent = ?1 AND handover.path IS NOT NULL ORDER BY handover.seq",
+            params![agent],
+        )?;
+        Ok((taken.into_iter())
+            .filter_map(|(seq, msg_id)| {
+                let whole = crate::forms::whole_reference(msg_id?.parse().ok()?);
+                (references.iter())
+                    .any(|reference| whole.starts_with(reference.as_str()))
+                    .then_some(seq)
+            })
+            .collect())
+    }
+
+    /// Whether a path took a kept message that waits for the agent `agent`.
+    pub fn taken_by_paths(&self, agent: &str) -> Result<bool, Error> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM handover WHERE agent = ?1 AND path IS NOT NULL)",
+            params![agent],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// The `seq` of each kept message the socket of the Claude Code session `session` took whose
+    /// `msg_id` is one of `msg_ids`, but those left to the hooks.
+    pub fn written_ids(&self, session: &str, msg_ids: &[String]) -> Result<Vec<u64>, Error> {
+        let mut seqs = Vec::new();
+        for msg_id in msg_ids {
+            let rows: Vec<(u64, String)> = self.lines(
+                "SELECT handover.seq, handover.agent FROM handover
+                 JOIN kept ON kept.seq = handover.seq
+                 WHERE handover.written = ?1 AND kept.msg_id = ?2 AND handover.path != 'hooks'",
+                params![session, msg_id],
+            )?;
+            seqs.extend(rows.into_iter().map(|(seq, _)| seq));
+        }
+        Ok(seqs)
+    }
+
+    /// Records that the session file of the Claude Code session `session` shows the kept messages
+    /// `seqs` that wait for the agent `agent` going to the model: no path takes them again, and
+    /// they wait for the model's own entry, or for the session's end.
+    pub fn shown(&self, session: &str, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET written = ?3, due = ?4 WHERE seq = ?1 AND agent = ?2
+                     AND path IS NOT NULL AND path != 'hooks'",
+                params![sql_seq(*seq)?, agent, session, i64::MAX],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Records that the kept message `seq` was handed over to the agent `agent`, which can then
@@ -2905,8 +3078,8 @@ impl State {
     pub fn end_claude(&self, session: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
-            "UPDATE handover SET failed = 1 WHERE written = ?1",
-            params![session],
+            "UPDATE handover SET failed = 1, due = ?2 WHERE written = ?1",
+            params![session, unix_ms()],
         )?;
         tx.execute(
             "DELETE FROM claude_session WHERE session = ?1",
@@ -2916,37 +3089,30 @@ impl State {
         Ok(())
     }
 
-    /// The `seq` of each kept message that waits for the agent `agent` that a session's socket
-    /// took.
-    pub fn written(&self, agent: &str) -> Result<Vec<u64>, Error> {
-        let written: Vec<(u64, String)> = self.lines(
-            "SELECT seq, written FROM handover WHERE agent = ?1 AND written IS NOT NULL
-             ORDER BY seq",
-            params![agent],
-        )?;
-        Ok(written.into_iter().map(|(seq, _)| seq).collect())
-    }
-
     /// Records that the socket of the Claude Code session `session` takes the kept messages
     /// `messages` that wait for the agent `agent`, and the signal of `signalled` in its line
-    /// `signal`, before they are written to it.
+    /// `signal`, before they are written to it; each waits for its confirmation until `due`, in
+    /// Unix milliseconds.
     pub fn socket_takes(
         &self,
         (session, agent): (&str, &str),
         messages: &[u64],
         (signalled, signal): (&[u64], &str),
+        due: i64,
     ) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         for seq in messages {
             tx.execute(
-                "UPDATE handover SET written = ?3, failed = 0 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, session],
+                "UPDATE handover SET written = ?3, failed = 0, path = 'socket', due = ?4
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, session, due],
             )?;
         }
         for seq in signalled {
             tx.execute(
-                "UPDATE handover SET signalled = 1, signal = ?3 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, signal],
+                "UPDATE handover SET signalled = 1, signal = ?3, path = 'socket', due = ?4
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, signal, due],
             )?;
         }
         tx.commit()?;
@@ -2959,7 +3125,8 @@ impl State {
         let tx = self.db.unchecked_transaction()?;
         for seq in seqs {
             tx.execute(
-                "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL
+                "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL,
+                     path = NULL, due = NULL
                  WHERE seq = ?1 AND agent = ?2",
                 params![sql_seq(*seq)?, agent],
             )?;
@@ -2969,17 +3136,18 @@ impl State {
     }
 
     /// Records that the Claude Code session `session` said its line `line` did not reach the
-    /// model: the message waits for the other paths, or its signal for the hooks.
+    /// model: the message, or its signal, goes by the next path at once.
     pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
+        let now = unix_ms();
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
-            "UPDATE handover SET failed = 1 WHERE written = ?1
+            "UPDATE handover SET failed = 1, due = ?3 WHERE written = ?1 AND path = 'socket'
                  AND seq IN (SELECT seq FROM kept WHERE msg_id = ?2)",
-            params![session, line],
+            params![session, line, now],
         )?;
         tx.execute(
-            "UPDATE handover SET signalled = 0, signal = NULL WHERE signal = ?1",
-            params![line],
+            "UPDATE handover SET signal = NULL, due = ?2 WHERE signal = ?1 AND path = 'socket'",
+            params![line, now],
         )?;
         tx.commit()?;
         Ok(())
@@ -3599,6 +3767,15 @@ impl State {
 /// `seq` as SQLite holds it.
 fn sql_seq(seq: u64) -> Result<i64, Error> {
     i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
+}
+
+/// Now, in Unix milliseconds.
+pub fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
+        })
 }
 
 /// Now, in Unix seconds.
