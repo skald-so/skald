@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks, its cross-session socket, and its fallbacks: Channels, `asyncRewake` and the mod.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks, its cross-session socket, its fallbacks: Channels, `asyncRewake` and the mod, and Skald's Claude Code plugin.
 - Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -49,6 +49,17 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/skald-so/skald/rel
 ```sh
 npm install -g skald-so
 ```
+
+#### Claude Code plugin
+
+Skald's MCP server, hooks and skill for Claude Code. Install it after `skald`, which it runs:
+
+```sh
+claude plugin marketplace add skald-so/skald
+claude plugin install skald@skald
+```
+
+Updates: [Delivery to agent sessions](docs/agent-sessions.md#what-you-need-to-do).
 
 ### 2. Connect a machine
 
