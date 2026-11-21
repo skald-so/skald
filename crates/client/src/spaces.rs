@@ -18,7 +18,7 @@
 //! Each revision the device signs after revision 1 drops the `service` devices the revision before
 //! it lists that are revoked or on the account of no member of the new one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -187,7 +187,7 @@ fn personal_taken(first: &Roster) -> String {
 
 /// This machine's device, with the master key it pinned and its certificate, once the server took
 /// them.
-fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, String> {
+pub fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, String> {
     let Some(device) = state.device().map_err(text)? else {
         return Ok(None);
     };
@@ -1702,7 +1702,15 @@ pub fn members(synced: Synced) -> Result<(), String> {
         devices,
         ..
     } = synced;
-    let (members, mut warnings) = member_devices(&roster, &devices, &follower.own);
+    let mut verified = BTreeSet::new();
+    for member in roster.body().members.iter() {
+        if member.account != follower.own.account
+            && (follower.state.verified(member.account, &member.master)).map_err(text)?
+        {
+            verified.insert(member.account);
+        }
+    }
+    let (members, mut warnings) = member_devices(&roster, &devices, &follower.own, &verified);
     let shown: Vec<&Cert> = (members.iter().flat_map(|(_, shown)| shown))
         .flat_map(|shown| shown.linked.iter().chain(&shown.revoked))
         .copied()
@@ -1720,22 +1728,26 @@ pub fn members(synced: Synced) -> Result<(), String> {
     Ok(())
 }
 
-/// The devices of one member's account that `skald members` shows.
+/// What `skald members` shows of one member's account.
 struct Shown<'d> {
-    /// Those with a valid certificate.
+    /// Its fingerprint ([`fingerprint_line`]).
+    fingerprint: String,
+    /// Its devices with a valid certificate.
     linked: Vec<&'d Cert>,
-    /// The revoked ones whose certificates pass checks 1 and 2.
+    /// Its revoked devices whose certificates pass checks 1 and 2.
     revoked: Vec<&'d Cert>,
 }
 
-/// Each member of `roster`, a space's last accepted revision, with the devices of its account
-/// `devices` holds that `skald members` shows, none when the device has no master key for it; and
-/// the warnings of `skald devices` for them. A certificate is checked against the master key `own`
-/// pinned for its own account, and against the `master` the revision gives any other.
+/// Each member of `roster`, a space's last accepted revision, with what `skald members` shows of
+/// its account: its fingerprint, marked if `verified` holds the account, and the devices of it
+/// `devices` holds; none when the device has no master key for it. And the warnings of
+/// `skald devices` for them. A certificate and the fingerprint take the master key `own` pinned
+/// for its own account, and the `master` the revision gives any other.
 fn member_devices<'r, 'd>(
     roster: &'r Roster,
     devices: &'d SpaceDevices,
     own: &Own,
+    verified: &BTreeSet<AccountId>,
 ) -> (Vec<(&'r Member, Option<Shown<'d>>)>, Vec<String>) {
     let mut warnings: Vec<String> = Vec::new();
     let mut members = Vec::new();
@@ -1744,6 +1756,8 @@ fn member_devices<'r, 'd>(
             members.push((member, None));
             continue;
         };
+        let fingerprint =
+            fingerprint_line(member.account, &master, verified.contains(&member.account));
         let checked = devices::check(&master, devices);
         for warning in devices::two_bodies_warnings(&checked) {
             if !warnings.contains(&warning) {
@@ -1756,6 +1770,7 @@ fn member_devices<'r, 'd>(
                 .collect()
         };
         let shown = Shown {
+            fingerprint,
             linked: of(&checked.linked),
             revoked: of(&checked.revoked),
         };
@@ -1766,10 +1781,10 @@ fn member_devices<'r, 'd>(
 }
 
 /// What `skald members` shows of `roster`, a space's last accepted revision, with `members`, its
-/// members and their devices ([`member_devices`]): each member's handle and role, and under it each
-/// device of its account with a valid certificate, then each revoked one, as `skald devices` shows
-/// them, `this` device marked and each line ending with what `signatures` shows of its SSH
-/// signature.
+/// members and their accounts ([`member_devices`]): each member's handle and role, and under it its
+/// account's fingerprint, then each device of its account with a valid certificate, then each
+/// revoked one, as `skald devices` shows them, `this` device marked and each line ending with what
+/// `signatures` shows of its SSH signature.
 fn members_listing(
     roster: &Roster,
     members: &[(&Member, Option<Shown>)],
@@ -1786,6 +1801,7 @@ fn members_listing(
         let Some(shown) = shown else {
             continue;
         };
+        out.push_str(&format!("    {}\n", shown.fingerprint));
         if shown.linked.is_empty() {
             out.push_str("    no device with a valid certificate\n");
         }
@@ -1805,6 +1821,16 @@ fn members_listing(
         }
     }
     out
+}
+
+/// How `skald members` shows the fingerprint of `account` with the master key `master`, marked
+/// `verified` if so.
+pub fn fingerprint_line(account: AccountId, master: &[u8; 32], verified: bool) -> String {
+    let fingerprint = skald_crypto::account_fingerprint(account, master);
+    match verified {
+        true => format!("fingerprint {fingerprint}  verified"),
+        false => format!("fingerprint {fingerprint}"),
+    }
 }
 
 /// The first line of what `skald members` and `skald channels` show of `roster`, a space's last
@@ -2003,7 +2029,7 @@ pub(crate) mod tests {
                 records: Vec::new(),
             };
             let own = self.own();
-            let (members, warnings) = member_devices(roster, &devices, &own);
+            let (members, warnings) = member_devices(roster, &devices, &own, &BTreeSet::new());
             let listing = members_listing(roster, &members, this, &Default::default());
             (listing, warnings)
         }
@@ -2036,7 +2062,8 @@ pub(crate) mod tests {
 
         assert!(
             shown.ends_with(&format!(
-                "  bob  member\n    {}\n    {}\n",
+                "  bob  member\n    {}\n    {}\n    {}\n",
+                fingerprint_line(pair.bob, &pair.bob_master.public_key(), false),
                 devices::linked_line(&certs[1], this),
                 devices::revoked_line(&certs[0], this)
             )),
@@ -2065,11 +2092,14 @@ pub(crate) mod tests {
 
         let shown = pair.listing(&roster, &certs, this);
 
+        let ada_fingerprint = fingerprint_line(ada, &pair.ada_master.public_key(), false);
+        let bob_fingerprint = fingerprint_line(bob, &pair.bob_master.public_key(), false);
         assert_eq!(
             shown,
             (
                 format!(
-                    "The space acme ({}), revision 2:\n  ada  admin\n    {}\n  bob  member\n    {}\n",
+                    "The space acme ({}), revision 2:\n  ada  admin\n    {ada_fingerprint}\n    \
+                     {}\n  bob  member\n    {bob_fingerprint}\n    {}\n",
                     body.space,
                     devices::linked_line(&certs[0], this),
                     devices::linked_line(&certs[1], this)
@@ -2081,12 +2111,39 @@ pub(crate) mod tests {
             pair.listing(&roster, &[], this),
             (
                 format!(
-                    "The space acme ({}), revision 2:\n  ada  admin\n    no device with a valid \
-                     certificate\n  bob  member\n    no device with a valid certificate\n",
+                    "The space acme ({}), revision 2:\n  ada  admin\n    {ada_fingerprint}\n    \
+                     no device with a valid certificate\n  bob  member\n    {bob_fingerprint}\n    \
+                     no device with a valid certificate\n",
                     body.space
                 ),
                 vec![]
             )
+        );
+    }
+
+    #[test]
+    fn members_mark_only_the_verified_accounts_fingerprints() {
+        let pair = Pair::new();
+        let (roster, this) = (pair.roster(), DeviceId::from_bytes([7; 16]));
+        let devices = SpaceDevices::default();
+        let verified = BTreeSet::from([pair.bob]);
+
+        let (members, _) = member_devices(&roster, &devices, &pair.own(), &verified);
+        let shown = members_listing(&roster, &members, this, &Default::default());
+
+        let ada = fingerprint_line(pair.ada, &pair.ada_master.public_key(), false);
+        let bob = fingerprint_line(pair.bob, &pair.bob_master.public_key(), true);
+        assert!(
+            shown.contains(&format!("  ada  admin\n    {ada}\n")),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!("  bob  member\n    {bob}\n")),
+            "{shown}"
+        );
+        assert!(
+            bob.ends_with("  verified") && !ada.contains("verified"),
+            "{shown}"
         );
     }
 

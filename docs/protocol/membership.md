@@ -12,6 +12,7 @@ CDDL rules not defined here, such as `id`, `address` and `timestamp`, are in [RE
 - [Service device](#service-device)
 - [Revocation](#revocation)
 - [Device checks](#device-checks)
+- [Account fingerprint](#account-fingerprint)
 - [Trust levels](#trust-levels)
 - [Roster](#roster)
 - [Policy](#policy)
@@ -41,7 +42,9 @@ signed<body> = [
 ## Account
 Each account has two keys, both created on its first device:
 - **Master key:** an Ed25519 key pair, the account's root of trust. It signs the account record and the first device's certificate. Devices do not keep its private key.
-- **Recovery key:** 32 bytes from a cryptographically secure generator, shown to the user once. Shown and entered as base32 [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §6] without padding, in groups of four characters joined by `-`; input ignores case, spaces and `-`. Its HPKE key pair is `DeriveKeyPair(recovery key)` of DHKEM(X25519, HKDF-SHA256) [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §7.1.3].
+- **Recovery key:** 12 characters of [Crockford's base32](https://www.crockford.com/base32.html), `0123456789ABCDEFGHJKMNPQRSTVWXYZ`, from a cryptographically secure generator: 60 bits. Shown to the user once, in upper case, as 3 groups of 4 characters joined by `-`.
+- **Recovery key input:** any case; O reads as 0, I and L as 1; a terminal's bracketed-paste markers, `ESC [200~` and `ESC [201~`, are removed whole, since their digits are in the alphabet; every other character outside the alphabet is skipped, such as spaces, `-`, line ends and blank lines. Exactly 12 characters of the alphabet must be left.
+- **Derivation:** Argon2id [[RFC 9106](https://www.rfc-editor.org/rfc/rfc9106)], version `0x13`, 262144 KiB of memory, 8 passes, 1 lane, a 64-byte tag, no secret or associated data. Password: the key's 12 characters in upper case, ASCII. Salt: `skald recovery` followed by the account ID's 16 bytes. The tag's first 32 bytes are the master backup's AES-256-GCM key; its last 32 are `ikm` of the recovery HPKE key pair, `DeriveKeyPair(ikm)` of DHKEM(X25519, HKDF-SHA256) [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §7.1.3]. One derivation gives both, so the account record's `recovery` tests a guess at the key no cheaper than the backup. Its cost: [Security considerations](#security-considerations).
 
 ```cddl
 account = signed<account-body>   ; label "skald account", by the master key
@@ -55,13 +58,13 @@ account-body = {
 }
 
 master-backup = [
-  enc: bstr .size 32,      ; the HPKE encapsulated key
-  ct: bstr,                ; the 32-byte master private key, sealed
+  nonce: bstr .size 12,    ; the AES-256-GCM nonce
+  ct: bstr .size 48,       ; the 32-byte master private key, sealed, and the tag
 ]
 ```
 
 - The server stores the account record and the master backup.
-- **Master backup:** the master private key sealed with HPKE in PSK mode [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180), §5.1.2], single-shot, with the suite of [Scheme `hpke`](README.md#scheme-hpke), to the recovery HPKE key, `psk` `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup psk", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)], `psk_id` `skald master backup`, `info` `skald master backup`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master`.
+- **Master backup:** the master private key sealed with AES-256-GCM under the derived key, with a random `nonce`, `aad` the account ID. The recovery key unlocks it; the client checks that the opened key matches `master` and the derived recovery HPKE public key matches `recovery`.
 - A new recovery key: a device unlocks the master key with the old one, stores a new backup for the new one and signs an account record with the next `revision`. A client uses the valid record with the highest `revision`. The old recovery key still opens the master key: [Security considerations](#security-considerations).
 - A client MUST reject an account record whose signature does not verify with `master`, or whose `master` is not the one it pinned: its own account's, or the one the [roster](#roster) gives for a member.
 
@@ -127,7 +130,7 @@ A new `client` device asks its user nothing; it asks the server whether the acco
 - **From a linked device:** the new device shows a [link code](#link-code), and its user enters it on a `client` device of the account, which issues the certificate. The new device takes a certificate and the master key only through a link code or the recovery key, never from a device the server names.
   - A `browser` is linked only this way: it shows the code, and its user enters it on a linked `client` device.
   - With the certificate, the issuing device sends a link object for the new device: the [roster](#roster) revisions it starts from.
-- **With the recovery key**, entered only in the CLI: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open in PSK mode with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
+- **With the recovery key**, entered only in the CLI: the new device unlocks the master key and issues its own certificate with it. It MUST reject a [master backup](#account) that does not open with that recovery key, and pins `master` only from one that does. It shows its user the account's devices, revoked or not, and in this order:
   1. revokes with the master key each device its user names as stolen ([Revocation](#revocation));
   2. takes its [anchors](#anchors);
   3. revokes with its own key each device its user names as lost or wiped;
@@ -325,11 +328,20 @@ The master key is the one the client pinned: its own account's on linking or, fo
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
 - an account record's `recovery` changes;
-- a member's `master` changes in the roster;
+- a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
+
+## Account fingerprint
+Two people check that their devices see the same master key for each other's accounts by comparing fingerprints.
+
+- **Fingerprint:** SHA-256 over the encoded `["skald fingerprint", account, master]`, the account ID and the master public key as byte strings. Each of its eight 4-byte words, as a big-endian integer modulo 100000, gives five decimal digits with leading zeros; the groups are joined by one space, 40 digits in all, about 132 bits. Vector: [test-vectors.md](test-vectors.md#account-fingerprint).
+- A device shows its own account's fingerprint from the master key it pinned, and a member's from the `master` the roster gives.
+- Two people compare the fingerprints their devices show for their own accounts over a channel they trust, such as in person or on a call; a fingerprint the server or a message gives proves nothing.
+- A device marks an account verified, for that master key, only on its person's yes to whether the fingerprint matches; an agent never marks one. A verification stays on the device that made it.
+- A verified account whose `master` changes in an accepted revision is no longer verified, and the device warns ([Device checks](#device-checks)).
 
 ## Trust levels
 A recipient device sets the level of each message it accepts from the sending device, the one its scheme authenticates ([Envelope](README.md#envelope)), and of each task it claims from its `sender` ([Claim checks](queues.md#claim-checks)). The level sets how a message's text reaches the agent ([Device to agent](delivery.md#device-to-agent)) and a task's rights ([Running a task](queues.md#running-a-task)).
@@ -675,7 +687,8 @@ A reader MUST drop an entry unless:
 - The server gives the certificates, revocations and revisions. It cannot forge them, but it can withhold them: a hidden revocation keeps a device trusted for those who do not see it, and a hidden revision keeps clients on an older roster.
 - A stolen device can revoke the account's other devices and certify new ones, but not under an existing device's ID, and its revocations count even after another device revokes it. The recovery key restores the account: a device linked with it revokes the stolen one with the master key. That one object voids every revocation the stolen device and the devices it certified signed, and lists in `also` the devices that stay revoked, so the server cannot restore them by withholding a second object.
 - The master key cannot be rotated. A leaked recovery key, current or old, with any copy of a master backup it opens, gives away the master key for good: its holder can certify and revoke devices and sign an account record with its own `recovery`, so member devices wrap history keys to it. A new recovery key does not lock it out: the holder signs a record with a higher `revision` again. Clients warn when `recovery` changes.
-- Only a holder of the recovery key seals a master backup that opens in PSK mode, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
+- Only a holder of the recovery key seals a master backup that opens with it, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
+- A recovery key holds 60 bits. Whoever holds the server's database tests a guess at an account's key offline, with its record or backup, at the cost of one [derivation](#account): about a second of a laptop core, with 256 MiB of memory. The salt makes each guess good for one account. Finding a key takes 2^59 derivations on average, about 18 billion laptop-years; hardware a million times faster takes about 18,000 years.
 - A link code holds 30 bits, and a CPace run gives a server or network attacker one online guess at it and no offline test. Each code takes an action of the new device's user, and the new device runs it at most 3 times, whoever answers: an attacker that answers its hellos gives it a certificate, a master key and a link object of its choice with a chance of at most 3 in 2^30 per user action, about 3 in a billion.
 - The new device does not count the issuing device's runs, which the issuing device counts itself: an attacker that answers its entries with hellos of its own gets at most 3 more guesses at each issuing device before it stops. Each issuing device counts only its own runs, so a code allows at most 3 at the new device plus 3 at each issuing device its user enters it on, each guess with a chance of 1 in 2^30. A success there still needs the issuing device's user to confirm the `name` and kind the attacker chose.
 - A run without a session is no account's until a session enters its pairing. A session of any account that knows a pairing can pair the run first and answer the new device's hellos, as the server can: the new device counts its runs whoever answers, so the chance stays at most 3 in 2^30 per action of its user. It spends one of those runs, and the person's issuing device then finds no run. A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes.

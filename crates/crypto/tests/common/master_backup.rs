@@ -1,108 +1,92 @@
-//! The master backup as `docs/protocol/membership.md`, "Account", seals it, with the `hpke` crate
-//! apart from the code under test, and the recovery key's text form: for the tests of `skald-crypto`
-//! and of the CLI.
+//! The recovery key's derivation and the master backup as `docs/protocol/membership.md`, "Account",
+//! says, with the `argon2`, `aes-gcm` and `hpke` crates apart from the code under test, and the
+//! recovery key's shown form: for the tests of `skald-crypto` and of the CLI.
 
-use hkdf::Hkdf;
-use hpke::aead::AesGcm128;
-use hpke::kdf::HkdfSha256;
+use aes_gcm::aead::{Aead as _, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce};
+use argon2::{Algorithm, Argon2, Params, Version};
 use hpke::kem::X25519HkdfSha256;
-use hpke::{Deserializable as _, Kem as _, OpModeR, OpModeS, PskBundle, Serializable as _};
-use sha2::Sha256;
+use hpke::{Kem as _, Serializable as _};
 
-/// `info` and `psk_id` of the master backup's seal, and `info` of its PSK's derivation.
-pub const BACKUP_INFO: &[u8] = b"skald master backup";
-const PSK_ID: &[u8] = b"skald master backup";
-const PSK_INFO: &[u8] = b"skald master backup psk";
-/// The base32 alphabet of RFC 4648, §6.
-const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+/// Crockford's base32 alphabet, in the order of its values.
+pub const ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+/// Argon2id's memory in KiB, passes and lanes.
+const MEMORY: u32 = 262_144;
+const PASSES: u32 = 8;
+const LANES: u32 = 1;
+/// What comes before the account ID in the salt.
+const SALT_PREFIX: &[u8] = b"skald recovery";
 
-/// The backup's PSK: `HKDF-SHA256(salt = "", IKM = recovery key, info = "skald master backup psk",
-/// L = 32)`.
-fn psk(recovery: &[u8; 32]) -> [u8; 32] {
-    let mut psk = [0; 32];
-    Hkdf::<Sha256>::new(Some(b""), recovery)
-        .expand(PSK_INFO, &mut psk)
-        .expect("32 bytes of HKDF-SHA256");
-    psk
+/// The 12 characters of `shown`, a key in its shown form: 3 groups of 4 characters of [`ALPHABET`]
+/// joined by `-`; `None` for any other text.
+pub fn digits(shown: &str) -> Option<[u8; 12]> {
+    let shaped = shown.len() == 14
+        && shown.bytes().enumerate().all(|(at, c)| match at {
+            4 | 9 => c == b'-',
+            _ => ALPHABET.as_bytes().contains(&c),
+        });
+    shaped.then(|| {
+        shown
+            .replace('-', "")
+            .into_bytes()
+            .try_into()
+            .expect("12 characters")
+    })
 }
 
-/// `plaintext` sealed as a master backup to `recovery` on the account `account`, its 16 bytes: HPKE
-/// in PSK mode, single-shot, with DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM, to
-/// `DeriveKeyPair(recovery)`; gives `enc` and `ct`.
-pub fn seal(plaintext: &[u8], recovery: &[u8; 32], account: &[u8; 16]) -> ([u8; 32], Vec<u8>) {
-    let psk = psk(recovery);
-    let (_, recipient) = X25519HkdfSha256::derive_keypair(recovery);
-    let mode = OpModeS::Psk(PskBundle::new(&psk, PSK_ID).expect("a PSK and its ID"));
-    let (enc, ct) = hpke::single_shot_seal::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
-        &mode,
-        &recipient,
-        BACKUP_INFO,
-        plaintext,
-        account,
-    )
-    .expect("a seal to a derived key");
-    (enc.to_bytes().into(), ct)
-}
-
-/// What `enc` and `ct` open to as a master backup of `recovery` on the account `account`, if they
-/// open.
-pub fn open(enc: &[u8], ct: &[u8], recovery: &[u8; 32], account: &[u8; 16]) -> Option<Vec<u8>> {
-    let psk = psk(recovery);
-    let (key, _) = X25519HkdfSha256::derive_keypair(recovery);
-    let mode = OpModeR::Psk(PskBundle::new(&psk, PSK_ID).expect("a PSK and its ID"));
-    let enc = <X25519HkdfSha256 as hpke::Kem>::EncappedKey::from_bytes(enc).ok()?;
-    hpke::single_shot_open::<AesGcm128, HkdfSha256, X25519HkdfSha256>(
-        &mode,
-        &key,
-        &enc,
-        BACKUP_INFO,
-        ct,
-        account,
-    )
-    .ok()
-}
-
-/// The bytes of `text` in base32 of RFC 4648, §6, without padding; `None` for any other character,
-/// a length no byte string has, or bits set past the last byte.
-pub fn base32(text: &str) -> Option<Vec<u8>> {
-    if matches!(text.len() % 8, 1 | 3 | 6) {
-        return None;
-    }
-    let mut bits: u64 = 0;
-    let mut count = 0;
-    let mut out = Vec::new();
-    for c in text.bytes() {
-        let value = ALPHABET.iter().position(|a| *a == c)?;
-        bits = (bits << 5) | value as u64;
-        count += 5;
-        if count >= 8 {
-            count -= 8;
-            out.push((bits >> count) as u8);
-            bits &= (1 << count) - 1;
-        }
-    }
-    (bits == 0).then_some(out)
-}
-
-/// The shown form of the recovery key `key`: base32 of RFC 4648, §6, without padding, in groups of
-/// four joined by `-`.
-pub fn shown_form(key: &[u8; 32]) -> String {
-    let mut digits = Vec::new();
-    let (mut bits, mut count) = (0u64, 0);
-    for byte in key {
-        bits = (bits << 8) | u64::from(*byte);
-        count += 8;
-        while count >= 5 {
-            count -= 5;
-            digits.push(ALPHABET[((bits >> count) & 0x1f) as usize]);
-        }
-    }
-    if count > 0 {
-        digits.push(ALPHABET[((bits << (5 - count)) & 0x1f) as usize]);
-    }
+/// The shown form of the key of `digits`: 3 groups of 4 joined by `-`.
+pub fn shown_form(digits: &[u8; 12]) -> String {
     let groups: Vec<&str> = digits
         .chunks(4)
-        .map(|group| std::str::from_utf8(group).expect("base32 is ASCII"))
+        .map(|group| std::str::from_utf8(group).expect("the alphabet is ASCII"))
         .collect();
     groups.join("-")
+}
+
+/// Argon2id of the key of `digits` on `account`, its 16 bytes: the backup's AES-256-GCM key and the
+/// IKM of the recovery HPKE key pair.
+pub fn derive(digits: &[u8; 12], account: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
+    let params = Params::new(MEMORY, PASSES, LANES, Some(64)).expect("Argon2id parameters");
+    let salt = [SALT_PREFIX, account].concat();
+    let mut out = [0; 64];
+    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
+        .hash_password_into(digits, &salt, &mut out)
+        .expect("Argon2id");
+    let (aead, ikm) = out.split_at(32);
+    (
+        aead.try_into().expect("32 bytes"),
+        ikm.try_into().expect("32 bytes"),
+    )
+}
+
+/// The recovery HPKE public key of `ikm`: `DeriveKeyPair(ikm)` of DHKEM(X25519, HKDF-SHA256).
+pub fn recovery_public(ikm: &[u8; 32]) -> [u8; 32] {
+    let (_, public) = X25519HkdfSha256::derive_keypair(ikm);
+    public.to_bytes().into()
+}
+
+/// `plaintext` sealed under `aead` with `nonce`, the account's 16 bytes as associated data.
+pub fn seal(plaintext: &[u8], aead: &[u8; 32], nonce: &[u8; 12], account: &[u8; 16]) -> Vec<u8> {
+    Aes256Gcm::new(aead.into())
+        .encrypt(
+            &Nonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad: account,
+            },
+        )
+        .expect("a seal")
+}
+
+/// What `ct` opens to under `aead` with `nonce` on `account`, if it opens.
+pub fn open(ct: &[u8], aead: &[u8; 32], nonce: &[u8; 12], account: &[u8; 16]) -> Option<Vec<u8>> {
+    Aes256Gcm::new(aead.into())
+        .decrypt(
+            &Nonce::from(*nonce),
+            Payload {
+                msg: ct,
+                aad: account,
+            },
+        )
+        .ok()
 }

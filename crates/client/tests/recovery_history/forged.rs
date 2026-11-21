@@ -65,7 +65,7 @@ fn wraps_to_the_recovery_key_a_reader_must_drop_leave_their_entries_counted_not_
         &[4_177_708_001, 4_177_708_002],
         &["ada-wraps-forged", "bob-closes-the-books"],
     );
-    let recovery = recovery_hpke(&key);
+    let recovery = recovery_hpke(&key, talk.ada.account);
     let account = talk.ada.account;
     let epoch_key = assert_wrapped_to_recovery(&mut talk, (account, &recovery), FORGED);
     let cloud = talk.cloud();

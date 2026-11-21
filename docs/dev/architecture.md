@@ -47,7 +47,7 @@
 - **Link code:** a new device shows a short code; its user enters it on an already linked `client` device. A PAKE keyed by the code carries the keys and the certificate, so the server never sees the code and cannot link a device itself.
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
-- The recovery key is entered only in the CLI, never in a web page.
+- The recovery key is 12 characters, shown as 3 groups of 4. It is typed or pasted only in the CLI, never in a web page.
 - **Local page:** `skald sign-in --browser` and `skald link --browser` take the link code's steps on a page `skald` opens in the browser, as their person or an agent runs them: the code and a fresh one, the reminder and the new device's confirmation; the sign-in page also shows a waiting recovery key. The commands' output holds no code, confirmation or recovery key; the page takes no recovery key.
   - It listens only on 127.0.0.1, on a port the system picks, while its command runs.
   - It answers only requests whose query holds its one-time secret, with its own Host and its own Origin or none; every answer carries `Cache-Control: no-store`.

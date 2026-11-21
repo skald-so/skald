@@ -6,8 +6,6 @@
 use std::io::{self, BufRead};
 use std::path::Path;
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::RecoveryKey;
 use zeroize::Zeroizing;
 
@@ -26,10 +24,7 @@ pub fn keep(
     stored: &mut secrets::Map,
     key: &RecoveryKey,
 ) -> Result<(), secrets::Error> {
-    stored.insert(
-        RECOVERY_KEY.to_owned(),
-        URL_SAFE_NO_PAD.encode(*key.to_bytes()),
-    );
+    stored.insert(RECOVERY_KEY.to_owned(), key.shown().as_str().to_owned());
     secrets.save(stored)
 }
 
@@ -44,9 +39,7 @@ pub fn forget(secrets: &Secrets, stored: &mut secrets::Map) -> Result<(), secret
 
 /// The recovery key `stored`, the secrets, hold, if they hold a readable one.
 fn kept(stored: &secrets::Map) -> Option<RecoveryKey> {
-    let bytes = Zeroizing::new(URL_SAFE_NO_PAD.decode(stored.get(RECOVERY_KEY)?).ok()?);
-    let key: &[u8; 32] = bytes.as_slice().try_into().ok()?;
-    Some(RecoveryKey::from_bytes(key))
+    RecoveryKey::parse(stored.get(RECOVERY_KEY)?).ok()
 }
 
 /// The line that says a recovery key waits, with the command that shows it, on `server`. A
@@ -180,8 +173,8 @@ mod tests {
         keep(&secrets, &mut stored, &key).unwrap();
         let loaded = secrets.load().unwrap();
         assert_eq!(
-            *kept(&loaded).expect("a key").to_bytes(),
-            *key.to_bytes(),
+            *kept(&loaded).expect("a key").shown(),
+            *key.shown(),
             "the same key"
         );
         forget(&secrets, &mut stored).unwrap();
@@ -189,7 +182,7 @@ mod tests {
         assert!(kept(&loaded).is_none());
         assert_eq!(loaded.get("other").map(String::as_str), Some("kept"));
         let broken = secrets::Map::from([(RECOVERY_KEY.to_owned(), "AAAA".to_owned())]);
-        assert!(kept(&broken).is_none(), "no key of 3 bytes");
+        assert!(kept(&broken).is_none(), "no key of 4 characters");
     }
 
     #[test]

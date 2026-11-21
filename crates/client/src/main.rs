@@ -41,6 +41,7 @@ mod delivery;
 mod device;
 mod devices;
 mod events;
+mod fingerprints;
 mod folders;
 mod follow;
 mod forms;
@@ -366,6 +367,23 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
+    /// Compare it with the one the other person's device shows, in person or on a call. Run by its
+    /// person at a terminal for a member, it then asks whether they match, and a yes marks the
+    /// account verified on this device, as skald members shows; a later change of its master key
+    /// warns and ends that. As an agent or through a pipe, it marks nothing.
+    Fingerprint {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true, requires = "handle")]
+        space: Option<String>,
+        /// The member's handle, as skald members shows it.
+        #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: Option<String>,
+    },
+    /// A step of skald fingerprint around its person's answer, which skald fingerprint hands to
+    /// the helper.
+    #[command(skip)]
+    FingerprintStep { step: fingerprints::Step },
     /// Adds a channel to a space this device follows, on a device of an admin of it: the device
     /// signs the space's next roster revision with the channel, its account the channel's member.
     /// It first accepts the revisions the server has; when another revision comes first, it signs
@@ -1076,6 +1094,7 @@ impl Command {
             Command::SetDeliveryText { .. } => Some("set-delivery-text"),
             Command::DeliveryModes { .. } => Some("delivery-modes"),
             Command::Held | Command::HeldStep { .. } => Some("held"),
+            Command::FingerprintStep { .. } => Some("fingerprint"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -1102,6 +1121,7 @@ impl Command {
                 | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
+                | Command::Fingerprint { space: Some(_), .. }
                 | Command::Channels { .. }
                 | Command::CreateSpace { .. }
                 | Command::CreateChannel { .. }
@@ -1125,6 +1145,9 @@ impl Command {
                     | Command::RevokeDevice { .. }
                     | Command::SetUsername { .. }
                     | Command::History { .. }
+                    | Command::FingerprintStep {
+                        step: fingerprints::Step::Sync { .. }
+                    }
             )
     }
 
@@ -1322,6 +1345,16 @@ fn main() -> ExitCode {
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
     }
+    if let Command::Fingerprint {
+        space: Some(space),
+        handle: Some(handle),
+    } = &operation.command
+        && operation.agent.is_none()
+        && link_code::at_terminal()
+    {
+        let (space, handle) = (space.clone(), handle.clone());
+        return fingerprint(operation, !one_shot, &space, &handle);
+    }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
     };
@@ -1514,6 +1547,22 @@ fn held(operation: Operation, starts: bool) -> ExitCode {
     })
 }
 
+/// `skald fingerprint <space> <handle>` as `operation` says, by its person at a terminal
+/// ([`fingerprints::run`]): each step goes through the helper that runs, or one it starts if
+/// `starts`; otherwise it runs here, holding the lock for the step.
+fn fingerprint(operation: Operation, starts: bool, space: &str, handle: &str) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let mut starts = starts;
+    fingerprints::run(&dir, space, handle, |step| {
+        let operation = operation.step(Command::FingerprintStep { step });
+        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
+        routed(route, operation)
+    })
+}
+
 /// Runs `operation` in this process, then closes the connection it kept.
 fn here(operation: Operation) -> Result<(), String> {
     let result = perform(operation);
@@ -1641,6 +1690,9 @@ fn performed(operation: Operation) -> Result<(), String> {
                 | Command::Helper { .. }
                 | Command::LinkStep { .. }
                 | Command::HeldStep { .. }
+                | Command::FingerprintStep {
+                    step: fingerprints::Step::Verify { .. }
+                }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -1741,6 +1793,23 @@ fn performed(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(spaces::members),
+        Command::Fingerprint { space: None, .. } => {
+            state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
+        }
+        Command::Fingerprint {
+            space: Some(space),
+            handle,
+        } => synced(
+            state_dir,
+            key_storage,
+            speaks,
+            timeout,
+            &space,
+            agent.is_some(),
+        )
+        .and_then(|synced| fingerprints::show(&synced, handle.as_deref().unwrap_or_default())),
+        Command::FingerprintStep { step } => state::dir(state_dir)
+            .and_then(|dir| fingerprints::step(&dir, key_storage, (speaks, timeout), step)),
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,

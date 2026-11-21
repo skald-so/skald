@@ -374,6 +374,10 @@ To a new release, in `~/skald`:
 
 Accounts made on a release without account recovery have no recovery key. An upgrade from such a release needs a new stack, from [Settings](#settings) on, so that each account gets one.
 
+### From a release with long recovery keys
+
+Releases before 12-character recovery keys made recovery keys and master backups of another form, which later releases do not read. An upgrade from such a release needs a new stack, from [Settings](#settings) on, so that each account gets a new recovery key.
+
 ## Rollback
 
 Back to the release before an upgrade, with the backup from that upgrade, `<backup file>`. The rollback replaces the stack's database and attachments with the backup's ([Cloud](dev/infrastructure.md#cloud), "Deployment"): what changed after the upgrade is lost.

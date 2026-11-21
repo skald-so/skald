@@ -32,15 +32,10 @@ impl HpkeKey {
         Self(StaticSecret::from(*secret))
     }
 
-    /// The recovery HPKE key of an account's 32-byte `recovery` key: `DeriveKeyPair(recovery)` of
-    /// DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3), as `docs/protocol/membership.md`, "Account",
-    /// says. Its [`HpkeKey::to_bytes`] are the derived private key, clamped.
-    pub fn from_recovery_key(recovery: &[u8; 32]) -> Self {
-        Self::derived(recovery)
-    }
-
-    /// The private key of `DeriveKeyPair(ikm)` of DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3).
-    pub(crate) fn derived(ikm: &[u8; 32]) -> Self {
+    /// The private key of `DeriveKeyPair(ikm)` of DHKEM(X25519, HKDF-SHA256) (RFC 9180, §7.1.3),
+    /// as the recovery HPKE key pair is derived (`docs/protocol/membership.md`, "Account"). Its
+    /// [`HpkeKey::to_bytes`] are the derived private key, clamped.
+    pub fn from_ikm(ikm: &[u8; 32]) -> Self {
         let (key, _) = <Dhkem as Kem>::derive_keypair(ikm);
         let mut secret = Zeroizing::new([0; 32]);
         key.write_exact(secret.as_mut());

@@ -19,3 +19,11 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# Argon2id of the recovery key runs at the spec's cost in every build: optimized, a test build's
+# derivation takes as long as a release's.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
