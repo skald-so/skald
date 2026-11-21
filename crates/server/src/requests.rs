@@ -388,7 +388,7 @@ fn proof_of(headers: &HeaderMap) -> Option<RequestProof> {
 fn refusal(closing: Closing) -> Response {
     let unauthorized = StatusCode::UNAUTHORIZED;
     match closing {
-        Closing::SessionEnded => not_signed_in(),
+        Closing::SessionEnded | Closing::AccountDeleted => not_signed_in(),
         Closing::AuthRequired => problem(
             unauthorized,
             closing.reason(),
@@ -493,6 +493,7 @@ mod tests {
             (Closing::DeviceRefused, 401, "device-refused"),
             (Closing::SignatureRefused, 401, "signature-refused"),
             (Closing::SessionEnded, 401, "not-signed-in"),
+            (Closing::AccountDeleted, 401, "not-signed-in"),
             (Closing::Malformed, 400, "invalid-request"),
             (Closing::ServerError, 500, "server-error"),
         ];

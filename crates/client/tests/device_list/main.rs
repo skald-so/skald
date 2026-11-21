@@ -159,6 +159,7 @@ impl MadeUp {
             issuer,
             issued: MADE_UP_ISSUED,
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: Unknown::default(),
         }

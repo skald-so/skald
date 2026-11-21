@@ -10,6 +10,7 @@ mod envelope;
 mod frame;
 mod history;
 mod id;
+mod invite;
 mod link;
 mod presence;
 mod queue;
@@ -29,7 +30,9 @@ pub use anchors::{ANCHORS_LABEL, Anchors, AnchorsBody};
 pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };
-pub use cert::{CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL};
+pub use cert::{
+    CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL, SSH_LABEL, SSH_NAMESPACE,
+};
 pub use content::{
     Attachment, Body, Content, Delegation, DelegationBody, GRANT_LABEL, Grant, GrantBody,
 };
@@ -46,6 +49,7 @@ pub use id::{
     AccountId, BlobId, ChannelId, ClaimId, DeviceId, Id, IdError, InviteId, Issued, Kind,
     MessageId, QueueId, SpaceId, TaskId, kind,
 };
+pub use invite::{ACCEPTANCE_LABEL, Acceptance, AcceptanceBody, INVITE_LABEL, Invite, InviteBody};
 pub use link::{LINK_LABEL, Link, LinkBody, LinkGrantBody, LinkMessage, LinkRequestBody};
 pub use presence::{
     AgentState, AgentStatus, NOTE_MAX, PRESENCE_LABEL, Presence, PresenceBody, PresencePlaintext,

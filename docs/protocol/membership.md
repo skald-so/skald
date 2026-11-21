@@ -84,6 +84,7 @@ cert-body = {
   7 => timestamp,          ; issued
   ? 8 => bstr,             ; ssh: an SSH signature of the device key
   9 => tstr .size (1..64), ; name: set on the device, e.g. "Phone"
+  ? 10 => uint,            ; github: the GitHub user ID whose key made `ssh`
   * int => any,            ; fields of later versions
 }
 
@@ -93,6 +94,9 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it, except a `service` device's: [Service device](#service-device).
 - **Proof check:** a client MUST discard a certificate unless `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)) and `proof` verifies with `signing`. A discarded certificate counts nowhere and is not shown: the certificate of a device ID, a device's chain and issuers, the signer of an object and the devices a device certified come only from certificates that pass this check, here and in [README.md](README.md). So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
 - A device signs `proof` for one certificate only, the one issued for it when it joins the account. Certificates of one `device` with the same `body` are one certificate: a client uses a copy whose `signature` passes check 1 of [Device checks](#device-checks). A client that sees two certificates of one `device` with different bodies that pass the proof check treats neither as valid and warns its user.
+- **Kept certificates:** a client keeps the certificate of each device it trusted, one that passed checks 1 and 2 of [Device checks](#device-checks). When the server later gives that device with another certificate in its place, the client warns once of a key change, until the server gives the kept one again:
+  - one that fails the proof check or check 1 still counts nowhere, so the device is not trusted until then;
+  - one of another body that passes the proof check makes neither valid, as two bodies given at once do; the client keeps it too, so neither is valid also once the server gives only one of them.
 - A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
@@ -100,7 +104,15 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - A `service` device is certified on the account of the admin who creates it, by the `client` device it is created on.
 - `name` and `issued` are for display; nothing depends on them. A client shows a device only by its certificate's `name`, `kind` and `issued`, never by a name the server gives.
 - The one exception: while a device of the account waits for linking, each command of a linked `client` device that reaches the server, and each tool call of its MCP server, says once that the server reports, unverified, a device of that `name` and kind waiting, and that `skald link` links it (`getWaitingDevices` in the OpenAPI spec, `link-notice` in [delivery.md](delivery.md#frames)). The name is escaped as other text from the server. Only a prompt: the certificate still goes only through the code its user types ([Link code](#link-code)).
-- **SSH signature** (`ssh`, optional): an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, all byte strings. It is made with one of the user's SSH keys on GitHub. A client that checks it fetches the user's keys from GitHub, not from the Skald server; a signature that does not verify is a key change.
+- **SSH signature** (`ssh` and `github`, optional):
+  - `ssh`: an SSH signature [[OpenSSH PROTOCOL.sshsig](https://github.com/openssh/openssh-portable/blob/master/PROTOCOL.sshsig)] in its binary form, the base64 of its armored text decoded, version 1, with namespace `skald.so` over the encoded `["skald ssh", account, device, signing]`, the label a text string and the rest byte strings ([Conventions](README.md#conventions)). It is made with one of the SSH keys of the GitHub user `github` names.
+  - `github`: GitHub's user ID of that user.
+  - A certificate carries both or neither; one with only one of them is malformed.
+  - Only a `client` device's certificate carries them; a client ignores them on other kinds.
+  - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
+    - it passes when its key is on the list and it verifies with that key;
+    - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;
+    - it counts as not checked when the client cannot check it, as with GitHub unreachable or a listed key it does not verify. A client verifies Ed25519 and ECDSA (P-256, P-384, P-521) keys, RSA keys of 1024 to 8192 bits with an exponent of 2 to 2^33 − 1, and the security keys `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com`.
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
@@ -289,7 +301,9 @@ A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
 - an account record's `recovery` changes;
 - a member's `master` changes in the roster;
-- an `ssh` signature it checks does not verify;
+- an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
+- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
+- the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
 
 ## Trust levels
@@ -427,7 +441,7 @@ acceptance-body = {
 ```
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
-- **Link:** `https://<server>/invite/<invite>#<fragment>`; the fragment is base64url without padding of the secret followed by the hash of the roster revision the admin's device last accepted. Browsers do not send a fragment to the server.
+- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
 - The server stores the invite and the acceptance. Revoking an invite deletes it on the server.
 
 The newcomer's device MUST, from the link:
@@ -588,7 +602,7 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 | Problem | The item |
 |---|---|
 | `malformed` | Does not decode as its kind, names another channel than its upload, or is a link whose `prev` is not below its epoch |
-| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows, or, on a service token's connection, a channel the token does not list |
+| `not-a-member` | Comes from a device that is no member of the epoch, or a revoked one, or names no channel of the space whose group the server follows, or, on a service token's connection, a channel the token does not list; a wrap, to the recovery key or a browser of a deleted account |
 | `epoch-mismatch` | Is of an epoch the channel has not had; a link or wrap, of an epoch before the channel's cutoff; an entry, of an epoch other than the channel's current or previous one |
 
 - With a history retention, the server deletes each entry stored longer ago than it. A channel's cutoff is the latest epoch of an entry the server has deleted, and never moves back. The server deletes the links and wraps of epochs before the cutoff; those of the cutoff and later epochs stay, whatever their age. Without a retention, it deletes none.

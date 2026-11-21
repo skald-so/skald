@@ -68,6 +68,7 @@ fn certificate() -> Cert {
         issuer: None,
         issued: 1_762_819_200,
         ssh: None,
+        github: None,
         name: "Laptop".to_owned(),
         unknown: Unknown::default(),
     };

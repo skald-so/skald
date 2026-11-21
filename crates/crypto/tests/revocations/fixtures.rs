@@ -170,6 +170,7 @@ pub fn certs() -> Vec<Cert> {
                 device: device(seed),
                 account,
                 ssh: None,
+                github: None,
                 unknown: Unknown::default(),
             };
             issue(&body, &key(by), &key(seed)).expect("a fixture certificate")

@@ -16,7 +16,8 @@ use skald_crypto::{ChainProblem, DeviceCheckError, check_device, check_valid_dev
 use skald_proto::{AccountRecord, Cbor as _, Cert, DeviceId, DeviceKind, Revocation, VersionRange};
 
 use crate::connection::{self, Connection, printable};
-use crate::follow::SpaceDevices;
+use crate::follow::{self, Own, SpaceDevices};
+use crate::kept_certs;
 use crate::revocations;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
@@ -43,18 +44,20 @@ struct Entry {
 }
 
 /// Lists the devices of the account the machine whose state is in `dir` signed in to, from the
-/// server of its session, its secrets in `storage`.
+/// server of its session, its secrets in `storage`. A `person`'s run warns too of master keys its
+/// spaces give ([`follow::master_warnings`]); an agent's names nothing of them.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     speaks: VersionRange,
     timeout: Duration,
+    person: bool,
 ) -> Result<(), String> {
     let (state, server, token) = signed_in(dir, storage)?;
 
     let Some(state::Device {
         id: this,
-        link: Link::Certified { master, .. },
+        link: Link::Certified { master, cert },
         ..
     }) = state.device().map_err(text)?
     else {
@@ -72,8 +75,19 @@ pub fn run(
     let checked = check(&master, &devices);
     print!("{}", listing(&checked, this));
     let changed = statuses(&state, &checked, None, "this account")?;
-    for warning in
-        (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked))).chain(changed)
+    let masters = if person {
+        let cert = Cert::from_cbor(&cert).map_err(text)?;
+        let own = Own {
+            account: cert.body().account,
+            master,
+        };
+        follow::master_warnings(&state, &own, None)?
+    } else {
+        Vec::new()
+    };
+    for warning in (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)))
+        .chain(changed)
+        .chain(masters)
     {
         eprintln!("skald: warning: {warning}");
     }
@@ -95,8 +109,9 @@ pub fn own(
 }
 
 /// Records in `state` whether each device `checked` holds with a certificate that passes checks 1
-/// and 2, of `account` if given, is revoked; gives the warning of each that is revoked, valid again
-/// or new since the device last checked it, as a device of `whose` ("Device checks").
+/// and 2, of `account` if given, is revoked, and keeps its certificate ([`kept_certs::keep`]);
+/// gives the warning of each that is revoked, valid again or new since the device last checked it,
+/// as a device of `whose` ("Device checks").
 pub fn statuses(
     state: &State,
     checked: &Checked,
@@ -104,10 +119,14 @@ pub fn statuses(
     whose: &str,
 ) -> Result<Vec<String>, String> {
     let of = |cert: &Cert| account.is_none_or(|account| cert.body().account == account);
-    let seen: Vec<(DeviceId, bool)> = (checked.linked.iter().map(|cert| (cert, false)))
-        .chain(checked.revoked.iter().map(|cert| (cert, true)))
+    let trusted: Vec<(&Cert, bool)> = (checked.linked.iter().map(|cert| (*cert, false)))
+        .chain(checked.revoked.iter().map(|cert| (*cert, true)))
         .filter(|(cert, _)| of(cert))
-        .map(|(cert, revoked)| (cert.body().device, revoked))
+        .collect();
+    let certs: Vec<&Cert> = trusted.iter().map(|(cert, _)| *cert).collect();
+    kept_certs::keep(state, &certs)?;
+    let seen: Vec<(DeviceId, bool)> = (trusted.iter())
+        .map(|(cert, revoked)| (cert.body().device, *revoked))
         .collect();
     let changed = state.device_statuses(&seen).map_err(text)?;
     Ok(changed
@@ -157,8 +176,10 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 }
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
-/// certificates it gives, and the revocations it gives with those `state` holds; a certificate or
-/// revocation that does not decode counts as none.
+/// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
+/// it gives with those `state` holds; a certificate or revocation that does not decode counts as
+/// none. Prints the warning of each device given with a certificate other than the one `state`
+/// keeps ([`kept_certs`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
@@ -173,7 +194,7 @@ pub fn fetch(
         .iter()
         .filter_map(|entry| entry.device.parse().ok())
         .collect();
-    let certs = devices
+    let given = devices
         .devices
         .iter()
         .filter_map(|entry| {
@@ -181,6 +202,10 @@ pub fn fetch(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
+    let (certs, swapped) = kept_certs::settle(state, given)?;
+    for warning in swapped {
+        eprintln!("skald: warning: {warning}");
+    }
     let given = devices.revocations.iter().filter_map(|text| {
         let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
         Revocation::from_cbor(&bytes).ok()
@@ -465,6 +490,7 @@ mod tests {
                 issuer,
                 issued: 1_800_000_000,
                 ssh: None,
+                github: None,
                 name: name.to_owned(),
                 unknown: Unknown::default(),
             };

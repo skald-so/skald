@@ -922,6 +922,7 @@ impl Issuer {
             issuer: Some(this),
             issued: now(),
             ssh: None,
+            github: None,
             name: request.name.clone(),
             unknown: Unknown::default(),
         };

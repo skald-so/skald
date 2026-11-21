@@ -238,6 +238,7 @@ impl Keys {
             issuer: None,
             issued: now(),
             ssh: None,
+            github: None,
             name,
             unknown: Unknown::default(),
         }
@@ -731,6 +732,7 @@ mod tests {
             issuer: None,
             issued: 1_800_000_000,
             ssh: None,
+            github: None,
             name: "ada".to_owned(),
             unknown: Unknown::default(),
         };

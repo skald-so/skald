@@ -130,6 +130,7 @@ pub fn second_machine(world: &World, first: &Person, host: &'static str) -> Pers
         issuer: Some(first.device),
         issued: now(),
         ssh: None,
+        github: None,
         name: host.to_owned(),
         unknown: Unknown::default(),
     };
