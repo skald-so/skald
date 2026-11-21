@@ -11,6 +11,9 @@
 #     version; so does the marketplace's entry if it gives a version.
 #   - The plugin has a skill: a SKILL.md, under skills/ or a directory the manifest adds, with a name
 #     and a description, whose rules name inbox, reply, send, peer, service and data.
+#   - The plugin runs `skald hook claude` on SessionStart, SessionEnd, PostToolUse and Stop, for
+#     every session and tool, from hooks/hooks.json or the hooks the manifest gives, in shell form or
+#     exec form.
 #   - script/release-update writes the next release's version, 0.40.6, into the plugin's manifest,
 #     and into the marketplace's entry if it gives one, and leaves the source at main.
 set -euo pipefail
@@ -93,6 +96,25 @@ else
     grep -qi -- "$word" <<<"$rules" || fail "the skill's rules do not name $word"
   done
 fi
+
+# The hooks: the event maps of hooks/hooks.json and of each file or inline object the manifest's
+# `hooks` gives, as one JSON array.
+maps=$(
+  {
+    jq -c '.hooks // empty' "$home/hooks/hooks.json" 2>/dev/null || true
+    jq -r '.hooks // empty | if type == "array" then .[] else . end | strings' "$plugin" 2>/dev/null |
+      while IFS= read -r file; do jq -c '.hooks // empty' "$home/${file#./}" 2>/dev/null || true; done
+    jq -c '.hooks // empty | if type == "array" then .[] else . end | objects' "$plugin" 2>/dev/null || true
+  } | jq -sc .
+)
+for event in SessionStart SessionEnd PostToolUse Stop; do
+  jq -e --arg event "$event" '
+    any(.[][$event][]?; (.matcher // "" | . == "" or . == "*") and any(.hooks[]?;
+      .type == "command" and (
+        (.args == null and (.command | strings | test("^\\s*skald\\s+hook\\s+claude\\s*$")))
+        or (.command == "skald" and .args == ["hook", "claude"]))))
+  ' <<<"$maps" >/dev/null || fail "the plugin does not run skald hook claude on every $event"
+done
 
 # The version script/release-update writes.
 "$root/script/install-git-cliff" >/dev/null

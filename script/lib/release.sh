@@ -1,6 +1,7 @@
-# The names and helpers the Release PR workflow and its tests share, sourced by
-# script/release-update, script/install-git-cliff and the tests of the Release PR and the tag. The GitHub App skald-release, its environment and its
-# secrets are set up on GitHub under these names; a rename changes them here and in the workflow.
+# The names and helpers the Release PR workflow and its tests share, sourced by script/release-pr,
+# script/release-update, script/install-git-cliff and the tests of the Release PR, the tag and the
+# Claude Code plugin. The GitHub App skald-release, its environment and its secrets are set up on
+# GitHub under these names; a rename changes them here and in the workflow.
 
 # The workflow that tags the merge of a Release PR and keeps the Release PR open.
 release_workflow=.github/workflows/release-pr.yml
