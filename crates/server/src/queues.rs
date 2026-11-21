@@ -6,13 +6,15 @@
 //! `mode`, or deletes it with its tasks. The server stores a task, as the bytes it got, only from a
 //! device that may send in the channel and, a `service` device, whose token has `queues`; once per
 //! task ID and per `idempotency_key` in its queue, and answers a device's repeated upload of a task
-//! ID as it answered the first. It gives tasks only to devices that may send in the channel.
+//! ID as it answered the first. It gives tasks, with their states and last claims, only to devices
+//! that may send in the channel. Claims and what follows them: [`crate::claims`].
 
 use axum::Json;
 use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use skald_proto::{
     AccountId, Cbor as _, ChannelId, DeviceId, Name, QueueId, QueuedTask, SpaceId, TaskId,
@@ -36,13 +38,13 @@ const MAX_ATTEMPTS: i32 = 5;
 const ATTEMPTS: std::ops::RangeInclusive<i32> = 1..=100;
 /// The longest body of an enqueue.
 const TASK_BODY_LIMIT: usize = 64 << 20;
-/// The longest body of a queue's settings.
-const SETTINGS_BODY_LIMIT: usize = 4096;
+/// The longest JSON body, such as a queue's settings.
+const JSON_BODY_LIMIT: usize = 4096;
 
 /// A queue's mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-enum Mode {
+pub(crate) enum Mode {
     AtLeastOnce,
     AtMostOnce,
 }
@@ -55,7 +57,7 @@ impl Mode {
         }
     }
 
-    fn of(stored: &str) -> Self {
+    pub(crate) fn of(stored: &str) -> Self {
         match stored {
             "at-most-once" => Mode::AtMostOnce,
             _ => Mode::AtLeastOnce,
@@ -113,7 +115,21 @@ impl Settings {
 struct Task {
     queued_task: String,
     state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    progress: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
     attempts: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    claim: Option<LastClaim>,
+}
+
+/// A task's last claim, as `Task` in the spec gives it.
+#[derive(Serialize)]
+struct LastClaim {
+    claim_id: String,
+    generation: i64,
+    device: String,
 }
 
 /// `Tasks` in the spec.
@@ -123,7 +139,7 @@ struct Tasks {
 }
 
 /// A queue as the server keeps it, with the account that created it.
-struct Kept {
+pub(crate) struct Kept {
     queue: Queue,
     creator: Option<AccountId>,
 }
@@ -178,7 +194,7 @@ async fn of_channel(db: &PgPool, at: &InChannel) -> Result<Option<Vec<Queue>>, s
 /// `POST /spaces/<space>/channels/<channel>/queues`: a new queue of the channel with the body's
 /// settings and the defaults for the others, from a `client` device in the channel.
 pub(crate) async fn create(State(state): State<AppState>, at: InChannel, body: Body) -> Response {
-    let settings = match settings(body).await {
+    let settings = match json::<Settings>(body).await {
         Ok(settings) => settings,
         Err(refused) => return *refused,
     };
@@ -244,7 +260,7 @@ pub(crate) async fn change(
         Ok(found) => found,
         Err(refused) => return *refused,
     };
-    let settings = match settings(body).await {
+    let settings = match json::<Settings>(body).await {
         Ok(settings) => settings,
         Err(refused) => return *refused,
     };
@@ -597,18 +613,28 @@ async fn insert(
     if queue.is_none() {
         return Ok(Some(Upload::Refused(Problem::UnknownQueue)));
     }
-    let key = task.sched.idempotency_key.as_deref();
+    let sched = &task.sched;
+    let key = sched.idempotency_key.as_deref();
+    // A deadline from the year 10000 on is kept as none.
+    let deadline = (sched.deadline).and_then(|deadline| i64::try_from(deadline).ok());
     // Of two inserts of the same task ID or key at once, the second waits for the first to commit,
     // and inserts nothing.
     let inserted = sqlx::query(
-        "INSERT INTO tasks (id, queue_id, uploader_id, queued_task, idempotency_key)
-         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5) ON CONFLICT DO NOTHING",
+        "INSERT INTO tasks (
+             id, queue_id, uploader_id, queued_task, idempotency_key, template, addressee, deadline
+         )
+         VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7::uuid,
+                 CASE WHEN $8::bigint < 253402300800 THEN to_timestamp($8::bigint) END)
+         ON CONFLICT DO NOTHING",
     )
     .bind(task.task.to_string())
     .bind(task.queue.to_string())
     .bind(device.to_string())
     .bind(bytes)
     .bind(key)
+    .bind(sched.template.as_ref().map(ToString::to_string))
+    .bind(sched.device.map(|device| device.to_string()))
+    .bind(deadline)
     .execute(&mut *tx)
     .await?;
     if inserted.rows_affected() == 1 {
@@ -692,8 +718,10 @@ async fn given(
     {
         return Err(Box::new(unknown_queue()));
     }
-    let found: Vec<(Vec<u8>, String, i32)> = sqlx::query_as(
-        "SELECT queued_task, state, attempts FROM tasks
+    let found: Vec<TaskRow> = sqlx::query_as(
+        "SELECT queued_task, state, progress, reason, attempts, claim_id::text, generation,
+                claim_device::text
+         FROM tasks
          WHERE queue_id = $1::uuid AND ($2::uuid IS NULL OR id = $2::uuid) ORDER BY seq",
     )
     .bind(queue.to_string())
@@ -701,14 +729,36 @@ async fn given(
     .fetch_all(&state.db)
     .await
     .map_err(failed)?;
-    Ok(found
-        .into_iter()
-        .map(|(bytes, state, attempts)| Task {
-            queued_task: base64(&bytes),
-            state,
-            attempts,
-        })
-        .collect())
+    Ok(found.into_iter().map(given_task).collect())
+}
+
+/// A task's row as [`given`] reads it.
+type TaskRow = (
+    Vec<u8>,
+    String,
+    Option<String>,
+    Option<String>,
+    i32,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
+/// The task of `row` as the spec's `Task`.
+fn given_task(row: TaskRow) -> Task {
+    let (bytes, state, progress, reason, attempts, claim_id, generation, device) = row;
+    Task {
+        queued_task: base64(&bytes),
+        state,
+        progress,
+        reason,
+        attempts,
+        claim: claim_id.zip(device).map(|(claim_id, device)| LastClaim {
+            claim_id,
+            generation,
+            device,
+        }),
+    }
 }
 
 /// A queue's row as the queries read it.
@@ -728,8 +778,8 @@ fn kept((id, name, mode, lease, max_attempts, creator): Row) -> Kept {
 }
 
 /// The queue `queue` of `channel` of `space`, if it has it.
-async fn find(
-    db: &PgPool,
+pub(crate) async fn find(
+    db: impl sqlx::PgExecutor<'_>,
     space: SpaceId,
     channel: ChannelId,
     queue: QueueId,
@@ -747,9 +797,9 @@ async fn find(
     Ok(found.map(kept))
 }
 
-/// The settings of the JSON `body`; the refusal of a body that is none.
-async fn settings(body: Body) -> Result<Settings, Box<Response>> {
-    let Ok(body) = axum::body::to_bytes(body, SETTINGS_BODY_LIMIT).await else {
+/// The JSON `body` as a `T`, such as a queue's settings; the refusal of a body that is none.
+pub(crate) async fn json<T: DeserializeOwned>(body: Body) -> Result<T, Box<Response>> {
+    let Ok(body) = axum::body::to_bytes(body, JSON_BODY_LIMIT).await else {
         return Err(Box::new(invalid("The body is over 4096 bytes.")));
     };
     parse(&body).map_err(|refusal: Refusal| Box::new(refusal.into_response()))
@@ -761,11 +811,11 @@ fn not_a_member() -> Response {
     )
 }
 
-fn not_allowed(detail: &str) -> Response {
+pub(crate) fn not_allowed(detail: &str) -> Response {
     problem(StatusCode::FORBIDDEN, "not-allowed", "Not allowed", detail)
 }
 
-fn unknown_queue() -> Response {
+pub(crate) fn unknown_queue() -> Response {
     problem(
         StatusCode::NOT_FOUND,
         "unknown-queue",
@@ -774,7 +824,7 @@ fn unknown_queue() -> Response {
     )
 }
 
-fn unknown_task() -> Response {
+pub(crate) fn unknown_task() -> Response {
     problem(
         StatusCode::NOT_FOUND,
         "unknown-task",

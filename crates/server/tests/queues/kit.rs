@@ -161,7 +161,7 @@ impl World {
         self.client(self.server(), token, &self.stage.bot, who.to_owned())
     }
 
-    fn client(&self, server: &Server, token: &str, device: &Device, who: String) -> Client {
+    pub fn client(&self, server: &Server, token: &str, device: &Device, who: String) -> Client {
         let flow = &self.stage.f.team.flow;
         Client {
             who,

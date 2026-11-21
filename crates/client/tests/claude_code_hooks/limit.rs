@@ -7,7 +7,7 @@ use serde_json::json;
 use skald_proto::MessageId;
 
 use crate::client::INBOX;
-use crate::hooks::{Event, INBOX_WORD, MESSAGE_ARG, Web, assert_own_line};
+use crate::hooks::{Event, MESSAGE_ARG, Web, assert_cut, assert_own_line};
 use crate::kit::RECV;
 use crate::lines::{agent_line, agent_lines, assert_handed_line, refers_to};
 use crate::solo::WEB;
@@ -22,13 +22,6 @@ fn text_of(head: &str, length: usize) -> String {
     text.truncate(length - 1);
     text.push('.');
     text
-}
-
-/// Whether a word of `line` is `#<ref>` of `msg_id`.
-fn names_reference(line: &str, msg_id: MessageId) -> bool {
-    (line.split(|c: char| c != '#' && !c.is_ascii_alphanumeric()))
-        .filter_map(|word| word.strip_prefix('#'))
-        .any(|reference| refers_to(reference, msg_id))
 }
 
 /// What starts api's long message; it is nowhere else.
@@ -55,12 +48,7 @@ fn message_over_the_limit_is_cut_and_inbox_returns_it_whole_by_its_reference() {
         refers_to(&line.reference, msg_id) && line.text.starts_with(&long[..1_000]),
         "not the long message's line: {line:?}"
     );
-    assert!(!context.contains(&long), "the whole text went in");
-    let last = context.lines().rev().find(|line| !line.trim().is_empty());
-    assert!(
-        last.is_some_and(|last| last.contains(INBOX_WORD) && names_reference(last, msg_id)),
-        "the last line names no {INBOX_WORD} and #<ref>: {last:?}"
-    );
+    assert_cut(&context, &long, msg_id);
 
     let reference = format!("#{}", line.reference);
     let whole = web.session.call(INBOX, json!({ MESSAGE_ARG: reference }));

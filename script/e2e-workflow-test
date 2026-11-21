@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // Tests .github/workflows/e2e.yml, which runs the e2e tests of the client and of the adapters
 // against the latest Claude Code:
-//   - it runs daily, by hand, and on a PR into dev that changes the adapter (hook.rs, main.rs,
-//     mcp.rs, recv.rs and state.rs of the client, and crates/adapters), its e2e or hook tests, a
-//     module the e2e tests take by #[path] or include!, found by following them from
-//     claude_code_e2e/main.rs and claude_code_executor/main.rs, or the workflow; a PR that changes
-//     none of them does not start it;
+//   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_relay.rs,
+//     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, recv.rs, state.rs and wait.rs of the
+//     client, and crates/adapters), its e2e or hook tests, a module the e2e tests take by #[path]
+//     or include!, found by following them from claude_code_e2e/main.rs and
+//     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
+//     it;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
 //     npm, then runs the ignored claude_code_e2e tests of the client and claude_code_executor tests
 //     of the adapters with SKALD_E2E_REQUIRED=1, so a skip fails, each in a step without a
@@ -81,11 +82,15 @@ if (!(on.schedule ?? []).some((entry) => typeof entry?.cron === 'string')) fail(
 if (!runsFor(workflow, event('workflow_dispatch', 'refs/heads/dev'))) fail('a manual run does not start it');
 if (!runsFor(workflow, event('pull_request', 'refs/pull/7/merge'))) fail('a PR into dev does not start it');
 for (const changed of [
+  'crates/client/src/claude_relay.rs',
+  'crates/client/src/claude_socket.rs',
+  'crates/client/src/helper.rs',
   'crates/client/src/hook.rs',
   'crates/client/src/main.rs',
   'crates/client/src/mcp.rs',
   'crates/client/src/recv.rs',
   'crates/client/src/state.rs',
+  'crates/client/src/wait.rs',
   'crates/client/tests/claude_code_hooks/hooks.rs',
   'crates/client/tests/claude_code_hooks/inputs/stop.json',
   'crates/adapters/src/lib.rs',

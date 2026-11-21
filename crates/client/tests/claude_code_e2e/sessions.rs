@@ -58,7 +58,7 @@ fn turn_at(stub: &Stub, step: usize) -> Value {
 /// The message line in `text` whose text is `said`, wherever in a line it starts; fails unless
 /// there is one.
 #[track_caller]
-fn line_in(text: &str, said: &str) -> AgentLine {
+pub fn line_in(text: &str, said: &str) -> AgentLine {
     let needle = format!(": {said}");
     let at = text
         .find(&needle)
@@ -73,7 +73,7 @@ fn line_in(text: &str, said: &str) -> AgentLine {
 
 /// Fails unless `line` is the message `msg_id` from `from`, by the device `device`, at `level`.
 #[track_caller]
-fn assert_from(line: &AgentLine, msg_id: MessageId, (from, device, level): (&str, &str, &str)) {
+pub fn assert_from(line: &AgentLine, msg_id: MessageId, (from, device, level): (&str, &str, &str)) {
     assert!(
         refers_to(&line.reference, msg_id),
         "{line:?} is not {msg_id}"

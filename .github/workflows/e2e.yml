@@ -15,11 +15,15 @@ on:
     # (script/e2e-workflow-test), and this file.
     paths:
       - crates/adapters/**
+      - crates/client/src/claude_relay.rs
+      - crates/client/src/claude_socket.rs
+      - crates/client/src/helper.rs
       - crates/client/src/hook.rs
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
       - crates/client/src/recv.rs
       - crates/client/src/state.rs
+      - crates/client/src/wait.rs
       - crates/client/tests/claude_code_e2e/**
       - crates/client/tests/claude_code_hooks/**
       - crates/client/src/test_dir.rs
@@ -33,6 +37,7 @@ on:
       - crates/client/tests/device_keys/keys.rs
       - crates/client/tests/device_revocation/revocations.rs
       - crates/client/tests/gap_detection/gaps.rs
+      - crates/client/tests/helper/helped.rs
       - crates/client/tests/history_common/mod.rs
       - crates/client/tests/history_devices/devices.rs
       - crates/client/tests/history_reading/reading.rs
