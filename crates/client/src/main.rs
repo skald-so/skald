@@ -53,6 +53,7 @@ mod history_reading;
 mod hook;
 mod inbound;
 mod intake;
+mod joined;
 mod kept_certs;
 mod key_chain;
 mod key_packages;
