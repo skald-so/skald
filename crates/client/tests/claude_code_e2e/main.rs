@@ -18,11 +18,15 @@
 //! `SessionStart` and `SessionEnd` hook (`socket_claude.rs`), on a stub that answers each turn by
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
+//!
+//! The session of `permission_prompts.rs` stops on its own permission prompt, which its
+//! `PermissionRequest` and `Notification` hooks tell the person's device.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
+mod permission_prompts;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;
@@ -34,6 +38,10 @@ mod stub;
 // The processes of a copy of `skald`, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]
 mod helped;
+
+// The person's lines of recorded prompts, as the tests of detecting permission prompts have them.
+#[path = "../claude_code_permission/prompt_lines.rs"]
+mod prompt_lines;
 
 // The hook handler's command, its runs and Ada's and Bob's agents, as the tests of the hook handler
 // have them.
