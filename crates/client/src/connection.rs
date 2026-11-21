@@ -73,11 +73,12 @@ pub enum Error {
         speaks: VersionRange,
     },
     /// The server refused the request for another reason: the problem's type `kind`, its
-    /// `detail`.
+    /// `detail` and, of a `duplicate` task, its extension member `task`.
     Refused {
         status: u16,
         kind: String,
         detail: String,
+        task: Option<String>,
     },
     /// An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5), such as `authorization_pending`.
     OAuth { error: String, description: String },
@@ -644,10 +645,20 @@ enum Body<'a> {
     Json(Method, &'a [u8]),
     /// None, a `GET` with the device's proof `proof`.
     ProvedGet { proof: &'a str },
-    /// JSON, `POST`ed with the device's proof `proof`.
-    ProvedJson { json: &'a [u8], proof: &'a str },
-    /// CBOR, `PUT` with the device's proof `proof`.
-    ProvedCbor { cbor: &'a [u8], proof: &'a str },
+    /// None, a `DELETE` with the device's proof `proof`.
+    ProvedDelete { proof: &'a str },
+    /// JSON, sent by `method` with the device's proof `proof`.
+    ProvedJson {
+        method: Method,
+        json: &'a [u8],
+        proof: &'a str,
+    },
+    /// CBOR, sent by `method` with the device's proof `proof`.
+    ProvedCbor {
+        method: Method,
+        cbor: &'a [u8],
+        proof: &'a str,
+    },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
     /// the timeout.
     Frame {
@@ -657,11 +668,12 @@ enum Body<'a> {
     },
 }
 
-/// The method of a request with a JSON body.
+/// The method of a request with a body.
 #[derive(Clone, Copy)]
 pub enum Method {
     Post,
     Put,
+    Patch,
 }
 
 /// The server's answer to one request.
@@ -709,6 +721,8 @@ struct Problem {
     detail: String,
     #[serde(default)]
     supported: Vec<u64>,
+    #[serde(default)]
+    task: Option<String>,
 }
 
 impl Connection {
@@ -856,7 +870,30 @@ impl Connection {
         (token, proof): (&str, &str),
         json: &[u8],
     ) -> Result<Vec<u8>, Error> {
-        self.http(path, Some(token), Body::ProvedJson { json, proof })
+        self.send_json_proved(Method::Post, path, (token, proof), json)
+    }
+
+    /// `<method> <path>` of the JSON `json` as the device of `proof`, on the device session of
+    /// `token`.
+    pub fn send_json_proved(
+        &mut self,
+        method: Method,
+        path: &str,
+        (token, proof): (&str, &str),
+        json: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let body = Body::ProvedJson {
+            method,
+            json,
+            proof,
+        };
+        self.http(path, Some(token), body)
+    }
+
+    /// `DELETE <path>` as the device of `proof`, on the device session of `token`.
+    pub fn delete_proved(&mut self, path: &str, (token, proof): (&str, &str)) -> Result<(), Error> {
+        self.http(path, Some(token), Body::ProvedDelete { proof })
+            .map(drop)
     }
 
     /// `PUT <path>` of the CBOR `cbor` as the device of `proof`, on the device session of `token`.
@@ -866,7 +903,24 @@ impl Connection {
         (token, proof): (&str, &str),
         cbor: &[u8],
     ) -> Result<Vec<u8>, Error> {
-        self.http(path, Some(token), Body::ProvedCbor { cbor, proof })
+        self.send_cbor_proved(Method::Put, path, (token, proof), cbor)
+    }
+
+    /// `<method> <path>` of the CBOR `cbor` as the device of `proof`, on the device session of
+    /// `token`.
+    pub fn send_cbor_proved(
+        &mut self,
+        method: Method,
+        path: &str,
+        (token, proof): (&str, &str),
+        cbor: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let body = Body::ProvedCbor {
+            method,
+            cbor,
+            proof,
+        };
+        self.http(path, Some(token), body)
     }
 
     /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
@@ -900,22 +954,30 @@ impl Connection {
                 Body::Form(form) => {
                     with_headers(agent.post(&url), &version, bearer).send_form(form.iter().copied())
                 }
-                Body::Json(method, json) => match method {
-                    Method::Post => with_headers(agent.post(&url), &version, bearer),
-                    Method::Put => with_headers(agent.put(&url), &version, bearer),
-                }
-                .content_type("application/json")
-                .send(json),
-                Body::ProvedGet { proof } => with_headers(agent.get(&url), &version, bearer)
-                    .header(PROOF_HEADER, proof)
-                    .call(),
-                Body::ProvedJson { json, proof } => {
-                    with_headers(agent.post(&url), &version, bearer)
-                        .header(PROOF_HEADER, proof)
+                Body::Json(method, json) => {
+                    with_headers(with_body(&agent, method, &url), &version, bearer)
                         .content_type("application/json")
                         .send(json)
                 }
-                Body::ProvedCbor { cbor, proof } => with_headers(agent.put(&url), &version, bearer)
+                Body::ProvedGet { proof } => with_headers(agent.get(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .call(),
+                Body::ProvedDelete { proof } => with_headers(agent.delete(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .call(),
+                Body::ProvedJson {
+                    method,
+                    json,
+                    proof,
+                } => with_headers(with_body(&agent, method, &url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .content_type("application/json")
+                    .send(json),
+                Body::ProvedCbor {
+                    method,
+                    cbor,
+                    proof,
+                } => with_headers(with_body(&agent, method, &url), &version, bearer)
                     .header(PROOF_HEADER, proof)
                     .content_type("application/cbor")
                     .send(cbor),
@@ -1145,6 +1207,7 @@ impl Connection {
                 kind,
                 detail,
                 supported,
+                task,
             } = problem;
             let speaks = self.speaks;
             if kind == VersionProblem::TooOld.type_uri() {
@@ -1155,6 +1218,7 @@ impl Connection {
                     status,
                     kind,
                     detail,
+                    task,
                 });
             }
             // An older version each time: the loop ends.
@@ -1173,6 +1237,19 @@ fn best_of(speaks: VersionRange, supported: &[u64]) -> Option<NonZeroU64> {
         .filter(|&&version| speaks.contains(version))
         .max()
         .and_then(|&version| NonZeroU64::new(version))
+}
+
+/// A request to `url` by `method`, which has a body.
+fn with_body(
+    agent: &ureq::Agent,
+    method: Method,
+    url: &str,
+) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    match method {
+        Method::Post => agent.post(url),
+        Method::Put => agent.put(url),
+        Method::Patch => agent.patch(url),
+    }
 }
 
 /// `request` stating `version`, with the session of `bearer`, `Bearer <token>`, if given.

@@ -1,9 +1,9 @@
 //! Queues and tasks: `docs/protocol/queues.md`, "Tasks", "Queue key", "Claims and leases" and
 //! "Results".
 
-use crate::address::Name;
+use crate::address::{Address, Name};
 use crate::cbor::{self, Codec, DecodeError, FieldProblem, Item, MapOut, Unknown, field_error};
-use crate::content::Content;
+use crate::content::{Content, TASK};
 use crate::history::at_least;
 use crate::id::{ChannelId, ClaimId, DeviceId, QueueId, TaskId};
 use crate::signed::{Signed, SignedBody};
@@ -315,6 +315,31 @@ impl Codec for QueueMode {
             1 => Ok(Self::AtLeastOnce),
             2 => Ok(Self::AtMostOnce),
             other => Err(field_error(FIELD, FieldProblem::Value(other))),
+        }
+    }
+}
+
+impl Task {
+    /// Content with this as its `task` body ("Tasks"): from `from`, to `to`, with `hops`, and no
+    /// `counter`, other body, `reply_to`, delegation, grant or attachments.
+    pub fn content(&self, from: Address, to: Option<Address>, hops: u64) -> Content {
+        let body = MapOut::new(&Unknown::default())
+            .put(TASK, self.encode())
+            .finish();
+        let unknown = cbor::parse(&body)
+            .and_then(|item| item.map("content").map(cbor::Fields::unknown))
+            .expect("a map of one task body");
+        Content {
+            from,
+            to,
+            counter: None,
+            hops,
+            reply_to: None,
+            body: None,
+            delegation: None,
+            grant: None,
+            attachments: None,
+            unknown,
         }
     }
 }
