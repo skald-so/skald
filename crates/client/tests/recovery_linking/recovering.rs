@@ -9,7 +9,7 @@ use skald_github_stand_in::User;
 use skald_proto::DeviceId;
 
 use crate::at_terminal::{approve, first_at_terminal, shown_key};
-use crate::cloud::{Cloud, ids};
+use crate::cloud::Cloud;
 use crate::fixtures::strs;
 use crate::machine::{FIRST_DEVICE, Machine, NO, RUN_LIMIT, SERVER, SIGN_IN};
 use crate::terminal::{Shown, Terminal};
@@ -193,10 +193,5 @@ pub fn recovered(world: &World, ada: &Ada, machine: &Machine, named: &[(&str, De
 /// The one device of `ada`'s account that is not among `known`.
 #[track_caller]
 pub fn new_device(cloud: &Cloud, ada: &Person, known: &[DeviceId]) -> DeviceId {
-    let new: Vec<DeviceId> = ids(&cloud.devices(&ada.token))
-        .into_iter()
-        .filter(|device| !known.contains(device))
-        .collect();
-    assert_eq!(new.len(), 1, "not one new device: {new:?}");
-    new[0]
+    cloud.new_device(&ada.token, known)
 }

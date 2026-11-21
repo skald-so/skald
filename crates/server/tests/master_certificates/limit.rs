@@ -2,10 +2,11 @@
 //! and a certificate that would give the account more devices with a certificate than the limit is
 //! refused and not stored.
 
+use crate::accounts::{held, put, register};
 use crate::api::Person;
 use crate::common::device_flow::{DeviceFlow, INTERVAL, text};
-use crate::common::devices::Device;
-use crate::{DEVICES_LIMIT, assert_problem, held, issued_by_master, put_cert, register};
+use crate::issued_by_master;
+use crate::upload::assert_over_limit;
 
 /// At 2: Alice's laptop holds a certificate and her desktop is registered without one; her
 /// desktop's certificate, issued by the master key, is stored. Her phone then registers at the
@@ -16,20 +17,19 @@ fn at_the_limit_a_device_registers_and_its_master_key_certificate_is_refused() {
     let flow = DeviceFlow::start_with(&[INTERVAL, "1", "--devices-limit", "2"]);
     let alice = Person::new(&flow, 3_176_200_001, "alice");
     let desktop = &alice.uncertified;
-    let stored = put_cert(
-        &alice,
+    let stored = put(
+        &flow,
+        &alice.session,
         desktop,
         &issued_by_master(&alice, desktop, &alice.master),
     );
     assert_eq!(stored.status, 201, "the second device: {}", text(&stored));
-    let phone = Device::new("Phone");
-
-    register(&alice, &phone);
+    let phone = register(&alice, "Phone");
 
     let cert = issued_by_master(&alice, &phone, &alice.master);
     for what in ["over the limit", "again"] {
-        let refused = put_cert(&alice, &phone, &cert);
-        assert_problem(&refused, 403, DEVICES_LIMIT, what);
+        let refused = put(&flow, &alice.session, &phone, &cert);
+        assert_over_limit(&refused, what);
         assert_eq!(held(&alice, &phone), None, "{what}: stored");
     }
 }
@@ -42,12 +42,13 @@ fn at_a_limit_of_one_the_first_devices_account_registers_another_and_refuses_its
     let alice = Person::new(&flow, 3_176_200_101, "alice");
     let desktop = &alice.uncertified;
 
-    let refused = put_cert(
-        &alice,
+    let refused = put(
+        &flow,
+        &alice.session,
         desktop,
         &issued_by_master(&alice, desktop, &alice.master),
     );
 
-    assert_problem(&refused, 403, DEVICES_LIMIT, "over the limit");
+    assert_over_limit(&refused, "over the limit");
     assert_eq!(held(&alice, desktop), None, "stored");
 }

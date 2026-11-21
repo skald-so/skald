@@ -84,12 +84,7 @@ pub struct Keyed {
 
 /// The certificate of `person`'s machine's device, as the server holds it.
 pub fn cert_of(cloud: &Cloud, person: &Person) -> Cert {
-    cloud
-        .devices(&person.token)
-        .into_iter()
-        .find(|device| device.id == person.device)
-        .and_then(|device| device.cert)
-        .expect("the device's certificate")
+    (cloud.cert(&person.token, person.device)).expect("the device's certificate")
 }
 
 /// `person`'s machine's device, its keys read from its secrets file.

@@ -22,8 +22,8 @@ use skald_crypto::{
     marked_stolen, open_master_backup, sign_revocation, verify,
 };
 use skald_proto::{
-    AccountId, AccountRecord, Anchors, Cbor as _, Cert, CertBody, DeviceId, DeviceKind,
-    MasterBackup, NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, Roster, SpaceId, Unknown,
+    AccountId, AccountRecord, Anchors, Cbor as _, Cert, DeviceId, DeviceKind, MasterBackup,
+    NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, Roster, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
@@ -265,18 +265,9 @@ impl NewDevice<'_> {
                 .map_err(|err| state::Error::Malformed(format!("the issued certificate: {err}")))
                 .map_err(Into::into);
         }
-        let body = CertBody {
-            account: self.account,
-            device: self.keys.id(),
-            kind: DeviceKind::Client,
-            signing: self.keys.signing().public_key(),
-            hpke: self.keys.hpke().public_key(),
-            issuer: None,
-            issued: now(),
-            ssh: None,
-            name: self.device.name.clone(),
-            unknown: Unknown::default(),
-        };
+        let body = self
+            .keys
+            .master_cert_body(self.account, self.device.name.clone());
         let cert = skald_crypto::issue(&body, master, self.keys.signing())
             .map_err(|err| device::Error::Cert(err.to_string()))?;
         check_device(
@@ -822,6 +813,7 @@ impl Drop for EchoOff {
 mod tests {
     use super::*;
     use skald_crypto::issue;
+    use skald_proto::CertBody;
 
     /// An account with its master key and `client` devices: A and C certified by the master key,
     /// B by A; A revoked C. `this` is the new device, without a certificate yet.

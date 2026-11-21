@@ -144,10 +144,7 @@ pub fn person_on(
     let tokens = cloud.token_files(&machine);
     assert_eq!(tokens.len(), 1, "the new machine's sessions: {tokens:?}");
     let token = tokens[0].1.clone();
-    let cert = (cloud.devices(&token).into_iter())
-        .find(|held| held.id == device)
-        .and_then(|held| held.cert)
-        .expect("the new device's certificate");
+    let cert = (cloud.cert(&token, device)).expect("the new device's certificate");
     let key = keys::signing_key(&machine.files_holding(&token), &cert.body().signing);
     Person {
         user: ada.user.clone(),

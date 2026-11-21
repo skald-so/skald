@@ -5,7 +5,7 @@
 use skald_crypto::{RecoveryKey, open_master_backup};
 use skald_proto::{Cbor as _, MasterBackup};
 
-use crate::at_terminal::{AGENT, as_agent, keys_in};
+use crate::at_terminal::{AGENT, as_agent, keys_in, waiting_lines};
 use crate::browser::APPROVE;
 use crate::cloud::{Cloud, shown_grant, unb64};
 use crate::linking::says;
@@ -15,15 +15,6 @@ use crate::pages::{
     assert_holds_none, start_with,
 };
 use crate::world::{World, run};
-
-/// The lines of `text` that say a recovery key waits: those that hold `recovery key` and the
-/// command that shows it, `skald sign-in --server <cloud>`.
-fn waiting_lines<'t>(cloud: &Cloud, text: &'t str) -> Vec<&'t str> {
-    let command = format!("skald sign-in --server {}", cloud.url);
-    (text.lines())
-        .filter(|line| line.contains(&command) && line.to_lowercase().contains("recovery key"))
-        .collect()
-}
 
 /// Fails unless `key`, a recovery key in its shown form, opens the master backup the server holds
 /// for the account of the session `token` to its master key.

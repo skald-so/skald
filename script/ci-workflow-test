@@ -40,6 +40,9 @@
 //     the Actions cache before its tests, from where playwright-core keeps them on the runner's OS;
 //   - its test step sets SKALD_TEST_REAL_KEY_STORAGE=1, so a test uses the runner's Credential
 //     Manager; no other job of any workflow and no script sets it;
+//   - a process started before the tests samples the ephemeral ports in use into ports.txt, whose
+//     path the test step gives the tests in SKALD_TEST_PORT_SAMPLES; a step after the tests, also
+//     when they fail, prints the samples with the most;
 //   - a step after the tests, when they fail, prints the failures in PostgreSQL's log;
 //   - a step after the tests, also when they fail, fails the job when they left a skald-update-* or
 //     skald-client-* directory in the temporary directory.
@@ -496,6 +499,21 @@ for (const [k, until] of browserJobs) {
   const want = String(jobs[k]['runs-on']).startsWith('windows-') ? '~/AppData/Local/ms-playwright' : '~/.cache/ms-playwright';
   if (!expanded(until).some((step) => String(step.uses ?? '').startsWith('actions/cache@') && step.with?.path === want)) {
     fail(`job ${k} does not restore ${want} from the Actions cache before its tests: they drive Chrome Headless Shell`);
+  }
+}
+
+// The ports in use, sampled from before the tests, given to them and printed after them.
+const sampled = before.some((step) => /\bStart-Process\b/.test(commands(step.run).join('\n')) && commands(step.run).join('\n').includes("'ports.txt'"));
+const heldStep = steps.slice(testIndex + 1).find((step) => commands(step.run).join('\n').includes("'ports.txt'"));
+const given = commands(testStep.run).some((line) => /^\s*\$env:SKALD_TEST_PORT_SAMPLES\s*=.*'ports\.txt'/.test(line));
+if (!sampled || !heldStep || !given) {
+  fail(`job ${key} does not sample, from before its tests, the ephemeral ports in use, give the samples to them and print the most after them`);
+} else {
+  for (const failure of [false, true]) {
+    const scope = { ...states[key].scope, status: { success: !failure, always: true, failure, cancelled: false } };
+    if (truth(condition(heldStep.if ?? 'success()', scope)) !== true) {
+      fail(`the step of job ${key} that prints the most ephemeral ports in use does not run when the tests ${failure ? 'fail' : 'pass'}`);
+    }
   }
 }
 
