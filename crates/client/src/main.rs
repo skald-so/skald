@@ -35,6 +35,7 @@ mod channels;
 mod claude_relay;
 mod claude_socket;
 mod clock;
+mod codex;
 mod connection;
 mod copies;
 mod device;
@@ -897,17 +898,20 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// SessionStart, SessionEnd, PostToolUse and Stop. It reads the hook input on standard input
-    /// and runs in its folder, as the agent --agent names or, without it, the agent the session's
-    /// skald mcp registers by default. SessionStart registers the session with the helper, which
-    /// writes the agent's messages into the session's cross-session socket as they come, and
-    /// SessionEnd ends that. PostToolUse and Stop give the agent's waiting messages to the session
-    /// as additional context, each once, within the CLI's hook output limit, 10,000 characters: a
-    /// message from the person's own devices as its line, as skald recv shows it; for those from
-    /// others, only a line that tells the agent to call inbox. A message longer than the limit is
-    /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
-    /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
-    /// failure, which exits with 1.
+    /// SessionStart, SessionEnd, PostToolUse and Stop; Codex's SessionStart, PostToolUse,
+    /// UserPromptSubmit and Stop. It reads the hook input on standard input and runs in its
+    /// folder, as the agent --agent names or, without it, the agent the session's skald mcp
+    /// registers by default. SessionStart registers the session with the helper, starting one if
+    /// none runs. On Claude Code, the helper writes the agent's messages into the session's
+    /// cross-session socket as they come, and SessionEnd ends that; PostToolUse and Stop give the
+    /// agent's waiting messages to the session as additional context, each once, within the CLI's
+    /// hook output limit, 10,000 characters: a message from the person's own devices as its line,
+    /// as skald recv shows it; for those from others, only a line that tells the agent to call
+    /// inbox. A message longer than the limit is cut, and skald recv #<ref> shows it whole. Stop
+    /// continues the turn with them, up to the CLI's cap of continuations in a row. On Codex,
+    /// every message goes in only as that line, once for the new ones, to the session whose hook
+    /// ran last, and the hooks never wait on the network. It prints nothing while nothing waits,
+    /// and on a failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -921,8 +925,8 @@ enum Command {
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
     /// state goes through it, and each skald recv --wait waits through it. Only this OS account
-    /// reaches it. It exits after an idle time with no command, wait or registered Claude Code
-    /// session, on sign-out, and for a command of a newer skald.
+    /// reaches it. It exits after an idle time with no command, wait, registered Claude Code
+    /// session or live Codex session, on sign-out, and for a command of a newer skald.
     Helper {
         /// How long it waits idle before it exits, in seconds, for tests [default: 600].
         #[arg(long, env = "SKALD_HELPER_IDLE", value_name = "SECONDS", hide = true)]
@@ -1336,10 +1340,15 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
     };
-    if input.event.is_none() {
+    let Some(event) = input.event.filter(|event| cli.handles(*event)) else {
         return ExitCode::SUCCESS;
-    }
-    if input.event == Some(hook::Event::SessionStart) {
+    };
+    if cli == hook::Cli::Codex {
+        input.session.home = std::env::var_os(hook::CODEX_HOME)
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
+        input.session.process = codex::parent();
+    } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
         input.session.token =
@@ -1355,20 +1364,49 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     if !dir.join(state::FILE).is_file() {
         return ExitCode::SUCCESS;
     }
+    // A Codex session starts the helper only in a folder in a space; its other hooks start none.
+    let starts = !one_shot
+        && match cli {
+            hook::Cli::Claude => true,
+            hook::Cli::Codex => {
+                event == hook::Event::SessionStart
+                    && output::into(|_, _| Ok(()), || folders::working_space(&dir).is_ok())
+            }
+        };
     operation.command = Command::Hook {
         cli,
         input: Some(input),
     };
+    match cli {
+        hook::Cli::Claude => hooked(operation, &dir, starts, None),
+        hook::Cli::Codex => patiently(move |gate| hooked(operation, &dir, starts, Some(gate))),
+    }
+}
+
+/// Runs `operation`, a hook's, by the state in `dir` through the helper that runs, or one it
+/// starts if `starts`, or here. Prints only what the run gives the session, unless `gate` says the
+/// hook no longer waits for it, and exits with 1 on a failure, never 2.
+fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
     // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
-    let given = |stream, bytes: &[u8]| match stream {
-        output::Stream::Out => output::direct(stream, bytes),
-        output::Stream::Err => Ok(()),
+    let given = move |stream, bytes: &[u8]| match (stream, &gate) {
+        (output::Stream::Err, _) => Ok(()),
+        (output::Stream::Out, None) => output::direct(stream, bytes),
+        (output::Stream::Out, Some(gate)) => {
+            let waits = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match *waits {
+                true => output::direct(stream, bytes),
+                false => Err(std::io::Error::other("the hook no longer waits")),
+            }
+        }
     };
     let failed = |code| match code == ExitCode::SUCCESS {
         true => code,
         false => ExitCode::FAILURE,
     };
-    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
+    let mut sink = given.clone();
+    match helper::route_into(dir, &operation, (false, starts, false), &mut sink) {
         Ok(helper::Route::Helped(code)) => failed(code),
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
@@ -1376,6 +1414,30 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
             Err(_) => ExitCode::FAILURE,
         },
         Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// Whether a hook still waits for its run's output.
+type Gate = std::sync::Arc<std::sync::Mutex<bool>>;
+
+/// Runs `run` on a thread of its own and waits for it at most [`codex::PATIENCE`]; then the run
+/// writes nothing more, and the hook exits with success, having printed what it wrote.
+fn patiently(run: impl FnOnce(Gate) -> ExitCode + Send + 'static) -> ExitCode {
+    let gate: Gate = std::sync::Arc::new(std::sync::Mutex::new(true));
+    let (done, finished) = std::sync::mpsc::channel();
+    let given = std::sync::Arc::clone(&gate);
+    std::thread::spawn(move || {
+        let _ = done.send(run(given));
+    });
+    match finished.recv_timeout(codex::PATIENCE) {
+        Ok(code) => code,
+        Err(_) => {
+            // A write under way ends first.
+            *gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+            ExitCode::SUCCESS
+        }
     }
 }
 
@@ -1458,9 +1520,17 @@ impl Operation {
 /// helper does. Out of the helper, a run as an agent then checks the device's presence
 /// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
+    // A Codex hook never waits on the network.
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
-        && !matches!(operation.command, Command::Mcp { call: None, .. });
+        && !matches!(
+            operation.command,
+            Command::Mcp { call: None, .. }
+                | Command::Hook {
+                    cli: hook::Cli::Codex,
+                    ..
+                }
+        );
     let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
@@ -1820,17 +1890,24 @@ fn performed(operation: Operation) -> Result<(), String> {
                 forms::Form::of(true, json),
             )
         }
-        Command::Hook { input, .. } => {
+        Command::Hook { cli, input } => {
             let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
                 return Err("skald hook runs only as itself".to_owned());
             };
             let Some(event) = input.event else {
                 return Ok(());
             };
+            let client = match cli {
+                hook::Cli::Claude => hook::CLAUDE_CODE,
+                hook::Cli::Codex => hook::CODEX,
+            };
             // Without --agent, the agent the session's skald mcp registers by default.
-            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
+            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, client)) else {
                 return Ok(());
             };
+            if cli == hook::Cli::Codex {
+                return codex::hook(&dir, &agent, (event, &input.session));
+            }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
                 hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),

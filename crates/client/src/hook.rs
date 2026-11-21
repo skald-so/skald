@@ -1,5 +1,6 @@
 //! `skald hook claude`: the hook handler of Claude Code's `PostToolUse` and `Stop`
 //! (`docs/dev/architecture.md`, "Components"; `docs/protocol/delivery.md`, "Device to agent").
+//! Codex's hooks: [`crate::codex`].
 //!
 //! - It reads Claude Code's hook input on standard input ([`input`]) and runs in its `cwd`, the
 //!   session's folder, as the agent `--agent` names or, without it, the one the session's
@@ -25,10 +26,28 @@ use serde_json::json;
 pub enum Cli {
     /// Claude Code.
     Claude,
+    /// Codex.
+    Codex,
+}
+
+impl Cli {
+    /// Whether its hooks run the handler on `event`.
+    pub fn handles(self, event: Event) -> bool {
+        match self {
+            Cli::Claude => event != Event::UserPromptSubmit,
+            Cli::Codex => event != Event::SessionEnd,
+        }
+    }
 }
 
 /// The client name Claude Code gives an MCP server at initialization.
 pub const CLAUDE_CODE: &str = "claude-code";
+
+/// The client name Codex gives an MCP server at initialization.
+pub const CODEX: &str = "codex-mcp-client";
+
+/// The setting that names a Codex session's config home, which its hooks inherit.
+pub const CODEX_HOME: &str = "CODEX_HOME";
 
 /// Claude Code's hook output limit, in characters.
 pub const LIMIT: usize = 10_000;
@@ -42,10 +61,10 @@ pub const CAP_SETTING: &str = "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP";
 /// The most bytes of hook input a run reads.
 const INPUT_MOST: u64 = 1 << 20;
 
-/// What the run gives for messages below `own` that wait: a fixed line, without their senders or
-/// texts, that tells the agent to call `inbox`.
-pub const SIGNAL: &str = "skald: a message from another account or a service waits for you: \
-                          call the inbox tool, or skald recv, to read it";
+/// The signal (`docs/protocol/delivery.md`, "Device to agent"): a fixed line, without the senders,
+/// texts, count or references of the messages that wait, that tells the agent to call `inbox`.
+pub const SIGNAL: &str =
+    "skald: messages wait for you: call the inbox tool, or skald recv, to read them";
 
 /// The settings Claude Code gives its hooks but `SessionEnd`'s: the session's cross-session
 /// socket, and the token that makes a line on it the session's own child's.
@@ -60,6 +79,8 @@ pub enum Event {
     /// `SessionEnd`, which ends its registration.
     SessionEnd,
     PostToolUse,
+    /// `UserPromptSubmit`, Codex's only.
+    UserPromptSubmit,
     /// `Stop`; `continued` in a turn a `Stop` hook kept going.
     Stop {
         continued: bool,
@@ -73,6 +94,7 @@ impl Event {
             Event::SessionStart => "SessionStart",
             Event::SessionEnd => "SessionEnd",
             Event::PostToolUse => "PostToolUse",
+            Event::UserPromptSubmit => "UserPromptSubmit",
             Event::Stop { .. } => "Stop",
         }
     }
@@ -92,15 +114,22 @@ pub struct Input {
     pub session: Session,
 }
 
-/// A Claude Code session, as a hook's input and settings name it.
+/// A session, as a hook's input and settings name it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
-    /// Its ID and its session file.
+    /// Its ID, Codex's thread, and its session file.
     pub id: Option<String>,
     pub file: Option<PathBuf>,
-    /// Its cross-session socket and token, from [`SOCKET_SETTING`] and [`TOKEN_SETTING`].
+    /// Claude Code's cross-session socket and token, from [`SOCKET_SETTING`] and
+    /// [`TOKEN_SETTING`].
     pub socket: Option<PathBuf>,
     pub token: Option<String>,
+    /// Codex's config home, from [`CODEX_HOME`].
+    #[serde(default)]
+    pub home: Option<PathBuf>,
+    /// The ID of the process that ran the hook: Codex's own, which runs the session.
+    #[serde(default)]
+    pub process: Option<u32>,
 }
 
 /// The hook input on `from`, with the cap `cap` sets, if any; fails on input that is not one.
@@ -125,6 +154,7 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         "SessionStart" => Some(Event::SessionStart),
         "SessionEnd" => Some(Event::SessionEnd),
         "PostToolUse" => Some(Event::PostToolUse),
+        "UserPromptSubmit" => Some(Event::UserPromptSubmit),
         "Stop" => Some(Event::Stop {
             continued: given.stop_hook_active,
         }),
@@ -140,6 +170,8 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
             file: given.transcript_path,
             socket: None,
             token: None,
+            home: None,
+            process: None,
         },
     })
 }

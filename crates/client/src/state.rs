@@ -573,6 +573,23 @@ const MIGRATIONS: &[&str] = &[
         queue TEXT NOT NULL,
         record BLOB NOT NULL
     ) STRICT",
+    // Codex sessions ([`crate::codex`]): each session a hook registered, by its thread, with its
+    // agent, the agent's space and folder, its session file and config home, if known, the Codex
+    // process that runs it, if known, whether a turn of it runs, and the place of its last hook's
+    // run in the order of hooks; and, of each kept message that waits for an agent, the session
+    // whose hooks give its signal.
+    "CREATE TABLE codex_session (
+        thread TEXT PRIMARY KEY,
+        space TEXT NOT NULL,
+        agent TEXT NOT NULL,
+        folder TEXT NOT NULL,
+        file TEXT,
+        home TEXT,
+        process INTEGER CHECK (process >= 0),
+        busy INTEGER NOT NULL DEFAULT 0 CHECK (busy IN (0, 1)),
+        hooked INTEGER NOT NULL CHECK (hooked >= 1)
+    ) STRICT;
+    ALTER TABLE handover ADD COLUMN thread TEXT;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -893,6 +910,26 @@ pub struct ClaudeSession {
     pub token: Option<String>,
     /// Its session file.
     pub file: PathBuf,
+}
+
+/// A Codex session a hook registered ([`crate::codex`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSession {
+    /// Its thread, Codex's session ID.
+    pub thread: String,
+    pub space: SpaceId,
+    pub agent: String,
+    /// The agent's folder, where the session runs.
+    pub folder: PathBuf,
+    /// Its session file and config home, if its hooks gave them.
+    pub file: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+    /// The ID of the Codex process that runs it, if known.
+    pub process: Option<u32>,
+    /// Whether a turn of it runs: from a hook of the turn until the `Stop` that ends it.
+    pub busy: bool,
+    /// The place of its last hook's run in the order of the sessions' hooks.
+    pub hooked: u64,
 }
 
 /// A kept message that waits for the person's decision for the agent `agent`, by its entry's
@@ -2935,6 +2972,134 @@ impl State {
             "DELETE FROM claude_session WHERE session = ?1",
             params![session],
         )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Registers the Codex session `session`, or updates its registration, as the one whose hook
+    /// ran last: a session file or config home it does not give stays as registered.
+    pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
+        let text = |path: &Path| {
+            path.to_str()
+                .map(str::to_owned)
+                .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
+        };
+        let file = session.file.as_deref().map(text).transpose()?;
+        let home = session.home.as_deref().map(text).transpose()?;
+        self.db.execute(
+            "INSERT INTO codex_session
+                 (thread, space, agent, folder, file, home, process, busy, hooked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 (SELECT COALESCE(MAX(hooked), 0) + 1 FROM codex_session))
+             ON CONFLICT (thread) DO UPDATE SET
+                 space = excluded.space, agent = excluded.agent, folder = excluded.folder,
+                 file = COALESCE(excluded.file, file), home = COALESCE(excluded.home, home),
+                 process = COALESCE(excluded.process, process), busy = excluded.busy,
+                 hooked = excluded.hooked",
+            params![
+                session.thread,
+                session.space.to_string(),
+                session.agent,
+                text(&session.folder)?,
+                file,
+                home,
+                session.process,
+                session.busy,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The registered Codex sessions, the one whose hook ran last first.
+    pub fn codex_sessions(&self) -> Result<Vec<CodexSession>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT thread, space, agent, folder, file, home, process, busy, hooked
+             FROM codex_session ORDER BY hooked DESC",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                [
+                    row.get::<_, String>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ],
+                [row.get::<_, Option<String>>(4)?, row.get(5)?],
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let ([thread, space, agent, folder], [file, home], process, busy, hooked) = row?;
+            let malformed = || Error::Malformed(format!("the Codex session {thread}"));
+            Ok(CodexSession {
+                space: space.parse().map_err(|_| malformed())?,
+                agent,
+                folder: folder.into(),
+                file: file.map(PathBuf::from),
+                home: home.map(PathBuf::from),
+                process: process
+                    .map(|process| u32::try_from(process).map_err(|_| malformed()))
+                    .transpose()?,
+                busy,
+                hooked: u64::try_from(hooked).map_err(|_| malformed())?,
+                thread,
+            })
+        })
+        .collect()
+    }
+
+    /// Ends the registration of the Codex session `thread`: the signals that went to it go to
+    /// another session of their agent.
+    pub fn end_codex(&self, thread: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE handover SET thread = NULL WHERE thread = ?1",
+            params![thread],
+        )?;
+        tx.execute(
+            "DELETE FROM codex_session WHERE thread = ?1",
+            params![thread],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` of each kept message that waits for the agent `agent` whose signal goes to a
+    /// Codex session, and that session's thread.
+    pub fn codex_signals(&self, agent: &str) -> Result<Vec<(u64, String)>, Error> {
+        self.lines(
+            "SELECT seq, thread FROM handover WHERE agent = ?1 AND thread IS NOT NULL
+             ORDER BY seq",
+            params![agent],
+        )
+    }
+
+    /// Records that a Codex session's hook gave the signal of each of the kept messages `seqs` that
+    /// wait for the agent `agent`.
+    pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that the signal of each of the kept messages `seqs` that wait for the agent `agent`
+    /// goes to the Codex session `thread`.
+    pub fn signal_to(&self, seqs: &[u64], agent: &str, thread: &str) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET thread = ?3 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, thread],
+            )?;
+        }
         tx.commit()?;
         Ok(())
     }

@@ -92,6 +92,7 @@ skald inbound-modes                         # each agent's mode and allowlist in
 skald held                                  # accept or refuse each message an agent in hold keeps for you, at a terminal
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 skald hook claude                           # the handler of Claude Code's hooks
+skald hook codex                            # the handler of Codex's hooks
 ```
 
 - `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.

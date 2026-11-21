@@ -14,7 +14,7 @@ use crate::hooks::api_sends;
 use crate::lines::{assert_handed_line, reference};
 use crate::solo::WEB;
 use crate::talk::ADA_HOST;
-use crate::world::dir_of;
+use crate::world::{ADD_RULE, dir_of, path, run};
 
 /// The length of a device's reference in a default name.
 const DEVICE_REFERENCE: usize = 6;
@@ -89,15 +89,21 @@ fn hooks_without_agent_act_as_the_agent_skald_mcp_names_by_default() {
 /// What api says to web; it is nowhere else.
 const OUTSIDE: &str = "codex registration test: api asks web, not the folder outside spaces";
 
-/// In `~/work/elsewhere/web`, a folder in no space, sessions start with `--agent web` and without
-/// `--agent`: each `SessionStart` prints nothing, and no helper runs after [`QUIET`]. web's session
-/// in `~/work/clientA/web` starts, and its turn too. api sends web a message: each hook of both
+/// A space Ada's device is not in.
+const INITECH: &str = "initech";
+
+/// `~/work/elsewhere/web` is bound to `initech`, so it is in no space; not bound, it would be in
+/// Ada's personal space. There sessions start with `--agent web` and without `--agent`: each
+/// `SessionStart` prints nothing, and no helper runs after [`QUIET`]. web's session in
+/// `~/work/clientA/web` starts, and its turn too. api sends web a message: each hook of both
 /// sessions outside spaces prints nothing; then web's `PostToolUse` gives the signal, and web's
 /// `inbox` shows the message.
 #[test]
 fn nothing_registers_in_a_folder_in_no_space_and_its_hooks_print_nothing() {
     let mut codex = Codex::new(4_927_005_001, "ada-codex-outside-spaces");
     let elsewhere = dir_of(codex.machine(), "work/elsewhere/web");
+    let bound = run(codex.machine(), &[ADD_RULE, path(&elsewhere), INITECH]);
+    assert!(bound.success, "not bound: {bound:?}");
     let named = Thread::new(codex.machine(), &elsewhere, Some(WEB));
     let unnamed = Thread::new(codex.machine(), &elsewhere, None);
 
