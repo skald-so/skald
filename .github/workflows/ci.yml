@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Not on a draft: every job is skipped until the PR is ready for review.
   pull_request:
     branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
   # After every merge, every part: a check that a PR's selection missed fails on dev.
   push:
     branches: [dev]
@@ -10,10 +12,10 @@ on:
 permissions:
   contents: read
 
-# A PR's new push cancels the PR's older run; a push to dev has a group of its own, its commit, so
-# no run of another push or of a PR cancels it.
+# A PR's new push cancels the PR's older run. Pushes to dev share a group that cancels no running
+# run: a newer push replaces only a waiting one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # On a PR, each job runs its part of script/test only when the PR changes it: see
@@ -22,6 +24,8 @@ concurrency:
 jobs:
   changes:
     name: Changed parts
+    # A draft PR skips it, and so every job after it.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     outputs:
       workspace: ${{ steps.parts.outputs.workspace }}
@@ -188,11 +192,12 @@ jobs:
 
   # The check Rust that dev requires: it passes only when every job of the Rust code passed or was
   # skipped, its part unchanged. It runs whatever they end with, a failure or a cancelled run too:
-  # a required check that is skipped counts as passed.
+  # a required check that is skipped counts as passed. Skipped only on a draft PR, which cannot be
+  # merged; marking it ready runs it.
   rust:
     name: Rust
     needs: [changes, rust-workspace, rust-wasm, rust-image, rust-self-host, rust-mls, rust-agents, rust-edits, rust-repository]
-    if: always()
+    if: always() && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - shell: bash

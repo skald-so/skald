@@ -7,6 +7,7 @@ name: Edit prototype on Windows
 on:
   pull_request:
     branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - prototypes/edits/**
       - .github/workflows/edits-windows.yml
@@ -22,6 +23,7 @@ concurrency:
 jobs:
   windows:
     name: Windows
+    if: github.event.pull_request.draft != true
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
