@@ -3574,7 +3574,7 @@
             }
           },
           "403": {
-            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; or `https://skald.so/problems/device-revoked`, for a revoked device.",
+            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; or `https://skald.so/problems/device-revoked`, for a device that checks 3 and 4 of \"Device checks\" revoke, as by its issuer's revocation.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"

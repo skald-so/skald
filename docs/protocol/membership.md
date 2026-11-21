@@ -211,7 +211,7 @@ A `client` device with a certificate gets a device session of its account with i
 The server issues the session only if:
 - the challenge is one it issued for the device less than a minute ago, and no other request used it;
 - the certificate is the one it holds of the device, or it holds none and stores the one sent;
-- the device is a `client` device and not revoked;
+- the device is a `client` device that checks 3 and 4 of [Device checks](#device-checks) do not revoke, against the account's revocations;
 - the signature verifies with the certificate's `signing` over `origin` set to the origin of the server's public address.
 
 It stores the certificate sent only if the certificate is of the device as a `client` device, issued by a `client` device of its account, passes the proof check and checks 1 and 2 of [Device checks](#device-checks) against that account's master key and the certificates its devices hold, and matches the device's registration if there is one: on that account, with its keys and `name`. A device without a registration is registered by it. With the devices limit, a certificate the account has no place for is refused and gives no session.

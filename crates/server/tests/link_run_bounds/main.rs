@@ -2,10 +2,10 @@
 //! (`docs/protocol/membership.md`, "Link code" and "Device key session"): a run's token sends at
 //! most 8 later messages of at most 4096 bytes each; an account enters at most 10 pairings the
 //! server does not hold within 15 minutes; the server refuses a pairing once the run's device
-//! registered on another account; and a challenge for a device's session works once, for its
-//! device, for less than a minute. Against a `skald-server` with GitHub sign-in through the
-//! stand-in, as in the tests of link runs without a session; every HTTP response is checked against
-//! the OpenAPI spec in `api/openapi.json`.
+//! registered on another account; a challenge for a device's session works once, for its device,
+//! for less than a minute; and a device whose issuer is revoked gets no session. Against a
+//! `skald-server` with GitHub sign-in through the stand-in, as in the tests of link runs without a
+//! session; every HTTP response is checked against the OpenAPI spec in `api/openapi.json`.
 
 #![allow(dead_code)]
 
@@ -27,7 +27,19 @@ mod by_key;
 #[path = "../sessionless_links/kit.rs"]
 mod kit;
 
+// The revocations of the tests of revocations on the server, with the fixture and frames of the
+// tests of storing sent envelopes they use.
+#[path = "../mailbox/fixture.rs"]
+mod fixture;
+#[path = "../revocations/kit.rs"]
+mod revocations;
+#[path = "../spaces/rosters.rs"]
+mod rosters;
+#[path = "../mailbox/wire.rs"]
+mod wire;
+
 mod challenges;
+mod revoked;
 mod runs;
 
 use crate::common::Response;

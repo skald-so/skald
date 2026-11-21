@@ -12,7 +12,8 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind};
+use skald_crypto::DeviceCheckError;
+use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind, Revocation};
 use sqlx::{Postgres, Transaction};
 
 use crate::AppState;
@@ -22,6 +23,7 @@ use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, parse};
 use crate::sessions::{close_ended, tell_ended};
 use crate::sign_in::{digest, random_token};
+use crate::spaces::certs;
 
 /// The label of a device's signature over its challenge.
 const LABEL: &str = "skald device session";
@@ -159,6 +161,10 @@ pub(crate) async fn start(
 
     let failed = |err| Refusal::Database("start a device session", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
+    // The account's row lock orders the certificates of its devices, as `PUT
+    // /devices/{device}/cert` takes it, and its revocations, which wait for the session.
+    lock_account(&mut tx, &account).await.map_err(failed)?;
+    unrevoked(&mut tx, &account, held_cert.is_none().then_some(&cert), id).await?;
     if held_cert.is_none() {
         store(&state, &mut tx, &cert_bytes, &cert).await?;
     }
@@ -264,6 +270,44 @@ async fn check_new(
     check_on_account(state, &account, cert, id).await
 }
 
+/// Refuses device `id` if checks 3 and 4 of "Device checks" revoke it, against the master key of
+/// `account`, the certificates its devices hold with `sent` if given, and its stored revocations,
+/// read in `tx`.
+async fn unrevoked(
+    tx: &mut Transaction<'_, Postgres>,
+    account: &str,
+    sent: Option<&Cert>,
+    id: DeviceId,
+) -> Result<(), Refusal> {
+    let failed = |err| Refusal::Database("read the revocations", err);
+    let (master,): (Option<Vec<u8>>,) =
+        sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
+            .bind(account)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(failed)?;
+    let master: [u8; 32] = master
+        .and_then(|master| master.try_into().ok())
+        .ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;
+    let mut certs = certs(&mut **tx, &[account.to_owned()]).await?;
+    certs.extend(sent.cloned());
+    let stored: Vec<(Vec<u8>,)> =
+        sqlx::query_as("SELECT revocation FROM revocations WHERE account_id = $1::uuid")
+            .bind(account)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(failed)?;
+    let revocations: Vec<Revocation> = stored
+        .iter()
+        .map(|(bytes,)| Revocation::from_cbor(bytes).expect("a stored revocation decodes"))
+        .collect();
+    match skald_crypto::check_valid_device(&master, &certs, &revocations, id) {
+        Ok(_) => Ok(()),
+        Err(DeviceCheckError::Revoked { .. }) => Err(Refusal::DeviceRevoked),
+        Err(err) => Err(Refusal::Cert(err.to_string())),
+    }
+}
+
 /// Stores `cert`, the checked certificate `sent`, in `tx` within the devices limit, registering its
 /// device if the server does not have it. One stored meanwhile is left for the caller to compare.
 async fn store(
@@ -275,7 +319,6 @@ async fn store(
     let failed = |err| Refusal::Database("store a certificate", err);
     let body = cert.body();
     let account = body.account.to_string();
-    lock_account(tx, &account).await.map_err(failed)?;
     let held: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT cert FROM devices WHERE id = $1::uuid")
             .bind(body.device.to_string())

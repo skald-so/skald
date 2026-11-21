@@ -245,7 +245,7 @@ impl IntoResponse for Refusal {
                 StatusCode::NOT_FOUND,
                 "no-link-run",
                 "No such link run",
-                "No open run of the request's has this session: it ended or never opened.",
+                "No open run that this request reaches has this session: it ended or never opened.",
             ),
             Refusal::NoPairing => problem(
                 StatusCode::NOT_FOUND,
