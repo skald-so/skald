@@ -180,7 +180,7 @@ fn copies_of(certs: &[Cert], device: DeviceId) -> Result<Vec<&Cert>, ChainProble
 }
 
 /// The proof check: `device` is derived from `signing`, and `proof` verifies with `signing`.
-fn passes_proof_check(cert: &Cert) -> bool {
+pub fn passes_proof_check(cert: &Cert) -> bool {
     let body = cert.body();
     body.device.is_derived_from(&body.signing)
         && verify(
