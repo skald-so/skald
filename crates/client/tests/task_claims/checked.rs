@@ -88,9 +88,9 @@ fn to_without_a_device_in_sched_and_the_reverse_are_failed_without_retry() {
     assert_refused(&claims, (device_only, DEVICE_ONLY), &shown);
 }
 
-/// Ada's first device writes a task from claude whose content carries a grant it signed for the second
-/// machine's device in the channel, though a `client` device's content carries none. Codex's claim
-/// shows none of its text and a warning naming it; the server gives it `dead` with the reason
+/// Ada's first device writes a task from claude whose content carries a grant it signed for the
+/// second machine's device in the channel, though a `client` device's content carries none. Codex's
+/// claim shows none of its text and a warning naming it; the server gives it `dead` with the reason
 /// `failed`.
 #[test]
 fn client_sender_s_task_with_a_grant_is_failed_without_retry() {
