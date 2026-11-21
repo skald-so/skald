@@ -65,6 +65,7 @@
 
 mod claiming;
 
+mod checked;
 mod completed;
 mod crashed;
 mod failed;

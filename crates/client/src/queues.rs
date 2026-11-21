@@ -250,7 +250,7 @@ pub fn queues_path((space, channel): (SpaceId, ChannelId)) -> String {
 }
 
 /// The proof of a request of `follower`'s device.
-pub fn proof(follower: &mut Follower) -> Result<String, String> {
+fn proof(follower: &mut Follower) -> Result<String, String> {
     let keys = follower.keys()?;
     (follower.connection)
         .request_proof(&follower.token, follower.this, keys.signing())

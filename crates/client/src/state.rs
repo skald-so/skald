@@ -3717,9 +3717,9 @@ impl State {
         Ok(())
     }
 
-    /// Keeps `claim`, a claim the device now holds, or its new time and sealed part; with `hops`, the agent, by the name it counts
-    /// under ([`State::handed_hops`]), and the task's `hops`, the task counts for that agent's next
-    /// send as a message handed over to it does.
+    /// Keeps `claim`, a claim the device now holds, or its new time and sealed part; with `hops`,
+    /// the agent, by the name it counts under ([`State::handed_hops`]), and the task's `hops`, the
+    /// task counts for that agent's next send as a message handed over to it does.
     pub fn keep_claim(&self, claim: &TaskClaim, hops: Option<(&str, u64)>) -> Result<(), Error> {
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
         let space = claim.space.to_string();

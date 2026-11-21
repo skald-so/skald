@@ -650,11 +650,11 @@ enum Command {
     /// channel of the working directory's space; as an agent, only in the space of the agent's
     /// folder. It first accepts the space's latest roster revisions and goes through the mailbox
     /// as skald send does, then claims a task of the trust level own without a template. Runs a
-    /// task only once its checks pass: one for another device, or whose sender's trust level or
-    /// template the claim did not state, it hands back; one that fails another check it fails
-    /// without retry, with a warning. Extends the claim at once with started, then shows the task
-    /// in one line with its #<ref>, as skald recv shows a message; with no task, says so in one
-    /// line.
+    /// task only once its checks pass: one for another device or agent, or whose sender's trust
+    /// level or template the claim did not state, it hands back; one that fails another check it
+    /// fails without retry, with a warning. Extends the claim at once with started, then shows the
+    /// task in one line with its #<ref>, as skald recv shows a message; with no task, says so in
+    /// one line.
     Claim {
         /// The channel's ID, as skald channels shows it [default: the default channel of the
         /// working directory's space].
@@ -1299,8 +1299,8 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
 
 /// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
 /// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
-/// holding the lock of the state directory, which it creates if it is missing. Without a state directory the run is stateless: it takes no lock and
-/// does not wait.
+/// holding the lock of the state directory, which it creates if it is missing. Without a state
+/// directory the run is stateless: it takes no lock and does not wait.
 fn as_service(operation: Operation) -> ExitCode {
     if !matches!(
         operation.command,

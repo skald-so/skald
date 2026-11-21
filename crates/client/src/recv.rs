@@ -7,8 +7,8 @@
 //! and `mls` application messages it wrote, decrypting each message in its channel's group, and
 //! brings the group of each channel of those spaces in line ([`crate::groups`]), uploading the links
 //! of their key chains the server lacks ([`crate::key_chain`]), and repeats the completes and fails
-//! of claims that wait, sending their results ([`crate::claims`]). It then shows the other entries it
-//! wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
+//! of claims that wait, sending their results ([`crate::claims`]). It then shows the other entries
+//! it wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
 //! "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
 //! the sending device under `mls`, the group as this device holds it under `hpke`; from a

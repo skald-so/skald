@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, seal_task, sign_task};
 use skald_proto::{
-    Address, Cbor as _, ChannelId, Claim, ClaimId, Content, DeviceId, MessageId, Outcome, QueueId,
-    QueueMode, QueuedTask, Sched, SpaceId, Task, TaskBody, TaskId, TaskPlaintext, TaskResult,
-    Unknown,
+    Address, Cbor as _, ChannelId, Claim, ClaimId, Content, DeviceId, Grant, MessageId, Outcome,
+    QueueId, QueueMode, QueuedTask, Sched, SpaceId, Task, TaskBody, TaskId, TaskPlaintext,
+    TaskResult, Unknown,
 };
 
 use crate::agents::{CLAUDE, run_as_in};
@@ -320,6 +320,8 @@ pub struct Craft {
     pub sched: Sched,
     pub hops: u64,
     pub counter: Option<u64>,
+    /// A grant its content carries.
+    pub grant: Option<Grant>,
     pub alter: Alter,
 }
 
@@ -335,6 +337,7 @@ impl Craft {
             sched: Sched::default(),
             hops: 0,
             counter: None,
+            grant: None,
             alter: Alter::Nothing,
         }
     }
@@ -383,6 +386,7 @@ pub fn sealed_by(
         craft.hops,
     );
     content.counter = craft.counter.and_then(NonZeroU64::new);
+    content.grant = craft.grant.clone();
     let sender = match craft.alter {
         Alter::Sender(other) => other,
         _ => device,

@@ -222,7 +222,7 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
         (&roster, &devices),
         &server,
         (channel, queue_id),
-        &claim,
+        (&claim, agent),
     )?;
     let claim_id = claim.claim_id.to_string();
     let fencing = Fencing {
@@ -428,15 +428,15 @@ fn show(
     }
 }
 
-/// The claim checks of `claim`, from the queue `queue` of `channel`, by `roster`, the space's last
-/// accepted revision with `devices`, its accounts' devices, on `server`, as `follower`'s device
-/// makes them now; fails only if the device does.
+/// The claim checks of `claim`, from the queue `queue` of `channel`, as `agent` claims it, if
+/// given, by `roster`, the space's last accepted revision with `devices`, its accounts' devices, on
+/// `server`, as `follower`'s device makes them now; fails only if the device does.
 fn verdict(
     follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
     server: &ServerName,
     (channel, queue): (ChannelId, QueueId),
-    claim: &Claim,
+    (claim, agent): (&Claim, Option<&Name>),
 ) -> Result<Verdict, String> {
     let keys = follower.keys()?;
     let epoch = claim.task.epoch;
@@ -527,9 +527,9 @@ fn verdict(
         ));
     }
     if let Some(to) = &content.to
-        && !of_this_device(follower, roster, server, to)?
+        && claimer(follower, roster, server, agent).as_ref() != Some(to)
     {
-        return back(format!("its to, {to}, names no agent of this device"));
+        return back(format!("its to, {to}, is not the agent that claims it"));
     }
     Ok(Verdict::Runs(Box::new(Passed {
         sender,
@@ -563,14 +563,8 @@ fn from_sender(
         }
         return Ok(());
     }
-    let entry = recv::service_entry(roster, sender)
+    let listed = service_address(roster, sender, server)
         .ok_or("the space's last accepted revision lists its service sender as no agent")?;
-    let listed = Address::new(
-        body.name.clone(),
-        entry.owner.clone(),
-        entry.agent.clone(),
-        server.clone(),
-    );
     if content.from != listed {
         return Err("its from is not its service sender's agent".into());
     }
@@ -587,39 +581,32 @@ fn from_sender(
     .map_err(|err| err.to_string())
 }
 
-/// Whether `to` names an agent of `follower`'s device in the space of `roster` on `server`: the
-/// service agent of a `service` device, otherwise an agent of its account it has run as there.
-fn of_this_device(
+/// The address of the agent that claims on `follower`'s device in the space of `roster` on
+/// `server`: the service agent of a `service` device, otherwise `agent`; none for the person.
+fn claimer(
     follower: &Follower,
     roster: &Roster,
     server: &ServerName,
-    to: &Address,
-) -> Result<bool, String> {
-    let body = roster.body();
+    agent: Option<&Name>,
+) -> Option<Address> {
     if follower.service.is_some() {
-        return Ok(
-            recv::service_entry(roster, follower.this).is_some_and(|entry| {
-                *to == Address::new(
-                    body.name.clone(),
-                    entry.owner.clone(),
-                    entry.agent.clone(),
-                    server.clone(),
-                )
-            }),
-        );
+        return service_address(roster, follower.this, server);
     }
-    let handle = body
-        .member(follower.own.account)
-        .map(|member| &member.handle);
-    if to.is_person()
-        || to.space() != &body.name
-        || Some(to.owner()) != handle
-        || to.server() != server
-    {
-        return Ok(false);
-    }
-    let agents = (follower.state.agent_statuses(body.space)).map_err(text)?;
-    Ok(agents.iter().any(|agent| agent.name == to.agent().as_str()))
+    send::sender(follower, roster, server.clone(), Some(agent?)).ok()
+}
+
+/// The address of the service agent of the `service` device `device` in the space of `roster` on
+/// `server`, if the space lists one.
+fn service_address(roster: &Roster, device: DeviceId, server: &ServerName) -> Option<Address> {
+    let body = roster.body();
+    recv::service_entry(roster, device).map(|entry| {
+        Address::new(
+            body.name.clone(),
+            entry.owner.clone(),
+            entry.agent.clone(),
+            server.clone(),
+        )
+    })
 }
 
 /// The text of `request`, an A2A message in JSON, its text parts each on a line, once its
