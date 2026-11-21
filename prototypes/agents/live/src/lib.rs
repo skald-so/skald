@@ -2,13 +2,14 @@
 //! the environment it runs in, and how to read the session's events; the model stub; and the checks'
 //! options, prompts, messages and verdicts; [`channel`] has the same for the Channels path, [`hook`]
 //! for the hooks, [`queue`] for `codex queue`, [`app_server`] for the Codex app-server and
-//! [`limits`] for the subscription limits, [`before`] for the Claude Code checks before
-//! implementation; [`gui`] prepares and judges the checks on the desktop apps and IDE extensions.
-//! The binary only starts the CLIs and reads their output.
+//! [`limits`] for the subscription limits, [`before`] and [`codex_before`] for the Claude Code and
+//! Codex checks before implementation; [`gui`] prepares and judges the checks on the desktop apps
+//! and IDE extensions. The binary only starts the CLIs and reads their output.
 
 pub mod app_server;
 pub mod before;
 pub mod channel;
+pub mod codex_before;
 pub mod gui;
 pub mod hook;
 pub mod limits;
@@ -29,7 +30,7 @@ use agent_source::{Message, Source, State};
 use serde_json::{Value, json};
 
 pub use stub::{
-    AckWith, Call, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, PROMPTED, QUICK, Request, Response,
+    AckWith, Call, Cue, DONE, LOOP_PROMPT, PAUSE, PLACEHOLDER, PROMPTED, QUICK, Request, Response,
     SHELL, Stub, StubLog, held,
 };
 
@@ -419,16 +420,22 @@ fn codex_config(stub: Option<&str>) -> Vec<String> {
         "model_reasoning_effort=\"low\"".to_owned(),
     ];
     if let Some(stub) = stub {
-        let provider = "model_providers.stub";
-        config.extend([
-            "model_provider=\"stub\"".to_owned(),
-            format!("{provider}.name=\"stub\""),
-            format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
-            format!("{provider}.env_key=\"{STUB_KEY}\""),
-            format!("{provider}.wire_api=\"responses\""),
-        ]);
+        config.extend(codex_stub_provider(stub));
     }
     config
+}
+
+/// The config values of a Codex model provider that sends the placeholder key to the model stub
+/// at `stub`.
+pub(crate) fn codex_stub_provider(stub: &str) -> Vec<String> {
+    let provider = "model_providers.stub";
+    vec![
+        "model_provider=\"stub\"".to_owned(),
+        format!("{provider}.name=\"stub\""),
+        format!("{provider}.base_url={}", json!(format!("{stub}/v1"))),
+        format!("{provider}.env_key=\"{STUB_KEY}\""),
+        format!("{provider}.wire_api=\"responses\""),
+    ]
 }
 
 /// The `-c` value that makes `command` Codex's command hook for `event`. A `-c` value is TOML; a
@@ -599,10 +606,15 @@ impl<'a> Options<'a> {
 
     /// The model stub of a session, started with `script`; none with `--real`.
     pub fn stub(&self, script: &'static [Call]) -> io::Result<Option<Stub>> {
+        self.cued_stub(script, None)
+    }
+
+    /// As [`Options::stub`], with `cue` ([`Stub::start_cued`]).
+    pub fn cued_stub(&self, script: &'static [Call], cue: Option<Cue>) -> io::Result<Option<Stub>> {
         if self.real {
             Ok(None)
         } else {
-            Stub::start(script).map(Some)
+            Stub::start_cued(script, cue).map(Some)
         }
     }
 

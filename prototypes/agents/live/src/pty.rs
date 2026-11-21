@@ -564,6 +564,26 @@ impl Live {
         Ok(Some(added))
     }
 
+    /// Queues `text` for the session's `thread` with `codex queue`, in the session's environment,
+    /// so that it finds the session's config home; whether the command succeeded.
+    pub(crate) fn codex_queue(&self, thread: &str, text: &str) -> Result<bool> {
+        let mut command = self.prepared.agent.command();
+        self.prepared.env.apply(&mut command);
+        let output = command
+            .args(agent_live::codex_before::queue_args(thread, text))
+            .current_dir(&self.prepared.files.project)
+            .stdin(Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            eprintln!(
+                "live-check: session {}: codex queue: {}",
+                self.prepared.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(output.status.success())
+    }
+
     /// Runs the session until `done` holds or `limit` passes; whether `done` held.
     pub(crate) fn wait(
         &mut self,

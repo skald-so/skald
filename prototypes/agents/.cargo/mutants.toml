@@ -11,6 +11,7 @@ exclude_globs = [
   "live/src/read_run.rs",
   "live/src/permission_run.rs",
   "live/src/before_run.rs",
+  "live/src/codex_before_run.rs",
   "testing/src/lib.rs",
 ]
 # cargo-mutants builds and tests only the mutated packages in its baseline run; live-check's tests
@@ -24,9 +25,9 @@ additional_cargo_args = [
   "--package=agent-app-server",
   "--package=agent-limits",
 ]
-# cargo-mutants copies only this workspace; the test of the live checks' report reads
-# docs/dev/agent-delivery.md outside it, so it runs only in script/test.
+# cargo-mutants copies only this workspace; the tests of the live checks' report read
+# docs/dev/agent-delivery.md outside it, so they run only in script/test.
 additional_cargo_test_args = [
   "-E",
-  "not test(=the_report_gives_each_claude_code_checks_result_and_version_on_the_stub_and_the_real_model)",
+  "not (test(=the_report_gives_each_claude_code_checks_result_and_version_on_the_stub_and_the_real_model) | test(=the_report_gives_each_codex_checks_result_and_version_on_macos_and_linux) | test(=the_report_says_which_read_only_limits_codex_enforces_and_what_an_executor_takes) | test(=the_codex_items_of_checks_before_implementation_link_to_their_findings))",
 ]
