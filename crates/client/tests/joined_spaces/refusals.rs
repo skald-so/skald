@@ -1,8 +1,9 @@
 //! The spaces a device does not follow from its account's anchors objects: one whose anchors are
 //! off one chain, with a warning; one only an anchors object of a revoked device, of another
 //! account's device, of a `browser` or `service` device or with a broken signature names. With the
-//! anchors objects withheld, it follows nothing new and keeps working. Each test has Ada's first machine create `globex` after her
-//! second machine was linked, which the second machine follows in the same run.
+//! anchors objects withheld, it follows nothing new and keeps working. Each test has Ada's first
+//! machine create `globex` after her second machine was linked, which the second machine follows
+//! in the same run.
 
 use skald_proto::{Anchors, DeviceKind, Role, Roster};
 
