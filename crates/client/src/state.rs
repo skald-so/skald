@@ -5461,9 +5461,6 @@ pub(crate) mod tests {
         "0190b6a2-1f3c-7d4e-8a5b-6c7d8e9f0a1b".parse().unwrap()
     }
 
-    /// The state keeps each agent's status: what it set, what the device last gave it and its
-    /// runtime; a new session clears what it set. Each channel's presence counts its revisions
-    /// on, and keeps the last value the server took.
     /// A write while another connection, as a Codex hook's, holds the write lock waits for it and
     /// then succeeds.
     #[test]
@@ -5494,6 +5491,9 @@ pub(crate) mod tests {
         committed.join().unwrap();
     }
 
+    /// The state keeps each agent's status: what it set, what the device last gave it and its
+    /// runtime; a new session clears what it set. Each channel's presence counts its revisions
+    /// on, and keeps the last value the server took.
     #[test]
     fn agent_statuses_and_presence_revisions_are_kept() {
         let dir = TestDir::new("state-presence");

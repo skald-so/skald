@@ -50,8 +50,9 @@ fn person_has_seen(agents: &Agents, text: &str) {
 
 /// Ada's device has run as an agent in `~/work/acme`, whose Codex session starts there with
 /// `--agent`, and its turn starts. Bob's device sends the channel [`MANY`] messages, without `to`;
-/// after each [`BATCH`], the person's `skald recv` on Ada's machine shows the last sent. Each hook of the session, three times
-/// over, exits with success and prints at most 2,500 bytes; `PostToolUse` gives the signal first.
+/// after each [`BATCH`], the person's `skald recv` on Ada's machine shows the last sent. Each hook
+/// of the session, three times over, exits with success and prints at most 2,500 bytes;
+/// `PostToolUse` gives the signal first.
 #[test]
 fn hook_outputs_stay_within_the_limit_with_a_thousand_messages_waiting() {
     let mut agents = Agents::new(
