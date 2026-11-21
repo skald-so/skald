@@ -33,6 +33,17 @@ fn a_device_certified_by_a_revoked_device_gets_no_session() {
         "device-revoked",
         "the phone, whose certificate the server holds",
     );
+    // Checks 3 and 4 refuse the held certificate, not only the column the revocation set.
+    f.flow.stand.db.execute(&format!(
+        "UPDATE devices SET revoked = false WHERE id = '{}'",
+        phone.id
+    ));
+    assert_problem(
+        &ask(&phone, &phone_cert),
+        403,
+        "device-revoked",
+        "the phone, held, with its revoked column cleared",
+    );
     let watch = Device::new("Watch");
     let watch_cert = issued_by(&watch, alice.account, DeviceKind::Client, &tablet);
     assert_problem(
