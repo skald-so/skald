@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::before::{Before, Folder, Mode, SIGNAL, signal_tasks};
+use crate::before::{Before, Folder, Mode, SIGNAL, make_executable, signal_tasks, skill};
 use crate::channel::{Files, TERM};
 use crate::{
     Agent, Call, Checks, Cue, Kind, Options, PLACEHOLDER, SERVER, STUB_KEY, StubLog,
@@ -433,6 +433,15 @@ pub fn executor_environment(
     env
 }
 
+/// Deletes the sign-in, [`AUTH`], from the config home `config`, so that a work directory kept
+/// for its logs holds no key; nothing if there is none.
+pub fn forget_sign_in(config: &Path) -> io::Result<()> {
+    match fs::remove_file(config.join(AUTH)) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        removed => removed,
+    }
+}
+
 /// Makes `own` a config home that holds only the sign-in of the config home `config`.
 pub fn sign_in_only(config: &Path, own: &Path) -> io::Result<()> {
     fs::create_dir_all(own)?;
@@ -572,24 +581,6 @@ pub fn plant(config: &Path, marks: &Path, marketplace: &Path) -> io::Result<Plan
         ),
     )?;
     Ok(planted)
-}
-
-/// Makes `path` executable.
-fn make_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
-}
-
-/// Writes a skill `name` into `dir` whose description holds `token`.
-fn skill(dir: &Path, name: &str, token: &str) -> io::Result<()> {
-    fs::create_dir_all(dir)?;
-    fs::write(
-        dir.join("SKILL.md"),
-        format!(
-            "---\nname: {name}\ndescription: A planted skill; its token is {token}.\n---\n\n\
-             Reply with {token}.\n"
-        ),
-    )
 }
 
 /// The commands of the clean check's session: make the file the rule forbids, then print
@@ -770,14 +761,12 @@ impl CodexCheck {
             .report("control, without the clean flags", pass, &details)
     }
 
-    pub fn pass(&self) -> bool {
-        self.checks.pass()
-    }
-
-    /// The last line of the output.
-    pub fn verdict(&self, options: &Options) -> String {
-        self.checks
-            .verdict(self.check.name(), Agent::Codex, options)
+    /// The last line of the output, with `options`' model, and whether every check passed.
+    pub fn ended(&self, options: &Options) -> (String, bool) {
+        let line = self
+            .checks
+            .verdict(self.check.name(), Agent::Codex, options);
+        (line, self.checks.pass())
     }
 }
 
@@ -800,6 +789,11 @@ mod tests {
     use crate::tests::read_json;
 
     use super::*;
+
+    /// Whether every check of `check` passed.
+    fn passed(check: &CodexCheck) -> bool {
+        check.ended(&Options::default()).1
+    }
 
     fn options(all: bool, real: bool) -> Options<'static> {
         Options {
@@ -1061,6 +1055,9 @@ mod tests {
             .collect();
         assert_eq!(held, [AUTH]);
         assert_eq!(read(&own.join(AUTH)), read(&config.join(AUTH)));
+        forget_sign_in(&own).unwrap();
+        assert!(!own.join(AUTH).exists() && own.is_dir());
+        forget_sign_in(&own).unwrap();
 
         // The planted server and hooks leave their mark when they run.
         assert!(
@@ -1166,7 +1163,7 @@ mod tests {
         );
         let mut check = CodexCheck::new(Before::ReadOnly);
         let line = check.attempts(Mode::ReadOnly, &done, "d");
-        assert!(!check.pass(), "{line}");
+        assert!(!passed(&check), "{line}");
         assert!(line.starts_with("  read-only executor: fail — "), "{line}");
         for outcome in [
             "read a file in the folder: yes",
@@ -1189,11 +1186,11 @@ mod tests {
         // A read-only sandbox that kept the executor to reading its folder passes.
         let mut kept = CodexCheck::new(Before::ReadOnly);
         kept.attempts(Mode::ReadOnly, &[Attempt::ReadInside], "d");
-        assert!(kept.pass());
+        assert!(passed(&kept));
         let mut nothing = CodexCheck::new(Before::ReadOnly);
         nothing.attempts(Mode::ReadOnly, &[], "d");
         assert!(
-            !nothing.pass(),
+            !passed(&nothing),
             "a session that did nothing shows no sandbox"
         );
     }
@@ -1217,7 +1214,7 @@ mod tests {
         assert_eq!(done, Attempt::ALL);
         let mut check = CodexCheck::new(Before::Full);
         let line = check.attempts(Mode::Full, &done, "d");
-        assert!(check.pass(), "{line}");
+        assert!(passed(&check), "{line}");
         assert!(
             line.starts_with("  danger-full-access executor: pass — "),
             "{line}"
@@ -1231,7 +1228,7 @@ mod tests {
             .collect();
         let mut check = CodexCheck::new(Before::Full);
         check.attempts(Mode::Full, &offline, "d");
-        assert!(check.pass());
+        assert!(passed(&check));
         // A text written by something else is no write of the executor's.
         fs::write(executor.folder.written(), "other").unwrap();
         assert!(
@@ -1241,7 +1238,7 @@ mod tests {
         );
         let mut check = CodexCheck::new(Before::Full);
         check.attempts(Mode::Full, &[Attempt::ReadInside, Attempt::Command], "d");
-        assert!(!check.pass());
+        assert!(!passed(&check));
     }
 
     #[test]
@@ -1287,7 +1284,7 @@ mod tests {
             line.starts_with("  control, without the clean flags: pass — "),
             "{line}"
         );
-        assert!(check.pass());
+        assert!(passed(&check));
 
         // Only the clean flags: the rule did not keep the file from being made, and only the
         // instructions reached the model.
@@ -1317,7 +1314,7 @@ mod tests {
         );
         let line = check.session(Setup::Clean, &reached, "d");
         assert!(line.contains(": fail — "), "{line}");
-        assert!(!check.pass());
+        assert!(!passed(&check));
 
         // The clean session: none of it.
         let clean = recorded(&[(0, ""), (0, "parent: unset\n")]);
@@ -1348,14 +1345,14 @@ mod tests {
         ] {
             let mut check = CodexCheck::new(Before::Clean);
             check.session(Setup::Clean, &reached, "d");
-            assert!(!check.pass(), "{reached:?}");
+            assert!(!passed(&check), "{reached:?}");
             let mut check = CodexCheck::new(Before::Clean);
             check.session(Setup::Control, &reached, "d");
-            assert!(!check.pass(), "{reached:?}");
+            assert!(!passed(&check), "{reached:?}");
         }
         let mut check = CodexCheck::new(Before::Clean);
         check.session(Setup::Flags, &Reached::default(), "d");
-        assert!(!check.pass());
+        assert!(!passed(&check));
     }
 
     #[test]
@@ -1369,7 +1366,7 @@ mod tests {
         };
         let mut check = CodexCheck::new(Before::Signal);
         let line = check.signal("idle session", Some(&all), "d");
-        assert!(check.pass());
+        assert!(passed(&check));
         assert_eq!(
             line,
             "  idle session: pass — codex queue took the signal: yes; it reached the model: yes; \
@@ -1397,11 +1394,148 @@ mod tests {
         ] {
             let mut check = CodexCheck::new(Before::Signal);
             check.signal("idle session", Some(&broken), "d");
-            assert!(!check.pass(), "{broken:?}");
+            assert!(!passed(&check), "{broken:?}");
         }
         let mut check = CodexCheck::new(Before::Signal);
         let line = check.signal("busy session", None, "d");
         assert_eq!(line, "  busy session: fail — no signal went; d");
-        assert!(!check.pass());
+        assert!(!passed(&check));
+    }
+
+    #[test]
+    fn each_attempt_s_command_does_what_its_outcome_reads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = crate::before::LocalServer::start().unwrap();
+        let executor = Executor::make(tmp.path(), &server.url).unwrap();
+        // Run with no sandbox, each command but the public host's succeeds, and the outcomes read
+        // from its output name exactly its attempt; the writes and the server show in the end.
+        let offline: Vec<Attempt> = Attempt::ALL
+            .into_iter()
+            .filter(|attempt| *attempt != Attempt::PublicHost)
+            .collect();
+        let mut outputs = Vec::new();
+        for attempt in &offline {
+            let ran = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(executor.command(*attempt))
+                .current_dir(&executor.folder.folder)
+                .output()
+                .unwrap();
+            assert!(ran.status.success(), "{attempt:?}: {ran:?}");
+            let output = String::from_utf8(ran.stdout).unwrap();
+            let alone = recorded(&[(0, &output)]);
+            let mut done = executor.outcomes(Some(&alone), 0);
+            done.retain(|done| !matches!(done, Attempt::WriteInside | Attempt::WriteOutside));
+            let expected: &[Attempt] = match attempt {
+                Attempt::WriteInside | Attempt::WriteOutside | Attempt::LocalServer => &[],
+                _ => std::slice::from_ref(attempt),
+            };
+            assert_eq!(done, expected, "{attempt:?} printed {output:?}");
+            outputs.push(output);
+        }
+        let outputs: Vec<(i32, &str)> = outputs.iter().map(|o| (0, o.as_str())).collect();
+        assert_eq!(
+            executor.outcomes(Some(&recorded(&outputs)), server.requests()),
+            offline
+        );
+        assert!(server.requests() > 0);
+        // The writes land where their outcomes look: one in the folder, one outside it.
+        assert!(
+            executor
+                .folder
+                .written()
+                .starts_with(&executor.folder.folder)
+        );
+        assert!(
+            !executor
+                .written_outside()
+                .starts_with(&executor.folder.folder)
+        );
+        assert_eq!(
+            executor.command(Attempt::PublicHost),
+            "curl -s -m 10 -o /dev/null https://example.com/ && echo public-$((1+1))"
+        );
+        for (attempt, command) in [
+            (Attempt::Command, "echo ran-$((20+22))".to_owned()),
+            (Attempt::LocalServer, format!("curl -s -m 5 {}", server.url)),
+        ] {
+            assert_eq!(executor.command(attempt), command);
+        }
+        // Neither marker is in a command: either reaches the model only from a command's output.
+        for attempt in Attempt::ALL {
+            let command = executor.command(attempt);
+            for marker in [RAN, REACHED, &executor.inside, &executor.folder.secret] {
+                assert!(!command.contains(marker), "{marker} in {command}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_executor_s_prompt_and_script_run_each_attempt_s_command_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let executor = Executor::make(tmp.path(), "http://127.0.0.1:1/").unwrap();
+        let commands = Attempt::ALL.map(|attempt| executor.command(attempt));
+        let prompt = executor.prompt();
+        assert!(
+            prompt.starts_with("Run each of these shell commands in order"),
+            "{prompt}"
+        );
+        let mut at = 0;
+        for (n, command) in commands.iter().enumerate() {
+            let line = format!("{}. `{command}`\n", n + 1);
+            let found = prompt[at..]
+                .find(&line)
+                .unwrap_or_else(|| panic!("{line} in {prompt}"));
+            at += found + line.len();
+        }
+        let script: Vec<(&str, Value)> = executor
+            .script()
+            .iter()
+            .map(|call| match call {
+                Call::Tool { name, input } => (*name, serde_json::from_str(input).unwrap()),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        let expected: Vec<(&str, Value)> = commands
+            .iter()
+            .map(|command| {
+                (
+                    "exec_command",
+                    json!({ "cmd": command, "yield_time_ms": 30_000 }),
+                )
+            })
+            .collect();
+        assert_eq!(script, expected);
+    }
+
+    #[test]
+    fn names_each_clean_session_and_gives_the_verdict_line() {
+        assert_eq!(Setup::CLEAN.map(Setup::name), ["control", "flags", "clean"]);
+        assert_eq!(Setup::Sandbox.name(), "sandbox");
+        assert!(!Setup::Sandbox.signs_in_from_home());
+        assert!(Setup::CLEAN.iter().all(|setup| setup.signs_in_from_home()));
+
+        let mut check = CodexCheck::new(Before::Clean);
+        let ran = Reached {
+            ran: true,
+            ..Reached::default()
+        };
+        check.session(Setup::Clean, &ran, "d");
+        assert_eq!(
+            check.ended(&Options::default()),
+            (
+                "executor-clean on codex with the model stub: pass".to_owned(),
+                true
+            )
+        );
+        let mut check = CodexCheck::new(Before::ReadOnly);
+        check.attempts(Mode::ReadOnly, &[], "d");
+        assert_eq!(
+            check.ended(&options(false, true)),
+            (
+                "executor-read-only on codex with the real model: fail".to_owned(),
+                false
+            )
+        );
     }
 }

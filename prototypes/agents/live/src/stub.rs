@@ -946,6 +946,13 @@ mod tests {
         body["input"] = Value::Array(input);
         cued.body = body.to_string().into_bytes();
         assert_eq!(answered(&cued)["content"][0]["text"], DONE);
+        assert_eq!(
+            after_cue(
+                &json!([{ "a": "x" }, { "b": ["the cue"] }, { "c": "y" }]),
+                "the cue"
+            ),
+            Some(json!([{ "c": "y" }]))
+        );
         assert_eq!(after_cue(&json!([{ "a": "x" }]), "the cue"), None);
         assert_eq!(after_cue(&json!("not a list"), "the cue"), None);
     }

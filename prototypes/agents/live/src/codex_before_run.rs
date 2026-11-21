@@ -19,8 +19,8 @@ use crate::Result;
 use crate::pty::{Env, Prepared, TURN, turn_ended};
 use crate::run::{finish, run_session, start, start_with};
 
-/// Runs the check `check` with `options`; whether it passed.
-pub fn run(check: Before, options: &Options) -> Result<bool> {
+/// Runs the Codex check `check` with `options`; whether it passed.
+pub fn run_check(check: Before, options: &Options) -> Result<bool> {
     match check {
         Before::Signal => signal(options),
         Before::ReadOnly => executor(Mode::ReadOnly, options),
@@ -43,6 +43,7 @@ fn signal(options: &Options) -> Result<bool> {
     for (name, kind, case) in cases.into_iter().take(if options.all { 2 } else { 1 }) {
         let files = Files::new(&work.path().join(name));
         let claims = files.dir.join("claims");
+        let config = files.dir.join("home/.codex");
         let (script, cue) = codex_before::signal_script(kind);
         let stub = options.cued_stub(script, Some(cue))?;
         let url = stub.as_ref().map(Stub::url);
@@ -60,7 +61,7 @@ fn signal(options: &Options) -> Result<bool> {
                 &stub.url(),
                 &path,
             )?),
-            None => Env::Add(signed_in(&files.dir.join("home/.codex"))?),
+            None => Env::Add(signed_in(&config)?),
         };
         let mut live = Prepared::new(name, Agent::Codex, false, files, args, env, stub)?.start()?;
         let ready = match kind {
@@ -93,6 +94,8 @@ fn signal(options: &Options) -> Result<bool> {
             _ => None,
         };
         let session = live.end()?;
+        // With `--real`, `auth.json` holds the real key, and `finish` may keep the directory.
+        codex_before::forget_sign_in(&config)?;
         let seen = sent
             .map(|(added, queued)| -> Result<Signalled> {
                 Ok(Signalled {
@@ -106,12 +109,13 @@ fn signal(options: &Options) -> Result<bool> {
             .transpose()?;
         println!("{}", check.signal(case, seen.as_ref(), &session.summary()));
     }
-    let verdict = check.verdict(options);
-    Ok(finish(work, options, &verdict, check.pass()))
+    let (verdict, pass) = check.ended(options);
+    Ok(finish(work, options, &verdict, pass))
 }
 
 /// Signs Codex in, in the config home `config`, with the key in [`codex_before::REAL_KEY`] on
-/// stdin, and returns the variables its sessions get on top of `live-check`'s own.
+/// stdin, and returns the variables its sessions get on top of `live-check`'s own. The caller
+/// deletes the sign-in once the session ends ([`codex_before::forget_sign_in`]).
 fn signed_in(config: &Path) -> Result<Vec<(String, String)>> {
     let key = std::env::var(codex_before::REAL_KEY).map_err(|_| {
         format!(
@@ -204,8 +208,8 @@ fn executor(mode: Mode, options: &Options) -> Result<bool> {
         "{}",
         check.attempts(mode, &done, &executor_details(&session))
     );
-    let verdict = check.verdict(options);
-    Ok(finish(work, options, &verdict, check.pass()))
+    let (verdict, pass) = check.ended(options);
+    Ok(finish(work, options, &verdict, pass))
 }
 
 /// The clean executor: with the sign-in, an MCP server, a hook, a plugin with a skill and a hook,
@@ -243,6 +247,6 @@ fn clean(options: &Options) -> Result<bool> {
             check.session(setup, &reached, &executor_details(&session))
         );
     }
-    let verdict = check.verdict(options);
-    Ok(finish(work, options, &verdict, check.pass()))
+    let (verdict, pass) = check.ended(options);
+    Ok(finish(work, options, &verdict, pass))
 }

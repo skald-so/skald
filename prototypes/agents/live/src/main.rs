@@ -53,24 +53,8 @@ fn main() -> ExitCode {
             };
             ended(wake_run::wake(wake, &options))
         }
-        [name, "claude", options @ ..] if Before::parse(name).is_some() => {
-            let (Some(check), Some(options)) = (
-                Before::parse(name),
-                Options::parse(options).filter(|options| !options.all),
-            ) else {
-                return usage();
-            };
-            ended(before_run::run(check, &options))
-        }
-        [name, "codex", options @ ..] if Before::parse(name).is_some() => {
-            let (Some(check), Some(options)) = (Before::parse(name), Options::parse(options))
-            else {
-                return usage();
-            };
-            if !codex_before::takes(check, &options) {
-                return usage();
-            }
-            ended(codex_before_run::run(check, &options))
+        [name, agent, options @ ..] if Before::parse(name).is_some() => {
+            before_check(name, agent, options)
         }
         ["ack", agent, options @ ..] => agent_check(agent, options, read_run::ack),
         ["transcript", agent, options @ ..] => agent_check(agent, options, read_run::transcript),
@@ -182,6 +166,21 @@ fn check(options: &[&str], run: impl FnOnce(&Options) -> Result<bool>) -> ExitCo
     match Options::parse(options) {
         Some(options) => ended(run(&options)),
         None => usage(),
+    }
+}
+
+/// The check before implementation `name` on the agent named `agent` with `options`; the usage
+/// for an option the check does not take or another agent.
+fn before_check(name: &str, agent: &str, options: &[&str]) -> ExitCode {
+    let (Some(check), Some(options)) = (Before::parse(name), Options::parse(options)) else {
+        return usage();
+    };
+    match Agent::parse(agent) {
+        Some(Agent::Claude) if !options.all => ended(before_run::run(check, &options)),
+        Some(Agent::Codex) if codex_before::takes(check, &options) => {
+            ended(codex_before_run::run_check(check, &options))
+        }
+        _ => usage(),
     }
 }
 

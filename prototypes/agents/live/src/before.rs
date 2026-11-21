@@ -711,13 +711,13 @@ pub fn plant(config: &Path, folder: &Path, marks: &Path) -> io::Result<Planted> 
 }
 
 /// Makes `path` executable.
-fn make_executable(path: &Path) -> io::Result<()> {
+pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))
 }
 
 /// Writes a skill `name` into `dir` whose description holds `token`.
-fn skill(dir: &Path, name: &str, token: &str) -> io::Result<()> {
+pub(crate) fn skill(dir: &Path, name: &str, token: &str) -> io::Result<()> {
     fs::create_dir_all(dir)?;
     fs::write(
         dir.join("SKILL.md"),
