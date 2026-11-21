@@ -23,7 +23,7 @@ pub use account::{
     seal_master_backup, seal_master_backup_with_ephemeral, sign_account,
 };
 pub use anchors::{check_anchors, check_link, sign_anchors, sign_link};
-pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};
+pub use cert::{ChainProblem, DeviceCheckError, check_device, issue, passes_proof_check};
 pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
 pub use grant::{GrantError, check_grant};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
