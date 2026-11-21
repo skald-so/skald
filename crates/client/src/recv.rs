@@ -1236,6 +1236,26 @@ pub(crate) fn pushed(
     space: SpaceId,
     kept: Vec<(u64, Vec<u8>)>,
 ) -> Result<Pushing, String> {
+    pushing(follower, space, kept, true)
+}
+
+/// Of `kept`, as [`pushed`] gives them, each that opens, whatever the delivery mode: messages a
+/// path already took, which go by the next one.
+pub(crate) fn pushed_again(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+) -> Result<Pushing, String> {
+    pushing(follower, space, kept, false)
+}
+
+/// Of `kept`, as [`pushed`] gives them, those the delivery mode pushes now if `planned`, or each.
+fn pushing(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+    planned: bool,
+) -> Result<Pushing, String> {
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
@@ -1259,7 +1279,13 @@ pub(crate) fn pushed(
     }
     let waiting: Vec<delivery::Waiting> =
         opened.iter().map(|(waiting, ..)| waiting.clone()).collect();
-    let plan = settings.plan(&waiting, state::unix_millis());
+    let plan = match planned {
+        true => settings.plan(&waiting, state::unix_millis()),
+        false => delivery::Plan {
+            goes: waiting.iter().map(|waiting| waiting.seq).collect(),
+            due: None,
+        },
+    };
     let messages = (opened.into_iter())
         .filter(|(waiting, ..)| plan.goes.contains(&waiting.seq))
         .map(|(waiting, opened, msg_id)| {

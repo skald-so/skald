@@ -1,6 +1,6 @@
 //! What the tests share: Ada's machine with no session of an agent running, the copy of `skald`
 //! that Claude Code's MCP server and hooks run without the one-shot setting, the channel events of
-//! a `skald mcp`, and runs of the `asyncRewake` hook in the background.
+//! a `skald mcp`, runs of the `asyncRewake` hook in the background, and the mod's polls.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -22,6 +22,10 @@ pub const RESEND_SETTING: &str = "SKALD_RESEND_AFTER";
 
 /// The flag that makes `skald hook claude` the `asyncRewake` hook, and how long it waits.
 pub const WAIT_FLAG: &str = "--wait";
+
+/// The flags that make `skald hook claude` the mod's poll, and say that no turn runs.
+pub const MOD_FLAG: &str = "--mod";
+pub const IDLE_FLAG: &str = "--idle";
 
 /// The exit code with which the `asyncRewake` hook starts a turn.
 pub const REWAKES: i32 = 2;
@@ -94,6 +98,38 @@ impl Bare {
             seconds,
             settings,
         )
+    }
+
+    /// The mod's poll of `agent` in its folder, `skald --agent <agent> hook claude --mod --idle`,
+    /// with `settings`; fails unless it succeeds. Gives what it prints, a JSON object.
+    #[track_caller]
+    pub fn mod_polls(&self, agent: &str, settings: &[(&str, &str)]) -> Value {
+        let args = [AGENT, agent, HOOK, CLAUDE_CODE, MOD_FLAG, IDLE_FLAG];
+        let polled = (self.helped.start_in(&self.solo.dir(agent), settings, &args)).finish();
+        assert!(polled.success, "the mod's poll: {polled:?}");
+        serde_json::from_str(polled.stdout.trim())
+            .unwrap_or_else(|_| panic!("the mod's poll printed no JSON: {polled:?}"))
+    }
+
+    /// Runs the mod's poll of `agent`, with `settings`, every half second, as the mod does, for up
+    /// to `wait`, until one gives a prompt; gives it, if one did.
+    pub fn mod_prompt(
+        &self,
+        agent: &str,
+        settings: &[(&str, &str)],
+        wait: Duration,
+    ) -> Option<String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let polled = self.mod_polls(agent, settings);
+            if let Some(prompt) = polled["prompt"].as_str() {
+                return Some(prompt.to_owned());
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
     }
 }
 

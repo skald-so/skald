@@ -14,6 +14,8 @@
 //!   `inbox`. A signal the agent does not follow with `inbox` goes again. One confirmation ends it,
 //!   and a message the session file already shows goes by no other path. A helper that restarts
 //!   still resends what waits.
+//! - The delivery settings (`claude_code_modes/main.rs`) hold on Channels, `asyncRewake` and the
+//!   mod as on the socket: a mode holds back only a message no path took.
 //!
 //! As the tests of the hook handler (`claude_code_hooks/main.rs`) and of the socket
 //! (`claude_code_socket/main.rs`): Ada's machine, alone in `clienta`, her agents web and api in
@@ -41,6 +43,11 @@ mod fallbacks;
 #[cfg(unix)]
 mod resending;
 mod rewake;
+mod settings;
+
+// The settings' commands, as the end-to-end tests have them.
+#[path = "../claude_code_e2e/delivery.rs"]
+mod delivery;
 
 #[cfg(unix)]
 #[path = "../claude_code_socket/registered.rs"]

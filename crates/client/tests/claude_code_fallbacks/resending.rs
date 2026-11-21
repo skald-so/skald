@@ -3,7 +3,8 @@
 //! for the hooks and `inbox`. A signal the agent does not follow with `inbox` goes again. One
 //! confirmation ends it, and a message the session file already shows, queued too, goes by no other
 //! path; the hooks and `inbox` give a message only after the last path. A helper killed while a
-//! message waits for its timeout leaves it to be resent, and `read` of it goes once.
+//! message waits for its timeout leaves it to be resent, and `read` of it goes once. A delivery
+//! mode holds back only a message no path took.
 
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,12 +13,14 @@ use serde_json::json;
 
 use crate::client::Session;
 use crate::cloud::WAIT;
+use crate::delivery::{BATCH, set_mode};
 use crate::fallbacks::{
     QUIET, RESEND_SETTING, Rewake, channel_of, events, rewake_of, session_start, wait_events, woke,
 };
 use crate::hooks::{Event, assert_own_line, assert_signal};
 use crate::receipts::shows_read_once;
 use crate::registered::{Ada, lines_stay};
+use crate::senders::OWN;
 use crate::solo::WEB;
 use crate::standin::{SOCKET_VAR, Standin, TOKEN_VAR, Take};
 
@@ -381,4 +384,26 @@ fn the_hooks_and_inbox_give_a_message_only_after_the_last_path() {
 
     let context = ada.hook_gives(WEB, &session);
     assert_own_line(&context, WAITING_SAYS, msg_id, &api);
+}
+
+/// What api says to web; it is nowhere else.
+const BATCHED_SAYS: &str = "resend test: api asks web, whose person then sets batch";
+
+/// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. web's `skald
+/// mcp` runs. api sends web a message; the socket gets its line. The person then sets `own` in the
+/// default channel to `batch` with a window of 10 minutes. Once the timeout passed, one channel
+/// event comes, the message's line from api at `own`: the window holds back no message a path took.
+#[test]
+fn a_message_a_path_took_goes_by_the_next_one_whatever_mode_is_set_meanwhile() {
+    let ada = Ada::new(4_919_529_001, "ada-resend-batch-set-meanwhile");
+    let session = Standin::new(Take::Lose);
+    let mut paths = started(&ada, &session, TIMED, true, false);
+
+    let msg_id = ada.web.own(BATCHED_SAYS);
+    session.wait_lines(1);
+    let solo = &ada.web.solo;
+    set_mode(solo, solo.default_channel(), OWN, BATCH, Some("10m"));
+
+    let sent = wait_events(paths.channel(), 1, WAIT);
+    assert_own_line(&sent[0], BATCHED_SAYS, msg_id, &ada.web.api());
 }

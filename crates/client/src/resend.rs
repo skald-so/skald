@@ -316,7 +316,7 @@ fn opened(
             .collect::<Vec<_>>()
     };
     let fresh = recv::pushed(follower, space, sealed(fresh))?;
-    let again = recv::pushed(follower, space, sealed(again))?;
+    let again = recv::pushed_again(follower, space, sealed(again))?;
     let opened = (fresh.messages.into_iter().chain(again.messages))
         .map(|message| {
             let (line, _) = recv::kept_line(&message.opened, Form::Short, references);
