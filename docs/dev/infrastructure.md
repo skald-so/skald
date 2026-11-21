@@ -64,6 +64,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Release check:** `script/release-check` against a published release ("Release", "Release check"). A PR that changes it or the workflow starts it against the newest release, betas included, and so does a manual run (`workflow_dispatch`), or against the release its input `tag` names.
 - **Client on Windows:** all of the client's tests on `windows-2025`, with the runner image's PostgreSQL and OpenSSL and with Chrome Headless Shell from `web/`'s playwright-core, with the Rust code's part `workspace`, outside `script/test`: `.github/workflows/ci.yml`.
   - Windows runs only the tests of code whose behavior depends on the OS: today the client's. The other crates' logic does not depend on it, and the server runs only on Linux.
+  - cargo-nextest runs them, 12 at once on the runner's 4 CPUs: the tests mostly wait.
   - Only this job sets `SKALD_TEST_REAL_KEY_STORAGE=1`: a test then keeps a device's keys in the runner's Credential Manager, under a keyring service of its own, and deletes them. Without it, `script/test` included, no test touches the system's key storage.
   - When a test fails, the job prints the failures in PostgreSQL's log.
   - After the tests, also when one fails, a `skald-update-*` or `skald-client-*` directory left in the temporary directory fails the job.
