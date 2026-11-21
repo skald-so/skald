@@ -860,19 +860,19 @@ The executor (`skald_adapters::claude_code`):
 
 ### Codex
 `live-check signal codex [--all] [--real] [--model <model>] [--keep]`, `live-check <executor-read-only|executor-full|executor-clean> codex [--model <model>] [--keep]`; the executor checks run only on the stub.
-- On Windows `live-check` finds npm's `codex.cmd` and runs its script with `node`; the executor checks write their commands in PowerShell and the planted MCP server and hooks run `mark.cmd`. A check that needs a pseudo-terminal or a Unix socket, such as `signal`, says "not on Windows".
+- On Windows `live-check` runs `codex.exe` or WinGet's `codex-<arch>-pc-windows-msvc.exe`, else npm's `codex.cmd` script with `node`. The executor checks write their commands in PowerShell, the planted MCP server and hooks run `mark.cmd`, and the sessions get `-c windows.sandbox="unelevated"`. A check that needs a pseudo-terminal or a Unix socket, such as `signal`, says "not on Windows".
 - `signal`: a terminal UI session in a pseudo-terminal with `inbox` and the stub `claim`, as in [Claude Code](#claude-code), their tools approved. After its first turn, `codex queue --thread <id> --message <signal>` brings the fixed line to the idle session; with `--all`, also to a busy one while its first turn's command runs. Passes when the signal reached the model, the model called `inbox` and `claim`, and the message's token reached it only through `inbox`.
 - `executor-read-only`, `executor-full`: `codex exec` with the clean flags below, `--sandbox read-only` or `danger-full-access` and `-C` a temporary folder. Its commands read a file in the folder, write a file in it and one outside it, run `echo`, `curl` a local server and `https://example.com/`, and read a file outside the folder. `read-only` passes when only the read in the folder succeeds; full access passes when all but the public host succeed.
 - `executor-clean`: the config home holds the sign-in, `auth.json` with the placeholder key, an MCP server, a hook in `hooks.json`, an enabled plugin of a local marketplace with a hook and a skill, a rule that forbids a `touch`, a skill and `AGENTS.md`. Three sessions run that `touch` and print a variable: a control without the clean flags, with `--dangerously-bypass-hook-trust` and the variable, which must get all seven; one with only the clean flags; one with the flags and `CODEX_HOME` a folder that holds only `auth.json`. Passes when each signed in from `auth.json` and ran its commands, and the last got nothing planted and no variable.
 
-Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root, run with `--security-opt systempaths=unconfined` so that bubblewrap can mount `/proc`.
+Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root, run with `--security-opt systempaths=unconfined` so that bubblewrap can mount `/proc`. Windows: Windows 11, Codex 0.154.0 from WinGet.
 
 | Check | macOS, the stub | Linux, the stub | Windows, the stub |
 |---|---|---|---|
 | `live-check signal codex`, also `--all` | pass | pass | not on Windows |
-| `live-check executor-read-only codex` | fail | fail | pending |
-| `live-check executor-full codex` | pass | pass | pending |
-| `live-check executor-clean codex` | pass | pass | pending |
+| `live-check executor-read-only codex` | fail | fail | fail, without `windows.sandbox` |
+| `live-check executor-full codex` | pass | pass | pass |
+| `live-check executor-clean codex` | pass | pass | pass |
 
 `live-check signal codex --real`, Codex 0.162.1, macOS, the idle session: fail without `--model`, as the API key's project may not use Codex's default model, `gpt-6.1-terra` (403), so nothing reached the model; pass with `--model gpt-5.6-terra`, 1 `claim` call, the token reached the model only in `inbox`'s result; tokens: input 15,736 (cached 55,559), output 201.
 
@@ -888,9 +888,10 @@ What each attempt did, the same on macOS and Linux:
 
 Findings:
 - `read-only` blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
+- On Windows without `windows.sandbox`, `read-only` has no sandbox behind it, so `codex exec` rejects every command, reads too: "rejected: blocked by policy". Full access did all seven attempts there. The run with `windows.sandbox="unelevated"` is pending.
 - In Docker's default container, `read-only` runs no command at all, not even the read in the folder: "bwrap: Can't mount proc on /proc: Operation not permitted". The other checks pass there too.
 - Codex runs a command with the session's environment: the control's variable reached `echo`.
-- With the clean flags, only the config home's `AGENTS.md` still reaches the session; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
+- With the clean flags, only the config home's `AGENTS.md` still reaches the session, on Windows too; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
 
 A Codex executor's flags and environment, from these findings:
 - `codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false -c approval_policy="never" --sandbox <read-only|danger-full-access> -C <folder>`;

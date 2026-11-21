@@ -384,6 +384,8 @@ pub fn executor_args(
         "approval_policy=\"never\"".to_owned(),
         "model_reasoning_effort=\"low\"".to_owned(),
     ];
+    #[cfg(windows)]
+    config.push(crate::windows::SANDBOX.to_owned());
     config.extend(
         stub.map(|stub| {
             if setup.signs_in_from_home() {

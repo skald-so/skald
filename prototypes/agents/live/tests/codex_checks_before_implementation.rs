@@ -216,7 +216,8 @@ fn jq() -> String {
     jq
 }
 
-/// The stand-in for `codex`. It answers `--version`; otherwise it records its arguments,
+/// The stand-in for `codex`. Like Codex, it writes into its config home whenever it starts, even
+/// for `--version`. It answers `--version`; otherwise it records its arguments,
 /// environment, directory and a copy of its config home in `record/<kind>-<pid>`, and then:
 /// - the terminal UI, like Codex, writes into its config home and runs the command hooks of `-c
 ///   hooks.<event>=…` and of the config home's `hooks.json`: `SessionStart`, a `PreToolUse` of a
@@ -227,6 +228,7 @@ fn jq() -> String {
 const STAND_IN: &str = r#"#!/bin/sh
 record='@RECORD@'
 jq='@JQ@'
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/tmp/arg0" && : >"${CODEX_HOME:-$HOME/.codex}/tmp/arg0/codex-arg0.lock"
 if [ "$1" = --version ] || [ "$1" = -V ]; then echo 'codex-cli @VERSION@'; exit 0; fi
 sub=
 folder=$(pwd -P)

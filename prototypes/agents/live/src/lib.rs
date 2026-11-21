@@ -191,6 +191,18 @@ impl Agent {
         Ok(args)
     }
 
+    /// The variable that sets the CLI's config home and that home, made empty in `home` if it was
+    /// not there. The CLI writes into its config home whenever it starts, Codex even for
+    /// `--version`.
+    pub fn config_home(self, home: &Path) -> io::Result<(&'static str, PathBuf)> {
+        let (var, dir) = match self {
+            Self::Claude => ("CLAUDE_CONFIG_DIR", home.join(".claude")),
+            Self::Codex => ("CODEX_HOME", home.join(".codex")),
+        };
+        fs::create_dir_all(&dir)?;
+        Ok((var, dir))
+    }
+
     /// The CLI's environment on the model stub at `stub`: only `path` as `PATH`, `home` as `HOME`
     /// with an empty config home in it, the stub's address and the placeholder key. The CLI finds
     /// no sign-in there and no credential but the placeholder. On Windows it also gets the system's
@@ -201,11 +213,7 @@ impl Agent {
         stub: &str,
         path: &str,
     ) -> io::Result<Vec<(String, String)>> {
-        let (config_var, config_dir) = match self {
-            Self::Claude => ("CLAUDE_CONFIG_DIR", home.join(".claude")),
-            Self::Codex => ("CODEX_HOME", home.join(".codex")),
-        };
-        fs::create_dir_all(&config_dir)?;
+        let (config_var, config_dir) = self.config_home(home)?;
         let mut env = vec![
             ("PATH", path.to_owned()),
             ("HOME", home.to_string_lossy().into_owned()),
