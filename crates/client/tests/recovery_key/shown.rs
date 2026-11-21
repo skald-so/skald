@@ -9,7 +9,7 @@ use skald_github_stand_in::User;
 
 use crate::browser::Browser;
 use crate::cloud::{Cloud, GIVE_MASTER, shown_grant};
-use crate::machine::{DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, YES};
+use crate::machine::{DEVICES, KEY_STORAGE, Machine};
 use crate::system;
 use crate::terminal::Terminal;
 use crate::{
@@ -50,7 +50,7 @@ fn other_commands(machine: &Machine) -> Vec<(&'static str, String)> {
 /// Fails unless, once `key` was shown, `skald sign-in` at a terminal and the other commands on
 /// `machine` neither show it nor say a key waits.
 #[track_caller]
-fn assert_gone(cloud: &Cloud, machine: &Machine, key: &[u8; 32]) {
+fn assert_gone(cloud: &Cloud, machine: &Machine, key: &[u8; 12]) {
     let again = quiet_sign_in(cloud, machine, &[]);
     assert!(!holds_key(&again, key), "{again}");
     for (what, text) in other_commands(machine) {
@@ -120,7 +120,7 @@ fn signed_in_through_a_pipe(
     machine: &Machine,
     user: &User,
 ) -> String {
-    let mut run = machine.start(&sign_in(cloud, &[FIRST_DEVICE, YES]));
+    let mut run = machine.start(&sign_in(cloud, &[]));
     let grant = shown_grant(cloud, &mut run, cloud.grants().len());
     cloud.decide(&browser.page(), user, &grant, APPROVE);
     let finished = run.finish();
@@ -201,8 +201,7 @@ fn as_an_agent_sign_in_shows_none_and_the_persons_next_sign_in_does() {
         held(&cloud, &token).backup.is_some(),
         "the server took no backup"
     );
-    let again =
-        Terminal::start(&machine, &as_agent(&sign_in(&cloud, &[FIRST_DEVICE, YES]))).finish();
+    let again = Terminal::start(&machine, &as_agent(&sign_in(&cloud, &[]))).finish();
     assert_eq!(keys_in(&again.text), Vec::<String>::new(), "{again:?}");
     let recv = machine
         .start_in(&machine.root().join("home"), &as_agent(&["recv"]))

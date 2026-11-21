@@ -3097,11 +3097,20 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "reopened",
+            "in": "query",
+            "required": false,
+            "description": "Given when the page opened itself again from this server.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
+            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`; unless `reopened` is given, it also opens this page with `user_code` and `reopened` again from this server, once, as a request from another site lacks the `SameSite=Strict` session cookie. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -11692,7 +11701,7 @@
             "$ref": "#/components/schemas/AccountRecord"
           },
           "backup": {
-            "description": "The master backup, sealed to the recovery key the account record names.",
+            "description": "The master backup, sealed with the recovery key of the account record.",
             "$ref": "#/components/schemas/MasterBackup"
           }
         },

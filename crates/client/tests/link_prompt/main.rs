@@ -9,8 +9,8 @@
 //! command says it; the waiting device itself and other accounts' devices never do. A command that
 //! makes no request, such as `skald rules`, says nothing of it.
 //!
-//! As the tests of linking with a link code (`link_codes/main.rs`): Ada's new machine signs in as
-//! no first device at a terminal and shows its code; her first machine links it with `skald link`.
+//! As the tests of linking with a link code (`link_codes/main.rs`): Ada's new machine signs in at
+//! a terminal and shows its code; her first machine links it with `skald link`.
 //! As the tests of `skald recv --wait` (`recv_wait/main.rs`): her agents run in `~/work/acme`,
 //! bound to `acme`, and Bob's device is played by the tests; runs through a helper run the
 //! machine's own copy of `skald`. As the tests of the MCP server (`mcp_inbox/main.rs`): the tests

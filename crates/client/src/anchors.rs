@@ -8,12 +8,14 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, SpaceId, Unknown};
+use std::collections::BTreeMap;
+
+use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, Roster, SpaceId, Unknown};
 
 use crate::connection::{Connection, Method};
 use crate::device;
 use crate::devices::text;
-use crate::follow::{self, ATTEMPTS};
+use crate::follow::{self, ATTEMPTS, Own};
 use crate::state::State;
 
 /// The account's anchors objects: `POST` stores the device's, `GET` gives them all.
@@ -125,6 +127,51 @@ pub fn held(state: &State) -> Result<Held, String> {
         .find(|space| space.personal)
         .map(|space| space.id);
     Ok((anchors, personal))
+}
+
+/// The revision of `space` a device starts from, of the revisions the server gives the session
+/// `token` whose `hashes` valid anchors objects name ("Anchors"): the one with the lowest number,
+/// if every other one is a revision the device accepts after it ("Roster"); otherwise why the
+/// device does not follow the space.
+pub fn start(
+    (connection, token, state): (&mut Connection, &str, &State),
+    space: SpaceId,
+    hashes: &[[u8; 32]],
+    own: &Own,
+) -> Result<Result<Roster, String>, String> {
+    let given = follow::given(connection, token, space)?;
+    let anchored: Option<Vec<&Roster>> = hashes
+        .iter()
+        .map(|hash| {
+            given
+                .iter()
+                .find(|revision| revision.hash() == *hash && revision.body().space == space)
+        })
+        .collect();
+    let Some(start) = anchored.as_ref().and_then(|anchored| {
+        anchored
+            .iter()
+            .min_by_key(|revision| revision.body().revision)
+    }) else {
+        return Ok(Err(format!(
+            "the server gives no revision of the space {space} that the account's devices \
+             anchor, so this device does not follow it"
+        )));
+    };
+    let devices = follow::space_devices(connection, token, state, space)?;
+    let followed = follow::follow(start, &BTreeMap::new(), &given, &devices, own);
+    let accepted: Vec<[u8; 32]> = std::iter::once(*start)
+        .chain(&followed.accepted)
+        .map(Roster::hash)
+        .collect();
+    if hashes.iter().all(|hash| accepted.contains(hash)) {
+        return Ok(Ok((*start).clone()));
+    }
+    Ok(Err(format!(
+        "the account's devices anchor the space {} ({space}) at revisions off one chain, so this \
+         device does not follow it",
+        start.body().name.as_str()
+    )))
 }
 
 /// `POST /account/anchors`: has the server store `anchors`, in CBOR, which `state` holds as

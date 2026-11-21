@@ -2,7 +2,7 @@
 //! "Anchors" and "Revocation"), only by its person at a terminal, who types the key without echo.
 //!
 //! The device pins the master key only from an account record it signs and a master backup that
-//! opens in PSK mode with the key, issues its own certificate with it and shows the account's
+//! opens with the key, issues its own certificate with it and shows the account's
 //! devices. Then, in this order, it revokes with the master key the devices its person names
 //! stolen, has the server store its certificate, starts from the anchors objects of the devices no
 //! master-key revocation marks as stolen, takes the history keys wrapped to the recovery key
@@ -18,19 +18,20 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
-    HpkeKey, RecoveryKey, SigningKey, check_account, check_anchors, check_device, counts,
-    marked_stolen, open_master_backup, sign_revocation, verify,
+    PASTE_END, PASTE_START, RecoveryKey, SigningKey, check_account, check_anchors, check_device,
+    counts, marked_stolen, open_recovery, sign_revocation, verify,
 };
 use skald_proto::{
     AccountId, AccountRecord, Anchors, Cbor as _, Cert, DeviceId, DeviceKind, MasterBackup,
-    NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, Roster, SpaceId, Unknown,
+    NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
+use crate::anchors;
 use crate::connection::{Connection, printable};
 use crate::device::{self, Keys, MasterKey};
 use crate::devices::{self, text};
-use crate::follow::{self, Own, SpaceDevices};
+use crate::follow::{Own, SpaceDevices};
 use crate::link_code;
 use crate::output::{self, Stream};
 use crate::recovery_wraps;
@@ -76,7 +77,7 @@ pub struct NewDevice<'a> {
 }
 
 /// The run that sends again what a run with the recovery key signed and did not send.
-const AGAIN: &str = "the next skald sign-in --first-device no --with-recovery-key";
+const AGAIN: &str = "the next skald sign-in --with-recovery-key";
 
 /// What the run says when it stops: nothing is signed but what it says it signed.
 fn refused(why: &str) -> sign_in::Error {
@@ -108,24 +109,22 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
             "the account record the server gives fails: {err}; someone may have changed it"
         ))
     })?;
-    let typed = read_hidden(
-        "Type the account's recovery key; it does not show as you type, and Enter ends it: ",
-    )
-    .map_err(|err| sign_in::Error::Io(format!("cannot read the terminal: {err}")))?
-    .ok_or_else(|| refused("no recovery key was typed"))?;
-    let key = RecoveryKey::parse(typed.trim()).map_err(|_| {
-        refused("what was typed is not a recovery key: 13 groups of four letters and digits")
-    })?;
+    let typed = read_hidden("Type or paste the recovery key, then press Enter: ")
+        .map_err(|err| sign_in::Error::Io(format!("cannot read the terminal: {err}")))?
+        .ok_or_else(|| refused("no recovery key was typed"))?;
+    let key = RecoveryKey::parse(&typed)
+        .map_err(|_| refused("that is not a recovery key: it has 12 letters and digits"))?;
     drop(typed);
-    let signer = open_master_backup(&backup, &key, new.account, &master).map_err(|_| {
+    let opened = open_recovery(&record, &backup, &key).map_err(|_| {
         refused(
             "the recovery key does not open the account's master backup: it is not this \
              account's recovery key, or someone changed the backup",
         )
     })?;
-    // The wraps to the recovery key open with its HPKE key pair, kept until the wraps are taken.
-    let recovery = HpkeKey::from_recovery_key(&key.to_bytes());
     drop(key);
+    let signer = opened.master;
+    // The wraps to the recovery key open with its HPKE key pair, kept until the wraps are taken.
+    let recovery = opened.hpke;
     let cert = new.own_cert(&signer)?;
     new.state.set_link(&Link::Recovering {
         master,
@@ -166,7 +165,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
             return Err(sign_in::Error::Recovery(
                 "the account has as many devices as it may on this server, so the server does not \
                  store this device's certificate. Name a device stolen, or revoke one on a linked \
-                 device, then run skald sign-in --first-device no --with-recovery-key again"
+                 device, then run skald sign-in --with-recovery-key again"
                     .to_owned(),
             ));
         }
@@ -335,7 +334,14 @@ impl NewDevice<'_> {
             _ => None,
         };
         for (space, hashes) in &by_space {
-            match self.start(*space, hashes, own)? {
+            let start = anchors::start(
+                (&mut *self.connection, self.token, self.state),
+                *space,
+                hashes,
+                own,
+            )
+            .map_err(sign_in::Error::Io)?;
+            match start {
                 Ok(start) => self.state.add_linked_space(
                     *space,
                     start.body().name.as_str(),
@@ -346,53 +352,6 @@ impl NewDevice<'_> {
             }
         }
         Ok(())
-    }
-
-    /// The revision of `space` the device starts from: of those whose `hashes` the anchors give,
-    /// the one with the lowest number, if every other one is a revision it accepts after it
-    /// ("Roster"); otherwise why it does not join the space.
-    fn start(
-        &mut self,
-        space: SpaceId,
-        hashes: &[[u8; 32]],
-        own: &Own,
-    ) -> Result<Result<Roster, String>, sign_in::Error> {
-        let given =
-            follow::given(self.connection, self.token, space).map_err(sign_in::Error::Io)?;
-        let anchored: Option<Vec<&Roster>> = hashes
-            .iter()
-            .map(|hash| {
-                given
-                    .iter()
-                    .find(|revision| revision.hash() == *hash && revision.body().space == space)
-            })
-            .collect();
-        let Some(start) = anchored.as_ref().and_then(|anchored| {
-            anchored
-                .iter()
-                .min_by_key(|revision| revision.body().revision)
-        }) else {
-            return Ok(Err(format!(
-                "the server does not give a revision of the space {space} that the anchors of the \
-                 account's devices name, so this device does not join the space"
-            )));
-        };
-        let devices = follow::space_devices(self.connection, self.token, self.state, space)
-            .map_err(sign_in::Error::Io)?;
-        let followed = follow::follow(start, &BTreeMap::new(), &given, &devices, own);
-        let accepted: Vec<[u8; 32]> = std::iter::once(*start)
-            .chain(&followed.accepted)
-            .map(Roster::hash)
-            .collect();
-        if hashes.iter().all(|hash| accepted.contains(hash)) {
-            return Ok(Ok((*start).clone()));
-        }
-        Ok(Err(format!(
-            "the anchors of the account's devices of the space {} ({space}) disagree: one names a \
-             revision this device does not accept after the earliest one, so it does not join the \
-             space",
-            start.body().name.as_str()
-        )))
     }
 }
 
@@ -731,16 +690,55 @@ fn ask(
     Ok(Some(named))
 }
 
-/// Reads a line its person types at the terminal, with echo off, after showing `prompt`; `None`
-/// once the input ends.
+/// Reads what its person types or pastes at the terminal, with echo off, after showing `prompt`:
+/// the lines up to the first that is not blank, and on to the end of a paste still open there;
+/// `None` once the input ends before.
 fn read_hidden(prompt: &str) -> io::Result<Option<Zeroizing<String>>> {
     let echo = EchoOff::new()?;
     output::write(Stream::Out, prompt.as_bytes())?;
-    let mut line = Zeroizing::new(String::with_capacity(256));
-    let read = io::stdin().lock().read_line(&mut line);
+    let read = read_key(&mut io::stdin().lock());
     drop(echo);
     println!();
-    Ok((read? > 0).then_some(line))
+    read
+}
+
+/// The lines of `input` up to the first that is not blank, and on to the end of a paste still open
+/// there; `None` once `input` ends before.
+fn read_key(input: &mut impl BufRead) -> io::Result<Option<Zeroizing<String>>> {
+    let mut text = Zeroizing::new(String::with_capacity(256));
+    loop {
+        let mut line = Zeroizing::new(String::with_capacity(256));
+        if input.read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        text.push_str(&line);
+        if holds_key(&text) {
+            return Ok(Some(text));
+        }
+    }
+}
+
+/// Whether `text`, the lines read so far, is all of the key: more than blanks and paste markers,
+/// and no paste still open. A selection copied from the end of the line above the key pastes a
+/// line end before it: Windows Terminal sends it as a blank line first.
+fn holds_key(text: &str) -> bool {
+    let mut rest = text;
+    let mut blank = true;
+    while let Some(c) = rest.chars().next() {
+        if let Some(after) = [PASTE_START, PASTE_END]
+            .iter()
+            .find_map(|marker| rest.strip_prefix(marker))
+        {
+            rest = after;
+        } else if c.is_whitespace() || c.is_control() {
+            rest = &rest[c.len_utf8()..];
+        } else {
+            blank = false;
+            break;
+        }
+    }
+    let open = text.rfind(PASTE_START) > text.rfind(PASTE_END);
+    !blank && !open
 }
 
 /// The terminal's echo, off until it is dropped.
@@ -812,6 +810,60 @@ impl Drop for EchoOff {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `read_key` gives of `input`, and what it leaves.
+    fn read_from(input: &str) -> (Option<String>, String) {
+        let mut input = io::Cursor::new(input.as_bytes().to_vec());
+        let read = read_key(&mut input)
+            .expect("a read")
+            .map(|text| text.to_string());
+        let mut left = String::new();
+        io::Read::read_to_string(&mut input, &mut left).expect("the rest");
+        (read, left)
+    }
+
+    /// Blank lines before the key, a Windows line end among them, are read past; a paste open at
+    /// the key's line is read to its end; what follows is left; an input that ends first gives
+    /// none.
+    #[test]
+    fn the_key_is_read_past_blank_lines_to_the_end_of_its_paste() {
+        let key = "0123-4567-89AB";
+        for (input, read, left) in [
+            (format!("{key}\nnext\n"), format!("{key}\n"), "next\n"),
+            (format!("\r\n{key}\r\n"), format!("\r\n{key}\r\n"), ""),
+            (
+                format!("\n \t\n{key}\nnext\n"),
+                format!("\n \t\n{key}\n"),
+                "next\n",
+            ),
+            (
+                format!("{PASTE_START}\n{key}\n{PASTE_END}\nnext\n"),
+                format!("{PASTE_START}\n{key}\n{PASTE_END}\n"),
+                "next\n",
+            ),
+            (
+                format!("{PASTE_START}{key}{PASTE_END}\nnext\n"),
+                format!("{PASTE_START}{key}{PASTE_END}\n"),
+                "next\n",
+            ),
+            (
+                format!("{PASTE_START}\n{PASTE_END}\n{key}\n"),
+                format!("{PASTE_START}\n{PASTE_END}\n{key}\n"),
+                "",
+            ),
+            (key.to_owned(), key.to_owned(), ""),
+        ] {
+            assert_eq!(
+                read_from(&input),
+                (Some(read), left.to_owned()),
+                "{input:?}"
+            );
+        }
+        for input in ["", "\n\r\n", &format!("{PASTE_START}\n{key}\n")] {
+            assert_eq!(read_from(input).0, None, "{input:?}");
+        }
+    }
+
     use skald_crypto::issue;
     use skald_proto::CertBody;
 

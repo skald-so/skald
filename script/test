@@ -19,20 +19,22 @@
 #              WASM
 #   agents     the delivery prototypes in prototypes/agents
 #   edits      the edit comparison prototype in prototypes/edits
-#   repository copied code in crates/ and prototypes/ (script/duplicates); cargo-deny; the Release
-#              PR and the release tags on fixture repositories, with git-cliff, and the CHANGELOG
-#              section of v0.1.0 from the history; the Claude Code plugin's manifests and the version
+#   repository copied code in crates/ and prototypes/ (script/duplicates); that the schema
+#              migrations stay append-only (script/check-migrations); cargo-deny; the Release PR and
+#              the release tags on fixture repositories, with git-cliff, and the CHANGELOG section
+#              of v0.1.0 from the history; the Claude Code plugin's manifests and the version
 #              script/release-update gives it (script/claude-plugin-test)
 #   tooling    copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #              local sshd and the staging status check's on recorded GitHub API responses, of the CI
-#              workflow, of the e2e workflow, of the edge image and staging deploy workflow, of the
-#              Release PR workflow and its release tags, of the release workflow, its release notes,
-#              the attestations of its files and its image, its npm package, the move of main to a
-#              stable release, on fixture repositories too, and of the installers in installers/ and
-#              the npm package on this machine; of the release check and its jobs, against
-#              stand-ins for a release and the verification commands; of the Pages workflow; of how
-#              the release workflow builds and publishes the web app's archive; of the production
-#              deploy job; Renovate config validation
+#              workflow, of how the workflows a PR starts treat a draft, of the e2e workflow, of the
+#              edge image and staging deploy workflow, of the Release PR workflow and its release
+#              tags, of the release workflow, its release notes, the attestations of its files and
+#              its image, its npm package, the move of main to a stable release, on fixture
+#              repositories too, and of the installers in installers/ and the npm package on this
+#              machine; of the release check and its jobs, against stand-ins for a release and the
+#              verification commands; of the Pages workflow; of how the release workflow builds and
+#              publishes the web app's archive; of the production deploy job; Renovate config
+#              validation
 #   web        copied code in web/; web UI lint, tests (with the kit page screenshots against their
 #              references) and build; the web app's archive of a release (script/release-web-test)
 #   site       the website and docs built from docs/, which fails on a broken internal link
@@ -195,6 +197,7 @@ web_packages() {
 
 if checks repository; then
   script/duplicates crates prototypes
+  script/check-migrations
 fi
 
 if checks workspace; then
@@ -277,6 +280,7 @@ if checks tooling; then
   script/duplicates script
   script/duplicates-test
   script/check-pr-title-test
+  script/check-migrations-test
   script/changed-parts-test
   script/mutants-test
   script/tag-edge-test
@@ -284,6 +288,7 @@ if checks tooling; then
   script/deploy-production-test
   script/staging-status-test
   script/ci-workflow-test
+  script/draft-prs-workflow-test
   script/e2e-workflow-test
   script/edge-workflow-test
   script/release-pr-workflow-test

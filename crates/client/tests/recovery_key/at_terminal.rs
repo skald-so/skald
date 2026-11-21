@@ -6,7 +6,7 @@ use skald_github_stand_in::User;
 
 use crate::browser::{APPROVE, Page};
 use crate::cloud::Cloud;
-use crate::machine::{FIRST_DEVICE, Machine, SERVER, SIGN_IN, YES};
+use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::terminal::Terminal;
 
 /// The agent the tests run commands as.
@@ -31,7 +31,7 @@ pub fn approve(cloud: &Cloud, page: &Page, user: &User, run: &mut Terminal, befo
     cloud.decide(page, user, &grant, APPROVE);
 }
 
-/// Starts `skald sign-in --server <cloud> --first-device yes`, with `before` the arguments before
+/// Starts `skald sign-in --server <cloud>`, with `before` the arguments before
 /// it, on `machine` at a terminal, and approves its code as `user`.
 pub fn first_at_terminal(
     cloud: &Cloud,
@@ -41,20 +41,21 @@ pub fn first_at_terminal(
     before: &[&str],
 ) -> Terminal {
     let grants = cloud.grants().len();
-    let args = [before, &sign_in(cloud, &[FIRST_DEVICE, YES])[..]].concat();
+    let args = [before, &sign_in(cloud, &[])[..]].concat();
     let mut run = Terminal::start(machine, &args);
     approve(cloud, page, user, &mut run, grants);
     run
 }
 
-/// Every string in `text` in the shown form of a recovery key, 52 characters of the base32
-/// alphabet of RFC 4648, §6, in groups of four joined by `-`, each once, in order.
+/// Every string in `text` in the shown form of a recovery key, 3 groups of 4 characters of
+/// Crockford's base32 joined by `-`, each once, in order.
 pub fn keys_in(text: &str) -> Vec<String> {
+    const LENGTH: usize = 14;
     let chars: Vec<char> = text.chars().collect();
-    let digit = |c: char| c.is_ascii_uppercase() || ('2'..='7').contains(&c);
+    let digit = |c: char| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c);
     let mut found: Vec<String> = Vec::new();
     for start in 0..chars.len() {
-        let Some(window) = chars.get(start..start + 64) else {
+        let Some(window) = chars.get(start..start + LENGTH) else {
             break;
         };
         let shaped = window.iter().enumerate().all(
@@ -62,10 +63,11 @@ pub fn keys_in(text: &str) -> Vec<String> {
                 if at % 5 == 4 { *c == '-' } else { digit(*c) }
             },
         );
-        let bounded = |c: Option<&char>| c.is_none_or(|c| !(digit(*c) || *c == '-'));
+        let bounded =
+            |c: Option<&char>| c.is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == '-'));
         if shaped
             && bounded(start.checked_sub(1).and_then(|at| chars.get(at)))
-            && bounded(chars.get(start + 64))
+            && bounded(chars.get(start + LENGTH))
         {
             let key: String = window.iter().collect();
             if !found.contains(&key) {

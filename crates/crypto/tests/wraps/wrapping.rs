@@ -47,8 +47,9 @@ fn a_wrap_to_a_recovery_key_opens_with_the_key_pair_of_the_recovery_key() {
         (body.recipient, body.signer),
         (WrapRecipient::Recovery(ACCOUNT), device_id(13))
     );
-    // The key pair comes from the 32-byte recovery key alone, as a device linked with it has it.
-    let key = HpkeKey::from_recovery_key(&RECOVERY);
+    // The key pair comes from the IKM the recovery key derives alone, as a device linked with it
+    // has it.
+    let key = HpkeKey::from_ikm(&RECOVERY);
     assert_eq!(read(&wrap, &key), Ok(channel.key_bytes(0, 1)));
 }
 
@@ -110,12 +111,12 @@ fn a_wrap_opened_with_another_recipients_key_is_refused() {
         (
             "a recovery key",
             &browser_wrap,
-            HpkeKey::from_recovery_key(&RECOVERY),
+            HpkeKey::from_ikm(&RECOVERY),
         ),
         (
             "another recovery key",
             &recovery_wrap,
-            HpkeKey::from_recovery_key(&other_recovery),
+            HpkeKey::from_ikm(&other_recovery),
         ),
         ("a browser", &recovery_wrap, browser_reader(50).key),
         (
@@ -360,7 +361,7 @@ fn no_wrap_is_made_of_epoch_zero_or_to_a_key_of_small_order() {
             channel.id,
             1,
             WrapRecipient::Recovery(ACCOUNT),
-            &HpkeKey::from_recovery_key(&RECOVERY).public_key(),
+            &HpkeKey::from_ikm(&RECOVERY).public_key(),
             &signing_key(26),
         )
         .is_ok()

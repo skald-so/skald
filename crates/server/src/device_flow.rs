@@ -391,13 +391,35 @@ pub(crate) async fn page(
             StatusCode::OK,
             "Sign in a machine",
             &format!(
-                "<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>{}",
+                "{}<h1>Sign in a machine</h1><p>To sign a machine in to your Skald account, sign in first. {}</p>{}",
+                reopen(&user_code, param(query.as_deref(), REOPENED).is_some()),
                 sign_in_here(&state, &user_code),
                 sign_in::privacy_policy_link(&state)
             ),
         ),
         Err(err) => failed("read a session", err),
     }
+}
+
+/// The query parameter of the verification page reopened from this server.
+const REOPENED: &str = "reopened";
+
+/// The verification page's head without a web session, unless the page was `reopened`: it opens
+/// the page with `user_code` again from this server, once. A request from another site, as from
+/// the file `skald sign-in` opens, lacks the `SameSite=Strict` session cookie of a person signed
+/// in here; the reopened page's request starts on this site, so it carries the cookie.
+fn reopen(user_code: &str, reopened: bool) -> String {
+    if reopened {
+        return String::new();
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("user_code", user_code)
+        .append_pair(REOPENED, "1")
+        .finish();
+    format!(
+        "<meta http-equiv=\"refresh\" content=\"0;url={}\">",
+        escape(&format!("?{query}"))
+    )
 }
 
 /// The page that asks the person of `session` to approve or deny `user_code`, with `privacy`, the

@@ -7,9 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, StateKey};
-use skald_proto::{
-    AccountBody, AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown,
-};
+use skald_proto::{AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown};
 use zeroize::Zeroizing;
 
 use crate::connection::{self, Connection, Method};
@@ -54,9 +52,7 @@ pub enum Error {
     /// The server refused the device's certificate: the account has as many devices as the server
     /// lets it have.
     DevicesLimit,
-    /// The user says it is the account's first device, and the account has a master key.
-    NotFirst,
-    /// The user says it is not the account's first device, and the account has no master key.
+    /// The device is to link with the recovery key, and the account has no master key.
     NoMasterKey,
     /// The certificate it issued fails the checks.
     Cert(String),
@@ -100,15 +96,9 @@ impl std::fmt::Display for Error {
                  store this device's certificate yet; once a device of the account is revoked, the \
                  next skald command on this machine stores it",
             ),
-            Error::NotFirst => f.write_str(
-                "the account has a master key already: someone else may have created it. This \
-                 device does not link and makes no master key; if it is not the account's first \
-                 device, run skald sign-in --first-device no",
-            ),
             Error::NoMasterKey => f.write_str(
-                "the server reports no master key for the account, so this device makes none \
-                 and does not link; if it is the account's first device, run skald sign-in \
-                 --first-device yes",
+                "the account has no master key, so no recovery key: run skald sign-in without \
+                 --with-recovery-key",
             ),
             Error::Cert(err) => write!(f, "the certificate this device issued fails: {err}"),
         }
@@ -293,11 +283,6 @@ fn host_name(host: &str) -> String {
     }
 }
 
-/// What a new device asks its person first.
-const FIRST_QUESTION: &str = "Is this the account's first device? Answer yes only if no other \
-                              device of the account has signed in; yes creates the account's \
-                              master key";
-
 /// `DeviceRegistration` in the API spec.
 #[derive(Serialize)]
 struct Registration<'a> {
@@ -335,14 +320,6 @@ pub fn master_key(connection: &mut Connection, token: &str) -> Result<MasterKey,
         .map_err(|_| sign_in::Error::Unexpected("a master key answer without its key".to_owned()))
 }
 
-/// Whether this is the account's first device, as the user said beforehand, or ask the user.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum First {
-    Yes,
-    No,
-    Ask,
-}
-
 /// `device`, the machine's own device in `state`, with its keys `keys`, signed in to `account`
 /// with the session `token`: it registers if it has not, then links as the account's first device
 /// or waits for linking. A recovery key it creates goes to `stored`, the secrets, kept in
@@ -356,7 +333,6 @@ pub struct Setup<'a> {
     pub account: AccountId,
     pub device: state::Device,
     pub keys: &'a Keys,
-    pub first: First,
     /// Where its person answers, if the run is the person's or has its page: then, waiting for
     /// linking, it shows link codes there.
     pub person: Option<Person<'a>>,
@@ -388,7 +364,7 @@ impl Setup<'_> {
             Link::Recovering { .. } => {
                 println!(
                     "This device is linking with the account's recovery key: to finish, run skald \
-                     sign-in --first-device no --with-recovery-key at a terminal."
+                     sign-in --with-recovery-key at a terminal."
                 );
                 self.wait(false)
             }
@@ -416,7 +392,7 @@ impl Setup<'_> {
         if offered {
             println!(
                 "To link this device with the account's recovery key instead, run skald sign-in \
-                 --first-device no --with-recovery-key at a terminal."
+                 --with-recovery-key at a terminal."
             );
         }
         link_code::show(
@@ -481,31 +457,14 @@ impl Setup<'_> {
         )
     }
 
-    /// Asks whether this is the account's first device, then the server whether the account has a
-    /// master key, and acts on both as "Linking a device" says.
+    /// Asks the server whether the account has a master key, and acts on it as "Linking a device"
+    /// says: without one, the device is the account's first, unless it is to link with the
+    /// recovery key; with one, it waits for linking.
     fn link(self) -> Done {
-        let first = match self.first {
-            First::Yes => true,
-            First::No => false,
-            First::Ask => {
-                let answer = self
-                    .person
-                    .unwrap_or(Person::Terminal)
-                    .ask(FIRST_QUESTION)
-                    .map_err(sign_in::Error::Io)?;
-                let Some(first) = answer else {
-                    println!(
-                        "This device is not linked yet: it needs to know whether it is the \
-                         account's first device. Run skald sign-in --first-device yes|no."
-                    );
-                    return Ok(());
-                };
-                first
-            }
-        };
         let master = master_key(self.connection, self.token)?;
-        match (first, master.master) {
-            (true, None) => {
+        match master.master {
+            None if self.recovery.is_some() => Err(Error::NoMasterKey.into()),
+            None => {
                 let created = self.create_master()?;
                 // The recovery key is kept before anything that it backs is.
                 recovery::keep(self.secrets, self.stored, &created.recovery)?;
@@ -524,9 +483,7 @@ impl Setup<'_> {
                     &created.backup,
                 )
             }
-            (true, Some(_)) => Err(Error::NotFirst.into()),
-            (false, None) => Err(Error::NoMasterKey.into()),
-            (false, Some(_)) => {
+            Some(_) => {
                 self.state.set_link(&Link::Waiting)?;
                 if self.recovery.is_some() {
                     return self.recover();
@@ -606,16 +563,9 @@ fn own_certificate(body: &CertBody, keys: &Keys) -> Result<Created, Error> {
     let cert = skald_crypto::issue(body, &master, &keys.signing)
         .map_err(|err| Error::Cert(err.to_string()))?;
     let recovery = RecoveryKey::generate();
-    let account = AccountBody {
-        account: body.account,
-        master: public,
-        recovery: HpkeKey::from_recovery_key(&recovery.to_bytes()).public_key(),
-        revision: 1,
-        unknown: Unknown::default(),
-    };
+    let (account, backup) = skald_crypto::new_recovery(&master, &recovery, body.account);
     let record = skald_crypto::sign_account(&account, &master)
         .expect("an account record of the spec's form");
-    let backup = skald_crypto::seal_master_backup(&master, &recovery, body.account);
     drop(master);
     skald_crypto::check_device(&public, std::slice::from_ref(&cert), body.device)
         .map_err(|err| Error::Cert(err.to_string()))?;
@@ -649,31 +599,6 @@ fn waits() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn asked(input: &str) -> (Option<bool>, String) {
-        let mut output = Vec::new();
-        let answer =
-            crate::person::ask(&mut input.as_bytes(), &mut output, FIRST_QUESTION).expect("asked");
-        (answer, String::from_utf8(output).expect("UTF-8"))
-    }
-
-    #[test]
-    fn question_takes_yes_or_no_and_asks_again_otherwise() {
-        for (input, answer) in [
-            ("yes\n", Some(true)),
-            ("Y\n", Some(true)),
-            (" no \n", Some(false)),
-            ("n", Some(false)),
-            ("maybe\nyes\n", Some(true)),
-            ("", None),
-            ("maybe\n", None),
-        ] {
-            let (got, shown) = asked(input);
-            assert_eq!(got, answer, "{input:?}");
-            assert!(shown.contains("first device"), "{shown}");
-        }
-        assert!(asked("maybe\nno\n").1.contains("Please answer yes or no."));
-    }
 
     #[test]
     fn host_name_gives_a_valid_name() {
@@ -814,25 +739,20 @@ mod tests {
         // with that recovery key to the master key.
         let record = skald_proto::AccountRecord::from_cbor(&created.record).expect("a record");
         assert_eq!(skald_crypto::check_account(&record, &master), Ok(()));
-        let recovery = HpkeKey::from_recovery_key(&created.recovery.to_bytes()).public_key();
         assert_eq!(
-            (
-                record.body().account,
-                record.body().recovery,
-                record.body().revision
-            ),
-            (body.account, recovery, 1)
+            (record.body().account, record.body().revision),
+            (body.account, 1)
         );
         let backup = skald_proto::MasterBackup::from_cbor(&created.backup).expect("a backup");
-        let opened =
-            skald_crypto::open_master_backup(&backup, &created.recovery, body.account, &master)
-                .expect("the backup opens");
-        assert_eq!(opened.public_key(), master);
+        let opened = skald_crypto::open_recovery(&record, &backup, &created.recovery)
+            .expect("the backup opens");
+        assert_eq!(opened.master.public_key(), master);
+        assert_eq!(opened.hpke.public_key(), record.body().recovery);
         let other = own_certificate(&body, &keys).expect("issued");
         assert_ne!(other.master, master, "a new master key each time");
         assert_ne!(
-            *other.recovery.to_bytes(),
-            *created.recovery.to_bytes(),
+            *other.recovery.shown(),
+            *created.recovery.shown(),
             "a new recovery key each time"
         );
         // A body the device's keys do not prove is not issued.
@@ -853,7 +773,11 @@ mod tests {
         ] {
             assert!(error.to_string().contains("private keys"), "{error}");
         }
-        assert!(Error::NotFirst.to_string().contains("someone else"));
-        assert!(Error::NoMasterKey.to_string().contains("no master key"));
+        let no_master = Error::NoMasterKey.to_string();
+        assert!(no_master.contains("no master key"), "{no_master}");
+        assert!(
+            no_master.contains("without --with-recovery-key"),
+            "{no_master}"
+        );
     }
 }

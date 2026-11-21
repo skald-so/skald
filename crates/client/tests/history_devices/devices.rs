@@ -13,7 +13,7 @@ use crate::chain::uploads_link;
 use crate::fixtures::hex;
 use crate::keys;
 use crate::kit::{Change, issue_channel, latest, received, revise};
-use crate::machine::{FIRST_DEVICE, Machine, NO};
+use crate::machine::Machine;
 use crate::reading::{Said, admits, rotates, says};
 use crate::talk::{Line, Talk};
 use crate::world::{Person, World, now};
@@ -83,7 +83,7 @@ pub fn adds_ada_without_history(talk: &mut Talk, before: [&'static str; 2]) -> C
 }
 
 /// A second machine of `first`'s account, with the host name `host`, linked by hand as a link
-/// code's link will: it signs in as no first device; the test certifies its device with the keys
+/// code's link will: it signs in; the test certifies its device with the keys
 /// of `first`'s machine, sets the certificate up in the server's database, and writes it, the
 /// pinned master key and the spaces of `first`'s machine into the second machine's local state.
 /// `first`'s machine accepted the latest revision of each space at its last run, so those are the
@@ -93,7 +93,7 @@ pub fn second_machine(world: &World, first: &Person, host: &'static str) -> Pers
     let cloud = &world.cloud;
     let machine = Machine::new().with_host_name(host);
     let page = world.browser.page();
-    let signed_in = cloud.signed_in(&page, &machine, &first.user, &[FIRST_DEVICE, NO]);
+    let signed_in = cloud.signed_in(&page, &machine, &first.user, &[]);
     assert!(signed_in.success, "{signed_in:?}");
     let token = cloud.last_token();
     let waiting: Vec<DeviceId> = (cloud.devices(&token).into_iter())

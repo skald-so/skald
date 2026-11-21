@@ -98,11 +98,11 @@ fn body(
     body
 }
 
-/// A master backup of the form `[enc, ct]`: random bytes, as the server cannot tell.
+/// A master backup of the form `[nonce, ct]`: random bytes, as the server cannot tell.
 fn backup() -> Vec<u8> {
     let mut ct = random().to_vec();
     ct.extend_from_slice(&random()[..16]);
-    array_of(&[byte_item(&random()), byte_item(&ct)])
+    array_of(&[byte_item(&random()[..12]), byte_item(&ct)])
 }
 
 /// What `device`, registered on `machine`'s account, gives as the account's first device: a new
@@ -250,7 +250,8 @@ fn a_master_key_without_a_valid_record_and_backup_is_refused() {
     let mut broken = record_of(account, &master, &given.master.key, LABEL);
     let last = broken.len() - 1;
     broken[last] ^= 0x01;
-    let enc_too_short = array_of(&[byte_item(&[7; 31]), byte_item(&[8; 48])]);
+    let nonce_too_short = array_of(&[byte_item(&[7; 11]), byte_item(&[8; 48])]);
+    let ct_too_short = array_of(&[byte_item(&[7; 12]), byte_item(&[8; 47])]);
     let mut neither = given.without("record");
     neither
         .as_object_mut()
@@ -317,8 +318,12 @@ fn a_master_key_without_a_valid_record_and_backup_is_refused() {
             given.with("backup", &given.backup[1..]),
         ),
         (
-            "a backup with a short enc",
-            given.with("backup", &enc_too_short),
+            "a backup with a short nonce",
+            given.with("backup", &nonce_too_short),
+        ),
+        (
+            "a backup with a short ct",
+            given.with("backup", &ct_too_short),
         ),
         ("an empty backup", given.with("backup", &[])),
         ("a record not in base64url", not_base64),

@@ -407,7 +407,8 @@ reads() {
   done
 }
 # The workspace's build, fmt, clippy and tests, of the crates in WASM, and the checks of the whole
-# tree: copied code, cargo-deny and the release tests on copies of the working tree.
+# tree: copied code, the migrations' order, cargo-deny and the release tests on copies of the
+# working tree.
 crate_checks=(
   'cargo build --workspace --all-targets --locked'
   'cargo fmt --all --check'
@@ -423,6 +424,7 @@ crate_checks=(
 )
 tree_checks=(
   'script/duplicates crates prototypes'
+  script/check-migrations
   script/release-pr-test
   script/release-tag-test
 )
