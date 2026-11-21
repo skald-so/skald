@@ -4,7 +4,7 @@
 mod common;
 
 use common::{
-    a2a, alice, alice_device, assert_field_problem, bob_device, channel, content, hex, msg,
+    a2a, alice, alice_device, assert_field_problem, bob, bob_device, channel, content, hex, msg,
     server_device, to_hex,
 };
 use skald_proto::{
@@ -266,6 +266,33 @@ fn task_content_holds_the_task_as_its_body_and_no_counter() {
     let decoded = Content::from_cbor(&bytes).expect("task content decodes");
     assert_eq!(decoded, content);
     assert_eq!(decoded.unknown.get(11), Some(task.to_cbor().as_slice()));
+    assert_eq!(decoded.task(), Some(Ok(task)));
+}
+
+#[test]
+fn task_result_content_holds_the_result_as_its_body_with_a_counter() {
+    let result = TaskResult {
+        task: task_id(),
+        claim_id: claim_id(),
+        generation: 2,
+        outcome: Outcome::Done,
+        response: "{}".to_owned(),
+        unknown: Unknown::default(),
+    };
+    let counter = std::num::NonZeroU64::new(3).expect("3");
+
+    let content = result.content((alice(), bob()), counter, 5);
+
+    assert_eq!(
+        (content.counter, &content.body, content.hops),
+        (Some(counter), &None, 5)
+    );
+    assert_eq!(content.to, Some(bob()));
+    let decoded = Content::from_cbor(&content.to_cbor()).expect("result content decodes");
+    assert_eq!(decoded, content);
+    assert_eq!(decoded.unknown.get(12), Some(result.to_cbor().as_slice()));
+    assert_eq!(decoded.task_result(), Some(Ok(result)));
+    assert_eq!(decoded.task(), None);
 }
 
 /// `text` as a CBOR text string of under 256 bytes.

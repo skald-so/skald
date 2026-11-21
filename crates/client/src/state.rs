@@ -627,6 +627,19 @@ const MIGRATIONS: &[&str] = &[
         space TEXT NOT NULL,
         agent TEXT
     ) STRICT",
+    // The claims the device holds ([`crate::claims`]), by task ID, with their space, channel and
+    // queue, the agent that holds each, none for the person, when the device sent the last request
+    // the server answered that started its lease, by the device's clock, and the rest of it sealed
+    // under the state key: its claim, what its result needs, and its complete or fail, if any.
+    "CREATE TABLE task_claim (
+        task TEXT PRIMARY KEY,
+        space TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        queue TEXT NOT NULL,
+        agent TEXT,
+        since INTEGER NOT NULL CHECK (since >= 0),
+        sealed BLOB NOT NULL
+    ) STRICT",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -1041,6 +1054,22 @@ pub struct TaskOutgoing {
     pub record: Vec<u8>,
 }
 
+/// A claim the device holds ([`crate::claims`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskClaim {
+    pub task: TaskId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub queue: QueueId,
+    /// The agent that holds it; none for the person.
+    pub agent: Option<String>,
+    /// When the device sent the last request the server answered that started its lease, in Unix
+    /// seconds by its clock.
+    pub since: u64,
+    /// The rest of it, sealed under the state key.
+    pub sealed: Vec<u8>,
+}
+
 /// What a step on the MLS state writes with the state it saves, in the same transaction.
 #[derive(Debug, Default)]
 pub struct MlsChanges {
@@ -1087,6 +1116,8 @@ pub struct MlsChanges {
     /// Where the channel messages of [`MlsChanges::messages`] go, which the device keeps until
     /// their wait ends.
     pub tracked: Vec<Tracked>,
+    /// The tasks whose claims end: their results are in [`MlsChanges::messages`].
+    pub ended: Vec<TaskId>,
 }
 
 /// Where a channel message of the device's own goes: the devices it goes to, and how long the
@@ -1160,6 +1191,7 @@ impl MlsChanges {
             && self.own.is_empty()
             && self.recovered.is_empty()
             && self.tracked.is_empty()
+            && self.ended.is_empty()
     }
 }
 
@@ -1636,6 +1668,12 @@ impl State {
             }
             for tracked in &changes.tracked {
                 add_tracked(&tx, tracked)?;
+            }
+            for task in &changes.ended {
+                tx.execute(
+                    "DELETE FROM task_claim WHERE task = ?1",
+                    params![task.to_string()],
+                )?;
             }
             Ok(())
         };
@@ -4008,6 +4046,84 @@ impl State {
     pub fn remove_task(&self, task: TaskId) -> Result<(), Error> {
         self.db.execute(
             "DELETE FROM task_outbox WHERE task = ?1",
+            params![task.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Keeps `claim`, a claim the device now holds, or its new time and sealed part; with `hops`,
+    /// the agent, by the name it counts under ([`State::handed_hops`]), and the task's `hops`, the
+    /// task counts for that agent's next send as a message handed over to it does.
+    pub fn keep_claim(&self, claim: &TaskClaim, hops: Option<(&str, u64)>) -> Result<(), Error> {
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let space = claim.space.to_string();
+        tx.execute(
+            "INSERT INTO task_claim (task, space, channel, queue, agent, since, sealed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (task) DO UPDATE SET since = excluded.since, sealed = excluded.sealed",
+            params![
+                claim.task.to_string(),
+                space,
+                claim.channel.to_string(),
+                claim.queue.to_string(),
+                claim.agent,
+                sql_u64(claim.since)?,
+                claim.sealed
+            ],
+        )?;
+        if let Some((agent, hops)) = hops {
+            // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
+            tx.execute(
+                "INSERT INTO agent_hops (space, agent, highest) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO UPDATE SET highest = max(highest, excluded.highest)",
+                params![space, agent, i64::try_from(hops).unwrap_or(i64::MAX)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The claims the device holds, of the space `space` if given, in the order of their tasks'
+    /// IDs.
+    pub fn claims(&self, space: Option<SpaceId>) -> Result<Vec<TaskClaim>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT task, space, channel, queue, agent, since, sealed FROM task_claim
+             WHERE ?1 IS NULL OR space = ?1 ORDER BY task",
+        )?;
+        let rows = query.query_map(params![space.map(|space| space.to_string())], |row| {
+            Ok((
+                [
+                    row.get::<_, String>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ],
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+            ))
+        })?;
+        let rows: Vec<_> = rows.collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(|([task, space, channel, queue], agent, since, sealed)| {
+                Ok(TaskClaim {
+                    task: id("task ID", &task)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    queue: id("queue ID", &queue)?,
+                    agent,
+                    since: u64::try_from(since)
+                        .map_err(|_| Error::Malformed(format!("the time {since}")))?,
+                    sealed,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes the claim of the task `task` out of those the device holds: it ended or is lost.
+    pub fn remove_claim(&self, task: TaskId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM task_claim WHERE task = ?1",
             params![task.to_string()],
         )?;
         Ok(())
@@ -7362,6 +7478,50 @@ pub(crate) mod tests {
             BTreeSet::from([(1, browser), (2, browser), (2, recovery)])
         );
         assert_eq!(state.settled_wraps(other).unwrap(), BTreeSet::new());
+    }
+
+    /// A claim is kept by its task, its time and sealed part updated in place, and raises the hops
+    /// handed to its agent; it goes once removed, or with the step that puts its result in the
+    /// outbox.
+    #[test]
+    fn claims_are_kept_by_task_and_end_with_their_result() {
+        let dir = TestDir::new("state-claims");
+        let state = State::open(&dir).unwrap();
+        let space = SpaceId::generate();
+        let claim = |since| TaskClaim {
+            task: TaskId::generate(),
+            space,
+            channel: ChannelId::generate(),
+            queue: QueueId::generate(),
+            agent: Some("codex".to_owned()),
+            since,
+            sealed: vec![1],
+        };
+        let (first, second) = (claim(5), claim(6));
+        state.keep_claim(&first, Some(("codex", 3))).unwrap();
+        state.keep_claim(&second, None).unwrap();
+        let first = TaskClaim {
+            since: 9,
+            sealed: vec![2],
+            ..first
+        };
+        state.keep_claim(&first, Some(("codex", 1))).unwrap();
+        assert_eq!(state.handed_hops(space, "codex").unwrap(), Some(3));
+        let mut both = vec![first.clone(), second.clone()];
+        both.sort_by_key(|claim| claim.task.to_string());
+        assert_eq!(state.claims(Some(space)).unwrap(), both);
+        assert_eq!(state.claims(Some(SpaceId::generate())).unwrap(), []);
+        state.remove_claim(first.task).unwrap();
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    ended: vec![second.task],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+        assert_eq!(state.claims(None).unwrap(), []);
     }
 
     #[test]
