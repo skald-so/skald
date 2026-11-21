@@ -2976,7 +2976,7 @@ impl State {
             .prepare("SELECT channel, level, mode, window, text FROM delivery_setting")?;
         let rows = query.query_map([], |row| {
             Ok((
-                [row.get::<_, String>(0)?, row.get(1)?, row.get(2)?],
+                texts::<3>(row, 0)?,
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, String>(4)?,
             ))
@@ -3278,12 +3278,7 @@ impl State {
         )?;
         let rows = query.query_map([], |row| {
             Ok((
-                [
-                    row.get::<_, String>(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                ],
+                texts::<4>(row, 0)?,
                 [row.get::<_, Option<String>>(4)?, row.get(5)?],
                 row.get::<_, Option<i64>>(6)?,
                 row.get::<_, bool>(7)?,
@@ -4143,6 +4138,15 @@ impl State {
         )?;
         Ok(())
     }
+}
+
+/// The `N` text columns of `row` from `first` on.
+fn texts<const N: usize>(row: &rusqlite::Row, first: usize) -> rusqlite::Result<[String; N]> {
+    let mut texts: [String; N] = std::array::from_fn(|_| String::new());
+    for (at, text) in texts.iter_mut().enumerate() {
+        *text = row.get(first + at)?;
+    }
+    Ok(texts)
 }
 
 /// `path` as the state keeps it: text; fails on one that is not UTF-8.
