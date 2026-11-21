@@ -7,8 +7,6 @@
 use std::cell::{Cell, RefCell};
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
@@ -388,32 +386,11 @@ impl Prepared {
 
     /// Starts the CLI in a pseudo-terminal.
     pub(crate) fn start(self) -> Result<Live> {
-        let (master, slave) = open_pty()?;
         let mut command = self.agent.command();
         self.env.apply(&mut command);
-        command
-            .args(&self.args)
-            .current_dir(&self.files.project)
-            .stdin(Stdio::from(slave.try_clone()?))
-            .stdout(Stdio::from(slave.try_clone()?))
-            .stderr(Stdio::from(slave));
-        // SAFETY: setsid and ioctl are async-signal-safe; the child makes the terminal its own.
-        unsafe {
-            command.pre_exec(|| {
-                #[allow(
-                    clippy::useless_conversion,
-                    reason = "TIOCSCTTY is a u32 on macOS and the u64 ioctl takes on Linux"
-                )]
-                let request = libc::TIOCSCTTY.into();
-                if libc::setsid() < 0 || libc::ioctl(0, request, 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
-        let child = command.spawn()?;
-        drop(command);
-        let mut reader = File::from(master.try_clone()?);
+        command.args(&self.args).current_dir(&self.files.project);
+        let (child, master) = spawn_in_pty(command)?;
+        let mut reader = master.try_clone()?;
         let (chunks, output) = mpsc::channel();
         thread::spawn(move || {
             let mut buffer = [0; 8192];
@@ -428,7 +405,7 @@ impl Prepared {
         Ok(Live {
             notifications: None,
             log: File::create(&self.files.screen)?,
-            writer: File::from(master),
+            writer: master,
             session,
             screen: Screen::default(),
             tokens: Vec::new(),
@@ -589,6 +566,26 @@ impl Live {
         Ok(Some(added))
     }
 
+    /// Queues `text` for the session's `thread` with `codex queue`, in the session's environment,
+    /// so that it finds the session's config home; whether the command succeeded.
+    pub(crate) fn codex_queue(&self, thread: &str, text: &str) -> Result<bool> {
+        let mut command = self.prepared.agent.command();
+        self.prepared.env.apply(&mut command);
+        let output = command
+            .args(agent_live::codex_before::queue_args(thread, text))
+            .current_dir(&self.prepared.files.project)
+            .stdin(Stdio::null())
+            .output()?;
+        if !output.status.success() {
+            eprintln!(
+                "live-check: session {}: codex queue: {}",
+                self.prepared.name,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+        Ok(output.status.success())
+    }
+
     /// Runs the session until `done` holds or `limit` passes; whether `done` held.
     pub(crate) fn wait(
         &mut self,
@@ -717,8 +714,47 @@ impl Live {
     }
 }
 
+/// Starts `command` in a new pseudo-terminal, which it makes its own; the child and the
+/// terminal's controlling side.
+#[cfg(unix)]
+fn spawn_in_pty(mut command: Command) -> io::Result<(Child, File)> {
+    use std::os::unix::process::CommandExt;
+    let (master, slave) = open_pty()?;
+    command
+        .stdin(Stdio::from(slave.try_clone()?))
+        .stdout(Stdio::from(slave.try_clone()?))
+        .stderr(Stdio::from(slave));
+    // SAFETY: setsid and ioctl are async-signal-safe; the child makes the terminal its own.
+    unsafe {
+        command.pre_exec(|| {
+            #[allow(
+                clippy::useless_conversion,
+                reason = "TIOCSCTTY is a u32 on macOS and the u64 ioctl takes on Linux"
+            )]
+            let request = libc::TIOCSCTTY.into();
+            if libc::setsid() < 0 || libc::ioctl(0, request, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = command.spawn()?;
+    Ok((child, File::from(master)))
+}
+
+/// Off Unix there is no pseudo-terminal to start a session in.
+#[cfg(not(unix))]
+fn spawn_in_pty(_: Command) -> io::Result<(Child, File)> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "needs a pseudo-terminal: not on Windows",
+    ))
+}
+
 /// A pseudo-terminal of 200 columns and 50 rows: its controlling and its terminal side.
-fn open_pty() -> io::Result<(OwnedFd, OwnedFd)> {
+#[cfg(unix)]
+fn open_pty() -> io::Result<(std::os::fd::OwnedFd, std::os::fd::OwnedFd)> {
+    use std::os::fd::{FromRawFd, OwnedFd};
     let (mut master, mut slave) = (0, 0);
     let mut size = libc::winsize {
         ws_row: 50,

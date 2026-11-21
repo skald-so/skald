@@ -478,6 +478,19 @@ impl Session {
             .collect()
     }
 
+    /// The session's hook events so far, as the apps' stream has them, one a line: when each hook
+    /// started and what it gave, its exit code and stderr included.
+    pub fn hook_events(&self) -> String {
+        (self.output().lines())
+            .filter(|line| {
+                serde_json::from_str::<Value>(line).is_ok_and(|value| {
+                    (value["subtype"].as_str()).is_some_and(|kind| kind.starts_with("hook_"))
+                })
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Asks the session to exit, as a person or the apps do, and waits for it; kills it, with what
     /// it started, if it does not exit in time. Gives whether it exited by itself.
     pub fn end(&mut self) -> bool {

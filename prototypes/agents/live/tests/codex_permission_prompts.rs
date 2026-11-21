@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use agent_testing::write_executable;
+use agent_testing::{snapshot, write_executable};
 
 /// The app-server request a candidate path reads.
 const REQUEST_APPROVAL: &str = "item/commandExecution/requestApproval";
@@ -313,28 +313,6 @@ fn user_home(home: &Path) {
         "The user's own instructions.\n",
     )
     .unwrap();
-}
-
-/// Every path under `dir`, relative to `dir`, with the contents of each file.
-fn snapshot(dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    fn walk(root: &Path, at: &Path, into: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
-        let mut entries: Vec<PathBuf> = fs::read_dir(at)
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .collect();
-        entries.sort();
-        for path in entries {
-            let name = path.strip_prefix(root).unwrap().to_path_buf();
-            let contents = (!path.is_dir()).then(|| fs::read(&path).unwrap_or_default());
-            into.insert(name, contents);
-            if path.is_dir() {
-                walk(root, &path, into);
-            }
-        }
-    }
-    let mut found = BTreeMap::new();
-    walk(dir, dir, &mut found);
-    found
 }
 
 /// A stand-in of `codex` that records each run but `--version` in a folder of its own under

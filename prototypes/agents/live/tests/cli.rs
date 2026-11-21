@@ -1,5 +1,7 @@
 //! `live-check`'s commands, without running an agent CLI.
 
+#![cfg(unix)] // Its stand-ins are shell scripts or Unix sockets.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -130,6 +132,11 @@ fn wrong_arguments_print_the_usage() {
         &["transcript", "claude", "--stub"],
         &["resend", "claude", "--real"],
         &["resend", "codex"],
+        &["signal", "gemini"],
+        &["signal", "claude", "--all"],
+        &["own-text", "codex"],
+        &["executor-full", "codex", "--all"],
+        &["executor-clean", "codex", "--real"],
         &["gui", "socket", "codex-desktop"],
         &["gui", "mod", "codex-vscode"],
         &["gui", "read", "claude-vscode"],
