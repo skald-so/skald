@@ -12,7 +12,7 @@ use sqlx::PgPool;
 
 use crate::service_tokens::{self, Token};
 use crate::sign_in::{bearer, digest, not_signed_in, signed_in};
-use crate::{AppState, database_failed, problem};
+use crate::{AppState, database_failed, deletion, problem, problem_details};
 
 /// Why the server refuses a request.
 pub(crate) enum Refusal {
@@ -76,6 +76,9 @@ pub(crate) enum Refusal {
     Grant(String),
     /// No such service token of the space.
     NoServiceToken,
+    /// The spaces that block the account's deletion: those where it is the only admin and that have
+    /// other members.
+    DeletionBlocked(Vec<deletion::Listed>),
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -240,6 +243,17 @@ impl IntoResponse for Refusal {
                 "no-service-token",
                 "No such service token",
                 "The space has no such service token, or it has ended.",
+            ),
+            Refusal::DeletionBlocked(spaces) => problem_details(
+                conflict,
+                serde_json::json!({
+                    "type": "https://skald.so/problems/deletion-blocked",
+                    "title": "The account is a space's only admin",
+                    "status": conflict.as_u16(),
+                    "detail": "The account is the only admin of these spaces, which have other \
+                        members: make another member an admin of each first.",
+                    "spaces": spaces,
+                }),
             ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }

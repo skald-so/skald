@@ -6,9 +6,7 @@
 use std::thread;
 
 use skald_crypto::{HistoryKey, HpkeKey, SigningKey};
-use skald_proto::{
-    Cbor, ChannelId, DeviceId, DeviceKind, PROTOCOL_VERSION, ServerStatus, WrapRecipient,
-};
+use skald_proto::{Cbor, ChannelId, DeviceId, DeviceKind, ServerStatus, WrapRecipient};
 
 use crate::api::Person;
 use crate::common::devices::{Device, assert_taken, random};
@@ -48,14 +46,7 @@ fn deleted_accounts_entries_expire_and_their_senders_get_expired_for_report_true
     let f = Fixture::new(3_303_040_001);
     let t = &f.team;
     let laptop = t.carol.laptop.id;
-    let mut alice = Link::stating(
-        &t.flow.stand.instance(&[], &[]),
-        &t.flow,
-        &t.alice,
-        PROTOCOL_VERSION,
-    );
-    alice.sync(0);
-    assert_eq!(alice.catch_up(), []);
+    let (_other, mut alice) = Link::elsewhere(&t.flow, &t.alice);
     let reported = store_to(&mut alice, &f, laptop, 2, true);
     let unreported = store_to(&mut alice, &f, laptop, 1, false);
     assert_eq!(unreported.len(), 1);

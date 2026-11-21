@@ -1,8 +1,9 @@
 //! Server instances waking each other: `docs/dev/architecture.md`, "Network". An instance that adds
 //! mailbox entries, stores a roster revision, opens a run of a link code, ends a session or a
-//! service token, or revokes a device tells the others through PostgreSQL `NOTIFY`, in the
-//! transaction that does it. Each instance listens, and wakes the device's connections, sends the
-//! `space-notice` or the `link-notice`, or closes that session's, token's or device's connections.
+//! service token, revokes a device or deletes an account tells the others through PostgreSQL
+//! `NOTIFY`, in the transaction that does it. Each instance listens, and wakes the device's
+//! connections, sends the `space-notice` or the `link-notice`, or closes that session's, token's or
+//! device's connections.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -109,6 +110,10 @@ pub(crate) enum Event {
     SessionEnded(Vec<u8>),
     /// The device is revoked.
     Revoked(DeviceId),
+    /// The device's account is deleted.
+    Deleted(DeviceId),
+    /// The members of the space's latest revision get a notice of it.
+    Notice(SpaceId),
 }
 
 impl Event {
@@ -123,6 +128,8 @@ impl Event {
                 format!("{id} session {}", URL_SAFE_NO_PAD.encode(session))
             }
             Self::Revoked(device) => format!("{id} revoked {device}"),
+            Self::Deleted(device) => format!("{id} deleted {device}"),
+            Self::Notice(space) => format!("{id} notice {space}"),
         }
     }
 
@@ -139,6 +146,8 @@ impl Event {
             ("linking", account, None) => Self::Linking(account.parse().ok()?),
             ("session", session, None) => Self::SessionEnded(URL_SAFE_NO_PAD.decode(session).ok()?),
             ("revoked", device, None) => Self::Revoked(device.parse().ok()?),
+            ("deleted", device, None) => Self::Deleted(device.parse().ok()?),
+            ("notice", space, None) => Self::Notice(space.parse().ok()?),
             _ => return None,
         };
         words.next().is_none().then_some((instance, event))
@@ -243,6 +252,11 @@ async fn act(instance: &Instance, local: &Local, payload: &str) {
         Event::Linking(account) => local.notices.link(account),
         Event::SessionEnded(session) => local.connections.end_session(&session),
         Event::Revoked(device) => local.connections.end_device(device),
+        Event::Deleted(device) => local.connections.end_deleted(device),
+        Event::Notice(space) => match latest_members(&local.db, space).await {
+            Ok(accounts) => local.notices.notify(accounts, space),
+            Err(err) => error_reports::background_failed("read a space's members", &err),
+        },
     }
 }
 
@@ -259,6 +273,22 @@ async fn members(
     .bind(revision)
     .fetch_all(db)
     .await?;
+    Ok(found
+        .into_iter()
+        .map(|(account,)| account.parse().expect("a stored account ID"))
+        .collect())
+}
+
+/// The accounts that the latest revision of `space` lists as members.
+pub(crate) async fn latest_members(
+    db: impl sqlx::PgExecutor<'_>,
+    space: SpaceId,
+) -> Result<Vec<AccountId>, sqlx::Error> {
+    let found: Vec<(String,)> =
+        sqlx::query_as("SELECT account_id::text FROM space_access WHERE space_id = $1::uuid")
+            .bind(space.to_string())
+            .fetch_all(db)
+            .await?;
     Ok(found
         .into_iter()
         .map(|(account,)| account.parse().expect("a stored account ID"))
@@ -362,6 +392,8 @@ mod tests {
             Event::Linking(AccountId::from_bytes([3; 16])),
             Event::SessionEnded(vec![0, 15, 16, 255]),
             Event::Revoked(device),
+            Event::Deleted(device),
+            Event::Notice(space),
         ] {
             let payload = event.payload(&instance());
             assert_eq!(Event::parse(&payload), Some(("a1", event)), "{payload}");
@@ -387,6 +419,10 @@ mod tests {
             "a1 linking noaccount".to_owned(),
             format!("a1 linking {space} more"),
             format!("a1 revoked {device} more"),
+            "a1 deleted nodevice".to_owned(),
+            format!("a1 deleted {device} more"),
+            "a1 notice nospace".to_owned(),
+            format!("a1 notice {space} more"),
             format!("a1 later {device}"),
         ] {
             assert_eq!(Event::parse(&payload), None, "{payload}");
