@@ -2,10 +2,8 @@
 
 use skald_proto::ReceiptStatus;
 
-use crate::held::{
-    HELD, agent_status_lines, c_reads, holding, receipts_with, says_none_waiting, status_lines,
-};
-use crate::inbound::claude_allows;
+use crate::held::{HELD, c_reads, holding, receipts_with, says_none_waiting};
+use crate::inbound::{agent_status_lines, claude_allows, status_lines};
 use crate::receipts::{assert_shows_once, shows_read};
 use crate::senders::LAPTOP_AGENT;
 

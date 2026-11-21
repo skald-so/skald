@@ -60,6 +60,11 @@ pub fn state_key(secrets: &Secrets, sealed: &SealedState) -> Result<StateKey, St
     Ok(key)
 }
 
+/// The key of the local state `state`, whose secrets are `secrets`, as [`state_key`] gives it.
+pub fn local_state_key(state: &State, secrets: &Secrets) -> Result<StateKey, String> {
+    state.mls_step(|sealed| Ok((None, state_key(secrets, sealed)?)))
+}
+
 /// Whether the server of `connection` holds an unused KeyPackage of `device`, a device of the
 /// account of the session `token`.
 pub fn held(connection: &mut Connection, token: &str, device: DeviceId) -> Result<bool, String> {

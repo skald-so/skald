@@ -22,7 +22,7 @@ use skald_server::{
 use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_GITHUB, SIGN_IN_GOOGLE, SUBMIT, Visit};
 use super::common::Server;
 use super::machine::{self, Finished, Machine, Run};
-use super::relay::{Relay, strings_named};
+use super::relay::{Relay, count_heads, strings_named};
 
 #[path = "../../../server/tests/common/agent.rs"]
 mod agent;
@@ -520,12 +520,7 @@ impl Cloud {
 
     /// How many requests whose line starts with `request` the machines sent from `since` on.
     pub fn count_sent(&self, since: Instant, request: &str) -> usize {
-        let request = request.to_lowercase();
-        self.relay
-            .sent_since(since)
-            .iter()
-            .filter(|sent| sent.head.starts_with(&request))
-            .count()
+        count_heads(&self.relay.sent_since(since), request)
     }
 
     /// Starts `skald sign-in --server <this server> <extra>` on `machine`, approves the code it

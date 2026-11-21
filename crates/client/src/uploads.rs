@@ -35,7 +35,7 @@ use skald_proto::{
 use crate::devices::text;
 use crate::spaces::Follower;
 use crate::state::{self, State, Uploaded};
-use crate::{agents, folders, follow, groups, revocations, secrets, service};
+use crate::{agents, folders, follow, groups, presence, revocations, secrets, service};
 
 /// The setting of how far after an upload its value expires, in seconds; a helper takes it from
 /// the command that starts it.
@@ -381,7 +381,7 @@ fn shown(held: &State, space: SpaceId, live: &Live, now: u64) -> Result<Vec<Show
             (true, true) => AgentState::Busy,
             (true, false) => AgentState::Available,
         };
-        let code = code(state);
+        let code = state.code();
         let since = match record.shown {
             Some((shown, since)) if shown == code => since,
             last => {
@@ -405,26 +405,6 @@ fn shown(held: &State, space: SpaceId, live: &Live, now: u64) -> Result<Vec<Show
     Ok(shown)
 }
 
-/// The code of `state` in `agent-state`.
-fn code(state: AgentState) -> u8 {
-    match state {
-        AgentState::Available => 1,
-        AgentState::Busy => 2,
-        AgentState::Waiting => 3,
-        AgentState::Offline => 4,
-    }
-}
-
-/// The state of `code` in `agent-state`.
-fn state_of(code: u8) -> AgentState {
-    match code {
-        1 => AgentState::Available,
-        2 => AgentState::Busy,
-        3 => AgentState::Waiting,
-        _ => AgentState::Offline,
-    }
-}
-
 /// The statuses of `shown` in a value, each agent's address in the space `space` of the member
 /// `handle` on `server`; an agent whose name is not valid is left out.
 fn statuses(
@@ -436,7 +416,7 @@ fn statuses(
             let agent = shown.agent.parse().ok()?;
             Some(AgentStatus {
                 agent: Address::new(space.clone(), handle.clone(), agent, server.clone()),
-                state: state_of(shown.state),
+                state: AgentState::of_code(u64::from(shown.state)).unwrap_or(AgentState::Offline),
                 since: shown.since,
                 note: shown.note.clone(),
                 runtime: (shown.runtime.as_deref()).and_then(|runtime| runtime.parse().ok()),
@@ -470,13 +450,8 @@ fn upload(
     let value = (channel.key)
         .seal(&body, keys.signing())
         .map_err(|err| err.to_string())?;
-    let proof = (follower.connection)
-        .request_proof(&follower.token, follower.this, keys.signing())
-        .map_err(text)?;
-    let path = format!(
-        "/spaces/{}/channels/{}/presence",
-        channel.space, channel.channel
-    );
+    let proof = follower.proof(keys)?;
+    let path = presence::path(channel.space, channel.channel);
     let token = follower.token.clone();
     (follower.connection)
         .put_cbor_proved(&path, (&token, &proof), &value.to_cbor())
@@ -494,20 +469,6 @@ pub fn runtime(client: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Each state has its code in `agent-state`, and back.
-    #[test]
-    fn states_have_their_codes() {
-        for (state, code) in [
-            (AgentState::Available, 1),
-            (AgentState::Busy, 2),
-            (AgentState::Waiting, 3),
-            (AgentState::Offline, 4),
-        ] {
-            assert_eq!(super::code(state), code);
-            assert_eq!(state_of(code), state);
-        }
-    }
 
     /// A client's name is made a name as an agent's default name makes it.
     #[test]

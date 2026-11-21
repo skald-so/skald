@@ -77,8 +77,8 @@ mod reading;
 
 // Ada's agents, as the tests of handing messages over have them, with the messages of the tests of
 // gap detection; what an agent reads, as the tests of compact output have it; the senders of the
-// tests of trust levels; the MCP client of the tests of the MCP server; and the second space of
-// the tests of the helper.
+// tests of trust levels; the MCP client of the tests of the MCP server; the second space of the
+// tests of the helper; and what the tests of presence uploads share.
 #[path = "../agent_handover/agents.rs"]
 mod agents;
 #[path = "../mcp_inbox/client.rs"]
@@ -89,5 +89,7 @@ mod gaps;
 mod helped;
 #[path = "../compact_output/lines.rs"]
 mod lines;
+#[path = "../presence_uploads/presence.rs"]
+mod presence;
 #[path = "../trust_levels/senders.rs"]
 mod senders;

@@ -279,6 +279,11 @@ fn directory(synced: Synced, scope: Scope, reading: Reading) -> Result<Vec<Liste
     Ok(sorted(latest(listed)))
 }
 
+/// The path of the presence values of `channel` in `space`.
+pub fn path(space: SpaceId, channel: ChannelId) -> String {
+    format!("/spaces/{space}/channels/{channel}/presence")
+}
+
 /// The values the server gives of the channel `at`, each as its bytes, to the device of
 /// `follower`; those that are no base64url are left out, given to `warn`.
 fn values(
@@ -286,13 +291,9 @@ fn values(
     (space, channel): (SpaceId, ChannelId),
     warn: &dyn Fn(String),
 ) -> Result<Vec<Vec<u8>>, String> {
-    let keys = follower.keys()?;
-    let proof = (follower.connection)
-        .request_proof(&follower.token, keys.id(), keys.signing())
-        .map_err(text)?;
-    let path = format!("/spaces/{space}/channels/{channel}/presence");
+    let proof = follower.proof(&follower.keys()?)?;
     let body = (follower.connection)
-        .get_proved(&path, (&follower.token, &proof))
+        .get_proved(&path(space, channel), (&follower.token, &proof))
         .map_err(text)?;
     let Values { values } = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a channel's presence values".to_owned())?;

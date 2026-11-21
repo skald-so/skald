@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use skald_crypto::MlsDevice;
 use skald_proto::{
     AgentState, AgentStatus, Cbor as _, ChannelId, DeviceId, PROOF_HEADER, PROTOCOL_VERSION,
-    Presence, PresenceBody, REQUEST_LABEL, RequestProof, SpaceId, VERSION_HEADER,
+    Presence, PresenceBody, SpaceId, VERSION_HEADER,
 };
 
 use crate::agents::Agents;
@@ -20,16 +20,15 @@ use crate::kit::received;
 use crate::lines::{JSON_FLAG, json_objects};
 use crate::machine::{Finished, Machine};
 use crate::played::Played;
+use crate::presence::{presence_path, proof};
 use crate::senders::{OWN, data_warnings};
-use crate::world::{ACME, AGENT, HOST, Person, WARNING, now, post_as, warnings, words};
+use crate::world::{ACME, AGENT, HOST, Person, WARNING, now, warnings, words};
 
 /// The command that lists the agents, and the MCP tool that does.
 pub const AGENTS: &str = "agents";
 pub const AGENTS_TOOL: &str = "agents";
 
-/// The states as the CLI shows them.
-pub const AVAILABLE: &str = "available";
-pub const BUSY: &str = "busy";
+/// The state of an agent with no running session, as the CLI shows it.
 pub const OFFLINE: &str = "offline";
 
 /// The word of a warning of a dropped value.
@@ -88,35 +87,17 @@ pub fn sealed(
         .expect("a sealed presence value")
 }
 
-/// The path of `at`'s channel's presence.
-pub fn presence_path((space, channel): (SpaceId, ChannelId)) -> String {
-    format!("/spaces/{space}/channels/{channel}/presence")
-}
-
 /// `device`'s machine uploads `value` as its value in `at`'s channel, proving its device on its
 /// session as `/mailbox/send` takes it; fails unless the server keeps it.
 #[track_caller]
 pub fn upload(cloud: &Cloud, device: &Person, at: (SpaceId, ChannelId), value: &Presence) {
-    let (status, body) = post_as(cloud, &device.token, "/session/challenge", None);
-    assert!(
-        (200..300).contains(&status),
-        "no challenge: {status} {body}"
-    );
-    let challenge = (body["challenge"].as_str())
-        .map(unb64)
-        .unwrap_or_else(|| panic!("a challenge in base64url: {body}"));
-    let signature = (device.key).sign(REQUEST_LABEL, &[&challenge, cloud.public.as_bytes()]);
-    let proof = RequestProof {
-        challenge,
-        device: device.device,
-        signature,
-    };
+    let header = proof(cloud, device);
     let path = presence_path(at);
     let mut response = agent()
         .put(format!("{}{path}", cloud.url))
         .header(VERSION_HEADER, PROTOCOL_VERSION.to_string())
         .header("authorization", format!("Bearer {}", device.token))
-        .header(PROOF_HEADER, URL_SAFE_NO_PAD.encode(proof.to_cbor()))
+        .header(PROOF_HEADER, header)
         .header("content-type", "application/cbor")
         .send(&value.to_cbor()[..])
         .unwrap_or_else(|err| panic!("PUT {path}: {err}"));

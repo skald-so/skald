@@ -9,8 +9,9 @@ use skald_proto::AgentState;
 use crate::client::{CLIENT, session_in};
 use crate::kit::received;
 use crate::machine::Finished;
+use crate::presence::AVAILABLE;
 use crate::senders::LAPTOP;
-use crate::values::{AVAILABLE, Directory, OFFLINE, listed_json, object_of, status};
+use crate::values::{Directory, OFFLINE, listed_json, object_of, status};
 use crate::world::{AGENT, now, warnings};
 
 /// The agent's name both devices list.

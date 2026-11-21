@@ -164,10 +164,7 @@ pub fn step(
         }
         Step::Refuse { seq, agent, reason } => {
             let state = State::open(dir).map_err(text)?;
-            let space = (state.held(now).map_err(text)?.into_iter())
-                .find(|held| held.seq == seq && held.agent == agent)
-                .map(|held| held.space)
-                .ok_or_else(|| GONE.to_owned())?;
+            let space = waiting(&state, seq, &agent, now)?.space;
             if !(state.refuse_held(seq, &agent, reason.as_deref(), now)).map_err(text)? {
                 return Err(GONE.to_owned());
             }
@@ -186,13 +183,11 @@ pub fn step(
 /// the state in `dir`, its secrets in `storage`.
 fn show(dir: &Path, storage: secrets::Storage, seq: u64, agent: &str) -> Result<(), String> {
     let (state, _, _, _, secrets) = signed_in_with_secrets(dir, storage)?;
-    let held = (state.held(state::unix_now()).map_err(text)?.into_iter())
-        .find(|held| held.seq == seq && held.agent == agent)
-        .ok_or_else(|| GONE.to_owned())?;
+    let held = waiting(&state, seq, agent, state::unix_now())?;
     let this = (state.device().map_err(text)?)
         .map(|device| device.id)
         .ok_or_else(|| "this machine has no device".to_owned())?;
-    let key = state.mls_step(|sealed| Ok((None, key_packages::state_key(&secrets, sealed)?)))?;
+    let key = key_packages::local_state_key(&state, &secrets)?;
     let message = (key.open(this, &recv::kept_item(seq), &held.line))
         .and_then(|opened| serde_json::from_slice::<forms::Message>(&opened).ok())
         .ok_or_else(|| "the held message this device kept does not open".to_owned())?;
@@ -205,6 +200,14 @@ fn show(dir: &Path, storage: secrets::Storage, seq: u64, agent: &str) -> Result<
         .unwrap_or_default();
     println!("{}", shown(&held, &space, &message, &reference));
     Ok(())
+}
+
+/// The message of the kept entry `seq` that waits for the person's decision for `agent` by `now`,
+/// in Unix seconds, by `state`; fails with [`GONE`] if none does.
+fn waiting(state: &State, seq: u64, agent: &str, now: u64) -> Result<Held, String> {
+    (state.held(now).map_err(text)?.into_iter())
+        .find(|held| held.seq == seq && held.agent == agent)
+        .ok_or_else(|| GONE.to_owned())
 }
 
 /// How `skald held` shows `message`, `held` for its agent in the space named `space`, by its

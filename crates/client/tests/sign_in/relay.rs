@@ -30,6 +30,14 @@ pub struct Sent {
     pub head: String,
 }
 
+/// How many of `sent` have a line that starts with `request`, whatever its case.
+pub fn count_heads(sent: &[Sent], request: &str) -> usize {
+    let request = request.to_lowercase();
+    (sent.iter())
+        .filter(|sent| sent.head.starts_with(&request))
+        .count()
+}
+
 /// How the relay loses the server's answer to a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lose {
