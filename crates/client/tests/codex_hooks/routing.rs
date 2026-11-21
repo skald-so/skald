@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crate::codex::{Codex, CodexProcess, Event, QUIET, assert_bare, hook_command};
 use crate::helped::{EXIT_LIMIT, IDLE_SETTING};
+use crate::kit::RECV;
 use crate::solo::{API, WEB};
 
 /// What web says to api, and api to web; neither is anywhere else.
@@ -130,7 +131,77 @@ const LIVE_FOR: Duration = Duration::from_secs(8);
 #[test]
 fn helper_runs_while_a_session_lives_and_exits_once_none_does() {
     let codex = Codex::new(4_927_012_001, "ada-codex-helper-lifetime");
-    assert_helper_lives_with_the_session(&codex, |hook| hook);
+    assert_helper_lives_with_the_session(&codex, false, |hook| hook);
+}
+
+/// The idle time, in seconds, of the helper that runs before a session starts: room for the
+/// session's hooks to run before it, still less than [`LIVE_FOR`].
+const FIRST_IDLE: &str = "4";
+
+/// A helper with an idle time of [`FIRST_IDLE`] seconds already runs on Ada's machine, started by
+/// the person's `skald recv`. web's session starts in a Codex process of its own and runs
+/// `PostToolUse`: that helper, and no other, still runs after [`LIVE_FOR`]; it exits once the
+/// Codex process does.
+#[test]
+fn a_session_that_starts_while_a_helper_runs_keeps_it_running() {
+    let codex = Codex::new(4_927_012_003, "ada-codex-helper-first");
+    assert_helper_lives_with_the_session(&codex, true, |hook| hook);
+}
+
+/// As [`helper_runs_while_a_session_lives_and_exits_once_none_does`], with each hook run as Codex
+/// on Windows may run it: through `cmd /c`, `powershell -Command &` and `pwsh -Command &`, each
+/// with a machine of its own; a shell not installed is skipped.
+#[cfg(windows)]
+#[test]
+fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
+    let shells: [(&str, &[&str]); 3] = [
+        ("cmd", &["/c"]),
+        ("powershell", &["-NoProfile", "-Command"]),
+        ("pwsh", &["-NoProfile", "-Command"]),
+    ];
+    for (at, (shell, args)) in shells.into_iter().enumerate() {
+        if Command::new(shell)
+            .args(args)
+            .arg("exit 0")
+            .output()
+            .is_err()
+        {
+            continue;
+        }
+        let id = 4_927_012_010 + u64::try_from(at).expect("a small number");
+        let codex = Codex::new(id, &format!("ada-codex-through-{shell}"));
+        assert_helper_lives_with_the_session(&codex, false, |hook| {
+            let mut command = Command::new(shell);
+            command.args(args);
+            if shell == "cmd" {
+                command.arg(hook.get_program()).args(hook.get_args());
+            } else {
+                let quoted = |text: &std::ffi::OsStr| {
+                    format!("'{}'", text.to_string_lossy().replace('\'', "''"))
+                };
+                let words: Vec<String> = std::iter::once(hook.get_program())
+                    .chain(hook.get_args())
+                    .map(quoted)
+                    .collect();
+                command.arg(format!("& {}", words.join(" ")));
+            }
+            settings_of(&hook, &mut command);
+            // A shell needs the system's settings, which the stand-in Codex does not pass on.
+            for name in [
+                "SystemRoot",
+                "windir",
+                "PATH",
+                "TEMP",
+                "TMP",
+                "PSModulePath",
+            ] {
+                if let Some(value) = std::env::var_os(name) {
+                    command.env(name, value);
+                }
+            }
+            command
+        });
+    }
 }
 
 /// The npm package's launcher's setting of its own process and its parent's.
@@ -144,32 +215,50 @@ const LAUNCHER: &str = "SKALD_LAUNCHER";
 #[test]
 fn a_session_through_the_npm_launcher_lives_while_its_codex_process_runs() {
     let codex = Codex::new(4_927_012_002, "ada-codex-npm-launcher");
-    assert_helper_lives_with_the_session(&codex, |hook| {
+    assert_helper_lives_with_the_session(&codex, false, |hook| {
         let mut command = Command::new("/bin/sh");
         command
             .arg("-c")
             .arg(format!("{LAUNCHER}=\"$$ $PPID\" \"$0\" \"$@\"; exit $?"))
             .arg(hook.get_program())
             .args(hook.get_args());
-        for (name, value) in hook.get_envs() {
-            if let Some(value) = value {
-                command.env(name, value);
-            }
-        }
-        command.current_dir(hook.get_current_dir().expect("the session's folder"));
+        settings_of(&hook, &mut command);
         command
     });
 }
 
-/// With no helper on Ada's machine, web's session starts in a Codex process of its own, its
-/// `SessionStart` and then its `PostToolUse` run as `through` makes each of the hook's command,
-/// with a helper idle time of [`SHORT_IDLE`] seconds; fails unless one helper then runs, still
-/// runs after [`LIVE_FOR`] with no command, and exits once the Codex process does.
+/// Gives `command` the settings and the folder of `hook`.
+fn settings_of(hook: &Command, command: &mut Command) {
+    for (name, value) in hook.get_envs() {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    command.current_dir(hook.get_current_dir().expect("the session's folder"));
+}
+
+/// With no helper on Ada's machine, or, if `helper_first`, one with an idle time of
+/// [`FIRST_IDLE`] seconds that the person's `skald recv` started, web's session starts in a Codex
+/// process of its own, its `SessionStart` and then its `PostToolUse` run as `through` makes each of
+/// the hook's command, with a helper idle time of [`SHORT_IDLE`] seconds; fails unless one helper
+/// then runs, the one that ran before if any, still runs after [`LIVE_FOR`] with no command, and
+/// exits once the Codex process does.
 #[track_caller]
-fn assert_helper_lives_with_the_session(codex: &Codex, through: impl Fn(Command) -> Command) {
+fn assert_helper_lives_with_the_session(
+    codex: &Codex,
+    helper_first: bool,
+    through: impl Fn(Command) -> Command,
+) {
     let web = codex.thread_of(WEB);
     let mut process = CodexProcess::start();
     codex.helped.assert_none();
+    let first = helper_first.then(|| {
+        let idle = [(IDLE_SETTING, FIRST_IDLE)];
+        let received =
+            (codex.helped.command_in(&web.dir, &idle, &[RECV]).output()).expect("run skald recv");
+        assert!(received.status.success(), "{received:?}");
+        codex.helped.one_helper()
+    });
 
     for event in [Event::SessionStart, Event::PostToolUse] {
         let command = through(hook_command(
@@ -180,6 +269,10 @@ fn assert_helper_lives_with_the_session(codex: &Codex, through: impl Fn(Command)
         (process.run(&command, &web.input(event))).assert_silent(event.name());
     }
     let helper = codex.helped.one_helper();
+    assert!(
+        first.is_none_or(|first| first == helper),
+        "another helper runs"
+    );
     thread::sleep(LIVE_FOR);
     assert!(
         codex.helped.helpers().contains(&helper),

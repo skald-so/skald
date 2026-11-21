@@ -3,7 +3,7 @@
 
 use std::time::{Duration, Instant};
 
-use crate::codex::{Codex, Event};
+use crate::codex::{Codex, Event, Thread};
 use crate::fixtures::TIMEOUT_SETTING;
 use crate::helped::ONE_SHOT_SETTING;
 use crate::solo::WEB;
@@ -22,7 +22,9 @@ const AT_ONCE: Duration = Duration::from_secs(10);
 /// web's session starts, which starts the helper; the helper is killed, and the server stops
 /// answering: each request to it waits. Each hook of web's session, `SessionStart` too, run with a
 /// request timeout of [`LONG_TIMEOUT`] seconds and as long a wait for its run, returns within
-/// [`AT_ONCE`], exits with success and prints nothing, run as Codex runs it and in one-shot mode.
+/// [`AT_ONCE`], exits with success and prints nothing, run as Codex runs it and in one-shot mode;
+/// so does each as the first hook of a session in web's folder of an agent new to the space, whose
+/// presence would change.
 #[test]
 fn hooks_return_at_once_and_print_nothing_with_the_helper_and_the_server_down() {
     let codex = Codex::new(4_927_013_001, "ada-codex-hooks-offline");
@@ -34,17 +36,21 @@ fn hooks_return_at_once_and_print_nothing_with_the_helper_and_the_server_down() 
 
     let waits = [(TIMEOUT_SETTING, LONG_TIMEOUT), PATIENCE_SETTING];
     let one_shot = [waits[0], waits[1], (ONE_SHOT_SETTING, "1")];
-    for settings in [&waits[..], &one_shot[..]] {
-        for event in Event::ALL {
-            let started = Instant::now();
-            let hooked = codex.hook_with(&web, event, settings);
-            let took = started.elapsed();
-            hooked.assert_silent(event.name());
-            assert!(
-                took <= AT_ONCE,
-                "{} took {took:?}: {settings:?}",
-                event.name()
-            );
+    for (round, settings) in [&waits[..], &one_shot[..]].into_iter().enumerate() {
+        for (at, event) in Event::ALL.into_iter().enumerate() {
+            let agent = format!("fresh-{round}-{at}");
+            let new = Thread::new(codex.machine(), &web.dir, Some(&agent));
+            for (of, what) in [(&web, "web"), (&new, agent.as_str())] {
+                let started = Instant::now();
+                let hooked = codex.hook_with(of, event, settings);
+                let took = started.elapsed();
+                hooked.assert_silent(&format!("{what}: {}", event.name()));
+                let event = event.name();
+                assert!(
+                    took <= AT_ONCE,
+                    "{what}: {event} took {took:?}: {settings:?}"
+                );
+            }
         }
     }
 }

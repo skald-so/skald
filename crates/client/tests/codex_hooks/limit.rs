@@ -19,6 +19,11 @@ fn note(counter: u64) -> String {
     format!("codex limit test: Bob's note {counter:04} of {MANY}")
 }
 
+/// How many messages Bob's device sends between two times the person's `skald recv` on Ada's
+/// machine shows the last: no run takes in so many that it lasts past the test kit's limit on a
+/// loaded machine.
+const BATCH: u64 = 100;
+
 /// How long Ada's machine may take to take in [`MANY`] messages: a slow machine, as Windows', takes
 /// over a minute.
 const TAKE_IN: Duration = Duration::from_secs(300);
@@ -45,7 +50,7 @@ fn person_has_seen(agents: &Agents, text: &str) {
 
 /// Ada's device has run as an agent in `~/work/acme`, whose Codex session starts there with
 /// `--agent`, and its turn starts. Bob's device sends the channel [`MANY`] messages, without `to`;
-/// the person's `skald recv` on Ada's machine shows the last. Each hook of the session, three times
+/// after each [`BATCH`], the person's `skald recv` on Ada's machine shows the last sent. Each hook of the session, three times
 /// over, exits with success and prints at most 2,500 bytes; `PostToolUse` gives the signal first.
 #[test]
 fn hook_outputs_stay_within_the_limit_with_a_thousand_messages_waiting() {
@@ -69,8 +74,10 @@ fn hook_outputs_stay_within_the_limit_with_a_thousand_messages_waiting() {
     for counter in 1..=MANY {
         let envelope = bob_says(&mut agents.talk, counter, &note(counter));
         bob.stored(&envelope);
+        if counter % BATCH == 0 {
+            person_has_seen(&agents, &note(counter));
+        }
     }
-    person_has_seen(&agents, &note(MANY));
 
     let first = hook(Event::PostToolUse);
     assert!(!first.stdout.is_empty(), "no signal: {first:?}");
