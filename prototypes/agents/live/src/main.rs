@@ -99,6 +99,12 @@ fn main() -> ExitCode {
             };
             ended(subscription::status_line(&options))
         }
+        ["gui", "permission-hook", surface] => match Surface::parse(surface) {
+            Some(surface @ (Surface::CodexDesktop | Surface::CodexVsCode)) => {
+                ended(permission_gui::codex_gui(surface))
+            }
+            _ => usage(),
+        },
         ["gui", path, surface, flags @ ..] => {
             let (Some(path), Some(surface)) = (GuiPath::parse(path), Surface::parse(surface))
             else {
@@ -140,6 +146,7 @@ fn main() -> ExitCode {
             ended(gui_run::queue(Path::new(work), cli))
         }
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
+        ["gui-result", work] => ended(permission_gui::codex_gui_result(Path::new(work))),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -240,11 +247,12 @@ fn usage() -> ExitCode {
          live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]\n       \
          live-check gui socket <claude-desktop|claude-vscode> --bypass\n       \
          live-check gui read <codex-desktop|codex-vscode> [--busy]\n       \
+         live-check gui permission-hook <codex-desktop|codex-vscode>\n       \
          live-check gui-socket <check-dir> [--no-auth] [--listen <seconds>]\n       \
          live-check gui-add <check-dir>\n       \
          live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
-         live-check gui-result <check-dir> <token>\n       \
+         live-check gui-result <check-dir> [<token>]\n       \
          live-check gui-permission <claude-desktop|claude-vscode>\n       \
          live-check gui-permission-link <check-dir>\n       \
          live-check gui-permission-result <check-dir>\n       \

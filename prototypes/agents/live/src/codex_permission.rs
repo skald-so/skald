@@ -6,14 +6,18 @@
 //! the binary runs Codex.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
 use crate::channel::Files;
-use crate::hook::{Timed, timed_hook, timed_runs};
-use crate::permission::{came, carries, prompted_details, text, told_details};
-use crate::{Agent, Call, Checks, Options, PROMPTED, codex_config_flags, codex_hook, model_flag};
+use crate::gui::{CHECK, Surface, codex_config, write_codex_config};
+use crate::hook::{HOOK_RUNS, Timed, timed_hook, timed_runs};
+use crate::permission::{came, carries, gui_check, prompted_details, text, told_details};
+use crate::{
+    Agent, Call, Checks, Options, PROMPTED, codex_config_flags, codex_hook, model_flag, pretty,
+};
 
 /// The app-server's request that a command waits on approval.
 pub const REQUEST: &str = "item/commandExecution/requestApproval";
@@ -61,6 +65,9 @@ pub const EVENTS: [&str; 5] = [
     "PostToolUse",
     "Stop",
 ];
+
+/// The hook events a GUI check's session records: those of [`EVENTS`] but `SessionStart`.
+pub const GUI_EVENTS: [&str; 4] = ["PreToolUse", "PermissionRequest", "PostToolUse", "Stop"];
 
 /// Where the check's app-server watcher writes each message it gets, with when it came.
 pub const WATCH: &str = "watch.jsonl";
@@ -570,6 +577,25 @@ impl Observed {
             .or_else(|| started().map(|watched| watched.at_ms))
     }
 
+    /// When the agent last called the prompted command by `at_ms`, from its `PreToolUse` runs: in
+    /// a GUI session, the model may first run it in the sandbox, then ask to run it outside. Without
+    /// `at_ms`, as [`called_ms`](Self::called_ms).
+    pub fn called_before(&self, at_ms: Option<u64>) -> Option<u64> {
+        let Some(at_ms) = at_ms else {
+            return self.called_ms();
+        };
+        self.runs
+            .iter()
+            .filter(|run| {
+                run.event == "PreToolUse"
+                    && run.started_ms <= at_ms
+                    && self.ours(&run.input["session_id"])
+                    && prompted(&run.input)
+            })
+            .map(|run| run.started_ms)
+            .max()
+    }
+
     /// When `candidate` first told of this session's prompt, and what it carried: the names of its
     /// fields and the values that say what waits.
     pub fn told(&self, candidate: Candidate) -> Option<(u64, String)> {
@@ -828,6 +854,56 @@ impl PermissionCheck {
         )
     }
 
+    /// The GUI session `name`, whose dialog a person answered: whether the agent called the
+    /// prompted command, whether the `PermissionRequest` hook told within [`WITHIN_MS`] of its last
+    /// `PreToolUse` run, whether it named only this session, and whether the command ran once
+    /// answered: its `PostToolUse` run after the hook's.
+    pub fn gui(&mut self, name: &str, observed: &Observed) -> Vec<String> {
+        let told = observed.told(Candidate::Hook);
+        let told_ms = told.as_ref().map(|(at_ms, _)| *at_ms);
+        let called = observed.called_before(told_ms);
+        let summary = match &observed.thread {
+            Some(thread) => format!("session {thread}"),
+            None => "no hook ran in the project".to_owned(),
+        };
+        let (_, details) = prompted_details(&summary, called, None, false);
+        let mut lines =
+            vec![
+                self.checks
+                    .report(&format!("{name}, prompt"), called.is_some(), &details),
+            ];
+        let within = matches!((told_ms, called), (Some(at), Some(from)) if at.saturating_sub(from) <= WITHIN_MS);
+        lines.push(self.checks.report(
+            &format!("{name}, {}", Candidate::Hook.name()),
+            within,
+            &told_details(told.as_ref(), called, None),
+        ));
+        let others = observed.others(Candidate::Hook);
+        let named = match (&told, others.is_empty()) {
+            (_, false) => format!("named other sessions: {}", others.join(", ")),
+            (Some(_), true) => "the session's".to_owned(),
+            (None, true) => "no PermissionRequest run".to_owned(),
+        };
+        lines.push(self.checks.report(
+            &format!("{name}, session_id"),
+            told.is_some() && others.is_empty(),
+            &named,
+        ));
+        // What came after the hook told: the dialog shows then.
+        let after = told_ms.map_or_else(Vec::new, |at_ms| {
+            let mut from = observed.clone();
+            from.answered_ms = Some(at_ms);
+            from.after_answer()
+        });
+        let ran = after.iter().any(|(what, _)| what == "PostToolUse hook");
+        lines.push(self.checks.report(
+            &format!("{name}, after the dialog"),
+            ran,
+            &format!("after the PermissionRequest hook: {}", came(&after)),
+        ));
+        lines
+    }
+
     /// The check broke off with `error`: it fails.
     pub fn broke(&mut self, error: &str) -> String {
         self.checks
@@ -843,6 +919,59 @@ impl PermissionCheck {
         self.checks
             .verdict(self.candidate.check(), Agent::Codex, options)
     }
+}
+
+/// Writes the GUI check of the `PermissionRequest` hook on `surface`, whose version line is
+/// `version`, into `work` and returns the project to open: its config, as every Codex GUI check's
+/// with the user's MCP servers `user_mcp_servers` off, has [`APPROVAL`] and runs the hook recorder
+/// of `live`, `live-check`, on each of [`GUI_EVENTS`] into `work`'s [`HOOK_RUNS`].
+pub fn prepare_gui(
+    work: &Path,
+    surface: Surface,
+    version: &str,
+    live: &Path,
+    user_mcp_servers: &[String],
+) -> io::Result<PathBuf> {
+    if surface.agent() != Agent::Codex {
+        return Err(not_codex(surface));
+    }
+    let project = work.join("project");
+    let recorder = recorder(live, &work.join(HOOK_RUNS));
+    let mut top: Vec<String> = APPROVAL.map(String::from).into();
+    top.extend(GUI_EVENTS.map(|event| codex_hook(event, &recorder)));
+    write_codex_config(&project, &codex_config(&top, "", user_mcp_servers))?;
+    let check =
+        json!({ "surface": surface.name(), "path": Candidate::Hook.check(), "version": version });
+    fs::write(work.join(CHECK), pretty(&check))?;
+    Ok(project)
+}
+
+/// The output of the GUI check prepared in `work`: the surface's version line, the lines of
+/// [`PermissionCheck::gui`] and the verdict; and whether it passed.
+pub fn gui_result(work: &Path) -> io::Result<(Vec<String>, bool)> {
+    let (surface, version) = gui_check(work)?;
+    if surface.agent() != Agent::Codex {
+        return Err(not_codex(surface));
+    }
+    let mut observed = Observed::read(&work.join(HOOK_RUNS), &work.join(WATCH), work);
+    observed.thread = observed.thread_in(&work.join("project"));
+    let mut check = PermissionCheck::new(Candidate::Hook);
+    let mut lines = vec![version];
+    lines.extend(check.gui(surface.name(), &observed));
+    let verdict = if check.pass() { "pass" } else { "fail" };
+    lines.push(format!(
+        "{} on {}: {verdict}",
+        Candidate::Hook.check(),
+        surface.name()
+    ));
+    Ok((lines, check.pass()))
+}
+
+fn not_codex(surface: Surface) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{} runs no Codex", surface.name()),
+    )
 }
 
 #[cfg(test)]
@@ -1457,5 +1586,160 @@ mod tests {
         assert!(osc9.feed(b"\x07\x1b]99;no\x07").is_empty());
         // ESC in the text without `\` stays in it.
         assert_eq!(osc9.feed(b"\x1b]9;a\x1bxb\x07"), ["a\x1bxb"]);
+    }
+
+    #[test]
+    fn a_gui_session_passes_once_the_hook_names_it_and_the_command_runs() {
+        let a = observed("a", &only(HOOK_RUNS, A), "", "");
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        assert_eq!(
+            check.gui("codex-vscode", &a),
+            [
+                format!(
+                    "  codex-vscode, prompt: pass — session {A}; the agent called `touch \
+                     prompted.txt`"
+                ),
+                "  codex-vscode, PermissionRequest hook: pass — told 0.1 s after the call; carries \
+                 cwd, hook_event_name, model, permission_mode, session_id, tool_input, tool_name, \
+                 transcript_path, turn_id (Bash: touch prompted.txt)"
+                    .to_owned(),
+                "  codex-vscode, session_id: pass — the session's".to_owned(),
+                "  codex-vscode, after the dialog: pass — after the PermissionRequest hook: \
+                 PostToolUse hook 10.3 s, Stop hook 10.4 s"
+                    .to_owned(),
+            ]
+        );
+        assert!(check.pass());
+
+        // Next to another session's prompt, the hook names it too.
+        let beside = observed("a", HOOK_RUNS, "", "");
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        let lines = check.gui("a", &beside);
+        assert_eq!(
+            lines[2],
+            format!("  a, session_id: fail — named other sessions: {B}")
+        );
+        assert!(!check.pass());
+
+        // Answered no: the command never ran.
+        let b = observed("b", HOOK_RUNS, "", "");
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        let lines = check.gui("b", &b);
+        assert!(
+            lines[1].starts_with("  b, PermissionRequest hook: pass — told 0.0 s after the call")
+        );
+        assert_eq!(
+            lines[3],
+            "  b, after the dialog: fail — after the PermissionRequest hook: nothing"
+        );
+        assert!(!check.pass());
+
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        assert_eq!(
+            check.gui("c", &observed("c", "", "", "")),
+            [
+                "  c, prompt: fail — no hook ran in the project; the agent never called `touch \
+                 prompted.txt`",
+                "  c, PermissionRequest hook: fail — did not tell",
+                "  c, session_id: fail — no PermissionRequest run",
+                "  c, after the dialog: fail — after the PermissionRequest hook: nothing",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_gui_session_times_the_hook_from_the_call_it_asks_about() {
+        let touch = Some(PROMPTED);
+        // The model ran the command in the sandbox first, then asked to run it outside.
+        let runs = |asked: u64| {
+            [
+                run("PreToolUse", 1_000, A, touch),
+                run("PostToolUse", 2_000, A, touch),
+                run("PreToolUse", 5_000, B, touch),
+                run("PreToolUse", 6_000, A, Some("sleep 2")),
+                run("PreToolUse", 7_000, A, touch),
+                run("PermissionRequest", asked, A, touch),
+                run("PostToolUse", asked + 3_000, A, touch),
+                run("PreToolUse", asked + 4_000, A, touch),
+            ]
+            .concat()
+        };
+        let a = observed("a", &runs(7_200), "", "");
+        assert_eq!(a.called_ms(), Some(1_000));
+        assert_eq!(a.called_before(None), Some(1_000));
+        assert_eq!(a.called_before(Some(7_200)), Some(7_000));
+        assert_eq!(a.called_before(Some(6_999)), Some(1_000));
+        assert_eq!(a.called_before(Some(999)), None);
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        let lines = check.gui("a", &a);
+        assert!(
+            lines[1].starts_with("  a, PermissionRequest hook: pass — told 0.2 s after the call")
+        );
+        assert_eq!(
+            lines[3],
+            "  a, after the dialog: pass — after the PermissionRequest hook: PostToolUse hook 3.0 s"
+        );
+        assert!(check.pass());
+
+        for (asked, pass) in [(7_000 + WITHIN_MS, true), (7_001 + WITHIN_MS, false)] {
+            let mut check = PermissionCheck::new(Candidate::Hook);
+            check.gui("a", &observed("a", &runs(asked), "", ""));
+            assert_eq!(check.pass(), pass, "{asked}");
+        }
+    }
+
+    #[test]
+    fn a_gui_check_records_the_hooks_of_a_prompt_and_reads_their_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path();
+        let live = Path::new("/bin/live-check");
+        let user = ["mine".to_owned()];
+        let project = prepare_gui(work, Surface::CodexDesktop, "ChatGPT 1", live, &user).unwrap();
+        assert_eq!(project, work.join("project"));
+        let recorder = json!(recorder(live, &work.join("hook-runs.jsonl")));
+        let hook = |event: &str| {
+            format!("hooks.{event}=[{{hooks=[{{type=\"command\",command={recorder}}}]}}]\n")
+        };
+        assert_eq!(
+            fs::read_to_string(project.join(".codex/config.toml")).unwrap(),
+            format!(
+                "model = \"gpt-5.5\"\nmodel_reasoning_effort = \"low\"\n\
+                 approval_policy=\"on-request\"\nsandbox_mode=\"read-only\"\n{}{}{}{}\n\
+                 [features]\nplugins = false\n\n[mcp_servers.\"mine\"]\nenabled = false\n",
+                hook("PreToolUse"),
+                hook("PermissionRequest"),
+                hook("PostToolUse"),
+                hook("Stop")
+            )
+        );
+        let check: Value =
+            serde_json::from_str(&fs::read_to_string(work.join(CHECK)).unwrap()).unwrap();
+        assert_eq!(check["path"], "permission-hook");
+
+        let (lines, pass) = gui_result(work).unwrap();
+        assert!(!pass);
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0], "ChatGPT 1");
+        assert_eq!(lines[5], "permission-hook on codex-desktop: fail");
+        let runs =
+            only(HOOK_RUNS, A).replace("/tmp/skald-live/a/project", &project.to_string_lossy());
+        fs::write(work.join("hook-runs.jsonl"), runs).unwrap();
+        let (lines, pass) = gui_result(work).unwrap();
+        assert!(pass, "{lines:?}");
+        assert_eq!(
+            lines[3],
+            "  codex-desktop, session_id: pass — the session's"
+        );
+        assert_eq!(lines[5], "permission-hook on codex-desktop: pass");
+
+        let claude = tempfile::tempdir().unwrap();
+        assert!(prepare_gui(claude.path(), Surface::ClaudeVsCode, "v", live, &user).is_err());
+        fs::write(
+            claude.path().join(CHECK),
+            r#"{"surface":"claude-vscode","version":"v"}"#,
+        )
+        .unwrap();
+        let error = gui_result(claude.path()).unwrap_err();
+        assert_eq!(error.to_string(), "claude-vscode runs no Codex");
     }
 }

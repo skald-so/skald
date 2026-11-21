@@ -648,6 +648,18 @@ Findings:
 - Only the app-server tells that a prompt ended, after either answer.
 - The notification names no session and carries no end; it can only back up a wrapper of the terminal.
 
+On the desktop app and the VS Code extension, `live-check gui permission-hook <codex-desktop|codex-vscode>` prepares a [GUI check](#gui-live-check) of the hook:
+- the project's `.codex/config.toml` as for the other Codex GUI checks ([Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions)), with `approval_policy = "on-request"`, `sandbox_mode = "read-only"`, and `PreToolUse`, `PermissionRequest`, `PostToolUse` and `Stop` hooks running `live-check timed-hook`;
+- the prompt asks the agent to run `touch prompted.txt`, which waits on the person outside the sandbox;
+- `live-check gui-result <dir>`, without a token, prints the surface's version and passes when `PermissionRequest` ran within 10 s of the command's last `PreToolUse` run, carried the session's `session_id` and no other, and the command's `PostToolUse` ran after it, once the dialog was answered Yes.
+
+Not run there: the app-server, as each surface runs its own on stdio ([Results](#results), "Not run"); the notification, which needs a terminal.
+
+| Surface and version | Result | Tells | Names the session | After "Yes" |
+|---|---|---|---|---|
+| `codex-desktop` | — | | | |
+| `codex-vscode` | — | | | |
+
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
@@ -714,7 +726,7 @@ The surfaces take no CLI flags, so a check attaches a path only with files in th
 - Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use.
 
 ### GUI live check
-`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session), [`read`](#read-confirmations) and [`gui-permission`](#permission-prompts) have their own commands there:
+`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session), [`read`](#read-confirmations), [`gui-permission`](#permission-prompts) and [`gui permission-hook`](#codex-permission-prompts) have their own commands there:
 - makes a `skald-live-*` directory in `$TMPDIR` with the project, the surface's config and a source with one message holding a random token, the text of the path's CLI check;
 - prints the surface's version, the project, the prompt to type and the commands to run next; never the token;
 - with `--busy`, for `inbox` on Claude Code, `post-tool-use` and `stop`: the prompt of the path's busy case, with `sleep 20`, and no message until `live-check gui-add <dir>` adds it, which the person or agent runs once the command runs;
@@ -727,6 +739,7 @@ Steps, each on a new session in the check's project; Return did not always send 
 - **Claude Code for VS Code:** `open -n -a "Visual Studio Code" --args --user-data-dir <dir>/vscode <dir>/project`: a VS Code with an empty profile, so no other window opens. Continue without Signing In; close the welcome dialog; Restricted Mode, Manage: Trust; the Claude Code icon in the editor title opens a new session. Type the prompt; the send button, bottom right of the prompt box. Quit that VS Code.
 - **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; the new chat button, top right of the panel. Close that window.
 - **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer. For a hook, first send "Reply with only OK.": the untrusted hook does not run, and a hooks icon with a dot appears in the composer. It opens "Review hooks", which lists each new hook with its source ("This project"), event, command and timeout (600 s); check the hook, Allow selected; then New chat and the check's prompt.
+- **`gui permission-hook`, on either Codex surface:** Review hooks lists the four hooks: check each, Allow selected; then New chat and the check's prompt. When the agent asks to run `touch prompted.txt` outside the sandbox, the chat shows its approval request: Yes, the option that runs it once. Once the turn ends, `live-check gui-result <dir>`.
 
 The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control and to the Claude in Chrome extension. Each check's project settings on them turn off the user's plugins (`enabledPlugins`), the claude.ai connectors (`disableClaudeAiConnectors`) and the tools of the user's MCP servers (`permissions.deny`, by the name Claude Code gives a server's tools). No surface shows a turn's tokens.
 

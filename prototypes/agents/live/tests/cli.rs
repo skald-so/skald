@@ -109,7 +109,10 @@ fn wrong_arguments_print_the_usage() {
         &["gui-add"],
         &["gui-add", "dir", "token"],
         &["gui-result"],
-        &["gui-result", "dir"],
+        &["gui-result", "dir", "token", "more"],
+        &["gui", "permission-hook", "claude-desktop"],
+        &["gui", "permission-hook", "codex-vscode", "--busy"],
+        &["gui", "permission-hook", "codex"],
         &["gui-link"],
         &["gui-link", "dir", "--open"],
         &["gui-queue"],
@@ -890,39 +893,73 @@ fn gui_link_opens_the_sessions_deep_link() {
 /// The hook runs of a Claude Code session answered yes, recorded by `live-check permission claude`.
 const PERMISSION_RUNS: &str = include_str!("permission/yes.jsonl");
 
-#[test]
-fn gui_permission_prepares_a_check_whose_result_reads_the_hook_runs() {
-    let home = home_with_claude_code_for_vs_code();
+/// Prepares a permission prompt GUI check with `live-check <args>`, `home` as `HOME` and its own
+/// `TMPDIR`; asserts that it printed `version`, the project in the check's directory and the
+/// `prompt`, then `then` with the directory. Returns the `TMPDIR`, the directory and the project.
+fn permission_gui_check(
+    home: &Path,
+    args: &[&str],
+    version: &str,
+    prompt: &str,
+    then: &str,
+) -> (tempfile::TempDir, String, String) {
     let tmp = tempfile::tempdir().unwrap();
-    let args = ["gui-permission", "claude-vscode"];
-    let (_, lines) = succeeded(home.path(), tmp.path(), &args);
-    let [version, project, prompt, then] = lines.as_slice() else {
+    let (_, lines) = succeeded(home, tmp.path(), args);
+    let [shown, project, prompted, next] = lines.as_slice() else {
         panic!("{lines:?}");
     };
-    assert_eq!(*version, "claude-vscode: Claude Code for VS Code 2.1.322");
-    assert_eq!(
-        *prompt,
-        format!("prompt: {}", agent_live::permission::prompt())
-    );
-    let work = then
-        .strip_prefix("once it is answered: live-check gui-permission-result ")
-        .expect("the command to run");
+    assert_eq!(shown, version);
+    assert_eq!(*prompted, format!("prompt: {prompt}"));
+    let work = next.strip_prefix(then).expect("the command to run");
+    assert!(Path::new(work).starts_with(tmp.path()), "{work}");
     assert_eq!(*project, format!("project: {work}/project"));
-    assert!(
-        Path::new(work)
-            .join("project/.claude/settings.local.json")
-            .exists()
-    );
+    let (work, project) = (work.to_owned(), format!("{work}/project"));
+    (tmp, work, project)
+}
 
-    let result = || live_check_in(home.path(), tmp.path(), &["gui-permission-result", work]);
+/// Runs `live-check <command> <work>` with `home` and `tmp`: it fails without hook runs, then
+/// passes once `runs` are the check's. Returns the lines it then printed.
+fn permission_gui_result(
+    home: &Path,
+    tmp: &Path,
+    command: &str,
+    work: &str,
+    runs: &str,
+) -> Vec<String> {
+    let result = || live_check_in(home, tmp, &[command, work]);
     let nothing = result();
     assert_eq!(nothing.status.code(), Some(1), "{}", stderr(&nothing));
-    fs::write(Path::new(work).join("hook-runs.jsonl"), PERMISSION_RUNS).unwrap();
+    fs::write(Path::new(work).join("hook-runs.jsonl"), runs).unwrap();
     let told = result();
     assert!(told.status.success(), "{}", stderr(&told));
     let stdout = String::from_utf8(told.stdout).unwrap();
-    let lines: Vec<&str> = stdout.lines().collect();
+    let lines: Vec<String> = stdout.lines().map(String::from).collect();
     assert_eq!(lines.len(), 6, "{stdout}");
+    lines
+}
+
+#[test]
+fn gui_permission_prepares_a_check_whose_result_reads_the_hook_runs() {
+    let home = home_with_claude_code_for_vs_code();
+    let (tmp, work, project) = permission_gui_check(
+        home.path(),
+        &["gui-permission", "claude-vscode"],
+        "claude-vscode: Claude Code for VS Code 2.1.322",
+        &agent_live::permission::prompt(),
+        "once it is answered: live-check gui-permission-result ",
+    );
+    assert!(
+        Path::new(&project)
+            .join(".claude/settings.local.json")
+            .exists()
+    );
+    let lines = permission_gui_result(
+        home.path(),
+        tmp.path(),
+        "gui-permission-result",
+        &work,
+        PERMISSION_RUNS,
+    );
     assert_eq!(
         lines[0],
         "claude-vscode: Claude Code for VS Code 2.1.322, no session transcript"
@@ -1079,6 +1116,46 @@ fn queue_check(busy: bool) -> (tempfile::TempDir, tempfile::TempDir, Vec<String>
         .expect("the command that queues the message")
         .to_owned();
     (home, tmp, lines, work)
+}
+
+/// The hook runs of a Codex session answered yes, recorded by `live-check permission-hook codex`,
+/// with the session `A` in the project `/tmp/skald-live/a/project`.
+const CODEX_PERMISSION_RUNS: &str = include_str!("codex_permission/hook-runs.jsonl");
+
+#[test]
+fn gui_permission_hook_prepares_a_codex_check_whose_result_reads_the_hook_runs() {
+    let home = home_with_codex_for_vs_code();
+    fs::create_dir_all(home.path().join(".codex")).unwrap();
+    fs::write(
+        home.path().join(".codex/config.toml"),
+        "[mcp_servers.search]\ncommand = \"secret-command\"\n",
+    )
+    .unwrap();
+    let version = "codex-vscode: Codex for VS Code 26.1021.22027, codex 0.164.0-alpha.11.1";
+    let (tmp, work, project) = permission_gui_check(
+        home.path(),
+        &["gui", "permission-hook", "codex-vscode"],
+        version,
+        &agent_live::codex_permission::prompt(),
+        "once it is answered: live-check gui-result ",
+    );
+    let config = fs::read_to_string(Path::new(&project).join(".codex/config.toml")).unwrap();
+    assert!(
+        config.contains("[mcp_servers.\"search\"]\nenabled = false\n"),
+        "{config}"
+    );
+    assert!(!config.contains("secret-command"), "{config}");
+
+    let a = "01a1fcb4-1193-7453-8453-f71a429fde5e";
+    let runs: String = CODEX_PERMISSION_RUNS
+        .lines()
+        .filter(|line| line.contains(a))
+        .map(|line| format!("{}\n", line.replace("/tmp/skald-live/a/project", &project)))
+        .collect();
+    let lines = permission_gui_result(home.path(), tmp.path(), "gui-result", &work, &runs);
+    assert_eq!(lines[0], version);
+    assert_eq!(lines[3], "  codex-vscode, session_id: pass — the session's");
+    assert_eq!(lines[5], "permission-hook on codex-vscode: pass");
 }
 
 #[test]
