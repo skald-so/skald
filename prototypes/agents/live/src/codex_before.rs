@@ -1058,6 +1058,9 @@ mod tests {
         forget_sign_in(&own).unwrap();
         assert!(!own.join(AUTH).exists() && own.is_dir());
         forget_sign_in(&own).unwrap();
+        // A sign-in it cannot delete is an error, so the check does not keep it.
+        fs::create_dir(own.join(AUTH)).unwrap();
+        assert!(forget_sign_in(&own).is_err());
 
         // The planted server and hooks leave their mark when they run.
         assert!(
