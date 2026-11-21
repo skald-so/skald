@@ -23,9 +23,10 @@
 //   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
 //     checkout keeps no credentials, and a job's token reads contents at most.
 // And the job that runs the client's tests on Windows:
-//   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
-//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
-//     client, none left out;
+//   - one job of a PR into dev runs `cargo nextest run -p skald-client --locked --no-fail-fast`,
+//     with no other option but --test-threads, on a windows-2025 runner, in a step that may run and
+//     whose failure fails the job: every test of the client, none left out (the client is a binary,
+//     which has no doctests);
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
@@ -379,15 +380,19 @@ for (const [key, job] of Object.entries(jobs)) {
 
 // The job of the client on Windows.
 const states = jobsFor(ci, pr);
-// The cargo test command of a line, as its words, or null.
+// The cargo nextest run command of a line, as its words, or null.
 const cargoTest = (line) => {
   const w = words(line);
-  const at = w.findIndex((word, i) => word === 'cargo' && w[i + 1] === 'test');
-  return at < 0 ? null : w.slice(at + 2);
+  const at = w.findIndex((word, i) => word === 'cargo' && w[i + 1] === 'nextest' && w[i + 2] === 'run');
+  return at < 0 ? null : w.slice(at + 3);
 };
+// Whether the words run the client's tests: a build alone, --no-run, runs none.
 const testsClient = (args) => {
   const options = args.indexOf('--') < 0 ? args : args.slice(0, args.indexOf('--'));
-  return options.some((word, i) => (word === '-p' || word === '--package') && options[i + 1] === 'skald-client') || options.includes('--package=skald-client');
+  return (
+    !options.includes('--no-run') &&
+    (options.some((word, i) => (word === '-p' || word === '--package') && options[i + 1] === 'skald-client') || options.includes('--package=skald-client'))
+  );
 };
 
 // The job.
@@ -398,7 +403,7 @@ const found = Object.entries(jobs).filter(
     (job.steps ?? []).some((step) => commands(step.run).some((line) => testsClient(cargoTest(line) ?? []))),
 );
 if (found.length !== 1) {
-  fail(`not one job of a PR runs cargo test -p skald-client on a Windows runner: ${found.map(([key]) => key).join(', ') || 'none'}`);
+  fail(`not one job of a PR runs cargo nextest run -p skald-client on a Windows runner: ${found.map(([key]) => key).join(', ') || 'none'}`);
   done();
 }
 const [key, job] = found[0];
@@ -413,23 +418,26 @@ if (testStep['continue-on-error']) fail(`a failure of the test step of job ${key
 if (stepSkipped(testStep, states[key])) fail(`the test step of job ${key} is skipped for a PR`);
 if (testStep.if !== undefined) fail(`the test step of job ${key} has a condition: ${testStep.if}`);
 const tests = commands(testStep.run).filter((line) => cargoTest(line));
-if (tests.length !== 1) fail(`the test step of job ${key} runs cargo test ${tests.length} times, not once`);
+if (tests.length !== 1) fail(`the test step of job ${key} runs cargo nextest run ${tests.length} times, not once`);
 const args = cargoTest(tests[0] ?? '') ?? [];
-if (args.join(' ') !== '-p skald-client --locked --no-fail-fast') {
-  fail(`job ${key} runs cargo test ${args.join(' ')}, not cargo test -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
+// The options but --test-threads <n>, which changes only how many tests run at once.
+const threads = args.indexOf('--test-threads');
+const options = threads >= 0 && /^[1-9][0-9]*$/.test(args[threads + 1] ?? '') ? args.toSpliced(threads, 2) : args;
+if (options.join(' ') !== '-p skald-client --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
 }
 const last = commands(testStep.run)
   .map((line) => line.trim())
   .filter((line) => line !== '' && !line.startsWith('#'))
   .at(-1);
-if (last !== 'cargo test -p skald-client --locked --no-fail-fast') {
-  fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo test: its exit code is the step's last command's, so a failing test would not fail the step`);
+if (last !== tests[0]?.trim()) {
+  fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo nextest run: its exit code is the step's last command's, so a failing test would not fail the step`);
 }
 // A custom shell, {0} for the script, decides the exit code itself.
 if (String(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell ?? '').includes('{0}')) {
   fail(`the test step of job ${key} runs in a custom shell, which may hide a failing test`);
 }
-// The server's URL: in the step's or the job's env, or set in PowerShell before cargo test runs.
+// The server's URL: in the step's or the job's env, or set in PowerShell before the tests run.
 const url = /^postgres(ql)?:\/\/[^@\s/]+@127\.0\.0\.1:5432$/;
 const lines = commands(testStep.run);
 const set = lines.findIndex((line) => url.test(line.match(/^\s*\$env:SKALD_TEST_DATABASE_URL\s*=\s*"([^"]*)"\s*$/)?.[1] ?? ''));
