@@ -3,17 +3,19 @@ name: E2E
 # The e2e tests of the agent adapters against the latest agent CLIs, on Linux, macOS and Windows:
 # today the client's claude_code_e2e tests and the adapters' claude_code_executor tests against
 # Claude Code, which run it on their model stub, so they need no secret. Outside script/test: daily,
-# on demand, and when a PR changes the adapter, its tests or this file. A test that skips for want
-# of the CLI fails (SKALD_E2E_REQUIRED).
+# on demand, and when a PR changes the adapter, the Claude Code plugin, its tests or this file. A
+# test that skips for want of the CLI fails (SKALD_E2E_REQUIRED).
 on:
   schedule:
     - cron: '30 4 * * *'
   workflow_dispatch:
   pull_request:
     branches: [dev]
-    # The adapter, its tests and every module they take by #[path] or include!
+    # The adapter, the plugin, its tests and every module they take by #[path] or include!
     # (script/e2e-workflow-test), and this file.
     paths:
+      - .claude-plugin/**
+      - plugins/claude-code/**
       - crates/adapters/**
       - crates/client/src/claude_relay.rs
       - crates/client/src/claude_socket.rs

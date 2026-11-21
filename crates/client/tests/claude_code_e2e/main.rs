@@ -25,6 +25,9 @@
 //!
 //! The session of `permission_prompts.rs` stops on its own permission prompt, which its
 //! `PermissionRequest` and `Notification` hooks tell the person's device.
+//!
+//! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
+//! marketplace of this checkout, and nothing else of Skald's.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -35,6 +38,7 @@ mod inline;
 #[cfg(unix)]
 mod modes;
 mod permission_prompts;
+mod plugin;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;

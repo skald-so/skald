@@ -3,9 +3,9 @@
 // against the latest Claude Code:
 //   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_relay.rs,
 //     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, permission_prompts.rs, recv.rs,
-//     state.rs and wait.rs of the client, and crates/adapters), its e2e or hook tests, a module the
-//     e2e tests take by #[path]
-//     or include!, found by following them from claude_code_e2e/main.rs and
+//     state.rs and wait.rs of the client, and crates/adapters), the Claude Code plugin
+//     (.claude-plugin/ and plugins/claude-code/), its e2e or hook tests, a module the e2e tests take
+//     by #[path] or include!, found by following them from claude_code_e2e/main.rs and
 //     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
 //     it;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
@@ -98,6 +98,10 @@ for (const changed of [
   'crates/adapters/src/lib.rs',
   'crates/adapters/src/claude_code.rs',
   'crates/adapters/Cargo.toml',
+  '.claude-plugin/marketplace.json',
+  'plugins/claude-code/.claude-plugin/plugin.json',
+  'plugins/claude-code/hooks/hooks.json',
+  'plugins/claude-code/skills/skald/SKILL.md',
   ...modules('crates/client/tests/claude_code_e2e/main.rs', 10),
   ...modules('crates/adapters/tests/claude_code_executor/main.rs', 6),
   file,
