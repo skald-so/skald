@@ -24,9 +24,10 @@ additional_cargo_args = [
   "--package=agent-app-server",
   "--package=agent-limits",
 ]
-# cargo-mutants copies only this workspace; the test of the live checks' report reads
-# docs/dev/agent-delivery.md outside it, so it runs only in script/test.
+# cargo-mutants copies only this workspace; the tests of the live checks' report, and those of the
+# Codex permission prompt checks, which take their commands from it, read
+# docs/dev/agent-delivery.md outside it, so they run only in script/test.
 additional_cargo_test_args = [
   "-E",
-  "not test(=the_report_gives_each_claude_code_checks_result_and_version_on_the_stub_and_the_real_model)",
+  "not test(=the_report_gives_each_claude_code_checks_result_and_version_on_the_stub_and_the_real_model) and not binary(=codex_permission_prompts)",
 ]
