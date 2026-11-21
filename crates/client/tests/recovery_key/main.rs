@@ -9,8 +9,8 @@
 //! person's terminal is a pseudo-terminal, or a pseudo-console on Windows.
 //!
 //! The CLI, as these tests use it, beyond the device keys' tests:
-//! - at a terminal, `skald sign-in` shows the recovery key in its shown form, 13 groups of four
-//!   base32 characters joined by `-`, with what it is for, and deletes it once the person presses
+//! - at a terminal, `skald sign-in` shows the recovery key in its shown form, 3 groups of 4
+//!   characters of Crockford's base32 joined by `-`, with what it is for, and deletes it once the person presses
 //!   Enter: until then a kill leaves it waiting;
 //! - while it waits, every other run prints one line that holds `recovery key` and the full command
 //!   that shows it, `skald sign-in --server <the device's server>`;
@@ -74,8 +74,9 @@ pub fn setup() -> (Cloud, Browser) {
     (Cloud::start(120, 1), Browser::launch())
 }
 
-/// Whether `text` holds the recovery key `key` in any case, with or without `-` and spaces.
-pub fn holds_key(text: &str, key: &[u8; 32]) -> bool {
+/// Whether `text` holds the recovery key of the characters `key` in any case, with or without `-`
+/// and spaces.
+pub fn holds_key(text: &str, key: &[u8; 12]) -> bool {
     let squeeze = |text: &str| -> String {
         text.chars()
             .filter(|c| !c.is_whitespace() && *c != '-')
@@ -87,7 +88,7 @@ pub fn holds_key(text: &str, key: &[u8; 32]) -> bool {
 
 /// Whether `bytes`, what a machine or a server keeps or sends, hold the recovery key `key`: as
 /// bytes in any of [`keys`]'s encodings, or as text in any of [`holds_key`]'s forms.
-pub fn bytes_hold_key(bytes: &[u8], key: &[u8; 32]) -> bool {
+pub fn bytes_hold_key(bytes: &[u8], key: &[u8; 12]) -> bool {
     keys::holds(bytes, key) || holds_key(&String::from_utf8_lossy(bytes), key)
 }
 
@@ -122,17 +123,17 @@ pub fn assert_quiet(cloud: &Cloud, what: &str, text: &str) {
     );
 }
 
-/// The person reads the recovery key `run` shows, then presses Enter; gives the key's bytes and
-/// what the run printed. Fails unless the run succeeds and shows that one key.
+/// The person reads the recovery key `run` shows, then presses Enter; gives the key's characters
+/// and what the run printed. Fails unless the run succeeds and shows that one key.
 #[track_caller]
-pub fn written_down(run: Terminal) -> ([u8; 32], Shown) {
+pub fn written_down(run: Terminal) -> ([u8; 12], Shown) {
     let mut run = run;
     let key = shown_key(&mut run);
     run.enter();
     let shown = run.finish();
     assert!(shown.success, "{shown:?}");
     assert_eq!(keys_in(&shown.text), vec![key.clone()], "{shown:?}");
-    (backup::key_bytes(&key), shown)
+    (backup::key_digits(&key), shown)
 }
 
 /// What `GET /account/master` gives the session `token`: the master key, the account record and
@@ -164,7 +165,7 @@ pub fn held(cloud: &Cloud, token: &str) -> Held {
 /// that master key signs it; the backup opens with `key` to that master key's private key. Gives
 /// the master private key.
 #[track_caller]
-pub fn opens_the_backup(cloud: &Cloud, machine: &Machine, token: &str, key: &[u8; 32]) -> [u8; 32] {
+pub fn opens_the_backup(cloud: &Cloud, machine: &Machine, token: &str, key: &[u8; 12]) -> [u8; 32] {
     let account: AccountId = cloud.account_of(token);
     let held = held(cloud, token);
     let master = held.master.expect("the account's master key");
@@ -177,7 +178,7 @@ pub fn opens_the_backup(cloud: &Cloud, machine: &Machine, token: &str, key: &[u8
     assert_eq!(record.master, master, "the record's master key");
     assert_eq!(
         record.recovery,
-        backup::recovery_public(key),
+        backup::recovery_public(key, account),
         "the record's recovery key"
     );
     assert_eq!(record.revision, 1, "the record's revision");
@@ -194,7 +195,7 @@ pub fn opens_the_backup(cloud: &Cloud, machine: &Machine, token: &str, key: &[u8
 /// The person's `skald sign-in --server <cloud>` on `machine` at a terminal, once
 /// signed in: gives the recovery key it shows, read as [`written_down`] reads it.
 #[track_caller]
-pub fn key_at_sign_in(cloud: &Cloud, machine: &Machine) -> [u8; 32] {
+pub fn key_at_sign_in(cloud: &Cloud, machine: &Machine) -> [u8; 12] {
     let run = Terminal::start(machine, &sign_in(cloud, &[]));
     written_down(run).0
 }

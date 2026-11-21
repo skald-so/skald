@@ -181,6 +181,16 @@ impl Terminal {
             .and_then(|()| input.flush());
     }
 
+    /// The person ends the terminal's input at the start of a line: Ctrl-D on Unix, Ctrl-Z and
+    /// Enter on Windows.
+    // Only the tests of account fingerprints end it.
+    #[allow(dead_code)]
+    pub fn end_input(&self) {
+        let end: &[u8] = if cfg!(windows) { b"\x1a\r" } else { b"\x04" };
+        let mut input = self.input.lock().expect("the terminal's input");
+        let _ = input.write_all(end).and_then(|()| input.flush());
+    }
+
     /// Kills it at once, as the system does, without a signal it can handle; gives what it
     /// printed until then.
     // Only Windows kills it through the run's handle.

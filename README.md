@@ -96,6 +96,9 @@ skald create-queue --lease 120 <name>       # create a queue; also change-queue 
 skald enqueue [--queue <name>] <text>       # enqueue a task, end-to-end encrypted, in the default queue or <name>
 skald tasks [--queue <name>]                # the default channel's tasks: state, progress or reason, and attempts
 skald restart-task <task>                   # queue a dead task again, by its #<ref> or ID; cancel-task cancels one
+skald --agent <name> claim [--queue <name>] # claim one task the agent runs: its #<ref>, sender and text, in one line
+skald --agent <name> complete <task> <text> # complete a claimed task, by its #<ref> or ID; its result goes to the sender
+skald --agent <name> fail [--retry] <task> <text> # fail a claimed task, with --retry for another attempt; also extend
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
 skald --agent <name> recv <message>         # one of them again, whole, by its #<ref> or ID
 skald --agent <name> set-status busy        # the agent's status in the device's presence: busy or available, with --note <text>
@@ -116,6 +119,7 @@ skald hook claude                           # the handler of Claude Code's hooks
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
 - Agents that answer each other without a person stop after 10 hops: their next reply, send or enqueue goes nowhere, and your next `skald recv` warns of it. A message of yours starts the count again: [protocol, "Content"](docs/protocol/README.md#content).
 - Queues and tasks: [protocol, "Queues"](docs/protocol/queues.md). Only the person creates, changes and deletes queues. `skald enqueue` is refused while the device judges the channel's current epoch unclean. `--to <address>` names the agent whose one device listing it claims the task; `--idempotency-key` enqueues once per key. A task a device of another account may claim expires after 7 days unless `--deadline` sets another time. An agent's `skald tasks` lists only the tasks it enqueued; only the person restarts and cancels tasks. A service agent enqueues from CI: [Enqueueing tasks from CI](docs/service-agents.md#enqueueing-tasks-from-ci).
+- `skald claim` takes only tasks from devices of your account without a template; it hands back the rest and fails, with a warning, a task that fails its checks. A claimed task is extended at once; `skald extend` holds it for one more lease. Once another device may hold the task, `skald extend`, `skald complete` and `skald fail` say the claim is lost: stop its work, as no result goes out. A complete or fail the server has not answered is repeated by the next `skald recv`.
 - An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
 - `skald message-status` reads only what this device keeps, for a message's wait, at most 7 days. An agent asks only of its own messages and those handed over to it.
 - An agent in `hold` gets such a message only once you accept it with `skald held`; your `skald recv` says how many wait. The sender's `skald recv` shows `held`, then `read`, or `refused` with the reason, also once the message's wait ends undecided.
@@ -130,7 +134,7 @@ Agents that run without a person, such as in CI: [service agents](docs/service-a
 - The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
 - The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal or on its local page, never in an agent's output, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.
 - A new device links with a link code: `skald sign-in` on it shows the code, and `skald link` on a linked device takes it. With `--browser`, both take their steps on a local page they open in the browser, so an agent can start them while you answer there.
-- With the recovery key, a new device links itself: `skald sign-in --with-recovery-key` in a terminal, where you type the key. It revokes the devices you name stolen or lost; `skald sign-in --help` explains how. Accounts made before recovery keys have none.
+- With the recovery key, a new device links itself: `skald sign-in --with-recovery-key` in a terminal, where you type or paste the key. It revokes the devices you name stolen or lost; `skald sign-in --help` explains how. Accounts made before recovery keys have none.
 
 ## Security
 

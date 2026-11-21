@@ -287,6 +287,23 @@ pub fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Q
     Ok(queues)
 }
 
+/// Records that `agent`, if given, ran in `space`, then goes through the mailbox within `scope` as
+/// `skald send` does ([`send::through_mailbox`]), by `synced`, the space's last accepted revision
+/// and devices; gives them as they are after it.
+pub fn through_mailbox_as(
+    follower: &mut Follower,
+    (scope, space): (Scope, SpaceId),
+    agent: Option<&Name>,
+    synced: (Roster, SpaceDevices),
+) -> Result<(Roster, SpaceDevices), String> {
+    if let Some(agent) = agent {
+        (follower.state)
+            .add_agent(space, agent.as_str())
+            .map_err(text)?;
+    }
+    send::through_mailbox(follower, scope, space, synced)
+}
+
 /// The queue `name` of the channel `at`; fails, naming it, if the channel has none.
 pub fn named(
     follower: &mut Follower,
@@ -299,7 +316,7 @@ pub fn named(
 }
 
 /// The problem of the type `kind`, as a word: the last segment of its URI, such as `not-allowed`.
-fn problem(kind: &str) -> String {
+pub fn problem(kind: &str) -> String {
     printable(kind.rsplit('/').next().unwrap_or(kind))
 }
 
@@ -363,17 +380,12 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
             "enqueued",
         ));
     }
-    if let Some(agent) = agent {
-        (follower.state)
-            .add_agent(space.id, agent.as_str())
-            .map_err(text)?;
-    }
     // A stateless run goes through no mailbox: what it would write there, it would ack unshown.
     let stateless = follower.stateless();
     let (roster, devices) = if stateless {
         (roster, devices)
     } else {
-        send::through_mailbox(&mut follower, scope, space.id, (roster, devices))?
+        through_mailbox_as(&mut follower, (scope, space.id), agent, (roster, devices))?
     };
     let at = (space.id, channel);
     let queue = named(&mut follower, at, &name).map_err(|err| format!("{err}; {NOTHING}"))?;

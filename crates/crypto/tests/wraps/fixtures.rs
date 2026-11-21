@@ -22,7 +22,7 @@ pub const INFO: &[u8] = b"skald history wrap";
 pub const ACCOUNT: AccountId = AccountId::from_bytes([0xac; 16]);
 /// Another account.
 pub const OTHER_ACCOUNT: AccountId = AccountId::from_bytes([0xad; 16]);
-/// The account's recovery key, 32 bytes as the user enters it.
+/// The IKM of the account's recovery HPKE key pair, as Argon2id derives it from the recovery key.
 pub const RECOVERY: [u8; 32] = [0x7e; 32];
 
 /// The seed of the master key that issues the certificates of client devices.
@@ -88,9 +88,10 @@ pub fn browser(seed: u8) -> WrapRecipient {
     WrapRecipient::Browser(device_id(seed))
 }
 
-/// The recovery HPKE key of `recovery`.
+/// The recovery HPKE key of `recovery`, the IKM Argon2id derives from a recovery key:
+/// `DeriveKeyPair(recovery)`.
 pub fn recovery_key(recovery: &[u8; 32]) -> HpkeKey {
-    HpkeKey::from_recovery_key(recovery)
+    HpkeKey::from_ikm(recovery)
 }
 
 /// A recipient of a wrap with its X25519 public key and the HPKE key it opens wraps with.

@@ -242,7 +242,7 @@ The claiming device MUST NOT run a task unless, when it starts it:
 3. `channel`, `queue` and `task` are those of the claim; `sched` is the same map as the record's; `mode` is the claim's;
 4. the content passes checks 2 and 3 of [Envelope](README.md#envelope) with `sender` as the sending device; it has a `task` body and no `counter`, and `to` exactly when `sched` has `device`; the `request`'s `messageId` is `task` in text form;
 5. `deadline`, if any, has not passed, and under `at-most-once` the claim's `attempt` is 1;
-6. the task matches the claim, as [Claims and leases](#claims-and-leases) says, with the [trust level](membership.md#trust-levels) of `sender`; and `to`, if any, names an agent of this device.
+6. the task matches the claim, as [Claims and leases](#claims-and-leases) says, with the [trust level](membership.md#trust-levels) of `sender`; and `to`, if any, names the agent of this device that claims it.
 
 - A task that fails check 1 because the device lacks the epoch's key, fails check 6, or needs a mode the device cannot enforce ([Running a task](#running-a-task)): a `client` device releases it, a `service` device fails it with retry.
 - A task that fails any other check: the device fails it without retry and tells its user.

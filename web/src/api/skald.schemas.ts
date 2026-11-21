@@ -269,7 +269,7 @@ export interface MasterKeyRequest {
   cert: Certificate;
   /** The account record: of the session's account, naming the master key and signed by it. */
   record: AccountRecord;
-  /** The master backup, sealed to the recovery key the account record names. */
+  /** The master backup, sealed with the recovery key of the account record. */
   backup: MasterBackup;
 }
 

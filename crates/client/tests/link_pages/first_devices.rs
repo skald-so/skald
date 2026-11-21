@@ -2,8 +2,8 @@
 //! first device shows its recovery key on its page and not in its output; as an agent, the line of
 //! a waiting recovery key names the page, and the page shows the key.
 
-use skald_crypto::{RecoveryKey, open_master_backup};
-use skald_proto::{Cbor as _, MasterBackup};
+use skald_crypto::{RecoveryKey, open_recovery};
+use skald_proto::{AccountRecord, Cbor as _, MasterBackup};
 
 use crate::at_terminal::{AGENT, as_agent, keys_in, waiting_lines};
 use crate::browser::APPROVE;
@@ -28,10 +28,18 @@ fn assert_opens_the_backup(cloud: &Cloud, token: &str, key: &str) {
         )
     };
     let master: [u8; 32] = field("master").try_into().expect("a 32-byte master key");
+    let record = AccountRecord::from_cbor(&field("record")).expect("an account record");
     let backup = MasterBackup::from_cbor(&field("backup")).expect("a master backup");
     let key = RecoveryKey::parse(key).expect("a recovery key");
-    open_master_backup(&backup, &key, cloud.account_of(token), &master)
+    assert_eq!(
+        record.body().account,
+        cloud.account_of(token),
+        "the record's account"
+    );
+    assert_eq!(record.body().master, master, "the record's master key");
+    let recovered = open_recovery(&record, &backup, &key)
         .expect("the backup opens with the key the page showed");
+    assert_eq!(recovered.master.public_key(), master);
 }
 
 /// The person reads the recovery key `paged` shows while `command`, on `machine`, goes on, and

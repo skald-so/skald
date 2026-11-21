@@ -9,8 +9,8 @@ use skald_proto::{ACCOUNT_LABEL, AccountBody, AccountRecord, Cbor, Unknown};
 use crate::cbor::{Value, bytes, text};
 use crate::fields::{map, signed_cbor, truncated_and_longer, unknown, with, without};
 use crate::fixtures::{
-    ACCOUNT, LABEL, MASTER, OTHER_ACCOUNT, OTHER_MASTER, RECOVERY, account_fields, body_fields,
-    master, public, recovery_public,
+    ACCOUNT, LABEL, MASTER, OTHER_ACCOUNT, OTHER_MASTER, RECOVERY_PUBLIC, account_fields,
+    body_fields, master, public,
 };
 
 /// The tests' account body: the account's master key and recovery key, revision 1.
@@ -18,7 +18,7 @@ fn body() -> AccountBody {
     AccountBody {
         account: ACCOUNT,
         master: public(&MASTER),
-        recovery: recovery_public(&RECOVERY),
+        recovery: RECOVERY_PUBLIC,
         revision: 1,
         unknown: Unknown::default(),
     }
@@ -67,7 +67,7 @@ fn a_record_the_master_key_signs_encodes_its_fields_and_passes_the_check() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_record_with_fields_of_later_versions_round_trips_byte_for_byte_and_passes_the_check() {
-    let mut fields = body_fields(ACCOUNT, &public(&MASTER), &recovery_public(&RECOVERY), 7);
+    let mut fields = body_fields(ACCOUNT, &public(&MASTER), &RECOVERY_PUBLIC, 7);
     fields.extend(unknown());
     let body_bytes = map(&fields);
     let signature = master().sign(LABEL, &[&body_bytes]);
@@ -80,7 +80,7 @@ fn a_record_with_fields_of_later_versions_round_trips_byte_for_byte_and_passes_t
     let decoded = record.body();
     assert_eq!(decoded.account, ACCOUNT);
     assert_eq!(decoded.master, public(&MASTER));
-    assert_eq!(decoded.recovery, recovery_public(&RECOVERY));
+    assert_eq!(decoded.recovery, RECOVERY_PUBLIC);
     assert_eq!(decoded.revision, 7);
     assert_ne!(
         decoded.unknown,
