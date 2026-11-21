@@ -9,7 +9,7 @@ use crate::common::devices::{Device, random, unb64};
 use crate::common::{Response, TestDb};
 use crate::history::{Answer, Item, attempt, upload_to};
 use crate::kit::{Body, Client, World};
-use crate::scene::Peer;
+use crate::scene::{Peer, removing};
 use crate::wire::{Socket, assert_nowhere};
 
 /// The problems of a refused upload.
@@ -150,4 +150,13 @@ pub fn assert_none_given(w: &World, client: &Client, epoch: u64, what: &str) {
         "{what}: an object of epoch {epoch} given to {}",
         client.who
     );
+}
+
+/// alice's laptop commits carol's Remove, which bob's laptop processes: epoch 2, of alice and bob.
+#[track_caller]
+pub fn remove_carol(w: &mut World) {
+    let carol = w.carol.id;
+    let removal = w.alice.commits(&w.stage.f, removing(&[carol]));
+    w.bob.process(&w.stage.f, &removal);
+    assert_eq!(w.epoch(), 2, "the epoch of carol's Remove");
 }

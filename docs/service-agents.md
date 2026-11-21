@@ -78,7 +78,7 @@ skald send --all --channel <channel> "rollout started"
 skald enqueue --channel <channel> "run the smoke tests of the release"
 ```
 
-- The token needs `queues`: the server refuses the tasks of a token without it, and the run enqueues nothing, naming that refusal, `not-a-member`.
+- The token needs `send` and `queues`: `--permission send --permission queues`. The server refuses the tasks of a token without `queues`, and the run enqueues nothing, naming that refusal, `not-a-member`.
 - The task is sealed to the queue key the channel's member devices publish for the current epoch ([Queue key](protocol/queues.md#queue-key)). The run enqueues nothing, and says why, when that key fails its checks or no member device has published it yet.
 - It takes the options of a person's `skald enqueue`, with the same defaults: [README](../README.md).
 - The run fails unless the server stores the task within it: nothing waits for a later run.

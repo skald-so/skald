@@ -211,8 +211,8 @@ pub fn enqueuer(
     if !permissions.iter().any(|permission| permission == QUEUES) {
         return Err(format!(
             "the service token has no queues permission, so the server refuses its tasks: \
-             not-a-member; the agent needs a token with --permission queues, from skald \
-             create-service-token; {nothing}"
+             not-a-member; the agent needs a token with --permission send --permission queues, \
+             from skald create-service-token; {nothing}"
         ));
     }
     entry_sender(follower, space, at, grant, nothing)

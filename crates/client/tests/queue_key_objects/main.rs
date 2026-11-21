@@ -51,6 +51,10 @@ mod warnings;
 mod history_common;
 use history_common::*;
 
+// The run the tests of history entries kill in an epoch it judged unclean.
+#[path = "../history_entries/entries.rs"]
+mod entries;
+
 // The queue requests and tasks of the tests of queues, with what an agent reads, as the tests of
 // compact output have it.
 #[path = "../compact_output/lines.rs"]

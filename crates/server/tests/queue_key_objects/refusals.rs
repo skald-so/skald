@@ -11,9 +11,9 @@ use crate::history::Item;
 use crate::kit::World;
 use crate::objects::{
     EPOCH_MISMATCH, MALFORMED, NOT_A_MEMBER, assert_given, assert_none_given, keeps, not_kept,
-    object, refuses,
+    object, refuses, remove_carol,
 };
-use crate::scene::{Peer, removing, revoke};
+use crate::scene::{Peer, revoke};
 use crate::tokens::{QUEUES, RECEIVE, SEND};
 use crate::wire::Socket;
 
@@ -26,10 +26,7 @@ use crate::wire::Socket;
 fn objects_from_devices_outside_the_epoch_are_refused() {
     let mut w = World::new(5_418_200_001);
     let [alice_reads, ..] = w.laptops();
-    let carol = w.carol.id;
-    let removal = w.alice.commits(&w.stage.f, removing(&[carol]));
-    w.bob.process(&w.stage.f, &removal);
-    assert_eq!(w.epoch(), 2, "the epoch of carol's Remove");
+    remove_carol(&mut w);
     let (db, at) = (w.stage.f.db(), (w.space, w.channel));
     let (t, eve) = (&w.stage.f.team, &w.stage.f.eve);
     let mut dave = Peer::of(&w.stage.f, &t.dave);

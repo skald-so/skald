@@ -1,9 +1,9 @@
 //! The server keeps the first queue key object per channel and epoch from a member device of the
-//! epoch and gives it, byte for byte, to the devices that may send in the channel; a later object
-//! of the epoch changes nothing.
+//! epoch, removed since or not, and gives it, byte for byte, to the devices that may send in the
+//! channel; a later object of the epoch changes nothing.
 
 use crate::kit::World;
-use crate::objects::{assert_given, assert_none_given, genuine, keeps, object};
+use crate::objects::{assert_given, assert_none_given, genuine, keeps, object, remove_carol};
 use crate::tokens::SEND;
 
 /// Before any upload, alice's laptop is told the server keeps no object of epoch 1. alice's laptop
@@ -49,4 +49,23 @@ fn the_first_object_of_each_epoch_is_kept_and_a_later_one_changes_nothing() {
     keeps(at, &mut w.bob, &second, "bob's object of epoch 2");
     assert_given(&w, &carol, 2, &second, "bob's object of epoch 2");
     assert_given(&w, &carol, 1, &first, "epoch 1 after epoch 2's upload");
+}
+
+/// alice's laptop commits carol's Remove: epoch 2, of alice and bob. carol's laptop, a member of
+/// epoch 1, uploads an object of epoch 1: the server keeps it and gives it to alice's laptop.
+#[test]
+fn an_object_from_a_device_removed_since_its_epoch_is_kept() {
+    let mut w = World::new(5_418_100_021);
+    let [alice, ..] = w.laptops();
+    remove_carol(&mut w);
+    let carols = object(w.channel, 1, &w.stage.f.team.carol.laptop);
+
+    keeps(
+        (w.space, w.channel),
+        &mut w.carol,
+        &carols,
+        "the removed carol's object of epoch 1",
+    );
+
+    assert_given(&w, &alice, 1, &carols, "carol's object of epoch 1");
 }
