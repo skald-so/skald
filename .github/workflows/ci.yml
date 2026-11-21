@@ -5,7 +5,7 @@ on:
   pull_request:
     branches: [dev]
     types: [opened, synchronize, reopened, ready_for_review]
-  # After every merge, every part: a check that a PR's selection missed fails on dev.
+  # A run on dev checks every part: a check that a PR's selection missed fails there.
   push:
     branches: [dev]
 
