@@ -15,7 +15,7 @@ use skald_proto::{
 use zeroize::Zeroizing;
 
 use crate::hpke::Fixed;
-use crate::sign::{SigningKey, random_secret, verify};
+use crate::sign::{SigningKey, secret_bytes, verify};
 
 /// `info` and `psk_id` of the master backup's seal.
 const BACKUP_INFO: &[u8] = b"skald master backup";
@@ -32,24 +32,9 @@ type Dhkem = X25519HkdfSha256;
 /// An account's recovery key: 32 bytes, zeroed on drop and never shown but by [`RecoveryKey::shown`].
 pub struct RecoveryKey(Zeroizing<[u8; 32]>);
 
+secret_bytes!(RecoveryKey);
+
 impl RecoveryKey {
-    /// A new key from the cryptographically secure generator of the operating system, or in WASM
-    /// of the browser or Node.js.
-    ///
-    /// # Panics
-    /// If the random generator fails.
-    pub fn generate() -> Self {
-        Self(random_secret())
-    }
-
-    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
-        Self(Zeroizing::new(*bytes))
-    }
-
-    pub fn to_bytes(&self) -> Zeroizing<[u8; 32]> {
-        self.0.clone()
-    }
-
     /// The text a person writes down: base32 of RFC 4648, §6, without padding, in groups of four
     /// characters joined by `-`.
     pub fn shown(&self) -> Zeroizing<String> {
