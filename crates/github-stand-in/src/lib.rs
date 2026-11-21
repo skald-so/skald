@@ -1,4 +1,4 @@
-//! A local stand-in for GitHub's OAuth web flow and user endpoint, for tests: no test needs a real
+//! A local stand-in for GitHub's OAuth web flow and user endpoints, for tests: no test needs a real
 //! OAuth App. As GitHub does, it serves
 //! - `GET /login/oauth/authorize`: a person signed in to the stand-in in their browser authorizes the
 //!   app and goes back to `redirect_uri` with `code` and `state`: at once, as after an earlier
@@ -9,7 +9,10 @@
 //!   secret, in the body or by HTTP Basic, and, for a code with a challenge, only with its
 //!   `code_verifier`; a refusal is a `200` with `error`;
 //! - `GET /user`: the user of a token, `Authorization: Bearer <token>` or `token <token>`, to a
-//!   request with a `User-Agent`.
+//!   request with a `User-Agent`;
+//! - `GET /user/{id}`: a user by ID, and `GET /users/{login}/keys` and
+//!   `GET /users/{login}/ssh_signing_keys`: a user's public SSH authentication and signing keys,
+//!   unauthenticated, to a request with a `User-Agent`.
 //!
 //! Tests control its users and faults through [`GitHub`] in Rust, or from another process, such as a
 //! web test running the `skald-github-stand-in` binary, through the control endpoints:
@@ -17,6 +20,7 @@
 //!   authorize then answers a page whose link `#authorize` goes back with the code and whose link
 //!   `#cancel` goes back with `error=access_denied`;
 //! - `PUT /_stand-in/users`, a [`User`] in JSON: adds the user or replaces the one with its ID;
+//! - `PUT /_stand-in/ssh-keys`, [`SshKeys`] in JSON: a user's SSH keys from then on;
 //! - `PUT /_stand-in/faults`, a JSON array of [`Fault`]s: the faults from then on, `[]` for none;
 //! - `GET /_stand-in/requests`: the [`Request`]s to GitHub's endpoints so far;
 //! - `GET /_stand-in/tokens`: the tokens issued so far.
@@ -31,7 +35,7 @@ use std::thread::{self, JoinHandle};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Json, Query, RawQuery, State};
+use axum::extract::{Json, Path, Query, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
@@ -91,6 +95,11 @@ pub enum Fault {
     TokenStatus { status: u16 },
     /// The user endpoint answers with this status and no user.
     UserStatus { status: u16 },
+    /// The endpoints of users by ID and of their SSH keys answer with this status.
+    ApiStatus { status: u16 },
+    /// The endpoints of users by ID and of their SSH keys answer as GitHub at its rate limit:
+    /// `403` with `x-ratelimit-remaining: 0`.
+    RateLimited,
 }
 
 /// One of GitHub's endpoints the stand-in serves.
@@ -100,6 +109,21 @@ pub enum Endpoint {
     Authorize,
     Token,
     User,
+    /// `GET /user/{id}`.
+    UserById,
+    /// `GET /users/{login}/keys`.
+    Keys,
+    /// `GET /users/{login}/ssh_signing_keys`.
+    SigningKeys,
+}
+
+/// A user's public SSH keys, as OpenSSH public key lines.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SshKeys {
+    /// The user's ID.
+    pub user: u64,
+    pub authentication: Vec<String>,
+    pub signing: Vec<String>,
 }
 
 /// A request to one of GitHub's endpoints, as the stand-in received it.
@@ -124,6 +148,7 @@ struct Grant {
 #[derive(Default)]
 struct Data {
     users: BTreeMap<u64, User>,
+    ssh_keys: BTreeMap<u64, SshKeys>,
     faults: Vec<Fault>,
     grants: HashMap<String, Grant>,
     /// Issued tokens and their users, in order.
@@ -222,6 +247,11 @@ impl GitHub {
         self.shared.data().users.insert(user.id, user);
     }
 
+    /// Sets the SSH keys of the user `keys.user`, in place of any before.
+    pub fn put_ssh_keys(&self, keys: SshKeys) {
+        self.shared.data().ssh_keys.insert(keys.user, keys);
+    }
+
     /// The page that signs a browser in to the stand-in as the user `id`, as signing in to GitHub.
     /// Authorize then goes back at once.
     pub fn sign_in_url(&self, id: u64) -> String {
@@ -279,8 +309,12 @@ fn router(shared: Shared) -> Router {
         .route("/login/oauth/authorize", get(authorize))
         .route("/login/oauth/access_token", post(access_token))
         .route("/user", get(user))
+        .route("/user/{id}", get(user_by_id))
+        .route("/users/{login}/keys", get(keys))
+        .route("/users/{login}/ssh_signing_keys", get(signing_keys))
         .route("/_stand-in/sign-in", get(sign_in))
         .route("/_stand-in/users", put(put_user))
+        .route("/_stand-in/ssh-keys", put(put_ssh_keys))
         .route("/_stand-in/faults", put(put_faults))
         .route("/_stand-in/requests", get(requests))
         .route("/_stand-in/tokens", get(tokens))
@@ -615,11 +649,8 @@ fn status_response(status: u16, message: &str) -> Response {
 
 async fn user(State(shared): State<Shared>, headers: HeaderMap) -> Response {
     shared.record(Endpoint::User, &BTreeMap::new(), &headers);
-    if !headers.contains_key(header::USER_AGENT) {
-        return status_response(
-            403,
-            "Request forbidden by administrative rules. Please make sure your request has a User-Agent header.",
-        );
+    if let Some(refusal) = without_user_agent(&headers) {
+        return refusal;
     }
     if let Some(Fault::UserStatus { status }) =
         shared.fault(|fault| matches!(fault, Fault::UserStatus { .. }))
@@ -641,7 +672,48 @@ async fn user(State(shared): State<Shared>, headers: HeaderMap) -> Response {
     let Some(user) = user else {
         return status_response(401, "Bad credentials");
     };
-    Json(json!({
+    Json(public_user(user)).into_response()
+}
+
+/// GitHub's refusal of a request with `headers` that has no `User-Agent`, if it has none.
+fn without_user_agent(headers: &HeaderMap) -> Option<Response> {
+    (!headers.contains_key(header::USER_AGENT)).then(|| {
+        status_response(
+            403,
+            "Request forbidden by administrative rules. Please make sure your request has a User-Agent header.",
+        )
+    })
+}
+
+/// What the public API endpoints answer before they serve a request with `headers`, if anything:
+/// a refusal without a `User-Agent`, or a fault.
+fn api_refusal(shared: &Shared, headers: &HeaderMap) -> Option<Response> {
+    if let Some(refusal) = without_user_agent(headers) {
+        return Some(refusal);
+    }
+    match shared.fault(|fault| matches!(fault, Fault::ApiStatus { .. } | Fault::RateLimited))? {
+        Fault::ApiStatus { status } => Some(status_response(status, "Server Error")),
+        _ => {
+            let mut response = status_response(403, "API rate limit exceeded.");
+            let limits = [
+                ("x-ratelimit-limit", "60"),
+                ("x-ratelimit-remaining", "0"),
+                ("x-ratelimit-used", "60"),
+                ("x-ratelimit-reset", "4102444800"),
+            ];
+            for (name, value) in limits {
+                response
+                    .headers_mut()
+                    .insert(name, header::HeaderValue::from_static(value));
+            }
+            Some(response)
+        }
+    }
+}
+
+/// The JSON of `user`, as `GET /user` and `GET /user/{id}` give it.
+fn public_user(user: &User) -> Value {
+    json!({
         "login": user.login,
         "id": user.id,
         "node_id": format!("U_standin{}", user.id),
@@ -653,8 +725,83 @@ async fn user(State(shared): State<Shared>, headers: HeaderMap) -> Response {
         "email": user.email,
         "created_at": "2020-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
-    }))
-    .into_response()
+    })
+}
+
+async fn user_by_id(
+    State(shared): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Response {
+    let params = BTreeMap::from([("id".to_owned(), id.clone())]);
+    shared.record(Endpoint::UserById, &params, &headers);
+    if let Some(refusal) = api_refusal(&shared, &headers) {
+        return refusal;
+    }
+    let data = shared.data();
+    match id.parse().ok().and_then(|id: u64| data.users.get(&id)) {
+        Some(user) => Json(public_user(user)).into_response(),
+        None => status_response(404, "Not Found"),
+    }
+}
+
+/// Which of a user's SSH keys an endpoint lists.
+#[derive(Clone, Copy)]
+enum KeyKind {
+    Authentication,
+    Signing,
+}
+
+async fn keys(
+    State(shared): State<Shared>,
+    headers: HeaderMap,
+    Path(login): Path<String>,
+) -> Response {
+    listed_keys(&shared, &headers, &login, KeyKind::Authentication)
+}
+
+async fn signing_keys(
+    State(shared): State<Shared>,
+    headers: HeaderMap,
+    Path(login): Path<String>,
+) -> Response {
+    listed_keys(&shared, &headers, &login, KeyKind::Signing)
+}
+
+/// The SSH keys of `kind` of the user `login`, in any case, as GitHub lists them: an array of
+/// objects with `id` and `key`, and for signing keys `title` and `created_at`.
+fn listed_keys(shared: &Shared, headers: &HeaderMap, login: &str, kind: KeyKind) -> Response {
+    let endpoint = match kind {
+        KeyKind::Authentication => Endpoint::Keys,
+        KeyKind::Signing => Endpoint::SigningKeys,
+    };
+    let params = BTreeMap::from([("login".to_owned(), login.to_owned())]);
+    shared.record(endpoint, &params, headers);
+    if let Some(refusal) = api_refusal(shared, headers) {
+        return refusal;
+    }
+    let data = shared.data();
+    let Some(user) = (data.users.values()).find(|user| user.login.eq_ignore_ascii_case(login))
+    else {
+        return status_response(404, "Not Found");
+    };
+    let keys = data.ssh_keys.get(&user.id).cloned().unwrap_or_default();
+    let (lines, first) = match kind {
+        KeyKind::Authentication => (keys.authentication, 1),
+        KeyKind::Signing => (keys.signing, 1_000_001),
+    };
+    let listed: Vec<Value> = (lines.iter().zip(first..))
+        .map(|(line, id)| match kind {
+            KeyKind::Authentication => json!({ "id": id, "key": line }),
+            KeyKind::Signing => json!({
+                "id": id,
+                "key": line,
+                "title": format!("key {id}"),
+                "created_at": "2026-01-01T00:00:00Z",
+            }),
+        })
+        .collect();
+    Json(listed).into_response()
 }
 
 async fn sign_in(
@@ -682,6 +829,11 @@ async fn sign_in(
 
 async fn put_user(State(shared): State<Shared>, Json(user): Json<User>) -> StatusCode {
     shared.data().users.insert(user.id, user);
+    StatusCode::NO_CONTENT
+}
+
+async fn put_ssh_keys(State(shared): State<Shared>, Json(keys): Json<SshKeys>) -> StatusCode {
+    shared.data().ssh_keys.insert(keys.user, keys);
     StatusCode::NO_CONTENT
 }
 

@@ -21,6 +21,7 @@ use crate::kept_certs;
 use crate::revocations;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
+use crate::ssh_checks::{self, Results};
 use crate::state::{self, Link, State, StatusChange};
 
 /// What `skald devices` and `skald set-username` say when the machine has no session.
@@ -44,13 +45,14 @@ struct Entry {
 }
 
 /// Lists the devices of the account the machine whose state is in `dir` signed in to, from the
-/// server of its session, its secrets in `storage`. A `person`'s run warns too of master keys its
-/// spaces give ([`follow::master_warnings`]); an agent's names nothing of them.
+/// server of its session, its secrets in `storage`, their SSH signatures checked against GitHub's
+/// API at `github` ([`ssh_checks`]). A `person`'s run warns too of master keys its spaces give
+/// ([`follow::master_warnings`]); an agent's names nothing of them.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
-    speaks: VersionRange,
-    timeout: Duration,
+    (speaks, timeout): (VersionRange, Duration),
+    github: &str,
     person: bool,
 ) -> Result<(), String> {
     let (state, server, token) = signed_in(dir, storage)?;
@@ -73,7 +75,14 @@ pub fn run(
     let devices = own(&mut connection, &token, &state, &master)?;
 
     let checked = check(&master, &devices);
-    print!("{}", listing(&checked, this));
+    let shown: Vec<&Cert> = checked
+        .linked
+        .iter()
+        .chain(&checked.revoked)
+        .copied()
+        .collect();
+    let (signatures, key_changes) = ssh_checks::check(&state, github, timeout, &shown)?;
+    print!("{}", listing(&checked, this, &signatures));
     let changed = statuses(&state, &checked, None, "this account")?;
     let masters = if person {
         let cert = Cert::from_cbor(&cert).map_err(text)?;
@@ -86,6 +95,7 @@ pub fn run(
         Vec::new()
     };
     for warning in (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)))
+        .chain(key_changes)
         .chain(changed)
         .chain(masters)
     {
@@ -353,21 +363,24 @@ pub fn check<'c>(master: &[u8; 32], devices: &'c SpaceDevices) -> Checked<'c> {
 }
 
 /// The list of `checked` on `this` device: the linked devices, the revoked ones, then those not
-/// linked, each part under its heading if it has any.
-pub fn listing(checked: &Checked, this: DeviceId) -> String {
+/// linked, each part under its heading if it has any; each device's line ends with what
+/// `signatures` shows of its SSH signature ([`ssh_checks::shown`]).
+pub fn listing(checked: &Checked, this: DeviceId, signatures: &Results) -> String {
     let mut out = String::new();
     if !checked.linked.is_empty() {
         out.push_str(
             "Linked: certificates chained to the account's master key this machine pinned\n",
         );
         for cert in &checked.linked {
-            out.push_str(&format!("  {}\n", linked_line(cert, this)));
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!("  {}{signature}\n", linked_line(cert, this)));
         }
     }
     if !checked.revoked.is_empty() {
         out.push_str("Revoked: chained to that key, and revoked since\n");
         for cert in &checked.revoked {
-            out.push_str(&format!("  {}\n", revoked_line(cert, this)));
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!("  {}{signature}\n", revoked_line(cert, this)));
         }
     }
     if !checked.apart.is_empty() {
@@ -648,7 +661,7 @@ mod tests {
                 apart,
                 two_bodies: vec![],
             };
-            listing(&checked, id)
+            listing(&checked, id, &Results::new())
         };
         assert_eq!(
             listed(vec![&cert], vec![&gone_cert], vec![other]),

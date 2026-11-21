@@ -43,6 +43,7 @@ use crate::revocations;
 use crate::secrets;
 use crate::service;
 use crate::sign_in;
+use crate::ssh_checks;
 use crate::state::{self, Link, State};
 
 /// What `skald create-space` says on a device without a certificate.
@@ -1691,45 +1692,57 @@ pub fn own_account(state: &State) -> Result<Option<AccountId>, String> {
         .map_err(text)
 }
 
-/// Shows the members of `synced`, a space the device follows; warns if the device's account is its
+/// Shows the members of `synced`, a space the device follows, their devices' SSH signatures
+/// checked against GitHub's API at `github` ([`ssh_checks`]); warns if the device's account is its
 /// only admin ([`only_admin`]).
-pub fn members(synced: Synced) -> Result<(), String> {
+pub fn members(synced: Synced, github: &str) -> Result<(), String> {
     let Synced {
         follower,
         roster,
         devices,
         ..
     } = synced;
-    let (listing, mut warnings) = members_listing(&roster, &devices, &follower.own, follower.this);
+    let (members, mut warnings) = member_devices(&roster, &devices, &follower.own);
+    let shown: Vec<&Cert> = (members.iter().flat_map(|(_, shown)| shown))
+        .flat_map(|shown| shown.linked.iter().chain(&shown.revoked))
+        .copied()
+        .collect();
+    let (signatures, key_changes) =
+        ssh_checks::check(&follower.state, github, follower.timeout, &shown)?;
+    warnings.extend(key_changes);
     warnings.extend(only_admin(&roster, follower.own.account));
-    print!("{listing}");
+    print!(
+        "{}",
+        members_listing(&roster, &members, follower.this, &signatures)
+    );
     for warning in warnings {
         eprintln!("skald: warning: {warning}");
     }
     Ok(())
 }
 
-/// What `skald members` shows of `roster`, a space's last accepted revision, with `devices`, those
-/// of its accounts: each member's handle and role, and under it each device of its account with a
-/// valid certificate, then each revoked one, as `skald devices` shows them, `this` device marked;
-/// and the warnings of `skald devices` for them. A certificate is checked against the master key
-/// `own` pinned for its own account, and against the `master` the revision gives any other.
-fn members_listing(
-    roster: &Roster,
-    devices: &SpaceDevices,
+/// The devices of one member's account that `skald members` shows.
+struct Shown<'d> {
+    /// Those with a valid certificate.
+    linked: Vec<&'d Cert>,
+    /// The revoked ones whose certificates pass checks 1 and 2.
+    revoked: Vec<&'d Cert>,
+}
+
+/// Each member of `roster`, a space's last accepted revision, with the devices of its account
+/// `devices` holds that `skald members` shows, none when the device has no master key for it; and
+/// the warnings of `skald devices` for them. A certificate is checked against the master key `own`
+/// pinned for its own account, and against the `master` the revision gives any other.
+fn member_devices<'r, 'd>(
+    roster: &'r Roster,
+    devices: &'d SpaceDevices,
     own: &Own,
-    this: DeviceId,
-) -> (String, Vec<String>) {
-    let body = roster.body();
+) -> (Vec<(&'r Member, Option<Shown<'d>>)>, Vec<String>) {
     let mut warnings: Vec<String> = Vec::new();
-    let mut out = heading(roster);
-    for member in body.members.iter() {
-        out.push_str(&format!(
-            "  {}  {}\n",
-            member.handle.as_str(),
-            role(member.role)
-        ));
+    let mut members = Vec::new();
+    for member in roster.body().members.iter() {
         let Some(master) = follow::master_of(roster, own, member.account) else {
+            members.push((member, None));
             continue;
         };
         let checked = devices::check(&master, devices);
@@ -1738,24 +1751,61 @@ fn members_listing(
                 warnings.push(warning);
             }
         }
-        let linked: Vec<&Cert> = checked
-            .linked
-            .iter()
-            .copied()
-            .filter(|cert| cert.body().account == member.account)
-            .collect();
-        warnings.extend(devices::shared_name_warnings(&linked));
-        if linked.is_empty() {
+        let of = |certs: &[&'d Cert]| -> Vec<&'d Cert> {
+            (certs.iter().copied())
+                .filter(|cert| cert.body().account == member.account)
+                .collect()
+        };
+        let shown = Shown {
+            linked: of(&checked.linked),
+            revoked: of(&checked.revoked),
+        };
+        warnings.extend(devices::shared_name_warnings(&shown.linked));
+        members.push((member, Some(shown)));
+    }
+    (members, warnings)
+}
+
+/// What `skald members` shows of `roster`, a space's last accepted revision, with `members`, its
+/// members and their devices ([`member_devices`]): each member's handle and role, and under it each
+/// device of its account with a valid certificate, then each revoked one, as `skald devices` shows
+/// them, `this` device marked and each line ending with what `signatures` shows of its SSH
+/// signature.
+fn members_listing(
+    roster: &Roster,
+    members: &[(&Member, Option<Shown>)],
+    this: DeviceId,
+    signatures: &ssh_checks::Results,
+) -> String {
+    let mut out = heading(roster);
+    for (member, shown) in members {
+        out.push_str(&format!(
+            "  {}  {}\n",
+            member.handle.as_str(),
+            role(member.role)
+        ));
+        let Some(shown) = shown else {
+            continue;
+        };
+        if shown.linked.is_empty() {
             out.push_str("    no device with a valid certificate\n");
         }
-        for cert in linked {
-            out.push_str(&format!("    {}\n", devices::linked_line(cert, this)));
+        for cert in &shown.linked {
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!(
+                "    {}{signature}\n",
+                devices::linked_line(cert, this)
+            ));
         }
-        for cert in (checked.revoked.iter()).filter(|cert| cert.body().account == member.account) {
-            out.push_str(&format!("    {}\n", devices::revoked_line(cert, this)));
+        for cert in &shown.revoked {
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!(
+                "    {}{signature}\n",
+                devices::revoked_line(cert, this)
+            ));
         }
     }
-    (out, warnings)
+    out
 }
 
 /// The first line of what `skald members` and `skald channels` show of `roster`, a space's last
@@ -1953,7 +2003,10 @@ pub(crate) mod tests {
                 revocations,
                 records: Vec::new(),
             };
-            members_listing(roster, &devices, &self.own(), this)
+            let own = self.own();
+            let (members, warnings) = member_devices(roster, &devices, &own);
+            let listing = members_listing(roster, &members, this, &Default::default());
+            (listing, warnings)
         }
     }
 

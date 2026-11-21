@@ -85,6 +85,7 @@ mod set_username;
 mod sign_in;
 mod sign_out;
 mod spaces;
+mod ssh_checks;
 mod state;
 mod stateless;
 #[cfg(test)]
@@ -203,6 +204,18 @@ struct Cli {
         hide = true
     )]
     websocket_retry: Option<NonZeroU64>,
+
+    /// The base URL of GitHub's REST API, for tests: skald update takes releases from it, and
+    /// commands check devices' SSH signatures against it.
+    #[arg(
+        long,
+        env = "SKALD_GITHUB_API_URL",
+        value_name = "URL",
+        global = true,
+        hide = true,
+        default_value = update::GITHUB_API_URL
+    )]
+    github_api_url: String,
 
     #[command(subcommand)]
     command: Command,
@@ -926,17 +939,7 @@ enum Command {
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
     /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
     /// rate limit.
-    Update {
-        /// The base URL of GitHub's REST API, for tests.
-        #[arg(
-            long,
-            env = "SKALD_GITHUB_API_URL",
-            value_name = "URL",
-            hide = true,
-            default_value = update::GITHUB_API_URL
-        )]
-        github_api_url: String,
-    },
+    Update,
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
     /// its config; the session's folder is the working directory. Once the client initializes or
     /// discovers the server, the session registers as its agent in the folder's space: the messages
@@ -1121,7 +1124,7 @@ impl Command {
             | Command::InboundModes
             | Command::DeliveryModes { .. }
             | Command::Folder { .. }
-            | Command::Update { .. }
+            | Command::Update
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
@@ -1241,6 +1244,7 @@ fn main() -> ExitCode {
         state_dir: cli.state_dir,
         key_storage: cli.key_storage,
         agent: cli.agent,
+        github_api: cli.github_api_url,
         command: cli.command,
         said: link_prompt::Said::default(),
     };
@@ -1488,11 +1492,19 @@ struct Operation {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     agent: Option<String>,
+    /// The base URL of GitHub's REST API.
+    #[serde(default = "github_api")]
+    github_api: String,
     command: Command,
     /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
     /// runs `skald recv` again and again, and says each once.
     #[serde(skip)]
     said: link_prompt::Said,
+}
+
+/// The base URL of GitHub's REST API by default.
+fn github_api() -> String {
+    update::GITHUB_API_URL.to_owned()
 }
 
 impl Operation {
@@ -1505,6 +1517,7 @@ impl Operation {
             state_dir: self.state_dir.clone(),
             key_storage: self.key_storage,
             agent: None,
+            github_api: self.github_api.clone(),
             command,
             said: link_prompt::Said::default(),
         }
@@ -1553,6 +1566,7 @@ fn performed(operation: Operation) -> Result<(), String> {
         timeout,
         state_dir,
         key_storage,
+        github_api,
         command,
         said,
         ..
@@ -1662,8 +1676,10 @@ fn performed(operation: Operation) -> Result<(), String> {
                 result
             })
         }
-        Command::Devices => state::dir(state_dir)
-            .and_then(|dir| devices::run(&dir, key_storage, speaks, timeout, agent.is_none())),
+        Command::Devices => state::dir(state_dir).and_then(|dir| {
+            let person = agent.is_none();
+            devices::run(&dir, key_storage, (speaks, timeout), &github_api, person)
+        }),
         // It runs through `link`.
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
@@ -1693,7 +1709,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(spaces::members),
+        .and_then(|synced| spaces::members(synced, &github_api)),
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,
@@ -2005,7 +2021,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                     })
                 })
             }),
-        Command::Update { github_api_url } => update::run(&github_api_url, timeout),
+        Command::Update => update::run(&github_api, timeout),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),

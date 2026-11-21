@@ -425,6 +425,7 @@ struct Settings {
     clock_offset: u64,
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
+    github_api: String,
     one_shot: bool,
     /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
     installed: Option<PathBuf>,
@@ -440,6 +441,7 @@ impl Settings {
             clock_offset: operation.clock_offset,
             state_dir: operation.state_dir.clone(),
             key_storage: operation.key_storage,
+            github_api: operation.github_api.clone(),
             one_shot,
             installed,
         }
@@ -454,6 +456,7 @@ impl Settings {
             state_dir: self.state_dir.clone(),
             key_storage: self.key_storage,
             agent: Some(agent.to_string()),
+            github_api: self.github_api.clone(),
             command: Command::Mcp {
                 relayed: false,
                 call: Some(call),
@@ -1098,6 +1101,7 @@ mod tests {
                 clock_offset: 0,
                 state_dir: None,
                 key_storage: secrets::Storage::File,
+                github_api: String::new(),
                 one_shot: true,
                 installed: None,
             },

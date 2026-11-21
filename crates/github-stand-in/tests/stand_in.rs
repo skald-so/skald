@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
-use skald_github_stand_in::{App, Endpoint, Fault, GitHub, User};
+use skald_github_stand_in::{App, Endpoint, Fault, GitHub, SshKeys, User};
 
 const CLIENT_ID: &str = "Ov23li0standin0test";
 const CLIENT_SECRET: &str = "standin-secret-test-0123456789abcdef";
@@ -420,6 +420,94 @@ fn faults_play_until_set_again() {
     assert_eq!(user(&github, &format!("Bearer {token}")).status, 200);
 }
 
+/// `GET <path>` of `github`'s API, unauthenticated.
+fn api(github: &GitHub, path: &str) -> Answer {
+    get(
+        &format!("{}{path}", github.url()),
+        &[("user-agent", "test")],
+    )
+}
+
+#[test]
+fn api_gives_a_user_by_id_and_the_user_s_ssh_keys_unauthenticated() {
+    let github = start();
+    github.put_ssh_keys(SshKeys {
+        user: 1001,
+        authentication: vec!["ssh-ed25519 AAAA1".to_owned(), "ssh-rsa AAAA2".to_owned()],
+        signing: vec!["ssh-ed25519 AAAA3".to_owned()],
+    });
+
+    let ada = api(&github, "/user/1001");
+    assert_eq!(ada.status, 200);
+    assert_eq!(
+        (ada.json()["id"].clone(), ada.json()["login"].clone()),
+        (json!(1001), json!("ada"))
+    );
+    assert_eq!(api(&github, "/user/1002").status, 404);
+    let keys = |path: &str| -> Vec<Value> {
+        let answer = api(&github, path);
+        assert_eq!(answer.status, 200, "{path}");
+        let listed = answer.json().as_array().cloned().expect("an array");
+        assert!(listed.iter().all(|key| key["id"].is_u64()), "{listed:?}");
+        listed.iter().map(|key| key["key"].clone()).collect()
+    };
+    assert_eq!(
+        keys("/users/ada/keys"),
+        vec![json!("ssh-ed25519 AAAA1"), json!("ssh-rsa AAAA2")]
+    );
+    assert_eq!(
+        keys("/users/ADA/ssh_signing_keys"),
+        vec![json!("ssh-ed25519 AAAA3")]
+    );
+    github.put_user(User::new(1003, "bob"));
+    assert_eq!(keys("/users/bob/keys"), Vec::<Value>::new());
+    assert_eq!(api(&github, "/users/eve/keys").status, 404);
+    let endpoints: Vec<Endpoint> = github.requests().iter().map(|r| r.endpoint).collect();
+    assert_eq!(
+        endpoints,
+        [
+            Endpoint::UserById,
+            Endpoint::UserById,
+            Endpoint::Keys,
+            Endpoint::SigningKeys,
+            Endpoint::Keys,
+            Endpoint::Keys,
+        ]
+    );
+}
+
+#[test]
+fn api_faults_answer_with_a_status_or_the_rate_limit() {
+    let github = start();
+    let paths = [
+        "/user/1001",
+        "/users/ada/keys",
+        "/users/ada/ssh_signing_keys",
+    ];
+    github.set_faults(&[Fault::ApiStatus { status: 502 }]);
+    for path in paths {
+        assert_eq!(api(&github, path).status, 502, "{path}");
+    }
+    github.set_faults(&[Fault::RateLimited]);
+    for path in paths {
+        let response = agent()
+            .get(&format!("{}{path}", github.url()))
+            .header("user-agent", "test")
+            .call()
+            .expect("GET");
+        assert_eq!(response.status().as_u16(), 403, "{path}");
+        assert_eq!(
+            response.headers().get("x-ratelimit-remaining").unwrap(),
+            "0",
+            "{path}"
+        );
+    }
+    github.set_faults(&[]);
+    for path in paths {
+        assert_eq!(api(&github, path).status, 200, "{path}");
+    }
+}
+
 #[test]
 fn binary_serves_the_control_endpoints() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_skald-github-stand-in"))
@@ -471,8 +559,35 @@ fn binary_serves_the_control_endpoints() {
         Some("access_denied")
     );
 
+    assert_eq!(
+        put(
+            "/_stand-in/ssh-keys",
+            json!({ "user": 7, "authentication": ["ssh-ed25519 AAAA1"], "signing": [] })
+        ),
+        204
+    );
+    let keys = get(&format!("{base}/users/bob/keys"), &[("user-agent", "test")]).json();
+    assert_eq!(keys[0]["key"], "ssh-ed25519 AAAA1");
+    assert_eq!(
+        put("/_stand-in/faults", json!([{ "fault": "rate_limited" }])),
+        204
+    );
+    let limited = get(&format!("{base}/user/7"), &[("user-agent", "test")]);
+    assert_eq!(limited.status, 403);
+    assert_eq!(
+        put(
+            "/_stand-in/faults",
+            json!([{ "fault": "api_status", "status": 500 }])
+        ),
+        204
+    );
+    assert_eq!(
+        get(&format!("{base}/user/7"), &[("user-agent", "test")]).status,
+        500
+    );
+
     let requests = get(&format!("{base}/_stand-in/requests"), &[]).json();
-    assert_eq!(requests.as_array().map(Vec::len), Some(2), "{requests}");
+    assert_eq!(requests.as_array().map(Vec::len), Some(5), "{requests}");
     assert_eq!(requests[0]["endpoint"], "authorize");
     assert_eq!(
         get(&format!("{base}/_stand-in/tokens"), &[]).json(),

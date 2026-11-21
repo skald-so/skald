@@ -317,6 +317,7 @@ Message texts, agent and session names other than service agents, threads, files
 - a leaked recovery key exposes the history;
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
+- GitHub learns the address of each device that checks SSH signatures and which GitHub users it checks ([architecture.md, "Network"](dev/architecture.md#network));
 - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds");
 - there has been no external crypto audit; the spec and threat model are public;
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).
