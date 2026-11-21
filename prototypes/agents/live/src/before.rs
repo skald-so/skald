@@ -719,13 +719,7 @@ pub fn plant(config: &Path, folder: &Path, marks: &Path) -> io::Result<Planted> 
 fn real_path(path: &Path) -> io::Result<PathBuf> {
     let real = fs::canonicalize(path)?;
     #[cfg(windows)]
-    if let Some(plain) = real
-        .to_str()
-        .and_then(|text| text.strip_prefix(r"\\?\"))
-        .filter(|text| !text.starts_with("UNC\\"))
-    {
-        return Ok(PathBuf::from(plain));
-    }
+    let real = crate::windows::plain_path(real);
     Ok(real)
 }
 

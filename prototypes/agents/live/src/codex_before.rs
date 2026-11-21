@@ -638,38 +638,8 @@ mod shell {
     }
 }
 
-/// On Windows, PowerShell, in which Codex runs commands there.
 #[cfg(windows)]
-mod shell {
-    use std::path::Path;
-
-    pub const READ: &str = "Get-Content -Raw";
-    pub const WRITE: &str = "Set-Content -NoNewline -Value written -Path";
-    pub const RAN: &str = "Write-Output \"ran-$(20+22)\"";
-    pub const CURL: &str = "curl.exe";
-    pub const NULL: &str = "NUL";
-    pub const THEN_REACHED: &str = "; if ($LASTEXITCODE -eq 0) { Write-Output \"public-$(1+1)\" }";
-    pub const MAKE_FILE: [&str; 4] = ["New-Item", "-ItemType", "File", "-Path"];
-    pub const MARK: &str = "mark.cmd";
-
-    pub fn quote(path: &Path) -> String {
-        format!("'{}'", path.to_string_lossy().replace('\'', "''"))
-    }
-
-    /// `program` as the first word of a command that `cmd` or PowerShell runs: a path with a space
-    /// in it would need each one's own quoting.
-    pub fn program(program: &Path) -> String {
-        program.to_string_lossy().into_owned()
-    }
-
-    pub fn print_parent(var: &str) -> String {
-        format!("Write-Output \"parent: $(if ($env:{var}) {{ $env:{var} }} else {{ 'unset' }})\"")
-    }
-
-    pub fn mark_script(marks: &Path) -> String {
-        format!("@echo off\r\ntype nul > \"{}\\%1\"\r\n", marks.display())
-    }
-}
+use crate::windows::shell;
 
 /// The clean check's prompt: its [`clean_commands`].
 pub fn clean_prompt(planted: &Planted) -> String {
