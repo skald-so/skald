@@ -478,8 +478,8 @@ impl Session {
             .collect()
     }
 
-    /// Asks the session to exit, as a person or the apps do, and waits for it; kills it if it does
-    /// not exit in time. Gives whether it exited by itself.
+    /// Asks the session to exit, as a person or the apps do, and waits for it; kills it, with what
+    /// it started, if it does not exit in time. Gives whether it exited by itself.
     pub fn end(&mut self) -> bool {
         match &mut self.running {
             Running::Terminal { input, .. } => {
@@ -502,13 +502,31 @@ impl Session {
             thread::sleep(Duration::from_millis(100));
         }
         match &mut self.running {
-            Running::Terminal { child, .. } => drop(child.kill()),
+            Running::Terminal { child, .. } => {
+                kill_tree(child.process_id());
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             Running::App { child, .. } => {
+                kill_tree(Some(child.id()));
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
         false
+    }
+}
+
+/// On Windows, ends the process `pid` and every process it started, while it still runs: there,
+/// `claude` is the `claude.cmd` shim that npm installs, and ending its `cmd.exe` alone leaves
+/// Claude Code's `node` running in the test's folder, where it starts more hooks, and so a helper.
+fn kill_tree(pid: Option<u32>) {
+    if let (true, Some(pid)) = (cfg!(windows), pid) {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
