@@ -283,8 +283,10 @@ pub fn assert_member(
         fingerprints_in(&block).iter().any(|one| one == expected),
         "{handle} is not shown with the fingerprint {expected:?}: {shown:?}"
     );
+    // The handles, such as `ada-verified-one-shot`, may hold `verified` themselves.
+    let unnamed = (handles.iter()).fold(block.clone(), |text, one| text.replace(one, ""));
     assert_eq!(
-        says_verified(&block),
+        says_verified(&unnamed),
         verified,
         "{handle} verified: {block:?}, in {shown:?}"
     );

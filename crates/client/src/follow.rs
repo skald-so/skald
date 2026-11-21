@@ -4,9 +4,10 @@
 //! and every revision built on it, has no effect: the device keeps the last revision it accepted,
 //! warns its user and keeps working with it. Another valid revision with a number it accepted means
 //! the server forked the roster: the device keeps its own and warns. It warns when a revision it
-//! accepts changes a member's `master`, and when a member's device is revoked, valid again or new
-//! since it last checked it ("Device checks"), and when a member account's record changes its
-//! `recovery` ([`crate::records`]). A revision's signer is checked with the revocations of its
+//! accepts changes a member's `master`, again for an account its person verified, which is then
+//! no longer verified ("Account fingerprint"), and when a member's device is revoked, valid again
+//! or new since it last checked it ("Device checks"), and when a member account's record changes
+//! its `recovery` ([`crate::records`]). A revision's signer is checked with the revocations of its
 //! account.
 //!
 //! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
@@ -250,6 +251,7 @@ fn settle(
             earlier,
             warnings,
         } = follow_trusting(&last, &held.hashes, (given, trusted), devices, own);
+        let changes = master_changes(&last, &accepted);
         let mut recorded = earlier;
         // A run that takes nothing writes back the same revision, so it gives what the state
         // holds if another run accepted revisions first.
@@ -269,6 +271,8 @@ fn settle(
             .accept(id, &held.last, &recorded, &newest.to_cbor())
             .map_err(text)?
         {
+            let mut warnings = warnings;
+            warnings.extend(unverify(state, name, &changes)?);
             return Ok((newest, warnings));
         }
         held = read(state, id, name)?;
@@ -276,6 +280,44 @@ fn settle(
     Err(format!(
         "other skald runs kept accepting revisions of the space {name}; run the command again"
     ))
+}
+
+/// Each member whose `master` the revisions of `accepted`, in order after `last`, change: its
+/// account, its handle and its master key before the change.
+fn master_changes(last: &Roster, accepted: &[Roster]) -> Vec<(AccountId, String, [u8; 32])> {
+    let previous = std::iter::once(last).chain(accepted);
+    (previous.zip(accepted))
+        .flat_map(|(previous, next)| {
+            (next.body().members.iter()).filter_map(|member| {
+                let before = previous.body().member(member.account)?;
+                (before.master != member.master).then(|| {
+                    let handle = member.handle.as_str().to_owned();
+                    (member.account, handle, before.master)
+                })
+            })
+        })
+        .collect()
+}
+
+/// Records in `state` that each account of `changes` ([`master_changes`]) its person verified for
+/// its master key before the change is no longer verified ("Account fingerprint"), and gives the
+/// warning of each; `name` names the space.
+fn unverify(
+    state: &State,
+    name: &str,
+    changes: &[(AccountId, String, [u8; 32])],
+) -> Result<Vec<String>, String> {
+    let mut warnings = Vec::new();
+    for (account, handle, before) in changes {
+        if state.verified(*account, before).map_err(text)? {
+            state.set_verified(*account, before, false).map_err(text)?;
+            warnings.push(format!(
+                "{handle} in the space {name} is no longer verified: its master key changed; \
+                 compare fingerprints again: skald fingerprint {name} {handle}"
+            ));
+        }
+    }
+    Ok(warnings)
 }
 
 /// The revision of the space `name` in `bytes`, as the local state holds it.
