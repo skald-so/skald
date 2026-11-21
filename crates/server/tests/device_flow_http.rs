@@ -1,7 +1,7 @@
 //! The device flow as plain HTTP shows it: malformed requests of a machine, a server without GitHub
-//! sign-in or with its database down, the verification page's refusals, and which session a token
-//! opens; the limit of wrong user codes. Every response is checked against the OpenAPI spec in
-//! `api/openapi.json`.
+//! sign-in or with its database down, the verification page's refusals and its opening itself
+//! again, and which session a token opens; the limit of wrong user codes. Every response is checked
+//! against the OpenAPI spec in `api/openapi.json`.
 
 mod common;
 
@@ -168,6 +168,45 @@ fn verification_page_without_a_session_links_to_the_sign_in() {
         .header("content-security-policy")
         .unwrap_or_default();
     assert!(policy.contains("frame-ancestors 'none'"), "{policy}");
+}
+
+/// Without a web session, the page opens itself again from this server, once, as a request from
+/// another site lacks the `SameSite=Strict` session cookie; with one, it asks for the code.
+#[test]
+fn verification_page_without_a_session_opens_itself_again_once() {
+    let flow = DeviceFlow::start();
+    let ada = flow.stand.user(3_120_664_603, "ada-reopens-standin");
+    let cookie = flow.web_cookie(&ada);
+    let grant = flow.authorize();
+    let local =
+        grant
+            .verification_uri_complete
+            .replacen(&flow.stand.public, flow.stand.server.base(), 1);
+    let reopen = format!(
+        "content=\"0;url=?user_code={}&amp;reopened=1\"",
+        grant.user_code
+    );
+
+    let response = get_url(&local, &[]);
+    assert_eq!(response.status, 200, "{}", text(&response));
+    let page = text(&response);
+    assert!(page.contains(&reopen), "{page}");
+    assert!(page.contains(START), "{page}");
+
+    let response = get_url(&format!("{local}&reopened=1"), &[]);
+    assert_eq!(response.status, 200, "{}", text(&response));
+    flow.conforms("get", PAGE, &response);
+    let page = text(&response);
+    assert!(!page.contains("http-equiv"), "{page}");
+    assert!(page.contains(START), "{page}");
+
+    let page = text(&get_url(&local, &[("cookie", cookie.as_str())]));
+    assert!(!page.contains("http-equiv"), "{page}");
+    assert!(
+        page.contains(&format!("value=\"{}\"", grant.user_code)),
+        "{page}"
+    );
+    flow.assert_pending(&grant);
 }
 
 #[test]

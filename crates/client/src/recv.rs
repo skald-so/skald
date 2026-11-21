@@ -1,14 +1,16 @@
 //! `skald recv`: the device gets its mailbox (`docs/protocol/delivery.md`, "Mailbox"). It first
 //! sends what is left in the outbox and the history entries of the messages the server stored
 //! ([`crate::history`]), then states its cursor, writes each entry it gets after the cursor to the
-//! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. It
-//! then accepts the revisions of each space it follows, and those of the space of each
-//! `space-notice` that came meanwhile ("Frames"). It then goes through the Welcomes, Commits
-//! and `mls` application messages it wrote, decrypting each message in its channel's group, and
-//! brings the group of each channel of those spaces in line ([`crate::groups`]), uploading the links
-//! of their key chains the server lacks ([`crate::key_chain`]), and repeats the completes and fails
-//! of claims that wait, sending their results ([`crate::claims`]). It then shows the other entries
-//! it wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
+//! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. As
+//! the person, it then follows the spaces other devices of the account joined ([`crate::joined`]).
+//! It then accepts the revisions of each space it follows, and those of the space of each
+//! `space-notice` that came meanwhile ("Frames"), following first a noticed space it does not. It
+//! then goes through the Welcomes, Commits and `mls` application messages it wrote, decrypting
+//! each message in its channel's group, and brings the group of each channel of those spaces in
+//! line ([`crate::groups`]), uploading the links of their key chains the server lacks
+//! ([`crate::key_chain`]), and repeats the completes and fails of claims that wait, sending their
+//! results ([`crate::claims`]). It then shows the other entries it
+//! wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
 //! "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
 //! the sending device under `mls`, the group as this device holds it under `hpke`; from a
@@ -77,6 +79,7 @@ use crate::history;
 use crate::hook;
 use crate::inbound;
 use crate::intake::{self, Intake};
+use crate::joined;
 use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::message_status;
@@ -469,6 +472,9 @@ fn receive(
 ) -> Result<(), String> {
     let mut mailbox = catch_up(follower, mailbox, timeout)?;
     let keys = follower.keys()?;
+    if scope == Scope::All {
+        joined::follow(follower);
+    }
     // By the end of catch-up the server sends the connection its notices: a revision stored before
     // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
     // space fetched here.
@@ -482,6 +488,9 @@ fn receive(
     while !due.is_empty() {
         sync_due(follower, scope, &mut due, synced)?;
         due.extend(mailbox.waiting_notices(follower, &keys));
+        if scope == Scope::All && joined::names_unfollowed(follower, &due) {
+            joined::follow(follower);
+        }
     }
     Ok(())
 }

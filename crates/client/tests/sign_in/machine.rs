@@ -1,7 +1,7 @@
-//! A machine without a browser: `skald` runs with an empty environment ([`bare_skald`]), a `PATH`
-//! with nothing on it and a home, a state directory and a temporary directory of its own, all under
-//! one directory that is removed on drop, in one-shot mode ([`ONE_SHOT`]). Several machines run on
-//! one this way.
+//! A machine without a browser: `skald` runs with an empty environment ([`bare_skald`]), `BROWSER`
+//! naming no program, a `PATH` with nothing on it and a home, a state directory and a temporary
+//! directory of its own, all under one directory that is removed on drop, in one-shot mode
+//! ([`ONE_SHOT`]). Several machines run on one this way.
 
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]
@@ -27,9 +27,7 @@ pub const KEY_STORAGE: &str = "SKALD_KEY_STORAGE";
 pub const SIGN_IN: &str = "sign-in";
 pub const SERVER: &str = "--server";
 pub const NAME: &str = "--name";
-/// The flag of `skald sign-in` that answers whether this is the account's first device, and its
-/// answers.
-pub const FIRST_DEVICE: &str = "--first-device";
+/// The answers to a yes-or-no option.
 pub const YES: &str = "yes";
 pub const NO: &str = "no";
 /// The sign-out command.
@@ -49,11 +47,17 @@ pub const HOST_NAME: &str = "SKALD_HOST_NAME";
 /// How long a run may take before the test fails.
 pub const RUN_LIMIT: Duration = Duration::from_secs(90);
 
-/// `skald` with an empty environment but for what Windows needs to run any program with sockets:
-/// without `SystemRoot`, Winsock loads no provider, os error 10106.
+/// The setting that names the program that opens the browser, and the program no machine has that
+/// [`bare_skald`] names, so no run opens a browser unless its test names a stand-in.
+pub const BROWSER: &str = "BROWSER";
+pub const NO_BROWSER_PROGRAM: &str = "skald-test-no-browser";
+
+/// `skald` with an empty environment but for `BROWSER` naming no program, and what Windows needs
+/// to run any program with sockets: without `SystemRoot`, Winsock loads no provider, os error
+/// 10106.
 pub fn bare_skald() -> Command {
     let mut command = Command::new(CLIENT);
-    command.env_clear();
+    command.env_clear().env(BROWSER, NO_BROWSER_PROGRAM);
     #[cfg(windows)]
     if let Some(root) = std::env::var_os("SystemRoot") {
         command.env("SystemRoot", root);
