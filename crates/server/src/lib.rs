@@ -449,6 +449,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/channels/{channel}/queue-keys/{epoch}",
+            get(history::queue_key).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/channels/{channel}/queues",
             get(queues::list)
                 .post(queues::create)

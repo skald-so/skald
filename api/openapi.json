@@ -6710,6 +6710,144 @@
         }
       }
     },
+    "/spaces/{space}/channels/{channel}/queue-keys/{epoch}": {
+      "get": {
+        "operationId": "getQueueKey",
+        "summary": "The channel's queue key object of an epoch",
+        "description": "The queue key object of the epoch the server keeps, the first a member device of that epoch uploaded, as it encoded it (docs/protocol/queues.md, \"Queue key object\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a device in the channel in the space's latest revision or, for a service token's device, with the token's `send` permission for the channel. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone reads none.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "name": "epoch",
+            "in": "path",
+            "required": true,
+            "description": "The epoch of the channel's group.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The epoch's queue key object.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueKeyObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `no-queue-key`: the server keeps no object of the epoch.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/spaces/{space}/channels/{channel}/queues": {
       "get": {
         "operationId": "listQueues",
@@ -11321,6 +11459,20 @@
         "description": "A queue's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "QueueKeyObject": {
+        "type": "object",
+        "required": [
+          "queue_key"
+        ],
+        "properties": {
+          "queue_key": {
+            "description": "An encoded `queue-key` (docs/protocol/queues.md, \"Queue key object\"), in base64url without padding (RFC 4648, §5).",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "additionalProperties": false
       },
       "QueueRequest": {
         "description": "A new queue: its name, and any settings other than the defaults: `at-least-once`, a lease of 300 seconds and 5 attempts.",
