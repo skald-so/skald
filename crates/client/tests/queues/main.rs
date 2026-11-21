@@ -66,11 +66,14 @@
 #![allow(dead_code)]
 
 mod addressees;
+mod claimers;
 mod deadlines;
 mod hops;
 mod idempotency;
+mod limit;
 mod management;
 mod queuing;
+mod retries;
 mod sealed;
 mod unclean;
 
@@ -100,3 +103,9 @@ mod lines;
 mod replying;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
+
+// The presence values of the tests of the agent directory, with the MCP client they use.
+#[path = "../mcp_inbox/client.rs"]
+mod client;
+#[path = "../presence_directory/values.rs"]
+mod values;

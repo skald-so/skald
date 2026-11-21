@@ -25,8 +25,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use skald_crypto::{seal_task, sign_task};
 use skald_proto::{
-    Address, Cbor as _, ChannelId, DeviceId, IDEMPOTENCY_KEY_MAX, MessageId, Name, QueueId,
-    QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown, VersionRange,
+    AccountId, Address, Cbor as _, ChannelId, DeviceId, IDEMPOTENCY_KEY_MAX, MessageId, Name,
+    QueueId, QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown, VersionRange,
 };
 
 use crate::connection::{self, Method, printable};
@@ -87,6 +87,18 @@ impl Queue {
         )
     }
 
+    /// Its JSON object, with every field, in `channel`.
+    fn json(&self, channel: ChannelId) -> serde_json::Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "channel": channel.to_string(),
+            "mode": self.mode.name(),
+            "lease": self.lease,
+            "max_attempts": self.max_attempts,
+        })
+    }
+
     /// Its ID; fails for one that is no queue ID.
     fn id(&self) -> Result<QueueId, String> {
         self.id
@@ -144,14 +156,25 @@ impl Run<'_> {
     }
 }
 
-/// `skald queues`: lists the queues of the run's channel with their settings.
-pub fn list(run: &Run) -> Result<(), String> {
+/// `skald queues`: lists the queues of the run's channel with their settings; as JSON objects, one
+/// per line, if `json`.
+pub fn list(run: &Run, json: bool) -> Result<(), String> {
     recv::holding_warnings(run.dir, run.agent, || {
         let (mut synced, channel, _) = run.synced()?;
         let queues = listed(&mut synced.follower, (synced.space.id, channel))?;
-        println!("The queues of the channel {channel}:");
-        for queue in &queues {
-            println!("  {}", queue.line());
+        if json {
+            for queue in &queues {
+                println!("{}", queue.json(channel));
+            }
+        } else if run.agent {
+            for queue in &queues {
+                println!("{}", queue.line());
+            }
+        } else {
+            println!("The queues of the channel {channel}:");
+            for queue in &queues {
+                println!("  {}", queue.line());
+            }
         }
         Ok(())
     })
@@ -291,6 +314,8 @@ pub struct Enqueue<'a> {
     pub idempotency_key: Option<&'a str>,
     pub deadline: Option<&'a str>,
     pub text: &'a str,
+    /// Whether it says the task as a JSON object.
+    pub json: bool,
 }
 
 /// `skald enqueue`: enqueues the task `given` names in the run's channel, as `agent` if given,
@@ -323,7 +348,12 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         None => 0,
     };
     if agent.is_some() && hops > MOST_HOPS {
-        return Err(over_the_limit(agent, channel));
+        return Err(send::over_the_limit(
+            agent,
+            channel,
+            to.as_ref(),
+            "enqueued",
+        ));
     }
     if let Some(agent) = agent {
         (follower.state)
@@ -345,11 +375,8 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
     };
     let (epoch, pk) = clean_epoch(&follower, channel)?;
     let deadline = set.or_else(|| {
-        let others = match addressee {
-            Some(device) => !own_device(&follower, &devices, device),
-            None => others_may_claim(&follower, (&roster, &devices), channel),
-        };
-        others.then_some(now + WEEK)
+        let claimers = Claimers::of((&roster, &devices), channel, addressee);
+        claimers.others(follower.own.account).then_some(now + WEEK)
     });
     let from = send::sender(&follower, &roster, server, agent)?;
     let task = TaskId::generate();
@@ -401,9 +428,21 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
     let reference = reference(&follower.state, task);
     match answered.into_iter().find(|(one, _)| one.task == task) {
         Some((_, Answer::Stored)) => {
-            match agent {
-                Some(_) => println!("enqueued #{reference}"),
-                None => println!(
+            match (given.json, agent) {
+                (true, _) => println!(
+                    "{}",
+                    json!({
+                        "task": task.to_string(),
+                        "ref": reference,
+                        "channel": channel.to_string(),
+                        "queue": body.queue.to_string(),
+                        "queue_name": name.as_str(),
+                        "deadline": deadline,
+                        "device": addressee.map(|device| device.to_string()),
+                    })
+                ),
+                (false, Some(_)) => println!("enqueued #{reference}"),
+                (false, None) => println!(
                     "The task {task} (#{reference}) is in the queue {name} of the channel \
                      {channel}."
                 ),
@@ -430,21 +469,6 @@ const NOTHING: &str = "nothing is enqueued";
 /// What a run says of a task the server has not answered.
 const KEPT: &str =
     "the local state keeps it, and the next skald enqueue or skald recv uploads it first";
-
-/// Why `agent`'s task in `channel` is not enqueued: it is past the limit on replies without a
-/// human. Warns of it, which an agent's run holds for its person.
-fn over_the_limit(agent: Option<&Name>, channel: ChannelId) -> String {
-    let agent = agent.map_or_else(String::new, |agent| format!(" {agent}"));
-    eprintln!(
-        "skald: warning: the agent{agent} enqueued nothing in the channel {channel}: the agents \
-         answered each other {MOST_HOPS} times without a person; a person's message to one of \
-         them starts the count again"
-    );
-    format!(
-        "the agents answered each other {MOST_HOPS} times without a person; a person's message \
-         starts the count again; {NOTHING}"
-    )
-}
 
 /// `given` as an `idempotency_key`: its UTF-8 bytes, 1 to [`IDEMPOTENCY_KEY_MAX`] of them.
 fn idempotency_key(given: &str) -> Result<Vec<u8>, String> {
@@ -530,29 +554,58 @@ fn clean_epoch(follower: &Follower, channel: ChannelId) -> Result<(u64, [u8; 32]
     Ok((epoch, pk))
 }
 
-/// Whether `device` is one of the devices of `follower`'s account among `devices`.
-fn own_device(follower: &Follower, devices: &SpaceDevices, device: DeviceId) -> bool {
-    (devices.certs.iter()).any(|cert| {
-        let body = cert.body();
-        body.device == device && body.account == follower.own.account
-    })
+/// The accounts that may claim a task, each `None` for a device whose certificate the device
+/// does not know.
+#[derive(Debug)]
+enum Claimers {
+    /// Those of its addressee's device.
+    Addressee(Option<AccountId>),
+    /// With no addressee, the channel's members and the devices in its `services`.
+    Channel {
+        members: Vec<AccountId>,
+        services: Vec<Option<AccountId>>,
+    },
 }
 
-/// Whether a device of another account may claim a task of `channel` with no addressee: `roster`,
-/// the latest revision the device accepted, lists another account among the channel's members,
-/// or a `service` device in its `services` that is not of the device's account among `devices`.
-fn others_may_claim(
-    follower: &Follower,
-    (roster, devices): (&Roster, &SpaceDevices),
-    channel: ChannelId,
-) -> bool {
-    let body = roster.body();
-    let Some(listed) = body.channels.iter().find(|it| it.id == channel) else {
-        return false;
-    };
-    let own = follower.own.account;
-    (listed.members.iter()).any(|member| member.account != own)
-        || (listed.services.iter()).any(|&device| !own_device(follower, devices, device))
+impl Claimers {
+    /// Who may claim a task of `channel` to the device `addressee`, if any, by `roster`, the
+    /// latest revision the device accepted, and `devices`, its accounts' devices.
+    fn of(
+        (roster, devices): (&Roster, &SpaceDevices),
+        channel: ChannelId,
+        addressee: Option<DeviceId>,
+    ) -> Self {
+        let account_of = |device: DeviceId| {
+            (devices.certs.iter())
+                .map(|cert| cert.body())
+                .find(|body| body.device == device)
+                .map(|body| body.account)
+        };
+        if let Some(device) = addressee {
+            return Claimers::Addressee(account_of(device));
+        }
+        let body = roster.body();
+        let listed = body.channels.iter().find(|it| it.id == channel);
+        Claimers::Channel {
+            members: (listed.iter())
+                .flat_map(|it| it.members.iter().map(|member| member.account))
+                .collect(),
+            services: (listed.iter())
+                .flat_map(|it| it.services.iter().map(|&device| account_of(device)))
+                .collect(),
+        }
+    }
+
+    /// Whether a device of another account than `own` may claim the task.
+    fn others(&self, own: AccountId) -> bool {
+        let other = |account: &Option<AccountId>| *account != Some(own);
+        match self {
+            Claimers::Addressee(account) => other(account),
+            Claimers::Channel { members, services } => {
+                members.iter().any(|&member| member != own) || services.iter().any(other)
+            }
+        }
+    }
 }
 
 /// The reference, `#<ref>` without its `#`, of the task `task` among the messages the device of
@@ -669,6 +722,11 @@ fn upload(follower: &mut Follower, task: &TaskOutgoing) -> Answer {
         (&follower.token, &proof),
         &task.record,
     );
+    answer(sent)
+}
+
+/// The answer `sent`, the result of an upload, gives.
+fn answer(sent: Result<Vec<u8>, connection::Error>) -> Answer {
     match sent {
         Ok(_) => Answer::Stored,
         // A refused proof, a timeout, a rate limit and the server's failure change with time.
@@ -723,6 +781,58 @@ mod tests {
         let err = deadline("2027-01-15T08:00:00Z", 1_800_000_000).unwrap_err();
         assert!(err.contains("has passed"), "{err}");
         assert!(deadline("tomorrow", now).is_err());
+    }
+
+    /// A task stays waiting for a refused proof, a timeout, a rate limit, the server's failure or
+    /// no answer; any other refusal is final.
+    #[test]
+    fn only_lasting_refusals_are_final() {
+        let refused = |status| {
+            answer(Err(connection::Error::Refused {
+                status,
+                kind: "https://skald.so/problems/duplicate".to_owned(),
+                detail: "taken".to_owned(),
+                task: Some(TaskId::generate().to_string()),
+            }))
+        };
+        for status in [401, 408, 429, 500, 503] {
+            let answer = refused(status);
+            assert!(matches!(answer, Answer::Waiting(_)), "{status}: {answer:?}");
+        }
+        for status in [400, 403, 404, 409, 413] {
+            let answer = refused(status);
+            assert!(
+                matches!(answer, Answer::Refused { .. }),
+                "{status}: {answer:?}"
+            );
+        }
+        let unanswered = answer(Err(connection::Error::Timeout(Duration::from_secs(1))));
+        assert!(matches!(unanswered, Answer::Waiting(_)), "{unanswered:?}");
+        assert!(matches!(answer(Ok(Vec::new())), Answer::Stored));
+    }
+
+    /// Another account may claim a task to its device, or to one whose certificate is unknown;
+    /// with no addressee, when the channel lists another account as a member, or another
+    /// account's or an unknown device in its `services`.
+    #[test]
+    fn another_account_may_claim_by_the_addressee_or_the_channel() {
+        let (own, other) = (AccountId::generate(), AccountId::generate());
+        let channel = |members: &[AccountId], services: &[Option<AccountId>]| Claimers::Channel {
+            members: members.to_vec(),
+            services: services.to_vec(),
+        };
+        for (claimers, others) in [
+            (Claimers::Addressee(Some(own)), false),
+            (Claimers::Addressee(Some(other)), true),
+            (Claimers::Addressee(None), true),
+            (channel(&[own], &[]), false),
+            (channel(&[own], &[Some(own)]), false),
+            (channel(&[own, other], &[]), true),
+            (channel(&[own], &[Some(other)]), true),
+            (channel(&[own], &[Some(own), None]), true),
+        ] {
+            assert_eq!(claimers.others(own), others, "{claimers:?}");
+        }
     }
 
     /// A queue's line holds its name, its mode, its lease and its `max_attempts`.

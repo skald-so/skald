@@ -314,7 +314,7 @@ pub fn send_synced(
     reported: Reported,
 ) -> Result<(), String> {
     if counted(&synced.follower, agent).is_some() && draft.hops > MOST_HOPS {
-        return Err(over_the_limit(agent, channel, draft.to.as_ref()));
+        return Err(over_the_limit(agent, channel, draft.to.as_ref(), "sent"));
     }
     let Synced {
         mut follower,
@@ -386,23 +386,28 @@ pub fn send_synced(
     reported
 }
 
-/// Why the message of `agent`, none for a member service agent, to `to`, none for everyone, in
-/// `channel` is not sent: it is past the limit on replies without a human. Warns of it, which an
-/// agent's run holds for its person.
-fn over_the_limit(agent: Option<&Name>, channel: ChannelId, to: Option<&Address>) -> String {
+/// Why what `agent`, none for a member service agent, sends to `to`, none for everyone, in
+/// `channel` as `verb` says, such as `sent` or `enqueued`, goes nowhere: it is past the limit on
+/// replies without a human. Warns of it, which an agent's run holds for its person.
+pub fn over_the_limit(
+    agent: Option<&Name>,
+    channel: ChannelId,
+    to: Option<&Address>,
+    verb: &str,
+) -> String {
     let to = to.map_or_else(|| "every agent".to_owned(), Address::to_string);
     let agent = agent.map_or_else(
         || "this service agent".to_owned(),
         |it| format!("the agent {it}"),
     );
     eprintln!(
-        "skald: warning: {agent} sent nothing to {to} in the channel {channel}: the \
+        "skald: warning: {agent} {verb} nothing to {to} in the channel {channel}: the \
          agents answered each other {MOST_HOPS} times without a person; a person's message to one \
          of them starts the count again"
     );
     format!(
         "the agents answered each other {MOST_HOPS} times without a person; a person's message \
-         starts the count again; nothing is sent"
+         starts the count again; nothing is {verb}"
     )
 }
 

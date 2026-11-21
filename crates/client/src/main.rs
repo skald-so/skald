@@ -543,12 +543,16 @@ enum Command {
     },
     /// Lists the queues of a channel of a space this device follows, by default the default
     /// channel of the working directory's space, each with its mode, lease in seconds and
-    /// max_attempts; as an agent, only in the space of the agent's folder.
+    /// max_attempts; as an agent, only in the space of the agent's folder, with no ID.
     Queues {
         /// The channel's ID, as skald channels shows it [default: the default channel of the
         /// working directory's space].
         #[arg(long, value_name = "CHANNEL")]
         channel: Option<String>,
+        /// Says each queue as a JSON object on a line of its own, with every field: id, name,
+        /// channel, mode, lease and max_attempts.
+        #[arg(long)]
+        json: bool,
     },
     /// Creates a queue in a channel, by default the default channel of the working directory's
     /// space; its creator and the space's admins change and delete it.
@@ -633,6 +637,10 @@ enum Command {
         /// The text of the task's request.
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: String,
+        /// Says the task as a JSON object, with every field: task, ref, channel, queue,
+        /// queue_name, deadline and device, the addressee's.
+        #[arg(long)]
+        json: bool,
     },
     /// Replies to a message, in its channel, to its sender, a person included: as skald send
     /// sends, with the message's ID as its reply_to; as with --to, the reply is handed only to its
@@ -1481,6 +1489,8 @@ fn performed(operation: Operation) -> Result<(), String> {
                 Command::Recv { json: true, .. }
                     | Command::Send { json: true, .. }
                     | Command::Agents { json: true, .. }
+                    | Command::Queues { json: true, .. }
+                    | Command::Enqueue { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1694,11 +1704,11 @@ fn performed(operation: Operation) -> Result<(), String> {
                 json,
             )
         }),
-        Command::Queues { channel } => queue_command(
+        Command::Queues { channel, json } => queue_command(
             state_dir,
             (key_storage, (speaks, timeout)),
             (channel.as_deref(), agent.is_some()),
-            queues::list,
+            |run| queues::list(run, json),
         ),
         Command::CreateQueue {
             channel,
@@ -1750,6 +1760,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             idempotency_key,
             deadline,
             text,
+            json,
         } => {
             let given = queues::Enqueue {
                 queue: &queue,
@@ -1757,6 +1768,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                 idempotency_key: idempotency_key.as_deref(),
                 deadline: deadline.as_deref(),
                 text: &text,
+                json,
             };
             queue_command(
                 state_dir,
