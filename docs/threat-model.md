@@ -36,6 +36,7 @@ Also whoever takes over the server or its database.
 - Withhold certificates, revocations and roster revisions: a hidden revocation keeps a device trusted for those who do not see it, a hidden revision keeps clients on an older roster, and withholding a revocation from every member device delays the revoked device's Remove ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
+- Withhold an acceptance, so no admin's device admits its newcomer ([membership.md](protocol/membership.md#invite)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them, hand one task to two devices at once, an `at-most-once` one included, hand an old task out again until its `deadline`, and hand a device a task its claim did not ask for ([queues.md](protocol/queues.md#security-considerations)).
@@ -309,6 +310,7 @@ An OS account on the device's machine other than the one that runs the client.
 - link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
+- acceptances: the newcomer's account and handle;
 - IP addresses and times of connections and requests;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;

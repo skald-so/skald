@@ -85,6 +85,7 @@
   - folders compare as canonical paths, so a symlink binds as its target.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
+  - it admits one person;
   - its secret travels only in the link's fragment and never reaches the server;
   - the admin's device admits the newcomer by itself, after checking the newcomer's devices.
 - Formats, checks, and how changes reach the MLS groups: [protocol spec](../protocol/membership.md#roster).
