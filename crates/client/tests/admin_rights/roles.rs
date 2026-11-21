@@ -12,9 +12,7 @@ use crate::fixtures::strs;
 use crate::front::Front;
 use crate::kit::{Change, create_space, issue_channel, latest, received, revise, rosters};
 use crate::machine::{Finished, Machine};
-use crate::world::{
-    ADMIN, Person, next_by, next_with, run, set_role, space_certs, store, words,
-};
+use crate::world::{ADMIN, Person, next_by, next_with, run, set_role, space_certs, store, words};
 
 /// The role commands.
 pub const MAKE_ADMIN: &str = "make-admin";
