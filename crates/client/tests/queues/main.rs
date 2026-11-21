@@ -105,7 +105,8 @@ mod replying;
 #[path = "../trust_levels/senders.rs"]
 mod senders;
 
-// The presence values of the tests of the agent directory, with the MCP client they use.
+// The presence values of the tests of the agent directory, with the MCP client and the presence
+// helpers they use.
 #[path = "../mcp_inbox/client.rs"]
 mod client;
 #[path = "../presence_uploads/presence.rs"]
