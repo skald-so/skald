@@ -795,6 +795,7 @@ mod tests {
                 status: 503,
                 kind: "https://skald.so/problems/server-error".to_owned(),
                 detail: "down".to_owned(),
+                task: None,
             },
             connection::Error::TooOld {
                 supported: vec![9],
