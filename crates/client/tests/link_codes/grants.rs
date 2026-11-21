@@ -126,6 +126,7 @@ impl Granted {
                 issuer: Some(first.device),
                 issued: now(),
                 ssh: None,
+                github: None,
                 name: request.name.clone(),
                 unknown: Unknown::default(),
             },

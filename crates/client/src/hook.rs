@@ -5,9 +5,11 @@
 //!   session's folder, as the agent `--agent` names or, without it, the one the session's
 //!   `skald mcp` registers by default: of the client name Claude Code gives, [`CLAUDE_CODE`].
 //! - It gives the agent's waiting statuses and `own` messages as their lines, and the signal,
-//!   [`SIGNAL`], once for each message below `own`, which waits for `inbox` ([`compose`]). What it
-//!   prints stays within Claude Code's hook output limit, [`LIMIT`]: what does not fit waits for
-//!   the next run; a message longer than the limit is cut and ends with how to read it whole.
+//!   [`SIGNAL`], once for each message below `own`, which waits for `inbox`; under `inline`, such a
+//!   message's line after the warning line ([`compose`]), as the delivery settings say
+//!   ([`crate::delivery`]). What it prints stays within Claude Code's hook output limit,
+//!   [`LIMIT`]: what does not fit waits for the next run; a message longer than the limit is cut
+//!   and ends with how to read it whole.
 //! - `Stop` continues the turn with them; once Claude Code took its cap of continuations in a row
 //!   with no tool call between them, [`CAP`] unless `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` sets it,
 //!   whose next output it drops, the run leaves them waiting.
@@ -19,6 +21,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+use crate::forms::DATA_WARNING;
 
 /// The agent CLIs whose hooks `skald hook` handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
@@ -177,6 +181,13 @@ pub enum Waiting {
         line: String,
         reference: String,
     },
+    /// A message below `own` of the entry `seq` that goes in as its text, `inline`, its line and
+    /// reference.
+    Inline {
+        seq: u64,
+        line: String,
+        reference: String,
+    },
     /// A message below `own` of the entry `seq`, and whether its signal went.
     Below { seq: u64, signalled: bool },
 }
@@ -195,9 +206,9 @@ pub struct Given {
 }
 
 /// What a run on `event` gives of `waiting`, if anything: the signal first if a message below
-/// `own` waits whose signal did not go; then each status and `own` line, in order, while they fit
-/// within [`LIMIT`], the first cut if it alone does not fit. Its output is one JSON object of
-/// at most [`LIMIT`] characters.
+/// `own` waits whose signal did not go; then each status, `own` and `inline` line, in order, the
+/// first `inline` one after [`DATA_WARNING`], while they fit within [`LIMIT`], the first cut if it
+/// alone does not fit. Its output is one JSON object of at most [`LIMIT`] characters.
 pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
     let budget = LIMIT.saturating_sub(escaped(&output(event, "")).chars().count());
     let mut context = Context::default();
@@ -216,6 +227,7 @@ pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
     let mut statuses = Vec::new();
     let mut handed = Vec::new();
     let mut lines = 0;
+    let mut warned = false;
     for waiting in waiting {
         match waiting {
             Waiting::Below { .. } => {}
@@ -233,14 +245,29 @@ pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
                 seq,
                 line,
                 reference,
+            }
+            | Waiting::Inline {
+                seq,
+                line,
+                reference,
             } => {
-                if context.fits(line, budget) {
-                    context.push(line);
+                let warning =
+                    (matches!(waiting, Waiting::Inline { .. }) && !warned).then_some(DATA_WARNING);
+                let given: Vec<&str> = warning.into_iter().chain([line.as_str()]).collect();
+                if context.fits_all(&given, budget) {
+                    for line in given {
+                        context.push(line);
+                    }
+                    warned |= warning.is_some();
                     lines += 1;
                     handed.push(*seq);
                     continue;
                 }
                 if lines == 0 {
+                    // It is the last line the run gives.
+                    if let Some(warning) = warning {
+                        context.push(warning);
+                    }
                     let tail = cut_tail(reference);
                     let room = budget.saturating_sub(context.cost() + 2 + context.cost_of(&tail));
                     context.push(&cut(line, room));
@@ -300,7 +327,21 @@ impl Context {
 
     /// Whether `line` fits within `budget` after the lines.
     fn fits(&self, line: &str, budget: usize) -> bool {
-        self.taken + self.cost_of(line) <= budget
+        self.fits_all(&[line], budget)
+    }
+
+    /// Whether `lines` fit within `budget` after the lines.
+    fn fits_all(&self, lines: &[&str], budget: usize) -> bool {
+        let mut taken = self.taken;
+        for (at, line) in lines.iter().enumerate() {
+            let end = if self.lines.is_empty() && at == 0 {
+                0
+            } else {
+                2
+            };
+            taken += end + escaped(line).chars().count();
+        }
+        taken <= budget
     }
 
     fn push(&mut self, line: &str) {
@@ -404,6 +445,60 @@ mod tests {
         assert_eq!((given.statuses, given.handed), (vec![7], vec![2]));
         assert_eq!(given.signalled, vec![1, 3]);
         assert!(given.output.contains(r#""hookEventName":"Stop""#));
+    }
+
+    fn inline(seq: u64, length: usize) -> Waiting {
+        let head = format!("[bob/review · bs · peer] #r{seq}: ");
+        let line = format!("{head}{}", "y".repeat(length - head.chars().count()));
+        Waiting::Inline {
+            seq,
+            line,
+            reference: format!("r{seq}"),
+        }
+    }
+
+    /// `inline` lines go in, handed over, after one warning line before the first of them; `own`
+    /// lines before it get none.
+    #[test]
+    fn inline_lines_follow_one_warning() {
+        let waiting = [own(1, 40), inline(2, 40), own(3, 40), inline(4, 40)];
+        let given = compose(Event::PostToolUse, &waiting).unwrap();
+        let shown = context(&given);
+        let lines: Vec<&str> = shown.lines().collect();
+        assert_eq!(lines.len(), 5, "{shown}");
+        assert!(lines[0].contains("#r1"), "{shown}");
+        assert_eq!(lines[1], DATA_WARNING);
+        assert!(
+            lines[2].contains("#r2") && lines[4].contains("#r4"),
+            "{shown}"
+        );
+        assert_eq!(given.handed, vec![1, 2, 3, 4]);
+        assert!(given.signalled.is_empty());
+
+        let given = compose(Event::PostToolUse, &[own(1, 100)]).unwrap();
+        assert!(!context(&given).contains(DATA_WARNING));
+    }
+
+    /// An `inline` line that does not fit after its warning waits; one longer than the limit alone
+    /// is cut after its warning, within the limit.
+    #[test]
+    fn inline_lines_stay_within_the_limit() {
+        let given = compose(Event::PostToolUse, &[own(1, 9_850), inline(2, 100)]).unwrap();
+        assert_eq!(given.handed, vec![1]);
+        assert!(!context(&given).contains(DATA_WARNING));
+
+        let given = compose(Event::PostToolUse, &[inline(5, 12_000)]).unwrap();
+        assert_eq!(given.handed, vec![5]);
+        assert!(given.output.chars().count() <= LIMIT);
+        let shown = context(&given);
+        assert!(shown.starts_with(DATA_WARNING), "{shown}");
+        assert!(
+            shown
+                .lines()
+                .last()
+                .unwrap()
+                .contains("inbox with message #r5")
+        );
     }
 
     /// Lines that do not fit wait, in order; one longer than the limit alone is cut within it and

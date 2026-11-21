@@ -29,7 +29,9 @@ pub use anchors::{ANCHORS_LABEL, Anchors, AnchorsBody};
 pub use cbor::{
     Cbor, DecodeError, EncodingProblem, FieldProblem, MAX_DEPTH, NonEmpty, Unknown, signed_data,
 };
-pub use cert::{CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL};
+pub use cert::{
+    CERT_LABEL, CERT_NAME_MAX, Cert, CertBody, DeviceKind, PROOF_LABEL, SSH_LABEL, SSH_NAMESPACE,
+};
 pub use content::{
     Attachment, Body, Content, Delegation, DelegationBody, GRANT_LABEL, Grant, GrantBody,
 };
