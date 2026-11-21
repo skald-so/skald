@@ -1204,7 +1204,12 @@ fn main() -> ExitCode {
         return link(operation, !one_shot, browser);
     }
     if let Command::Hook { cli, .. } = operation.command {
-        return run_hook(operation, cli, one_shot);
+        return match cli {
+            hook::Cli::Claude => run_hook(operation, cli, one_shot, None),
+            hook::Cli::Codex => {
+                patiently(move |gate| run_hook(operation, cli, one_shot, Some(gate)))
+            }
+        };
     }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
@@ -1333,9 +1338,15 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 }
 
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
-/// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
-/// what the run gives the session, and exits with 1 on a failure, never 2.
-fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
+/// folder, through the helper that runs, or one it starts unless `one_shot`, or here; a Codex hook
+/// runs here ([`codex_here`]). Prints only what the run gives the session, unless `gate` says the
+/// hook no longer waits for it, and exits with 1 on a failure, never 2.
+fn run_hook(
+    mut operation: Operation,
+    cli: hook::Cli,
+    one_shot: bool,
+    gate: Option<Gate>,
+) -> ExitCode {
     let cap = std::env::var(hook::CAP_SETTING).ok();
     let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
@@ -1377,18 +1388,51 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
         cli,
         input: Some(input),
     };
-    match cli {
-        hook::Cli::Claude => hooked(operation, &dir, starts, None),
-        hook::Cli::Codex => patiently(move |gate| hooked(operation, &dir, starts, Some(gate))),
+    if cli == hook::Cli::Codex && state::current(&dir) {
+        return codex_here(operation, &dir, starts, gate);
     }
+    hooked(operation, &dir, starts, gate)
 }
 
 /// Runs `operation`, a hook's, by the state in `dir` through the helper that runs, or one it
-/// starts if `starts`, or here. Prints only what the run gives the session, unless `gate` says the
-/// hook no longer waits for it, and exits with 1 on a failure, never 2.
+/// starts if `starts`, or here, printing what [`given`] lets through; exits with 1 on a failure.
 fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
-    // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
-    let given = move |stream, bytes: &[u8]| match (stream, &gate) {
+    let failed = |code| match code == ExitCode::SUCCESS {
+        true => code,
+        false => ExitCode::FAILURE,
+    };
+    let mut sink = given(gate.clone());
+    match helper::route_into(dir, &operation, (false, starts, false), &mut sink) {
+        Ok(helper::Route::Helped(code)) => failed(code),
+        // Held until the run exits.
+        Ok(helper::Route::Here(_lock)) => match output::into(given(gate), || here(operation)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// Runs `operation`, a Codex hook's, here by the state in `dir`, which has this client's schema,
+/// without the lock, so it never waits behind a run that holds it on the network: it only reads
+/// and writes the local state, whose WAL checkpoint waits for it. Then starts the helper, without
+/// waiting for it, if `starts`. Prints what [`given`] lets through; exits with 1 on a failure.
+fn codex_here(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
+    let timeout = operation.timeout;
+    let ran = output::into(given(gate), || here(operation));
+    if starts {
+        helper::start(dir, timeout);
+    }
+    match ran {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// What a hook's run gives the agent CLI: its output, unless `gate` says the hook no longer waits
+/// for it; not what else it says, such as its error.
+fn given(gate: Option<Gate>) -> impl FnMut(output::Stream, &[u8]) -> std::io::Result<()> + Clone {
+    move |stream, bytes: &[u8]| match (stream, &gate) {
         (output::Stream::Err, _) => Ok(()),
         (output::Stream::Out, None) => output::direct(stream, bytes),
         (output::Stream::Out, Some(gate)) => {
@@ -1400,28 +1444,16 @@ fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) ->
                 false => Err(std::io::Error::other("the hook no longer waits")),
             }
         }
-    };
-    let failed = |code| match code == ExitCode::SUCCESS {
-        true => code,
-        false => ExitCode::FAILURE,
-    };
-    let mut sink = given.clone();
-    match helper::route_into(dir, &operation, (false, starts, false), &mut sink) {
-        Ok(helper::Route::Helped(code)) => failed(code),
-        // Held until the run exits.
-        Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
-        },
-        Err(_) => ExitCode::FAILURE,
     }
 }
 
 /// Whether a hook still waits for its run's output.
 type Gate = std::sync::Arc<std::sync::Mutex<bool>>;
 
-/// Runs `run` on a thread of its own and waits for it at most [`codex::PATIENCE`]; then the run
-/// writes nothing more, and the hook exits with success, having printed what it wrote.
+/// Runs `run`, the whole of a Codex hook, its input's read included, on a thread of its own and
+/// waits for it at most [`codex::PATIENCE`], or as [`codex::PATIENCE_SETTING`] sets; then the run
+/// writes nothing more, and the hook exits
+/// with success, having printed what it wrote.
 fn patiently(run: impl FnOnce(Gate) -> ExitCode + Send + 'static) -> ExitCode {
     let gate: Gate = std::sync::Arc::new(std::sync::Mutex::new(true));
     let (done, finished) = std::sync::mpsc::channel();
@@ -1429,7 +1461,10 @@ fn patiently(run: impl FnOnce(Gate) -> ExitCode + Send + 'static) -> ExitCode {
     std::thread::spawn(move || {
         let _ = done.send(run(given));
     });
-    match finished.recv_timeout(codex::PATIENCE) {
+    let patience = (std::env::var(codex::PATIENCE_SETTING).ok())
+        .and_then(|seconds| seconds.trim().parse().ok())
+        .map_or(codex::PATIENCE, Duration::from_secs);
+    match finished.recv_timeout(patience) {
         Ok(code) => code,
         Err(_) => {
             // A write under way ends first.

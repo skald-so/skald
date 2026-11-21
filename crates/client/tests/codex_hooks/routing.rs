@@ -1,12 +1,12 @@
 //! Which session gets a message's signal: one of the agent the message is for; of that agent's
-//! live sessions, the one whose hook ran last when the message came; never one whose Codex process
-//! ended. A session keeps the helper running while its Codex process runs, and the helper exits
-//! idle once none does.
+//! live sessions, the one whose hook ran last when the message came, whatever hooks run after it;
+//! never one whose Codex process ended. A session keeps the helper running while its Codex process
+//! runs, also through the npm package's launcher, and the helper exits idle once none does.
 
 use std::thread;
 use std::time::Duration;
 
-use crate::codex::{Codex, CodexProcess, Event, assert_bare, hook_command};
+use crate::codex::{Codex, CodexProcess, Event, QUIET, assert_bare, hook_command};
 use crate::helped::{EXIT_LIMIT, IDLE_SETTING};
 use crate::solo::{API, WEB};
 
@@ -44,18 +44,36 @@ fn only_a_session_of_the_agent_a_message_is_for_gets_its_signal() {
 const TO_LATEST: &str = "codex routing test: api asks the web session that hooked last";
 
 /// Two sessions of web start, `older` first; then `older`'s turn starts and its `PostToolUse` runs
-/// and prints nothing, so its hook ran last. api sends web a message: `older`'s `PostToolUse` gives
-/// the signal, and `newer`'s `PostToolUse` then prints nothing.
+/// and prints nothing, so its hook ran last. api sends web a message, and the test waits [`QUIET`]
+/// while the helper takes it in. A third session of web, `newest`, starts; then `newest`'s and
+/// `newer`'s `PostToolUse` print nothing, `older`'s gives the signal, and `newer`'s and `newest`'s
+/// then print nothing.
 #[test]
 fn of_two_live_sessions_of_an_agent_the_one_whose_hook_ran_last_gets_the_signal() {
     let codex = Codex::new(4_927_010_001, "ada-codex-two-sessions");
-    let (older, newer) = (codex.thread_of(WEB), codex.thread_of(WEB));
+    let (older, newer, newest) = (
+        codex.thread_of(WEB),
+        codex.thread_of(WEB),
+        codex.thread_of(WEB),
+    );
     codex.starts(&older);
     codex.starts(&newer);
     codex.busy(&older);
     codex.silent(&older, Event::PostToolUse, "older, with nothing waiting");
 
     let msg_id = codex.web.own(TO_LATEST);
+    thread::sleep(QUIET);
+    codex.starts(&newest);
+    codex.silent(
+        &newest,
+        Event::PostToolUse,
+        "newest, which hooked after it came",
+    );
+    codex.silent(
+        &newer,
+        Event::PostToolUse,
+        "newer, which hooked after it came",
+    );
 
     let signal = codex.gives(&older, Event::PostToolUse);
     assert_bare(&signal, &[TO_LATEST], &[msg_id], &[]);
@@ -63,6 +81,11 @@ fn of_two_live_sessions_of_an_agent_the_one_whose_hook_ran_last_gets_the_signal(
         &newer,
         Event::PostToolUse,
         "newer, after older got the signal",
+    );
+    codex.silent(
+        &newest,
+        Event::PostToolUse,
+        "newest, after older got the signal",
     );
 }
 
@@ -113,6 +136,50 @@ fn helper_runs_while_a_session_lives_and_exits_once_none_does() {
     let command = hook_command(&codex.helped, &web, &[(IDLE_SETTING, SHORT_IDLE)]);
     (process.run(&command, &web.input(Event::SessionStart))).assert_silent("SessionStart");
     (codex.hook_by(&mut process, &web, Event::PostToolUse)).assert_silent("PostToolUse");
+    let helper = codex.helped.one_helper();
+    thread::sleep(LIVE_FOR);
+    assert!(
+        codex.helped.helpers().contains(&helper),
+        "the helper exited while the session lived"
+    );
+
+    process.end();
+    codex.helped.await_exit(helper, EXIT_LIMIT);
+}
+
+/// The npm package's launcher's setting of its own process and its parent's.
+#[cfg(unix)]
+const LAUNCHER: &str = "SKALD_LAUNCHER";
+
+/// As [`helper_runs_while_a_session_lives_and_exits_once_none_does`], with each hook run through a
+/// launcher as the npm package's: a process between Codex and `skald` that exits with it and gives
+/// it [`LAUNCHER`]. The helper still runs after [`LIVE_FOR`], and exits once the Codex process does.
+#[cfg(unix)]
+#[test]
+fn a_session_through_the_npm_launcher_lives_while_its_codex_process_runs() {
+    let codex = Codex::new(4_927_012_002, "ada-codex-npm-launcher");
+    let web = codex.thread_of(WEB);
+    let mut process = CodexProcess::start();
+    codex.helped.assert_none();
+
+    let mut launched = |event: Event| {
+        let hook = hook_command(&codex.helped, &web, &[(IDLE_SETTING, SHORT_IDLE)]);
+        let mut command = std::process::Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(format!("{LAUNCHER}=\"$$ $PPID\" \"$0\" \"$@\"; exit $?"))
+            .arg(hook.get_program())
+            .args(hook.get_args());
+        for (name, value) in hook.get_envs() {
+            if let Some(value) = value {
+                command.env(name, value);
+            }
+        }
+        command.current_dir(hook.get_current_dir().expect("the session's folder"));
+        (process.run(&command, &web.input(event))).assert_silent(event.name());
+    };
+    launched(Event::SessionStart);
+    launched(Event::PostToolUse);
     let helper = codex.helped.one_helper();
     thread::sleep(LIVE_FOR);
     assert!(

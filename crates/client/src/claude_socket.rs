@@ -45,7 +45,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::state::{ClaudeSession, State};
-use crate::{folders, hook, output, recv, secrets};
+use crate::{hook, output, recv, secrets};
 
 /// The statuses of the receipts that say a line did not reach the model.
 const FAILING: [&str; 5] = ["held", "expired", "refused", "dropped", "denied"];
@@ -65,17 +65,13 @@ pub fn register(dir: &Path, agent: &Name, session: &hook::Session) -> Result<(),
     let (Some(id), Some(file), Some(socket)) = (&session.id, &session.file, &session.socket) else {
         return Ok(());
     };
-    let Ok(space) = folders::working_space(dir) else {
+    let Some((state, space, folder)) = hook::registering(dir, agent)? else {
         return Ok(());
     };
-    let folder = std::env::current_dir()
-        .map_err(|err| format!("cannot read the working directory: {err}"))?;
-    let state = State::open(dir).map_err(text)?;
-    state.add_agent(space.id, agent.as_str()).map_err(text)?;
     let registered = ClaudeSession {
         position: 0,
         session: id.clone(),
-        space: space.id,
+        space,
         agent: agent.as_str().to_owned(),
         folder,
         socket: socket.clone(),
@@ -474,25 +470,39 @@ impl Served {
             .collect()
     }
 
-    /// Runs as `agent` in its `folder`, its output dropped, then goes back to `dir`: whether the
-    /// run did not fail; `None` if it panicked.
+    /// Runs as `agent` in its `folder`, as [`run_as`].
     fn run(&self, dir: &Path, folder: &Path, agent: &str) -> Option<bool> {
-        let Ok(agent) = crate::agents::name(agent) else {
-            return Some(false);
-        };
-        let (storage, speaks, timeout) = self.settings;
-        let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-            output::into(
-                |_, _| Ok(()),
-                || {
-                    std::env::set_current_dir(folder).map_err(|err| err.to_string())?;
-                    recv::to_sessions(dir, storage, (speaks, timeout), &agent)
-                },
-            )
-        }));
-        let _ = std::env::set_current_dir(dir);
-        ran.ok().map(|ran| ran.is_ok())
+        run_as(
+            self.settings,
+            dir,
+            (folder, agent),
+            |storage, settings, agent| recv::to_sessions(dir, storage, settings, agent).map(drop),
+        )
     }
+}
+
+/// Runs `run` with `settings` as `agent` in its `folder`, its output dropped, then goes back to
+/// `dir`, the helper's: whether the run did not fail; `None` if it panicked.
+pub fn run_as(
+    (storage, speaks, timeout): Settings,
+    dir: &Path,
+    (folder, agent): (&Path, &str),
+    run: impl FnOnce(secrets::Storage, (VersionRange, Duration), &Name) -> Result<(), String>,
+) -> Option<bool> {
+    let Ok(agent) = crate::agents::name(agent) else {
+        return Some(false);
+    };
+    let ran = panic::catch_unwind(AssertUnwindSafe(|| {
+        output::into(
+            |_, _| Ok(()),
+            || {
+                std::env::set_current_dir(folder).map_err(|err| err.to_string())?;
+                run(storage, (speaks, timeout), &agent)
+            },
+        )
+    }));
+    let _ = std::env::set_current_dir(dir);
+    ran.ok().map(|ran| ran.is_ok())
 }
 
 /// The state in `dir`, opened once into `state`; `None` if it does not open.

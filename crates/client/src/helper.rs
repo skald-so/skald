@@ -234,6 +234,15 @@ pub fn route_into(
     Err("the helper of the local state keeps going away; run the command again".to_owned())
 }
 
+/// Starts the helper of the state in `dir` unless one runs, without waiting for it.
+pub fn start(dir: &Path, timeout: Duration) {
+    if let Ok(dir) = std::path::absolute(dir)
+        && !running(&dir)
+    {
+        let _ = spawn(&dir, timeout);
+    }
+}
+
 /// Asks the helper of the state in `dir`, if one runs, to exit, so a sign-in takes the lock; fails
 /// for a helper newer than this run.
 pub fn stop(dir: &Path, timeout: Duration) -> Result<(), String> {

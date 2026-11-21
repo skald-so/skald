@@ -2889,23 +2889,9 @@ impl State {
         Ok(signalled.into_iter().map(|(seq, _)| seq).collect())
     }
 
-    /// Records that the hook of the agent `agent` gave the signal of the kept message `seq`.
-    pub fn signal_given(&self, seq: u64, agent: &str) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
-            params![sql_seq(seq)?, agent],
-        )?;
-        Ok(())
-    }
-
     /// Registers the Claude Code session `session`, after every other, in place of its earlier
     /// registration, if any.
     pub fn register_claude(&self, session: &ClaudeSession) -> Result<(), Error> {
-        let text = |path: &Path| {
-            path.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
-        };
         let tx = self.db.unchecked_transaction()?;
         tx.execute(
             "DELETE FROM claude_session WHERE session = ?1",
@@ -2918,10 +2904,10 @@ impl State {
                 session.session,
                 session.space.to_string(),
                 session.agent,
-                text(&session.folder)?,
-                text(&session.socket)?,
+                path_text(&session.folder)?,
+                path_text(&session.socket)?,
                 session.token,
-                text(&session.file)?,
+                path_text(&session.file)?,
             ],
         )?;
         tx.commit()?;
@@ -2979,13 +2965,8 @@ impl State {
     /// Registers the Codex session `session`, or updates its registration, as the one whose hook
     /// ran last: a session file or config home it does not give stays as registered.
     pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
-        let text = |path: &Path| {
-            path.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
-        };
-        let file = session.file.as_deref().map(text).transpose()?;
-        let home = session.home.as_deref().map(text).transpose()?;
+        let file = session.file.as_deref().map(path_text).transpose()?;
+        let home = session.home.as_deref().map(path_text).transpose()?;
         self.db.execute(
             "INSERT INTO codex_session
                  (thread, space, agent, folder, file, home, process, busy, hooked)
@@ -3000,7 +2981,7 @@ impl State {
                 session.thread,
                 session.space.to_string(),
                 session.agent,
-                text(&session.folder)?,
+                path_text(&session.folder)?,
                 file,
                 home,
                 session.process,
@@ -3076,8 +3057,8 @@ impl State {
         )
     }
 
-    /// Records that a Codex session's hook gave the signal of each of the kept messages `seqs` that
-    /// wait for the agent `agent`.
+    /// Records that a hook of the agent `agent` gave the signal of each of the kept messages
+    /// `seqs`.
     pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
         for seq in seqs {
@@ -3845,6 +3826,13 @@ impl State {
     }
 }
 
+/// `path` as the state keeps it: text; fails on one that is not UTF-8.
+fn path_text(path: &Path) -> Result<String, Error> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
+}
+
 /// `seq` as SQLite holds it.
 fn sql_seq(seq: u64) -> Result<i64, Error> {
     i64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))
@@ -4458,6 +4446,17 @@ fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<
         params![revocation, pending],
     )?;
     Ok(())
+}
+
+/// Whether the state in `dir` has the schema of this client's last migration, read without
+/// migrating it.
+pub fn current(dir: &Path) -> bool {
+    let latest = MIGRATIONS.len();
+    let version = Connection::open(dir.join(FILE)).and_then(|db| {
+        db.busy_timeout(std::time::Duration::from_secs(1))?;
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+    });
+    version.is_ok_and(|version| usize::try_from(version) == Ok(latest))
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.

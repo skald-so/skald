@@ -1162,9 +1162,7 @@ fn hand_over_hook(
         for position in &given.statuses {
             state.status_taken_by_agent(*position).map_err(text)?;
         }
-        for seq in &given.signalled {
-            state.signal_given(*seq, agent.as_str()).map_err(text)?;
-        }
+        (state.signals_given(&given.signalled, agent.as_str())).map_err(text)?;
     }
     let handed = given.map(|given| given.handed).unwrap_or_default();
     for seq in handed.iter().chain(&unopened) {

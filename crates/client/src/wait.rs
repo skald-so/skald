@@ -437,7 +437,7 @@ impl Sessions {
     fn looked(&mut self, dir: &Path, before: &mut BTreeSet<uploads::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         let claude = (self.claude.as_ref()).is_some_and(claude_socket::Served::looks)
-            || (self.codex.as_ref()).is_some_and(codex::Served::looks);
+            || (self.codex.as_mut()).is_some_and(|codex| codex.looks(dir));
         if self.waiting.is_empty() && !claude {
             let mut idle = Watch::default();
             idle.retry_at = self.watch.retry_at;

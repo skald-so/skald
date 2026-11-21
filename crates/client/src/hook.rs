@@ -16,10 +16,15 @@
 //!   failure, which exits with 1, never with 2, which would keep a turn going.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use skald_proto::{Name, SpaceId};
+
+use crate::devices::text;
+use crate::folders;
+use crate::state::State;
 
 /// The agent CLIs whose hooks `skald hook` handles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum, Serialize, Deserialize)]
@@ -132,7 +137,8 @@ pub struct Session {
     pub process: Option<u32>,
 }
 
-/// The hook input on `from`, with the cap `cap` sets, if any; fails on input that is not one.
+/// The hook input on `from`, its first JSON object, with the cap `cap` sets, if any; fails on input
+/// that is not one.
 pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
     #[derive(Deserialize)]
     struct Given {
@@ -145,10 +151,12 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         #[serde(default)]
         transcript_path: Option<PathBuf>,
     }
-    let mut bytes = Vec::new();
-    (from.take(INPUT_MOST).read_to_end(&mut bytes))
-        .map_err(|err| format!("cannot read the hook input: {err}"))?;
-    let given: Given = serde_json::from_slice(&bytes)
+    // Read up to the end of the object only: a shell between the CLI and the hook may never end
+    // the input.
+    let given: Given = serde_json::Deserializer::from_reader(from.take(INPUT_MOST))
+        .into_iter()
+        .next()
+        .ok_or("the hook input is empty")?
         .map_err(|err| format!("the hook input is malformed: {err}"))?;
     let event = match given.hook_event_name.as_str() {
         "SessionStart" => Some(Event::SessionStart),
@@ -174,6 +182,20 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
             process: None,
         },
     })
+}
+
+/// What registers a session of `agent` whose folder is the working directory, by the state in
+/// `dir`: the state, with the agent added to the folder's space, the space and the folder; `None`
+/// in a folder in no space.
+pub fn registering(dir: &Path, agent: &Name) -> Result<Option<(State, SpaceId, PathBuf)>, String> {
+    let Ok(space) = folders::working_space(dir) else {
+        return Ok(None);
+    };
+    let folder = std::env::current_dir()
+        .map_err(|err| format!("cannot read the working directory: {err}"))?;
+    let state = State::open(dir).map_err(text)?;
+    state.add_agent(space.id, agent.as_str()).map_err(text)?;
+    Ok(Some((state, space.id, folder)))
 }
 
 /// `line`, the line of the message `#<reference>`, as Skald puts it into a session at once: whole
@@ -389,6 +411,25 @@ mod tests {
         let taken = input(other.as_bytes(), Some("many")).unwrap();
         assert_eq!((taken.event, taken.cap), (None, CAP));
         assert!(input(&b"{\"cwd\""[..], None).is_err());
+    }
+
+    /// The input is its first object: the run reads no further, as on an input a shell between
+    /// the CLI and the hook never ends.
+    #[test]
+    fn input_ends_with_its_object() {
+        struct Endless(&'static [u8]);
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                assert!(!self.0.is_empty(), "read past the object");
+                let taken = self.0.len().min(buf.len());
+                buf[..taken].copy_from_slice(&self.0[..taken]);
+                self.0 = &self.0[taken..];
+                Ok(taken)
+            }
+        }
+        let given = Endless(br#" {"hook_event_name":"PostToolUse","cwd":"/w"}"#);
+        let taken = input(given, None).unwrap();
+        assert_eq!(taken.event, Some(Event::PostToolUse));
     }
 
     /// Nothing waiting, or only messages whose signal went, gives nothing.

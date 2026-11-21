@@ -4,24 +4,24 @@
 //! - `skald hook codex` is the handler of Codex's `SessionStart`, `PostToolUse`,
 //!   `UserPromptSubmit` and `Stop`, as the agent the session's `skald mcp` registers: the one
 //!   `--agent` names, or the default name of [`hook::CODEX`]. Codex runs each hook as its own
-//!   child, so the hook's parent is the process that runs the session ([`parent`]).
+//!   child, so the hook's parent, past the npm package's launcher and Windows' shells, is the
+//!   process that runs the session ([`parent`]).
 //! - Each hook registers the session, by its thread, with its folder's space, its agent, its
 //!   session file, its config home and its Codex process, as the one whose hook ran last
-//!   ([`hook`]); `SessionStart` starts the helper when none runs. In a folder in no space nothing
-//!   registers and the hooks print nothing.
+//!   ([`hook`]); `SessionStart` starts the helper when none runs, without waiting for it. In a
+//!   folder in no space nothing registers and the hooks print nothing.
 //! - A session is busy from a hook of its turn until the `Stop` that ends the turn. It lives while
 //!   its Codex process runs ([`runs`]); the helper keeps running meanwhile ([`Served`]).
 //! - Each message that waits for the agent goes to one of its live sessions: the one whose hook
-//!   ran last before the message was first seen, or, once that one ended, the one whose hook ran
-//!   last then. Its signal, [`hook::SIGNAL`], is the only thing of it that goes into a session:
+//!   ran last before the first hook of the agent that saw the message, or, once that one ended,
+//!   the one whose hook ran last then. Its signal, [`hook::SIGNAL`], is the only thing of it that goes into a session:
 //!   `PostToolUse` and `UserPromptSubmit` add it as context, `Stop` continues the turn with it,
 //!   once for the messages whose signal did not go. Otherwise every hook prints nothing.
-//! - A hook answers from the local state, through the helper or here, and never waits on the
-//!   network: the helper takes in what comes for the sessions' spaces ([`Served`]), and a hook
-//!   waits for the helper at most [`PATIENCE`], then prints nothing.
+//! - A hook answers from the local state and never waits on the network: it runs without the
+//!   lock, which a run on the network may hold; the helper takes in what comes for the sessions'
+//!   spaces ([`Served`]). A hook that has not finished within [`PATIENCE`] prints nothing more.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -32,10 +32,13 @@ use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
 use crate::state::{CodexSession, State};
-use crate::{claude_socket, folders, hook, recv};
+use crate::{claude_socket, hook, recv};
 
-/// How long a hook waits for its run, through the helper or here, before it prints nothing.
+/// How long a hook waits for its run before it prints nothing.
 pub const PATIENCE: Duration = Duration::from_secs(3);
+
+/// The setting that changes [`PATIENCE`], in seconds, for tests.
+pub const PATIENCE_SETTING: &str = "SKALD_HOOK_PATIENCE";
 
 /// Codex's hook output limit is about 2,500 tokens; a token takes at least a byte, so an output of
 /// at most this many bytes is within it.
@@ -58,16 +61,12 @@ pub fn hook(
     let Some(thread) = &session.id else {
         return Ok(());
     };
-    let Ok(space) = folders::working_space(dir) else {
+    let Some((state, space, folder)) = hook::registering(dir, agent)? else {
         return Ok(());
     };
-    let folder = std::env::current_dir()
-        .map_err(|err| format!("cannot read the working directory: {err}"))?;
-    let state = State::open(dir).map_err(text)?;
-    state.add_agent(space.id, agent.as_str()).map_err(text)?;
     let mut this = CodexSession {
         thread: thread.clone(),
-        space: space.id,
+        space,
         agent: agent.as_str().to_owned(),
         folder,
         file: session.file.clone(),
@@ -76,19 +75,29 @@ pub fn hook(
         busy: false,
         hooked: 0,
     };
-    if event != hook::Event::SessionStart {
-        let signalled = signals(&state, &this)?;
-        if !signalled.is_empty() {
-            output::write(Stream::Out, output_of(event).as_bytes())
-                .map_err(|err| format!("cannot write the signal to the output: {err}"))?;
-            (state.signals_given(&signalled, agent.as_str())).map_err(text)?;
-            this.busy = true;
-        } else {
-            // A `Stop` that gives nothing ends the turn.
-            this.busy = !matches!(event, hook::Event::Stop { .. });
-        }
+    // What waits goes to a session before this one counts as the one whose hook ran last.
+    let mut signalled = signals(&state, &this)?;
+    if event == hook::Event::SessionStart {
+        signalled.clear();
     }
+    if !signalled.is_empty() {
+        output::write(Stream::Out, output_of(event).as_bytes())
+            .map_err(|err| format!("cannot write the signal to the output: {err}"))?;
+        (state.signals_given(&signalled, agent.as_str())).map_err(text)?;
+    }
+    this.busy = busy_after(event, !signalled.is_empty());
     state.register_codex(&this).map_err(text)
+}
+
+/// Whether a session is busy after its hook on `event`, which gave the signal if `signalled`: a
+/// session starts idle, a hook of its turn makes it busy, and a `Stop` that gives nothing ends the
+/// turn.
+fn busy_after(event: hook::Event, signalled: bool) -> bool {
+    match event {
+        hook::Event::SessionStart | hook::Event::SessionEnd => false,
+        hook::Event::Stop { .. } => signalled,
+        hook::Event::PostToolUse | hook::Event::UserPromptSubmit => true,
+    }
 }
 
 /// The `seq` of each kept message that waits for the agent of `this`, a session whose hook runs,
@@ -160,13 +169,32 @@ fn output_of(event: hook::Event) -> String {
     printed
 }
 
-/// The ID of the process that runs this one, as Codex runs a hook; on Windows, the parent of a
-/// shell between them.
+/// The setting by which the launcher of the npm package (`npm/skald.js`) tells the `skald` it runs
+/// its own process ID and its parent's, space-separated.
+pub const LAUNCHER: &str = "SKALD_LAUNCHER";
+
+/// The ID of the process that runs this one, as Codex runs a hook: past the npm package's launcher
+/// ([`LAUNCHER`]) and, on Windows, the shells between them.
 pub fn parent() -> Option<u32> {
+    let launcher = std::env::var(LAUNCHER)
+        .ok()
+        .and_then(|given| launcher_of(&given));
     #[cfg(unix)]
-    return Some(std::os::unix::process::parent_id());
+    {
+        let parent = std::os::unix::process::parent_id();
+        Some(match launcher {
+            Some((launcher, above)) if launcher == parent => above,
+            _ => parent,
+        })
+    }
     #[cfg(windows)]
-    return windows::parent();
+    return windows::parent(launcher.map(|(launcher, _)| launcher));
+}
+
+/// The launcher's process ID and its parent's, as [`LAUNCHER`] gives them.
+fn launcher_of(given: &str) -> Option<(u32, u32)> {
+    let (launcher, above) = given.trim().split_once(' ')?;
+    Some((launcher.parse().ok()?, above.trim().parse().ok()?))
 }
 
 /// Whether the process `process` runs; one not known counts as running.
@@ -203,23 +231,32 @@ mod windows {
     /// The shells a hook's command may run in, whose parent then runs the session.
     const SHELLS: [&str; 3] = ["cmd.exe", "powershell.exe", "pwsh.exe"];
 
-    /// The parent of this process, or of the shell that is its parent.
-    pub fn parent() -> Option<u32> {
+    /// The nearest process above this one that is neither a shell nor `launcher`.
+    pub fn parent(launcher: Option<u32>) -> Option<u32> {
         let processes = snapshot()?;
         let parent_of = |pid: u32| {
             (processes.iter())
                 .find(|(each, _, _)| *each == pid)
-                .map(|(_, parent, name)| (*parent, name.clone()))
+                .map(|(_, parent, _)| *parent)
         };
-        let (parent, _) = parent_of(std::process::id())?;
-        match parent_of(parent) {
-            Some((grandparent, name))
-                if SHELLS.iter().any(|shell| shell.eq_ignore_ascii_case(&name)) =>
-            {
-                Some(grandparent)
+        let skipped = |pid: u32| {
+            Some(pid) == launcher
+                || (processes.iter()).any(|(each, _, name)| {
+                    *each == pid && SHELLS.iter().any(|shell| shell.eq_ignore_ascii_case(name))
+                })
+        };
+        let mut process = parent_of(std::process::id())?;
+        // Within as many steps as there are processes, even if reused IDs make a loop.
+        for _ in 0..processes.len() {
+            if !skipped(process) {
+                break;
             }
-            _ => Some(parent),
+            match parent_of(process) {
+                Some(above) if above != process => process = above,
+                _ => break,
+            }
         }
+        Some(process)
     }
 
     /// Each process's ID, its parent's and its executable's name.
@@ -268,11 +305,14 @@ mod windows {
 
 /// The Codex sessions the helper serves: it ends those whose Codex process ended, keeps running
 /// while one with a known process lives, and takes in what comes for their spaces, so their hooks
-/// find it in the local state.
+/// find it in the local state. Hooks register without it, so it reads the registrations again at
+/// least every [`ALIVE_EVERY`].
 pub struct Served {
     settings: claude_socket::Settings,
     /// Whether the registrations may have changed: a command ran.
     reload: bool,
+    /// When it last read the registrations.
+    loaded: Option<Instant>,
     live: BTreeMap<String, Live>,
     /// When the last intake failed, if it did.
     failed: Option<Instant>,
@@ -303,6 +343,7 @@ impl Served {
         Served {
             settings,
             reload: true,
+            loaded: None,
             live: BTreeMap::new(),
             failed: None,
         }
@@ -318,18 +359,20 @@ impl Served {
         (self.live.values()).any(|live| live.session.process.is_some())
     }
 
-    /// Whether the next look has anything to do.
-    pub fn looks(&self) -> bool {
-        self.reload || !self.live.is_empty()
-    }
-
-    /// Serves the sessions registered in the state in `dir`, `came` what came on the connection:
-    /// ends those whose Codex process ended; takes in once for each space of a session it has not
-    /// taken in for, or that `came` concerns. Gives whether it took in; `None` once a run panicked.
-    pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
-        if std::mem::take(&mut self.reload) {
+    /// Whether a session is registered in the state in `dir`, read again if due.
+    pub fn looks(&mut self, dir: &Path) -> bool {
+        let due = (self.loaded).is_none_or(|loaded| loaded.elapsed() >= ALIVE_EVERY);
+        if std::mem::take(&mut self.reload) || due {
             self.load(dir);
         }
+        !self.live.is_empty()
+    }
+
+    /// Serves the sessions registered in the state in `dir` ([`Served::looks`]), `came` what came
+    /// on the connection: ends those whose Codex process ended; takes in once for each space of a session it has not
+    /// taken in for, or that `came` concerns. Gives whether it took in; `None` once a run panicked.
+    pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
+        self.looks(dir);
         let gone: Vec<String> = (self.live.iter_mut())
             .filter_map(|(thread, live)| (!live.runs()).then(|| thread.clone()))
             .collect();
@@ -365,6 +408,7 @@ impl Served {
 
     /// Takes the registrations from the state in `dir`, keeping what it has of each it served.
     fn load(&mut self, dir: &Path) {
+        self.loaded = Some(Instant::now());
         let Ok(registered) = State::open(dir).and_then(|state| state.codex_sessions()) else {
             return;
         };
@@ -383,24 +427,14 @@ impl Served {
         }
     }
 
-    /// Takes in as `agent` in its `folder`, handing nothing over, its output dropped, then goes
-    /// back to `dir`: whether the run did not fail; `None` if it panicked.
+    /// Takes in as `agent` in its `folder`, handing nothing over ([`claude_socket::run_as`]).
     fn run(&self, dir: &Path, folder: &Path, agent: &str) -> Option<bool> {
-        let Ok(agent) = crate::agents::name(agent) else {
-            return Some(false);
-        };
-        let (storage, speaks, timeout) = self.settings;
-        let ran = panic::catch_unwind(AssertUnwindSafe(|| {
-            output::into(
-                |_, _| Ok(()),
-                || {
-                    std::env::set_current_dir(folder).map_err(|err| err.to_string())?;
-                    recv::hold_run(dir, storage, (speaks, timeout), &agent)
-                },
-            )
-        }));
-        let _ = std::env::set_current_dir(dir);
-        ran.ok().map(|ran| ran.is_ok())
+        claude_socket::run_as(
+            self.settings,
+            dir,
+            (folder, agent),
+            |storage, settings, agent| recv::hold_run(dir, storage, settings, agent),
+        )
     }
 }
 
@@ -441,5 +475,98 @@ mod tests {
         assert!(runs(Some(std::process::id())));
         assert!(runs(parent()));
         assert!(runs(None));
+    }
+
+    /// A session is idle after `SessionStart` and after a `Stop` that gives nothing, and busy after
+    /// any other hook of its turn.
+    #[test]
+    fn busy_from_a_hook_of_its_turn_until_a_stop_that_gives_nothing() {
+        for signalled in [false, true] {
+            assert!(!busy_after(hook::Event::SessionStart, signalled));
+            assert!(busy_after(hook::Event::PostToolUse, signalled));
+            assert!(busy_after(hook::Event::UserPromptSubmit, signalled));
+            for continued in [false, true] {
+                let stop = hook::Event::Stop { continued };
+                assert_eq!(busy_after(stop, signalled), signalled, "{stop:?}");
+            }
+        }
+    }
+
+    /// The launcher's setting gives its process ID and its parent's; anything else gives none.
+    #[test]
+    fn launcher_setting_gives_both_processes() {
+        assert_eq!(launcher_of("41 7"), Some((41, 7)));
+        assert_eq!(launcher_of(" 41 7\n"), Some((41, 7)));
+        for given in ["", "41", "41 x", "-1 7"] {
+            assert_eq!(launcher_of(given), None, "{given:?}");
+        }
+    }
+
+    /// The setting with which a run of this test acts in a run of it: prints its [`parent`], as
+    /// `parent`; runs this test as `parent` through the launcher's setting, as `launcher`.
+    #[cfg(windows)]
+    const PROBE: &str = "SKALD_TEST_PARENT_PROBE";
+
+    /// Run through each shell a hook's command may run in, as Codex runs it, nested too, and
+    /// through a launcher as the npm package's, a run's parent is this process. A shell not
+    /// installed is skipped.
+    #[cfg(windows)]
+    #[test]
+    fn parent_is_past_each_shell_and_the_launcher() {
+        let exe = std::env::current_exe().unwrap();
+        let test = [
+            "codex::tests::parent_is_past_each_shell_and_the_launcher",
+            "--exact",
+            "--nocapture",
+        ];
+        match std::env::var(PROBE).as_deref() {
+            Ok("parent") => {
+                println!("parent: {}", parent().unwrap_or_default());
+                return;
+            }
+            Ok(_) => {
+                // Windows walks past the launcher by its own process ID alone.
+                let given = format!("{} 0", std::process::id());
+                let status = (std::process::Command::new(&exe).args(test))
+                    .env(PROBE, "parent")
+                    .env(LAUNCHER, given)
+                    .status()
+                    .unwrap();
+                assert!(status.success());
+                return;
+            }
+            Err(_) => {}
+        }
+        let quoted = format!("& '{}' {}", exe.display(), test.join(" "));
+        let runs: [(&str, &[&str], &str); 5] = [
+            ("cmd", &["/c"], "parent"),
+            ("powershell", &["-NoProfile", "-Command"], "parent"),
+            ("pwsh", &["-NoProfile", "-Command"], "parent"),
+            (
+                "cmd",
+                &["/c", "powershell", "-NoProfile", "-Command"],
+                "parent",
+            ),
+            ("cmd", &["/c"], "launcher"),
+        ];
+        for (shell, args, mode) in runs {
+            let mut command = std::process::Command::new(shell);
+            command.args(args).env(PROBE, mode);
+            match args.last() {
+                Some(&"/c") => command.arg(&exe).args(test),
+                _ => command.arg(&quoted),
+            };
+            let output = match command.output() {
+                Ok(output) => output,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(err) => panic!("{shell}: {err}"),
+            };
+            let printed = String::from_utf8_lossy(&output.stdout);
+            let parent = (printed.lines())
+                .find_map(|line| line.strip_prefix("parent: "))
+                .unwrap_or_else(|| panic!("{shell} {args:?} {mode}: {printed}"));
+            let expected = std::process::id().to_string();
+            assert_eq!(parent.trim(), expected, "{shell} {args:?} {mode}");
+        }
     }
 }
