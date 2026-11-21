@@ -21,7 +21,8 @@
 #   edits      the edit comparison prototype in prototypes/edits
 #   repository copied code in crates/ and prototypes/ (script/duplicates); cargo-deny; the Release
 #              PR and the release tags on fixture repositories, with git-cliff, and the CHANGELOG
-#              section of v0.1.0 from the history
+#              section of v0.1.0 from the history; the Claude Code plugin's manifests and the version
+#              script/release-update gives it (script/claude-plugin-test)
 #   tooling    copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #              local sshd and the staging status check's on recorded GitHub API responses, of the CI
 #              workflow, of the e2e workflow, of the edge image and staging deploy workflow, of the
@@ -291,9 +292,11 @@ if checks tooling; then
   npx --yes --package renovate@44.225.1 -- renovate-config-validator --strict --no-global renovate.json
 fi
 
-# The Release PR on fixture repositories, with git-cliff.
+# The Release PR on fixture repositories, with git-cliff; the Claude Code plugin in the monorepo
+# marketplace and its version.
 if checks repository; then
   script/release-pr-test
+  script/claude-plugin-test
 fi
 
 # Web UI: lint, tests (including the check that the API client is generated from the spec and the
