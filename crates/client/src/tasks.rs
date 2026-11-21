@@ -18,7 +18,7 @@ use serde::Deserialize;
 use serde_json::json;
 use skald_proto::{Cbor as _, ChannelId, MessageId, Name, QueuedTask, SpaceId, TaskId};
 
-use crate::connection::{Method, printable};
+use crate::connection::{self, Method, printable};
 use crate::devices::text;
 use crate::forms::References;
 use crate::queues::{self, Queue, Run};
@@ -123,10 +123,7 @@ fn tasks_of<'q>(
         let proof = queues::proof(follower)?;
         let answer = (follower.connection)
             .get_proved(&path, (&follower.token, &proof))
-            .map_err(|err| {
-                let what = format!("the tasks of the queue {} are not listed", queue.name);
-                queues::refused(&what, err)
-            })?;
+            .map_err(|err| unlisted(&queue.name, err))?;
         let unexpected = || "unexpected answer from the server: a queue's tasks".to_owned();
         let Answer { tasks } = serde_json::from_slice(&answer).map_err(|_| unexpected())?;
         for task in tasks {
@@ -144,6 +141,12 @@ fn tasks_of<'q>(
         }
     }
     Ok(found)
+}
+
+/// Why the tasks of the queue `name`, as the server names it, are not listed: `err`.
+fn unlisted(name: &str, err: connection::Error) -> String {
+    let what = format!("the tasks of the queue {} are not listed", printable(name));
+    queues::refused(&what, err)
 }
 
 /// The references of `tasks` among the messages `follower`'s device keeps.
@@ -321,6 +324,22 @@ mod tests {
             attempts: 2,
             claim_device: None,
         }
+    }
+
+    /// Why a queue's tasks are not listed names the queue with no control character of the
+    /// server's.
+    #[test]
+    fn an_unlisted_queue_s_name_is_printable() {
+        let refusal = connection::Error::Refused {
+            status: 403,
+            kind: "https://skald.so/problems/not-a-member".to_owned(),
+            detail: "no".to_owned(),
+            task: None,
+        };
+        let why = unlisted("deploys\u{1b}[2J\u{7}", refusal);
+        assert!(!why.chars().any(char::is_control), "{why:?}");
+        assert!(why.contains("deploys"), "{why:?}");
+        assert!(why.contains("not-a-member"), "{why:?}");
     }
 
     /// A task's line holds its reference, its queue, its state with its progress or reason, and
