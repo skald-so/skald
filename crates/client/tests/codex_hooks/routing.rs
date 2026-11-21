@@ -154,12 +154,18 @@ fn a_session_that_starts_while_a_helper_runs_keeps_it_running() {
 #[cfg(windows)]
 #[test]
 fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
-    let shells: [(&str, &[&str]); 3] = [
-        ("cmd", &["/c"]),
-        ("powershell", &["-NoProfile", "-Command"]),
-        ("pwsh", &["-NoProfile", "-Command"]),
+    // TEMPORARY: each shell with each set of settings.
+    let shells: [(&str, &[&str], &str); 7] = [
+        ("cmd", &["/c"], "minimal"),
+        ("powershell", &["-NoProfile", "-Command"], "full"),
+        ("powershell", &["-NoProfile", "-Command"], "full-no-modules"),
+        ("powershell", &["-NoProfile", "-Command"], "minimal"),
+        ("pwsh", &["-NoProfile", "-Command"], "full"),
+        ("pwsh", &["-NoProfile", "-Command"], "full-no-modules"),
+        ("pwsh", &["-NoProfile", "-Command"], "minimal"),
     ];
-    for (at, (shell, args)) in shells.into_iter().enumerate() {
+    let mut failed = Vec::new();
+    for (at, (shell, args, variant)) in shells.into_iter().enumerate() {
         if Command::new(shell)
             .args(args)
             .arg("exit 0")
@@ -169,7 +175,7 @@ fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
             continue;
         }
         let id = 4_927_012_010 + u64::try_from(at).expect("a small number");
-        let codex = Codex::new(id, &format!("ada-codex-through-{shell}"));
+        let codex = Codex::new(id, &format!("ada-codex-through-{shell}-{at}"));
         let trace = std::env::temp_dir().join(format!("skald-trace-{shell}-{id}.log"));
         let _ = std::fs::remove_file(&trace);
         let traced = trace.clone();
@@ -189,6 +195,17 @@ fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
                         .collect();
                     command.arg(format!("& {}", words.join(" ")));
                 }
+                if variant != "minimal" {
+                    for (name, value) in std::env::vars_os() {
+                        if !name
+                            .to_string_lossy()
+                            .to_ascii_uppercase()
+                            .starts_with("SKALD")
+                        {
+                            command.env(name, value);
+                        }
+                    }
+                }
                 settings_of(&hook, &mut command);
                 // A shell needs the system's settings, which the stand-in Codex does not pass on.
                 for name in [
@@ -203,19 +220,24 @@ fn a_session_through_a_shell_lives_while_its_codex_process_runs() {
                         command.env(name, value);
                     }
                 }
+                if variant == "full-no-modules" {
+                    command.env_remove("PSModulePath");
+                }
                 command.env("SKALD_TRACE", &traced);
                 command
             });
         }));
         println!(
-            "TRACE {shell} ok={}:\n{}",
+            "TRACE {shell} {variant} ok={}:\n{}",
             result.is_ok(),
             std::fs::read_to_string(&trace).unwrap_or_default()
         );
-        if let Err(panic) = result {
-            std::panic::resume_unwind(panic);
+        if result.is_err() {
+            failed.push(format!("{shell} {variant}"));
         }
+        drop(codex);
     }
+    assert!(failed.is_empty(), "failed: {failed:?}");
 }
 
 /// The npm package's launcher's setting of its own process and its parent's.
