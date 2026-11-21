@@ -12,9 +12,8 @@ use serde_json::{Value, json};
 
 use crate::channel::Files;
 use crate::hook::{Timed, timed_hook, timed_runs};
-use crate::{
-    Agent, Call, Checks, Options, PROMPTED, codex_config_flags, codex_hook, model_flag, seconds,
-};
+use crate::permission::{came, carries, prompted_details, text, told_details};
+use crate::{Agent, Call, Checks, Options, PROMPTED, codex_config_flags, codex_hook, model_flag};
 
 /// The app-server's request that a command waits on approval.
 pub const REQUEST: &str = "item/commandExecution/requestApproval";
@@ -188,10 +187,9 @@ fn config(
 /// The arguments of the terminal UI of the `candidate` session in `files.project`, which waits for
 /// its prompt, on the model stub at `stub` if given; its hook runs go to `runs`. Only the arguments
 /// and, for the background app-server, its config home's `config.toml` ([`daemon_config`]) change
-/// Codex's config: no
-/// plugins; hooks without the trust Codex otherwise asks a person for; for [`Candidate::Remote`]
-/// the app-server on `socket`, which has the config; for [`Candidate::Daemon`] the background
-/// app-server; otherwise one of its own.
+/// Codex's config: no plugins; hooks without the trust Codex otherwise asks a person for; for
+/// [`Candidate::Remote`] the app-server on `socket`, which has the config; for
+/// [`Candidate::Daemon`] the background app-server; otherwise one of its own.
 pub fn session(
     candidate: Candidate,
     files: &Files,
@@ -712,38 +710,12 @@ fn status(status: &Value) -> String {
     }
 }
 
-/// The names of `fields` and what `says`, such as `threadId, command (command: touch …)`.
-fn carries(fields: &Value, says: &str) -> String {
-    let names: Vec<&str> = fields
-        .as_object()
-        .map(|fields| fields.keys().map(String::as_str).collect())
-        .unwrap_or_default();
-    format!("{} ({says})", names.join(", "))
-}
-
 /// Whether a hook's `input` is about the check's prompted shell command.
 fn prompted(input: &Value) -> bool {
     input["tool_name"] == "Bash"
         && input["tool_input"]["command"]
             .as_str()
             .is_some_and(|command| command.contains(PROMPTED))
-}
-
-/// A JSON value as text: a string as it is, anything else as JSON.
-fn text(value: &Value) -> String {
-    value
-        .as_str()
-        .map_or_else(|| value.to_string(), String::from)
-}
-
-/// `to_ms` less `from_ms`, in seconds with a sign, such as `-0.1 s`.
-fn signed(to_ms: u64, from_ms: u64) -> String {
-    // Less than what rounds to 0.1 s is no sign.
-    if to_ms + 50 > from_ms {
-        seconds(to_ms.saturating_sub(from_ms))
-    } else {
-        format!("-{}", seconds(from_ms - to_ms))
-    }
 }
 
 /// How the check answers the terminal's permission dialog.
@@ -795,58 +767,23 @@ impl PermissionCheck {
         summary: &str,
     ) -> Vec<String> {
         let called = observed.called_ms();
-        let shown = match (called, observed.shown_ms) {
-            (Some(called), Some(shown)) => format!("; the dialog showed {}", signed(shown, called)),
-            _ => "; the dialog never showed".to_owned(),
-        };
-        let waited = called.is_some() && observed.shown_ms.is_some();
-        let mut lines = vec![self.checks.report(
-            &format!("{name}, prompt"),
-            waited,
-            &format!(
-                "{summary}{}the agent {} `{PROMPTED}`{shown}",
-                if summary.is_empty() { "" } else { "; " },
-                if called.is_some() {
-                    "called"
-                } else {
-                    "never called"
-                }
-            ),
-        )];
+        let (waited, details) = prompted_details(summary, called, observed.shown_ms, true);
+        let mut lines = vec![
+            self.checks
+                .report(&format!("{name}, prompt"), waited, &details),
+        ];
         let told = observed.told(self.candidate);
         let from = observed.shown_ms.or(called);
         let pass = matches!((&told, from), (Some((at, _)), Some(from)) if at.saturating_sub(from) <= WITHIN_MS);
-        let details = match (&told, called) {
-            (Some((at_ms, carries)), Some(called)) => {
-                let dialog = observed.shown_ms.map_or_else(String::new, |shown| {
-                    format!(", {} after the dialog showed", signed(*at_ms, shown))
-                });
-                format!(
-                    "told {} after the call{dialog}; carries {carries}",
-                    signed(*at_ms, called)
-                )
-            }
-            (Some((_, carries)), None) => format!("told without the call; carries {carries}"),
-            (None, _) => "did not tell".to_owned(),
-        };
         lines.push(self.checks.report(
             &format!("{name}, {}", self.candidate.name()),
             pass,
-            &details,
+            &told_details(told.as_ref(), called, observed.shown_ms),
         ));
-        let after = observed.after_answer();
-        let came = if after.is_empty() {
-            "nothing".to_owned()
-        } else {
-            after
-                .iter()
-                .map(|(what, delay)| format!("{what} {}", seconds(*delay)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
         lines.push(format!(
-            "  {name}, after answering {} in the terminal: {came}",
-            answer.name()
+            "  {name}, after answering {} in the terminal: {}",
+            answer.name(),
+            came(&observed.after_answer())
         ));
         let between = match observed.session_between() {
             Some(entries) if entries.is_empty() => "nothing".to_owned(),
@@ -950,30 +887,42 @@ mod tests {
             .collect()
     }
 
+    /// What `after_answer` of `observed` gives, answered at `answered_ms`.
+    fn after(observed: &mut Observed, answered_ms: u64) -> Vec<(String, u64)> {
+        observed.answered_ms = Some(answered_ms);
+        observed.after_answer()
+    }
+
+    fn pairs(pairs: &[(&str, u64)]) -> Vec<(String, u64)> {
+        pairs
+            .iter()
+            .map(|(what, delay)| ((*what).to_owned(), *delay))
+            .collect()
+    }
+
     #[test]
     fn the_hook_finds_a_pending_approval_with_its_session_and_its_end() {
         let mut a = observed("a", HOOK_RUNS, "", "");
         assert_eq!(a.thread.as_deref(), Some(A));
-        let called = a.called_ms().unwrap();
+        // The `PreToolUse` run, then the `PermissionRequest` run 64 ms later.
+        assert_eq!(a.called_ms(), Some(1_795_241_022_534));
         let (told, carries) = a.told(Candidate::Hook).unwrap();
-        assert!(
-            told >= called && told - called < WITHIN_MS,
-            "{told} {called}"
+        assert_eq!(told, 1_795_241_022_598);
+        assert_eq!(
+            carries,
+            "cwd, hook_event_name, model, permission_mode, session_id, tool_input, tool_name, \
+             transcript_path, turn_id (Bash: touch prompted.txt)"
         );
-        assert!(
-            carries.contains("session_id") && carries.contains("Bash: touch prompted.txt"),
-            "{carries}"
+        assert_eq!(
+            after(&mut a, 1_795_241_032_900),
+            pairs(&[("PostToolUse hook", 11), ("Stop hook", 67)])
         );
-        a.answered_ms = Some(told + 10_000);
-        let after: Vec<String> = a.after_answer().into_iter().map(|(what, _)| what).collect();
-        assert_eq!(after, ["PostToolUse hook", "Stop hook"]);
 
         // The session answered no: the hook told, and no hook runs after the answer.
         let mut b = observed("b", HOOK_RUNS, "", "");
         assert_eq!(b.thread.as_deref(), Some(B));
-        let (told, _) = b.told(Candidate::Hook).unwrap();
-        b.answered_ms = Some(told + 10_000);
-        assert!(b.after_answer().is_empty());
+        assert_eq!(b.told(Candidate::Hook).unwrap().0, 1_795_241_046_532);
+        assert!(after(&mut b, 1_795_241_046_600).is_empty());
     }
 
     #[test]
@@ -1002,38 +951,42 @@ mod tests {
             a.thread.as_deref(),
             Some("01a1fceb-da19-7203-8bb9-807cd2c5b8f6")
         );
-        let called = a.called_ms().unwrap();
-        let (told, carries) = a.told(Candidate::Remote).unwrap();
-        assert!(
-            told >= called && told - called < WITHIN_MS,
-            "{told} {called}"
+        // The `item/started` of the command, not that of `sleep 2` before it.
+        assert_eq!(a.called_ms(), Some(1_795_244_681_115));
+        assert_eq!(
+            a.told(Candidate::Remote),
+            Some((
+                1_795_244_681_115,
+                format!(
+                    "status, threadId ({STATUS} active [waitingOnApproval]); {REQUEST} reached the \
+                     watcher"
+                )
+            ))
         );
-        assert!(carries.contains("[waitingOnApproval]"), "{carries}");
-        assert!(
-            carries.contains(&format!("{REQUEST} reached the watcher")),
-            "{carries}"
+        assert_eq!(
+            after(&mut a, 1_795_244_691_300),
+            pairs(&[
+                (RESOLVED, 11),
+                ("thread/status/changed active", 12),
+                ("item/completed commandExecution completed", 65),
+                ("thread/status/changed idle", 176),
+            ])
         );
-        a.answered_ms = Some(told + 10_000);
-        let after: Vec<String> = a.after_answer().into_iter().map(|(what, _)| what).collect();
-        assert_eq!(after[0], RESOLVED);
-        assert!(
-            after.contains(&"item/completed commandExecution completed".to_owned()),
-            "{after:?}"
-        );
-        assert_eq!(after.last().unwrap(), &format!("{STATUS} idle"));
 
         let mut b = observed("b", "", WATCH_NO, "");
         assert_eq!(
             b.thread.as_deref(),
             Some("01a1fcec-419d-7810-b269-b17720bf30e1")
         );
-        let (told, _) = b.told(Candidate::Daemon).unwrap();
-        b.answered_ms = Some(told + 10_000);
-        let after: Vec<String> = b.after_answer().into_iter().map(|(what, _)| what).collect();
-        assert!(after.contains(&RESOLVED.to_owned()), "{after:?}");
-        assert!(
-            after.contains(&"item/completed commandExecution declined".to_owned()),
-            "{after:?}"
+        assert_eq!(b.told(Candidate::Daemon).unwrap().0, 1_795_244_707_169);
+        assert_eq!(
+            after(&mut b, 1_795_244_717_300),
+            pairs(&[
+                (RESOLVED, 9),
+                ("thread/status/changed active", 9),
+                ("item/completed commandExecution declined", 9),
+                ("thread/status/changed idle", 48),
+            ])
         );
     }
 
@@ -1182,9 +1135,303 @@ mod tests {
             assert_eq!(Candidate::parse(candidate.check()), Some(candidate));
         }
         assert_eq!(Candidate::parse("permission"), None);
-        assert!(!Candidate::Daemon.takes_real());
+        let names: Vec<_> = Candidate::ALL
+            .map(|candidate| (candidate.name(), candidate.takes_real()))
+            .into();
+        assert_eq!(
+            names,
+            [
+                ("app-server request, --remote", true),
+                ("app-server request, background app-server", false),
+                ("PermissionRequest hook", true),
+                ("approval-requested notification", true),
+            ]
+        );
         assert!(Candidate::Remote.watches() && Candidate::Daemon.watches());
         assert!(!Candidate::Hook.watches() && !Candidate::Notification.watches());
+        assert_eq!(
+            prompt(),
+            "Run the shell command `touch prompted.txt`. Then reply with only OK."
+        );
+        assert_eq!(
+            [Answer::Yes, Answer::No].map(|answer| (answer.keys(), answer.name())),
+            [(b"y".as_slice(), "yes"), (b"\x1b".as_slice(), "no")]
+        );
+        assert_eq!(
+            recorder(Path::new("/bin/live-check"), Path::new("/tmp/runs.jsonl")),
+            "'/bin/live-check' 'timed-hook' '/tmp/runs.jsonl' 'true'"
+        );
+    }
+
+    /// A hook run's line of `event` in the session `session` at `ms`, about the shell command
+    /// `command` if given.
+    fn run(event: &str, ms: u64, session: &str, command: Option<&str>) -> String {
+        let mut input = json!({ "session_id": session, "cwd": "/tmp/skald-live/a/project" });
+        if let Some(command) = command {
+            input["tool_name"] = json!("Bash");
+            input["tool_input"] = json!({ "command": command });
+        }
+        format!(
+            "{}\n",
+            json!({ "hook_event_name": event, "started_ms": ms, "input": input })
+        )
+    }
+
+    #[test]
+    fn only_the_prompted_command_of_its_own_session_counts() {
+        let touch = Some(PROMPTED);
+        let runs = [
+            run("SessionStart", 1, A, None),
+            run("PreToolUse", 2, A, Some("sleep 2")),
+            run("PreToolUse", 3, B, touch),
+            run("PermissionRequest", 4, B, touch),
+            run("PostToolUse", 5, A, touch),
+            run("PreToolUse", 6, A, touch),
+            run("PermissionRequest", 7, A, Some("sleep 2")),
+            run("PermissionRequest", 8, A, touch),
+            run("PreToolUse", 20, A, touch),
+            run("PostToolUse", 21, A, Some("sleep 2")),
+            run("PostToolUse", 22, A, touch),
+            run("Stop", 23, B, None),
+            run("Stop", 24, A, None),
+        ]
+        .concat();
+        let mut a = observed("a", &runs, "", "");
+        assert_eq!(a.thread.as_deref(), Some(A));
+        assert_eq!(a.called_ms(), Some(6));
+        assert_eq!(a.told(Candidate::Hook).unwrap().0, 8);
+        assert_eq!(a.others(Candidate::Hook), [B]);
+        assert_eq!(
+            after(&mut a, 10),
+            pairs(&[("PostToolUse hook", 12), ("Stop hook", 14)])
+        );
+        // Without the answer's time, from the call.
+        a.answered_ms = None;
+        assert_eq!(a.after_answer()[0], ("PostToolUse hook".to_owned(), 16));
+        assert!(!prompted(
+            &json!({ "tool_name": "Edit", "tool_input": { "command": PROMPTED } })
+        ));
+    }
+
+    /// An app-server message's line of the watcher's file.
+    fn message(at_ms: u64, method: &str, params: &Value) -> String {
+        format!(
+            "{}\n",
+            watched_line(at_ms, &json!({ "method": method, "params": params }))
+        )
+    }
+
+    #[test]
+    fn only_the_messages_of_its_own_thread_count() {
+        let thread =
+            |id: &str| json!({ "thread": { "id": id, "cwd": "/tmp/skald-live/a/project" } });
+        let item = |id: &str, kind: &str, command: &str, status: &str| json!({ "threadId": id, "item": { "type": kind, "command": command, "status": status } });
+        let waiting = json!({ "type": "active", "activeFlags": [WAITING] });
+        let watch = [
+            // Another method that carries a thread is no thread of the watcher's.
+            message(1, "thread/archived", &thread(B)),
+            message(2, "thread/started", &thread(A)),
+            message(
+                3,
+                "item/started",
+                &item(B, "commandExecution", PROMPTED, ""),
+            ),
+            message(
+                4,
+                "item/started",
+                &item(A, "commandExecution", "sleep 2", ""),
+            ),
+            message(5, "item/started", &item(A, "agentMessage", PROMPTED, "")),
+            message(6, REQUEST, &json!({ "threadId": B, "command": PROMPTED })),
+            message(
+                7,
+                STATUS,
+                &json!({ "threadId": A, "status": { "type": "active" } }),
+            ),
+            message(
+                8,
+                "item/started",
+                &item(A, "commandExecution", PROMPTED, ""),
+            ),
+            message(9, STATUS, &json!({ "threadId": A, "status": waiting })),
+            message(20, RESOLVED, &json!({ "threadId": A })),
+            message(
+                21,
+                "item/completed",
+                &item(A, "agentMessage", "", "completed"),
+            ),
+            message(
+                22,
+                "item/completed",
+                &item(A, "commandExecution", "", "declined"),
+            ),
+            message(23, RESOLVED, &json!({ "threadId": B })),
+        ]
+        .concat();
+        let mut a = observed("a", "", &watch, "");
+        assert_eq!(a.watched_threads().len(), 1);
+        assert_eq!(a.thread.as_deref(), Some(A));
+        assert_eq!(a.called_ms(), Some(8));
+        assert_eq!(
+            a.told(Candidate::Daemon),
+            Some((
+                9,
+                format!(
+                    "status, threadId ({STATUS} active [waitingOnApproval]); {REQUEST} never \
+                     reached the watcher"
+                )
+            ))
+        );
+        assert_eq!(a.others(Candidate::Daemon), [B]);
+        assert_eq!(
+            after(&mut a, 10),
+            pairs(&[
+                (RESOLVED, 10),
+                ("item/completed commandExecution declined", 12)
+            ])
+        );
+    }
+
+    /// The entries of a session file of the thread `A`, with a call of `sleep 2`, `call_0`, then of
+    /// the prompted command, `call_1`, and `between` after it.
+    fn session_of(between: &[Value]) -> Vec<Value> {
+        let call = |id: &str, command: &str| {
+            json!({ "type": "response_item", "payload": {
+                "type": "function_call", "call_id": id, "arguments": json!({ "cmd": command }).to_string(),
+            } })
+        };
+        let mut entries = vec![
+            json!({ "type": "session_meta", "payload": { "id": A } }),
+            call("call_0", "sleep 2"),
+            json!({ "type": "response_item", "payload": { "type": "function_call_output", "call_id": "call_0" } }),
+            call("call_1", PROMPTED),
+        ];
+        entries.extend_from_slice(between);
+        entries
+    }
+
+    #[test]
+    fn the_session_file_ends_the_call_at_its_output_or_its_completed_item() {
+        let output = |id: &str| json!({ "type": "response_item", "payload": { "type": "function_call_output", "call_id": id } });
+        let completed = |id: &str| json!({ "type": "event_msg", "payload": { "type": "item_completed", "item": { "id": id } } });
+        let usage = json!({ "type": "token_usage_record" });
+        let a = |between: &[Value]| Observed {
+            sessions: vec![session_file(SESSION_NO), session_of(between)],
+            thread: Some(A.to_owned()),
+            ..Observed::default()
+        };
+        let other = [usage.clone(), output("call_0"), completed("call_0")];
+        let mut ended = other.to_vec();
+        ended.extend([completed("call_1"), usage.clone()]);
+        assert_eq!(
+            a(&ended).session_between().unwrap(),
+            [
+                "token_usage_record",
+                "response_item/function_call_output",
+                "event_msg/item_completed"
+            ]
+        );
+        let mut ended = other.to_vec();
+        ended.extend([output("call_1"), usage]);
+        assert_eq!(a(&ended).session_between().unwrap().len(), 3);
+        assert_eq!(a(&[]).session_between(), Some(vec![]));
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        let lines = check.prompted("a", &a(&[]), Answer::Yes, "");
+        assert_eq!(
+            lines[3],
+            "  a, session file between the call and its end: nothing"
+        );
+    }
+
+    #[test]
+    fn a_check_reports_each_line_from_the_recordings() {
+        let mut a = observed("a", HOOK_RUNS, "", "");
+        a.shown_ms = Some(1_795_241_022_700);
+        a.answered_ms = Some(1_795_241_032_700);
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        assert_eq!(
+            check.prompted("a", &a, Answer::Yes, "replies []"),
+            [
+                "  a, prompt: pass — replies []; the agent called `touch prompted.txt`; the dialog \
+                 showed 0.2 s",
+                "  a, PermissionRequest hook: pass — told 0.1 s after the call, -0.1 s after the \
+                 dialog showed; carries cwd, hook_event_name, model, permission_mode, session_id, \
+                 tool_input, tool_name, transcript_path, turn_id (Bash: touch prompted.txt)",
+                "  a, after answering yes in the terminal: PostToolUse hook 0.2 s, Stop hook 0.3 s",
+                "  a, session file between the call and its end: token_usage_record",
+            ]
+        );
+        assert!(check.pass());
+        // A candidate that tells later than [`WITHIN_MS`] after the dialog showed fails.
+        a.shown_ms = Some(1_795_241_022_598 - WITHIN_MS - 1);
+        let lines = check.prompted("a", &a, Answer::Yes, "");
+        assert!(lines[1].starts_with("  a, PermissionRequest hook: fail — "));
+        assert!(!check.pass());
+
+        let mut check = PermissionCheck::new(Candidate::Notification);
+        let quiet = observed("c", "", "", "");
+        let lines = check.prompted("c", &quiet, Answer::No, "s");
+        assert_eq!(
+            lines[..3],
+            [
+                "  c, prompt: fail — s; the agent never called `touch prompted.txt`; the dialog \
+                 never showed",
+                "  c, approval-requested notification: fail — did not tell",
+                "  c, after answering no in the terminal: nothing",
+            ]
+        );
+        assert_eq!(check.broke("lost"), "  the check: fail — broke off: lost");
+    }
+
+    #[test]
+    fn the_check_reads_its_recordings_from_the_session_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let (runs, watch) = (dir.path().join("runs.jsonl"), dir.path().join(WATCH));
+        fs::write(&runs, HOOK_RUNS).unwrap();
+        let line = watched_line(5, &json!({ "method": STATUS }));
+        fs::write(&watch, format!("{line}\nnot json\n")).unwrap();
+        let notification = Notified {
+            at_ms: 7,
+            text: "Approval requested".to_owned(),
+        };
+        fs::write(dir.path().join(NOTIFIED), notified_line(&notification)).unwrap();
+        let day = dir
+            .path()
+            .join("home/.codex")
+            .join(SESSIONS)
+            .join("2026/11/21");
+        fs::create_dir_all(&day).unwrap();
+        fs::write(day.join("rollout-a.jsonl"), SESSION_YES).unwrap();
+        fs::write(day.join("rollout-a.json"), SESSION_NO).unwrap();
+        let read = Observed::read(&runs, &watch, dir.path());
+        assert_eq!(read.runs, timed_runs(HOOK_RUNS));
+        assert_eq!(
+            read.watched,
+            [Watched {
+                at_ms: 5,
+                message: json!({ "method": STATUS })
+            }]
+        );
+        assert_eq!(read.notified, [notification]);
+        assert_eq!(read.sessions, [session_file(SESSION_YES)]);
+        let missing = Observed::read(&dir.path().join("none"), &dir.path().join("none"), &day);
+        assert_eq!(missing, Observed::default());
+    }
+
+    #[test]
+    fn the_check_finds_the_background_app_servers_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(daemon_socket(dir.path()), None);
+        let control = dir.path().join("app-server-control");
+        fs::create_dir_all(&control).unwrap();
+        for name in ["app-server-startup.lock", "other.sock"] {
+            fs::write(control.join(name), "").unwrap();
+        }
+        assert_eq!(daemon_socket(dir.path()), None);
+        let socket = control.join("app-server-control.sock");
+        fs::write(&socket, "").unwrap();
+        assert_eq!(daemon_socket(dir.path()), Some(socket));
+        assert_eq!(daemon_socket(&dir.path().join("none")), None);
     }
 
     #[test]
@@ -1204,5 +1451,7 @@ mod tests {
         );
         // A BEL alone, or another OSC, is none.
         assert!(osc9.feed(b"\x07\x1b]99;no\x07").is_empty());
+        // ESC in the text without `\` stays in it.
+        assert_eq!(osc9.feed(b"\x1b]9;a\x1bxb\x07"), ["a\x1bxb"]);
     }
 }

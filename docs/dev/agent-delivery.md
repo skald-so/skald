@@ -624,14 +624,14 @@ Left out: `notify` runs a program only on `agent-turn-complete` ([docs](https://
 
 The app-server checks watch with a client of their own that answers nothing: it lists the loaded threads every 300 ms and subscribes to each with `thread/resume`, which fails until the thread's first turn has saved it; `sleep 2` gives it the time. Each line also reports what the session file holds between the call and its end.
 
-Session flags: `--no-daemon`, or `--remote unix://<socket>`, with `--disable plugins --dangerously-bypass-hook-trust -C <project>` and the config as `-c` values; the app-server the check starts gets the same config. On the background app-server, any config override makes the terminal UI run an app-server of its own, so the session gets only `-C <project>` and the config goes to the config home's `config.toml`. In a new config home the terminal UI runs its app-server in-process: the check starts the background one with `codex app-server daemon start`, which installs it from the CLI into the config home, and ends it with `codex app-server daemon stop`. Environment: [Model stub](#model-stub). Each delay is from the call: the `PreToolUse` run or the app-server's `item/started`.
+Session flags: `--no-daemon`, or `--remote unix://<socket>`, with `--disable plugins --dangerously-bypass-hook-trust -C <project>` and the config as `-c` values; the app-server the check starts gets the same config. On the background app-server, any config override makes the terminal UI run an app-server of its own, so the session gets only `-C <project>` and the config goes to the config home's `config.toml`. In a new config home the terminal UI runs its app-server in-process: the check starts the background one with `codex app-server daemon start`, which installs it from the CLI into the config home, and ends it with `codex app-server daemon stop`. There the terminal UI asks whether to trust the new hooks after its composer shows; the check selects "Trust all and continue" with `2` and confirms with Enter. Until the question is confirmed, the terminal UI starts no thread and drops typed text; unconfirmed, it goes on after about 60 s. Environment: [Model stub](#model-stub). Each delay is from the call: the `PreToolUse` run or the app-server's `item/started`.
 
 Results on 2026-11-21, Codex 0.162.1, on the stub:
 
 | Command | Result | Tells | Names the session | After "Yes" | After "No" |
 |---|---|---|---|---|---|
 | `live-check permission-remote codex --all` | pass | A, B: 0.0 s, the status and the request together | `threadId`; C not named | `serverRequest/resolved` 0.0 s, `item/completed` `completed` 0.1 s, status `idle` 0.2 s | `serverRequest/resolved` 0.0 s, `item/completed` `declined` 0.0 s, status `idle` 0.0 s |
-| `live-check permission-daemon codex --all` | fail | Nothing: no prompt reached the stub | A, B, C: each terminal UI joined the background app-server 33–125 s after it started, after the check's 60 s wait, when the next terminal UI started or the session ended; the prompt typed before was lost | | |
+| `live-check permission-daemon codex --all` | pass | A, B: 0.0 s, the status and the request together | `threadId`; C not named | `serverRequest/resolved` 0.0 s, `item/completed` `completed` 0.1 s, status `idle` 0.1 s | `serverRequest/resolved` 0.0 s, `item/completed` `declined` 0.0 s, status `idle` 0.0 s |
 | `live-check permission-hook codex --all` | pass | A, B: 0.1 s | `session_id`, `transcript_path`, `cwd`, `turn_id`; C not named | `PostToolUse` 0.1 s, `Stop` 0.2 s | nothing |
 | `live-check permission-notification codex --all` | pass | A, B: 0.0 s | No: the text "Approval requested: <command, cut>"; only the terminal it came from tells the session. C wrote none | nothing | nothing |
 
@@ -644,12 +644,9 @@ The dialog showed 0.1–0.4 s after the call, after each path told. The session 
 | Needs | A client on an app-server the terminal UI joins, subscribed to its thread; a person's answer stays in the terminal | The hook in config, trusted | The setting, `notification_condition = "always"` (default `unfocused`), and a program that owns the terminal |
 
 Findings:
-- The `PermissionRequest` hook and the app-server tell within 0.1 s, before the dialog shows, and name the session. The app-server passed with `--remote`; the background app-server is open.
+- The `PermissionRequest` hook and the app-server tell within 0.1 s, before the dialog shows, and name the session. The app-server passed with `--remote` and on the background app-server.
 - Only the app-server tells that a prompt ended, after either answer.
 - The notification names no session and carries no end; it can only back up a wrapper of the terminal.
-
-Open questions:
-- Why a terminal UI joins the background app-server late in a new config home, and whether the request reaches a watcher there.
 
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).

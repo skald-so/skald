@@ -190,13 +190,16 @@ pub fn stub_environment(home: &Path, stub: &str, path: &str) -> io::Result<Vec<(
     Ok(env)
 }
 
-/// A dialog Claude Code opens before the session starts.
+/// A dialog the terminal UI opens before the session starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Dialog {
     /// Whether the user trusts the working directory; its default is "No, exit".
     Trust,
     /// The warning about loading a development channel.
     DevelopmentChannels,
+    /// Codex's question about new hooks, which a terminal UI on the background app-server asks:
+    /// it takes no `--dangerously-bypass-hook-trust`.
+    Hooks,
 }
 
 /// The keys that move the selection down and confirm it.
@@ -213,6 +216,7 @@ pub struct Screen {
     from: usize,
     trust: Answer,
     channels: Answer,
+    hooks: Answer,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -243,6 +247,11 @@ enum Answer {
 const TRUST: &str = "Yes,Itrustthisfolder";
 const TRUST_SELECTED: &str = "❯Yes,Itrustthisfolder";
 const CHANNELS: &str = "Iamusingthisforlocaldevelopment";
+/// The answer to Codex's question about new hooks, its second option, as a person who set them up
+/// gives it: its key selects it, then Enter confirms it.
+pub const HOOKS: &str = "Trustallandcontinue";
+const HOOKS_KEY: &[u8] = b"2";
+const HOOKS_SELECTED: &str = "›2.Trustallandcontinue";
 
 impl Screen {
     /// Adds the terminal's output `bytes` and returns the keys to send, if a dialog waits.
@@ -291,6 +300,16 @@ impl Screen {
             self.from = self.text.len();
             return Some((Dialog::DevelopmentChannels, ENTER));
         }
+        if self.hooks == Answer::Moved && contains(text, HOOKS_SELECTED) {
+            self.hooks = Answer::Done;
+            self.from = self.text.len();
+            return Some((Dialog::Hooks, ENTER));
+        }
+        if self.hooks == Answer::No && contains(text, HOOKS) {
+            self.hooks = Answer::Moved;
+            self.from = self.text.len();
+            return Some((Dialog::Hooks, HOOKS_KEY));
+        }
         None
     }
 
@@ -298,6 +317,16 @@ impl Screen {
     pub fn showed(&self, text: &str) -> bool {
         let text: String = text.split_whitespace().collect();
         contains(&self.text, &text)
+    }
+
+    /// Whether the screen showed `then` after it first showed `first`, white space aside.
+    pub fn showed_after(&self, first: &str, then: &str) -> bool {
+        let first: String = first.split_whitespace().collect();
+        let then: String = then.split_whitespace().collect();
+        self.text
+            .windows(first.len())
+            .position(|window| window == first.as_bytes())
+            .is_some_and(|at| contains(&self.text[at + first.len()..], &then))
     }
 }
 
@@ -810,6 +839,34 @@ pub(crate) mod tests {
         assert!(!screen.showed(LISTENING));
         screen.feed(LISTENING_SCREEN);
         assert!(screen.showed(LISTENING));
+    }
+
+    // Recorded from Codex 0.162.1's terminal UI on the background app-server, shortened.
+    const HOOKS_SCREEN: &[u8] = b"\x1b[2;3H\x1b[1mHooks \x1b[2;10Heed review\x1b[7;1H\x1b[7m\x1b[1m\
+        \xe2\x80\xba 1. Review hooks\x1b[8;3H\x1b[27m\x1b[22m2.\x1b[8;6HTrust\x1b[8;12Hall\x1b[8;16Hand\
+        \x1b[8;20Hcontinue\x1b[11;3H\x1b[1menter\x1b[22m confirm";
+    const HOOKS_MOVED: &[u8] =
+        b"\x1b[7;1H  1. Review hooks\x1b[8;1H\x1b[7m\x1b[1m\xe2\x80\xba 2. Trust all and continue";
+
+    #[test]
+    fn trusts_new_hooks_and_tells_what_showed_after_the_question() {
+        let mut screen = Screen::default();
+        assert_eq!(screen.feed(b"? for shortcuts"), None);
+        assert_eq!(
+            screen.feed(HOOKS_SCREEN),
+            Some((Dialog::Hooks, b"2".as_slice()))
+        );
+        // Enter waits for the selection on "Trust all and continue".
+        assert_eq!(screen.feed(HOOKS_SCREEN), None);
+        assert_eq!(screen.feed(HOOKS_MOVED), Some((Dialog::Hooks, ENTER)));
+        assert_eq!(screen.feed(HOOKS_MOVED), None);
+        assert_eq!(screen.feed(HOOKS_SCREEN), None, "once");
+        // The composer before the question does not count.
+        assert!(!screen.showed_after(HOOKS, "? for shortcuts"));
+        assert!(!screen.showed_after("never", "Trust"));
+        screen.feed(b"Ask Codex \x1b[1C? for shortcuts");
+        assert!(screen.showed_after(HOOKS, "? for shortcuts"));
+        assert!(screen.showed_after("Trust all and continue", "Ask Codex"));
     }
 
     #[test]

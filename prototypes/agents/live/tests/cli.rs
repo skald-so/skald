@@ -78,6 +78,8 @@ fn wrong_arguments_print_the_usage() {
         &["queue"],
         &["queue", "claude"],
         &["queue", "codex", "--verbose"],
+        &["permission-hook", "codex", "--verbose"],
+        &["permission-daemon", "codex", "--real"],
         &["app-server"],
         &["app-server", "claude"],
         &["app-server", "codex", "--verbose"],

@@ -14,7 +14,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use agent_app_server::{Received, Socket, Transport};
-use agent_live::channel::{ENTER, Files, TERM};
+use agent_live::channel::{ENTER, Files, HOOKS, TERM};
 use agent_live::codex_permission::{
     self, Answer, Candidate, DIALOG, NOTIFIED, Observed, PermissionCheck, WATCH, daemon_config,
     daemon_socket, watched_line,
@@ -26,17 +26,18 @@ use serde_json::{Value, json};
 
 use crate::Result;
 use crate::app::Server;
-use crate::pty::{Env, Live, Prepared, TICK, TURN};
+use crate::permission_run::{answer_dialog, shows};
+use crate::pty::{Env, Live, Prepared, TICK};
 use crate::run::{finish, start};
-
-/// How long the dialog waits before the check answers it.
-const HOLD: Duration = Duration::from_secs(10);
 
 /// How long the session runs once the dialog is answered.
 const AFTER: Duration = Duration::from_secs(10);
 
 /// What the terminal UI shows once it takes a prompt: its footer's hint.
 const COMPOSER: &str = "for shortcuts";
+
+/// What the composer shows once the prompt is typed: its start.
+const TYPED: &str = "Run the shell command";
 
 /// The longest wait for the terminal UI to take a prompt, or for the app-server to listen.
 const READY: Duration = Duration::from_secs(60);
@@ -184,16 +185,16 @@ impl Check<'_> {
             }
         }
         let ready = |live: &mut Live, files: &Files| -> Result<()> {
-            // The terminal UI on the background app-server starts its thread once its hooks are
-            // trusted; the watcher subscribes to the thread before a prompt starts its turn.
-            if shows(live, COMPOSER, READY)? {
-                trust_hooks(live)?;
-            }
             let ready = wait_until(live, READY, |live| {
-                let observed = Observed::read(&runs, &watch, &files.dir);
-                let watched =
-                    !self.candidate.watches() || observed.thread_in(&files.project).is_some();
-                (watched && live.showed(COMPOSER)).then_some(())
+                // The watcher learns of the thread before the prompt starts its turn.
+                let watched = !self.candidate.watches()
+                    || Observed::read(&runs, &watch, &files.dir)
+                        .thread_in(&files.project)
+                        .is_some();
+                // On the background app-server, the terminal UI asks about new hooks after its
+                // composer shows, and starts its thread and a new composer once they are trusted.
+                let asked = live.showed(HOOKS) && !live.showed_after(HOOKS, COMPOSER);
+                (watched && !asked && live.showed(COMPOSER)).then_some(())
             })?;
             if ready.is_none() {
                 eprintln!(
@@ -225,17 +226,14 @@ impl Check<'_> {
         };
         let mut observed = Observed::default();
         session.press(codex_permission::prompt().as_bytes())?;
+        // The terminal UI takes text typed at once as a paste, and Enter after it as sending it.
+        if !shows(&mut session, TYPED, Duration::from_secs(2))? {
+            eprintln!("live-check: session {name}'s composer never showed its prompt");
+        }
         session.pump_for(Duration::from_millis(500))?;
         session.press(ENTER)?;
-        if shows(&mut session, DIALOG, TURN)? {
-            observed.shown_ms = Some(now_ms());
-            session.pump_for(HOLD)?;
-            session.press(answer.keys())?;
-            observed.answered_ms = Some(now_ms());
-            session.pump_for(AFTER)?;
-        } else {
-            eprintln!("live-check: session {name} showed no permission dialog");
-        }
+        (observed.shown_ms, observed.answered_ms) =
+            answer_dialog(&mut session, name, DIALOG, answer.keys(), AFTER)?;
         let ended = session.end()?;
         let quiet = match quiet {
             Some((live, files)) => Some((live.end()?, files)),
@@ -346,20 +344,6 @@ fn stop_daemon(env: &Env, codex: &Path, socket: Option<&Path>) {
     }
 }
 
-/// What the terminal UI asks when hooks it runs are new: on the background app-server, which takes
-/// no `--dangerously-bypass-hook-trust`.
-const HOOKS: &str = "Trust all and continue";
-
-/// Answers the terminal UI's question about new hooks, if it asks within a second, "Trust all and
-/// continue", as a person who set them up does.
-fn trust_hooks(live: &mut Live) -> Result<()> {
-    if shows(live, HOOKS, Duration::from_secs(1))? {
-        live.press(b"2")?;
-        live.pump_for(Duration::from_secs(1))?;
-    }
-    Ok(())
-}
-
 /// Runs the session until `found` gives something for it or `limit` passes.
 fn wait_until<T>(
     live: &mut Live,
@@ -376,11 +360,6 @@ fn wait_until<T>(
         }
     }
     Ok(None)
-}
-
-/// Runs the session until its terminal shows `text` or `limit` passes; whether it showed.
-fn shows(live: &mut Live, text: &str, limit: Duration) -> Result<bool> {
-    Ok(wait_until(live, limit, |live| live.showed(text).then_some(()))?.is_some())
 }
 
 /// A client of the app-server that subscribes to every thread it loads and writes each message it

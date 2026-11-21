@@ -637,6 +637,11 @@ impl Live {
         self.screen.showed(text)
     }
 
+    /// Whether the terminal showed `then` after it first showed `first`, white space aside.
+    pub(crate) fn showed_after(&self, first: &str, then: &str) -> bool {
+        self.screen.showed_after(first, then)
+    }
+
     /// Types `keys` into the terminal, as a person answering a dialog.
     pub(crate) fn press(&mut self, keys: &[u8]) -> Result<()> {
         self.writer.write_all(keys)?;
