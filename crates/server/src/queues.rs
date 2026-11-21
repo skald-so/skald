@@ -805,7 +805,7 @@ pub(crate) async fn json<T: DeserializeOwned>(body: Body) -> Result<T, Box<Respo
     parse(&body).map_err(|refusal: Refusal| Box::new(refusal.into_response()))
 }
 
-pub(crate) fn not_a_member() -> Response {
+fn not_a_member() -> Response {
     requests::not_a_member(
         "The device may not send in the channel, or its token has no queues permission.",
     )

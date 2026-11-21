@@ -2,12 +2,13 @@
 //! "Claims and leases", "Fencing", "Modes and retries" and "Claim checks". Only a device that
 //! passes the server's claim checks claims a task, or extends, completes, fails or releases its
 //! claim. A claim gets the first task in storing order that is `queued`, past its backoff, before
-//! its `deadline`, not in the claimer's wait after its release, and that matches it, locked with
-//! `SKIP LOCKED` so that claims at once take different tasks. Extend, complete, fail and release
-//! pass the fencing check in the transaction that applies them; the server keeps the act that ended
-//! each claim, which a repeat of it gets again. A `client` or `browser` device of the uploader's
-//! account or of an admin restarts or cancels a task. Every instance applies lease ends and passed
-//! deadlines, and deletes finished tasks past the history retention, as they come due.
+//! its `deadline`, not in the claimer's wait after its release, of an uploader not revoked, and
+//! that matches it, locked with `SKIP LOCKED` so that claims at once take different tasks. Extend,
+//! complete, fail and release pass the fencing check in the transaction that applies them; the
+//! server keeps the act that ended each claim, which a repeat of it gets again. A `client` or
+//! `browser` device of the uploader's account or of an admin restarts or cancels a task. Every
+//! instance applies lease ends and passed deadlines, and deletes finished tasks past the history
+//! retention, as they come due.
 
 use std::time::Duration;
 
@@ -190,7 +191,7 @@ async fn claimed(
     let found: Option<(String, Vec<u8>, String)> = sqlx::query_as(
         "SELECT t.id::text, t.queued_task, t.uploader_id::text
          FROM tasks t JOIN devices u ON u.id = t.uploader_id
-         WHERE t.queue_id = $1::uuid AND t.state = 'queued'
+         WHERE t.queue_id = $1::uuid AND t.state = 'queued' AND NOT u.revoked
            AND (t.not_before IS NULL OR t.not_before <= now())
            AND (t.deadline IS NULL OR t.deadline > now())
            AND NOT EXISTS (
@@ -425,13 +426,14 @@ async fn acted(
     Ok(Ok(()))
 }
 
-/// The backoff after the `n`-th failed attempt, in seconds: `min(10 × 2^(n−1), 3600)`.
+/// The backoff after the `n`-th failed attempt, in seconds:
+/// `min(FIRST_WAIT × 2^(n−1), LONGEST_BACKOFF)`.
 fn backoff(n: i32) -> i64 {
     let doublings = u32::try_from(n.saturating_sub(1)).unwrap_or(0).min(16);
     (FIRST_WAIT << doublings).min(LONGEST_BACKOFF)
 }
 
-/// The wait after the `n`-th release, n from 1 to 4, in seconds: `10 × 2^(n−1)`.
+/// The wait after the `n`-th release, n from 1 to 4, in seconds: `FIRST_WAIT × 2^(n−1)`.
 fn release_wait(n: i32) -> i64 {
     let doublings = u32::try_from(n.saturating_sub(1)).unwrap_or(0).min(16);
     FIRST_WAIT << doublings
@@ -665,7 +667,8 @@ pub(crate) async fn run(db: PgPool, retention: Option<Duration>) {
 }
 
 /// Lease ends: under `at-least-once` with attempts below `max_attempts`, `queued` after the backoff
-/// from the lease's end; otherwise `dead` with `lease-expired`.
+/// from the lease's end, as [`backoff`] counts it from `$2` and `$3`; otherwise `dead` with
+/// `lease-expired`.
 const LEASE_ENDS: &str = "
     WITH due AS (
         SELECT t.id, q.mode = 'at-least-once' AND t.attempts < q.max_attempts AS again
@@ -678,7 +681,7 @@ const LEASE_ENDS: &str = "
     SET state = CASE WHEN due.again THEN 'queued' ELSE 'dead' END,
         reason = CASE WHEN due.again THEN NULL ELSE 'lease-expired' END,
         not_before = CASE WHEN due.again THEN t.lease_until + make_interval(
-            secs => least(10 * power(2, t.attempts - 1), 3600)) END,
+            secs => least($2::float8 * power(2, t.attempts - 1), $3::float8)) END,
         progress = NULL, lease_until = NULL, since = now()
     FROM due WHERE t.id = due.id";
 
@@ -703,15 +706,18 @@ const FINISHED: &str = "
 
 /// Applies what is due, a page at a time, as [`run`] says.
 async fn sweep(db: &PgPool, retention: Option<f64>) -> Result<(), sqlx::Error> {
-    let mut statements = vec![(LEASE_ENDS, None), (DEADLINES, None)];
+    let mut statements = vec![
+        (LEASE_ENDS, vec![FIRST_WAIT as f64, LONGEST_BACKOFF as f64]),
+        (DEADLINES, vec![]),
+    ];
     if let Some(retention) = retention {
-        statements.push((FINISHED, Some(retention)));
+        statements.push((FINISHED, vec![retention]));
     }
     for (statement, seconds) in statements {
         loop {
             let mut query = sqlx::query(statement).bind(PAGE);
-            if let Some(seconds) = seconds {
-                query = query.bind(seconds);
+            for seconds in &seconds {
+                query = query.bind(*seconds);
             }
             if query.execute(db).await?.rows_affected() == 0 {
                 break;
