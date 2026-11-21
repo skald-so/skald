@@ -67,6 +67,7 @@ mod person;
 mod plain_path;
 mod presence;
 mod proxy;
+mod queues;
 mod receipts;
 mod records;
 mod recovery;
@@ -544,6 +545,107 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Lists the queues of a channel of a space this device follows, by default the default
+    /// channel of the working directory's space, each with its mode, lease in seconds and
+    /// max_attempts; as an agent, only in the space of the agent's folder, with no ID.
+    Queues {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// Says each queue as a JSON object on a line of its own, with every field: id, name,
+        /// channel, mode, lease and max_attempts.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Creates a queue in a channel, by default the default channel of the working directory's
+    /// space; its creator and the space's admins change and delete it.
+    CreateQueue {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// Whether a task whose claim lapses is offered again [default: at-least-once].
+        #[arg(long, value_enum)]
+        mode: Option<queues::Mode>,
+        /// How long a claim lasts without a renewal, in seconds, 30 to 3600 [default: 300].
+        #[arg(long, value_name = "SECONDS")]
+        lease: Option<u64>,
+        /// How many claims a task gets before it goes to the dead-letter queue, 1 to 100
+        /// [default: 5].
+        #[arg(long, value_name = "COUNT")]
+        max_attempts: Option<u64>,
+        /// The queue's name: a-z, 0-9 and '-' inside, 1 to 63 characters.
+        #[arg(value_name = "NAME", allow_hyphen_values = true)]
+        name: String,
+    },
+    /// Changes the lease or max_attempts of a queue of a channel, by default the default channel
+    /// of the working directory's space; its mode stays.
+    ChangeQueue {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// How long a claim lasts without a renewal, in seconds, 30 to 3600.
+        #[arg(long, value_name = "SECONDS")]
+        lease: Option<u64>,
+        /// How many claims a task gets before it goes to the dead-letter queue, 1 to 100.
+        #[arg(long, value_name = "COUNT")]
+        max_attempts: Option<u64>,
+        /// The queue's name.
+        #[arg(value_name = "NAME", allow_hyphen_values = true)]
+        name: String,
+    },
+    /// Deletes a queue of a channel, by default the default channel of the working directory's
+    /// space, with its tasks; the default queue stays.
+    DeleteQueue {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The queue's name.
+        #[arg(value_name = "NAME", allow_hyphen_values = true)]
+        name: String,
+    },
+    /// Enqueues a task in a queue of a channel, by default the default queue of the default
+    /// channel of the working directory's space; as an agent, only in the space of the agent's
+    /// folder. It first accepts the space's latest roster revisions and goes through the mailbox
+    /// as skald send does, then encrypts the task to the channel's current epoch, signed by this
+    /// device, and has the server store it. Enqueues nothing, and says why, while this device
+    /// judges the current epoch unclean, for a queue the channel lacks, past the limit on agents
+    /// answering each other, or with --to an agent no device or several devices list in the
+    /// channel's presence. Without --deadline, a task a device of another account may claim gets
+    /// one 7 days after enqueue. Says the task's ID and #<ref>; as an agent, only enqueued
+    /// #<ref>. A task the server has not answered waits in the local state, and the next skald
+    /// enqueue or skald recv uploads it first, with the same bytes.
+    Enqueue {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The queue's name.
+        #[arg(long, value_name = "NAME", default_value = queues::DEFAULT)]
+        queue: String,
+        /// The agent the task is for, as skald send --to names it: only the device whose presence
+        /// lists it claims the task.
+        #[arg(long, value_name = "ADDRESS")]
+        to: Option<String>,
+        /// The task is enqueued once per key in the queue: the server refuses a later task with
+        /// it, naming the first. 1 to 32 bytes of UTF-8.
+        #[arg(long, value_name = "KEY")]
+        idempotency_key: Option<String>,
+        /// When the task expires unclaimed, as an RFC 3339 date-time such as
+        /// 2027-01-31T00:00:00Z.
+        #[arg(long, value_name = "TIME")]
+        deadline: Option<String>,
+        /// The text of the task's request.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+        /// Says the task as a JSON object, with every field: task, ref, channel, queue,
+        /// queue_name, deadline and device, the addressee's.
+        #[arg(long)]
+        json: bool,
+    },
     /// Replies to a message, in its channel, to its sender, a person included: as skald send
     /// sends, with the message's ID as its reply_to; as with --to, the reply is handed only to its
     /// sender, but it is not private: every member of the channel gets it. The person replies to a
@@ -842,6 +944,9 @@ impl Command {
             Command::ServiceTokens { .. } => Some("service-tokens"),
             Command::RevokeServiceToken { .. } => Some("revoke-service-token"),
             Command::RemoveMember { .. } => Some("remove-member"),
+            Command::CreateQueue { .. } => Some("create-queue"),
+            Command::ChangeQueue { .. } => Some("change-queue"),
+            Command::DeleteQueue { .. } => Some("delete-queue"),
             Command::ExcludeDevice { .. } => Some("exclude-device"),
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
@@ -865,6 +970,11 @@ impl Command {
         matches!(
             self,
             Command::Send { .. }
+                | Command::Queues { .. }
+                | Command::CreateQueue { .. }
+                | Command::ChangeQueue { .. }
+                | Command::DeleteQueue { .. }
+                | Command::Enqueue { .. }
                 | Command::Reply { .. }
                 | Command::MessageStatus { .. }
                 | Command::Recv { .. }
@@ -1391,6 +1501,8 @@ fn performed(operation: Operation) -> Result<(), String> {
                 Command::Recv { json: true, .. }
                     | Command::Send { json: true, .. }
                     | Command::Agents { json: true, .. }
+                    | Command::Queues { json: true, .. }
+                    | Command::Enqueue { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1603,6 +1715,79 @@ fn performed(operation: Operation) -> Result<(), String> {
                 json,
             )
         }),
+        Command::Queues { channel, json } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel.as_deref(), agent.is_some()),
+            |run| queues::list(run, json),
+        ),
+        Command::CreateQueue {
+            channel,
+            mode,
+            lease,
+            max_attempts,
+            name,
+        } => {
+            let settings = queues::Settings {
+                mode,
+                lease,
+                max_attempts,
+            };
+            queue_command(
+                state_dir,
+                (key_storage, (speaks, timeout)),
+                (channel.as_deref(), false),
+                |run| queues::create(run, &name, &settings),
+            )
+        }
+        Command::ChangeQueue {
+            channel,
+            lease,
+            max_attempts,
+            name,
+        } => {
+            let settings = queues::Settings {
+                mode: None,
+                lease,
+                max_attempts,
+            };
+            queue_command(
+                state_dir,
+                (key_storage, (speaks, timeout)),
+                (channel.as_deref(), false),
+                |run| queues::change(run, &name, &settings),
+            )
+        }
+        Command::DeleteQueue { channel, name } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel.as_deref(), false),
+            |run| queues::delete(run, &name),
+        ),
+        Command::Enqueue {
+            channel,
+            queue,
+            to,
+            idempotency_key,
+            deadline,
+            text,
+            json,
+        } => {
+            let given = queues::Enqueue {
+                queue: &queue,
+                to: to.as_deref(),
+                idempotency_key: idempotency_key.as_deref(),
+                deadline: deadline.as_deref(),
+                text: &text,
+                json,
+            };
+            queue_command(
+                state_dir,
+                (key_storage, (speaks, timeout)),
+                (channel.as_deref(), agent.is_some()),
+                |run| queues::enqueue(run, &given, agent.as_ref()),
+            )
+        }
         Command::Reply {
             message,
             text,
@@ -1755,6 +1940,24 @@ fn received(operation: &Operation) -> Result<bool, String> {
     );
     // The person's wait shows it as a warning; an agent's waits for a message.
     Ok(shown || (prompted && agent.is_none()))
+}
+
+/// Runs `command` on the state in `state_dir`, its secrets in `storage`, with `settings`, its
+/// protocol versions and timeout, in `channel`, if given, as an agent if `agent`.
+fn queue_command(
+    state_dir: Option<PathBuf>,
+    (storage, settings): (secrets::Storage, (VersionRange, Duration)),
+    (channel, agent): (Option<&str>, bool),
+    command: impl FnOnce(&queues::Run) -> Result<(), String>,
+) -> Result<(), String> {
+    let dir = state::dir(state_dir)?;
+    command(&queues::Run {
+        dir: &dir,
+        storage,
+        settings,
+        channel,
+        agent,
+    })
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
