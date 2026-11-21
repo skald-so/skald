@@ -88,6 +88,7 @@ for (const changed of [
   'crates/client/src/hook.rs',
   'crates/client/src/main.rs',
   'crates/client/src/mcp.rs',
+  'crates/client/src/permission_prompts.rs',
   'crates/client/src/recv.rs',
   'crates/client/src/state.rs',
   'crates/client/src/wait.rs',

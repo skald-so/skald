@@ -20,6 +20,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -28,6 +29,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 
 use crate::cloud::WAIT;
 

@@ -54,10 +54,14 @@ pub fn told(dir: &Path, agent: &Name, input: &hook::Input) -> Result<(), String>
         at: now,
     };
     let state = State::open(dir).map_err(text)?;
-    let kept_since = now.saturating_sub(KEPT.as_secs());
-    (state.prompt_told(&prompt, input.turn.as_deref(), by_request, kept_since))
+    (state.prompt_told(&prompt, input.turn.as_deref(), by_request, kept_since(now)))
         .map(drop)
         .map_err(text)
+}
+
+/// The earliest time, in Unix seconds, of a record kept at `now`.
+fn kept_since(now: u64) -> u64 {
+    now.saturating_sub(KEPT.as_secs())
 }
 
 /// Records that the session of the ID `session`, if given, no longer waits on a prompt it was
@@ -169,6 +173,21 @@ mod tests {
             .prompt_told(&prompt("d", 400), None, true, 201)
             .unwrap();
         assert_eq!(sessions(&state), ["c", "d"]);
+    }
+
+    /// A record is kept 7 days and goes after.
+    #[test]
+    fn records_are_kept_seven_days() {
+        let state = State::in_memory().unwrap();
+        let day = 24 * 60 * 60;
+        let told = |session, at| {
+            (state.prompt_told(&prompt(session, at), None, true, kept_since(at))).unwrap();
+        };
+        told("a", 1_000 * day);
+        told("b", 1_007 * day);
+        assert_eq!(sessions(&state), ["a", "b"]);
+        told("c", 1_007 * day + 1);
+        assert_eq!(sessions(&state), ["b", "c"]);
     }
 
     /// The person's line names the agent and its space; the JSON object holds every field.

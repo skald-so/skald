@@ -5,7 +5,7 @@
 //! Beside the hooks `socket_claude.rs` gives a session, `skald hook claude` is its
 //! `PermissionRequest` and `Notification` hook, from the folder's `.claude/settings.local.json`,
 //! which also starts it in Claude Code's default permission mode, so a call nothing allows stops on
-//! the prompt. The tests never answer the prompt.
+//! the prompt. The tests never answer the prompt; they dismiss it before the session ends.
 
 use std::fs;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -158,4 +158,9 @@ fn a_session_waiting_on_its_permission_prompt_is_detected_within_seconds() {
         );
     }
     model.assert_no_foreign_credential();
+
+    // A session left on its prompt does not exit when asked, and Windows keeps the machine's
+    // directory while its processes run.
+    session.dismiss_prompt();
+    session.end();
 }

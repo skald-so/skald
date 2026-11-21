@@ -14,9 +14,8 @@
 //! As the tests of Claude Code sessions over their socket (`claude_code_socket/main.rs`): Ada's
 //! machine, alone in `clienta`, her agents web and api in `~/work/clientA`; the hooks run as Claude
 //! Code runs them, through a helper, and a stand-in plays each session, registered by its
-//! `SessionStart`, so these tests run on Unix only. The hook inputs are recorded from Claude Code
-//! 2.1.328 (`recorded/`), with the session's ID and file, and the call's command and description
-//! the test's.
+//! `SessionStart`. The hook inputs are recorded from Claude Code 2.1.328 (`recorded/`), with the
+//! session's ID and file, and the call's command and description the test's.
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of the hook handler:
 //! - `skald [--agent <agent>] hook claude` also handles `PermissionRequest` and `Notification`;
@@ -32,15 +31,11 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
-#[cfg(unix)]
+mod again;
 mod once;
-#[cfg(unix)]
 mod prompt_lines;
-#[cfg(unix)]
 mod prompts;
-#[cfg(unix)]
 mod shown;
-#[cfg(unix)]
 mod unseen;
 
 // The runs of a copy of `skald` through a helper, as the tests of the helper have them; the hook
@@ -50,10 +45,8 @@ mod unseen;
 mod helped;
 #[path = "../claude_code_hooks/hooks.rs"]
 mod hooks;
-#[cfg(unix)]
 #[path = "../claude_code_socket/registered.rs"]
 mod registered;
-#[cfg(unix)]
 #[path = "../claude_code_socket/standin.rs"]
 mod standin;
 
