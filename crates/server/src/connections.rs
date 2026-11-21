@@ -53,6 +53,7 @@ pub(crate) enum Closing {
     DeviceRefused,
     SignatureRefused,
     SessionEnded,
+    AccountDeleted,
     /// A frame does not decode.
     Malformed,
     /// The database failed.
@@ -68,6 +69,7 @@ impl Closing {
             Self::DeviceRefused => "device-refused",
             Self::SignatureRefused => "signature-refused",
             Self::SessionEnded => "session-ended",
+            Self::AccountDeleted => "account-deleted",
             Self::Malformed => "",
             Self::ServerError => "server-error",
         }
@@ -197,6 +199,16 @@ impl Connections {
 
     /// Closes every connection of `device`, which is revoked.
     pub(crate) fn end_device(&self, device: DeviceId) {
+        self.end_device_for(device, Closing::DeviceRefused);
+    }
+
+    /// Closes every connection of `device`, whose account is deleted.
+    pub(crate) fn end_deleted(&self, device: DeviceId) {
+        self.end_device_for(device, Closing::AccountDeleted);
+    }
+
+    /// Closes every connection of `device` for `closing`.
+    fn end_device_for(&self, device: DeviceId, closing: Closing) {
         let held = self
             .by_device
             .lock()
@@ -204,7 +216,7 @@ impl Connections {
             .remove(&device);
         for ended in held.into_iter().flatten() {
             // The connection may be closing already.
-            let _ = ended.end.send(Closing::DeviceRefused);
+            let _ = ended.end.send(closing);
         }
     }
 }

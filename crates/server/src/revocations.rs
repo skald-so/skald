@@ -135,10 +135,10 @@ pub(crate) async fn store(
 }
 
 /// Marks the devices of `account` in `revoked` as revoked and its others as not, on `conn`, in its
-/// transaction. Expires every mailbox entry of each device it newly revokes, deletes its
-/// KeyPackages, presence values and session by its key, and tells the other instances to close its
-/// connections and end that session once the transaction commits. Gives those devices, the
-/// statuses the expiry added and the SHA-256s of the ended sessions' tokens.
+/// transaction. Takes from each device it newly revokes what [`withdraw`] takes, deletes its
+/// session by its key, and tells the other instances to close its connections and end that session
+/// once the transaction commits. Gives those devices, the statuses the expiry added and the
+/// SHA-256s of the ended sessions' tokens.
 async fn mark(
     conn: &mut PgConnection,
     state: &AppState,
@@ -161,17 +161,7 @@ async fn mark(
         .into_iter()
         .filter_map(|(device, revoked)| revoked.then_some(device))
         .collect();
-    let query = sqlx::query_as(removing!(
-        "DELETE FROM entries WHERE device_id = ANY($1::text[]::uuid[])
-         RETURNING device_id, seq, envelope_id, now() AS at"
-    ))
-    .bind(&newly);
-    let statuses = remove_on(conn, &state.wakers, query, ServerStatus::Expired).await?;
-    sqlx::query("DELETE FROM key_packages WHERE device_id = ANY($1::text[]::uuid[])")
-        .bind(&newly)
-        .execute(&mut *conn)
-        .await?;
-    presence::revoked(conn, &newly).await?;
+    let statuses = withdraw(conn, state, &newly).await?;
     let ended: Vec<(Vec<u8>,)> = sqlx::query_as(
         "DELETE FROM sessions WHERE key_device = ANY($1::text[]::uuid[]) RETURNING token_hash",
     )
@@ -190,4 +180,26 @@ async fn mark(
     );
     state.instance.tell(conn, &events).await?;
     Ok((newly, statuses, ended))
+}
+
+/// Takes from `devices`, newly revoked, what the server serves only to devices that are not, on
+/// `conn`, in its transaction: expires every mailbox entry of each, and deletes its KeyPackages and
+/// presence values. Gives the statuses the expiry added.
+pub(crate) async fn withdraw(
+    conn: &mut PgConnection,
+    state: &AppState,
+    devices: &[String],
+) -> Result<Statuses, sqlx::Error> {
+    let query = sqlx::query_as(removing!(
+        "DELETE FROM entries WHERE device_id = ANY($1::text[]::uuid[])
+         RETURNING device_id, seq, envelope_id, now() AS at"
+    ))
+    .bind(devices);
+    let statuses = remove_on(conn, &state.wakers, query, ServerStatus::Expired).await?;
+    sqlx::query("DELETE FROM key_packages WHERE device_id = ANY($1::text[]::uuid[])")
+        .bind(devices)
+        .execute(&mut *conn)
+        .await?;
+    presence::revoked(conn, devices).await?;
+    Ok(statuses)
 }

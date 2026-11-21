@@ -75,7 +75,7 @@ timestamp = uint       ; seconds since the Unix epoch
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
 - `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
-- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
+- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)), or a member's account was deleted (`deleteAccount` in the OpenAPI spec); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
 - `link-notice`: a device of the account has opened a run to be linked ([membership.md](membership.md#link-code)); the client fetches the account's waiting devices over HTTPS (`getWaitingDevices` in the OpenAPI spec). Like `space-notice`, it is not a mailbox entry. Only connections of device sessions get it.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
@@ -104,7 +104,7 @@ A WebSocket carries other frames only once its first frame, `auth`, proves the k
 | `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, nor the service token's `service` device with a certificate, or a revoked one |
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
-- A connection closes, with code 1008 and the reason `session-ended`, when the session or service token of its challenge ends, a token at its expiry too, and with the reason `device-refused` when its device is revoked.
+- A connection closes, with code 1008 and the reason `session-ended`, when the session or service token of its challenge ends, a token at its expiry too, with the reason `device-refused` when its device is revoked, and with the reason `account-deleted` when its device's account is deleted.
 - A connection of a service token reads and acks its device's mailbox only with the token's `receive` permission: without it, the server ignores its `sync` and `ack` and sends it no `message` or `status`. It gets the `space-notice` of the token's space only, and no `link-notice`.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
@@ -172,7 +172,7 @@ A member device's message with an `a2a` body also goes under [`hpke`](README.md#
   - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
 - **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
   - the entries after the cursor in `seq` order, up to a server limit per answer;
-  - a `space-notice` of each space with a roster revision listing the device's account stored since the device's previous long-poll answer, every such space at its first, so none is lost between requests;
+  - a `space-notice` of each space with a roster revision listing the device's account stored, or a member's account deleted, since the device's previous long-poll answer, every such space at its first, so none is lost between requests;
   - a `link-notice` if a run of a device of the account has opened since the device's previous long-poll answer and is still open.
 
   It answers at once when it has some or the wait is 0; otherwise with the first to arrive within the wait, through any server instance, or empty at the wait's end.
