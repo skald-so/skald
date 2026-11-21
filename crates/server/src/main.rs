@@ -99,8 +99,9 @@ struct Cli {
     )]
     sign_in_state_lifetime: u64,
 
-    /// How recent a web session's sign-in has to be to link another sign-in method to its account
-    /// or remove one; with an older one, the person signs in again first.
+    /// How recent a session's sign-in has to be to link another sign-in method to its account or
+    /// remove one, as a web session, or to delete the account; with an older one, the person signs
+    /// in again first.
     #[arg(
         long,
         env = "SKALD_LINK_SIGN_IN_AGE",

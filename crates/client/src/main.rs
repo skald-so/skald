@@ -53,6 +53,7 @@ mod history_reading;
 mod hook;
 mod inbound;
 mod intake;
+mod kept_certs;
 mod key_chain;
 mod key_packages;
 mod link_code;
@@ -1779,9 +1780,8 @@ fn performed(operation: Operation) -> Result<(), String> {
                 result
             })
         }
-        Command::Devices => {
-            state::dir(state_dir).and_then(|dir| devices::run(&dir, key_storage, speaks, timeout))
-        }
+        Command::Devices => state::dir(state_dir)
+            .and_then(|dir| devices::run(&dir, key_storage, speaks, timeout, agent.is_none())),
         // It runs through `link`.
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)

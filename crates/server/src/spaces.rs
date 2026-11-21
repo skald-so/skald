@@ -79,6 +79,8 @@ struct ListedMember {
     github_login: Option<String>,
     linked_devices: i64,
     joined_at: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    deleted: bool,
 }
 
 /// `ListedMembers` in the spec.
@@ -334,7 +336,7 @@ pub(crate) async fn revisions(State(state): State<AppState>, Readable(space): Re
 }
 
 /// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
-/// accounts' revocations and account records.
+/// accounts' revocations and account records, and which of them are deleted.
 pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Readable) -> Answer {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
@@ -346,9 +348,9 @@ pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Read
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
     let revocations = revocations::of_space(&state.db, space).await?;
-    let records: Vec<(Vec<u8>,)> = sqlx::query_as(
-        "SELECT record FROM accounts
-         WHERE record IS NOT NULL
+    let accounts: Vec<(String, Option<Vec<u8>>, bool)> = sqlx::query_as(
+        "SELECT id::text, record, deleted_at IS NOT NULL FROM accounts
+         WHERE (record IS NOT NULL OR deleted_at IS NOT NULL)
            AND id IN (SELECT account_id FROM roster_members WHERE space_id = $1::uuid)
          ORDER BY id",
     )
@@ -356,7 +358,15 @@ pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Read
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's account records", err))?;
-    Ok(Json(Devices::of(listed, &revocations).with_records(&records)).into_response())
+    let (mut records, mut deleted) = (Vec::new(), Vec::new());
+    for (account, record, gone) in accounts {
+        records.extend(record.map(|record| (record,)));
+        if gone {
+            deleted.push(account);
+        }
+    }
+    let devices = Devices::of(listed, &revocations).with_records(&records);
+    Ok(Json(devices.with_deleted(deleted)).into_response())
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
@@ -373,13 +383,14 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     let revision =
         i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
-    let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>, i64, String, bool)> = sqlx::query_as(
         "SELECT m.account_id::text,
              (SELECT login FROM sign_in_methods
               WHERE account_id = m.account_id AND provider = $3 ORDER BY created_at LIMIT 1),
              (SELECT count(*) FROM devices
               WHERE account_id = m.account_id AND cert IS NOT NULL AND NOT revoked),
-             to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
+             to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
+             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL)
          FROM roster_members m
          JOIN roster_revisions r ON r.space_id = m.space_id AND r.revision = 1 + COALESCE(
              (SELECT max(o.revision) FROM roster_revisions o
@@ -396,16 +407,18 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's members", err))?;
-    let mut shown: HashMap<String, (Option<String>, i64, String)> = rows
+    let mut shown: HashMap<String, (Option<String>, i64, String, bool)> = rows
         .into_iter()
-        .map(|(account, login, linked, joined)| (account, (login, linked, joined)))
+        .map(|(account, login, linked, joined, deleted)| {
+            (account, (login, linked, joined, deleted))
+        })
         .collect();
     let members = roster
         .body()
         .members
         .iter()
         .filter_map(|member| {
-            let (github_login, linked_devices, joined_at) =
+            let (github_login, linked_devices, joined_at, deleted) =
                 shown.remove(&member.account.to_string())?;
             Some(ListedMember {
                 handle: member.handle.to_string(),
@@ -416,6 +429,7 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
                 github_login,
                 linked_devices,
                 joined_at,
+                deleted,
             })
         })
         .collect();
@@ -713,6 +727,39 @@ pub(crate) async fn certs(
         .collect())
 }
 
+/// Refuses `roster` if it leaves the space with members whose accounts are not deleted and no admin
+/// whose account is not. The accounts' locks, taken after the space's, make a deletion of one of
+/// them wait for the revision, or the revision for the deletion, which it then sees.
+async fn with_living_admin(tx: &mut sqlx::PgConnection, roster: &Roster) -> Result<(), Refusal> {
+    let members: Vec<String> = (roster.body().members.iter())
+        .map(|member| member.account.to_string())
+        .collect();
+    // A locking read gives each row as the transaction it waited for left it.
+    let found: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT id::text, deleted_at IS NOT NULL FROM accounts
+         WHERE id = ANY($1::text[]::uuid[]) ORDER BY id FOR KEY SHARE",
+    )
+    .bind(&members)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|err| Refusal::Database("read a revision's accounts", err))?;
+    // An account this server does not hold is no deleted one.
+    let living = |account: &AccountId| {
+        let account = account.to_string();
+        !found.iter().any(|(id, deleted)| *deleted && *id == account)
+    };
+    let members = &roster.body().members;
+    let has_living = members.iter().any(|member| living(&member.account));
+    let living_admin =
+        (members.iter()).any(|member| member.role == Role::Admin && living(&member.account));
+    if has_living && !living_admin {
+        return Err(Refusal::Roster(
+            "the revision leaves the space with no admin whose account is not deleted".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
 /// gives their accounts' connections a notice of `space`, on each instance; with the accounts it
 /// adds to channels after `previous`. Of two revisions with one number at once, the first is stored
@@ -741,6 +788,7 @@ async fn insert(
         .execute(&mut *tx)
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
+    with_living_admin(&mut tx, roster).await?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let inserted = sqlx::query(
         "INSERT INTO roster_revisions (space_id, revision, roster) VALUES ($1::uuid, $2, $3)
