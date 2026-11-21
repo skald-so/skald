@@ -892,10 +892,20 @@ mod windows {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
+    };
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
     use windows_sys::Win32::System::Threading::{
         CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
-        PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute, WaitForSingleObject,
     };
 
     use super::{VERSION_SETTING, version};
@@ -923,9 +933,10 @@ mod windows {
     }
 
     /// Starts `exe` with `args` in `dir`, with this run's settings but `dropped`, as this run's
-    /// version, with no console and no handle of this run's: a handle a shell between the agent
-    /// CLI and the hook passed on, such as the CLI's end of the hook's output, would otherwise
-    /// stay open in the helper, and the CLI would wait for the hook's output while the helper runs.
+    /// version, with no console and NUL as its only handle of this run's: a handle a shell between
+    /// the agent CLI and the hook passed on, such as the CLI's end of the hook's output, would
+    /// otherwise stay open in the helper, and the CLI would wait for the hook's output while the
+    /// helper runs.
     pub fn spawn(
         exe: &Path,
         args: &[OsString],
@@ -965,25 +976,37 @@ mod windows {
         block.push(0);
         let mut current = wide(dir.as_os_str());
         current.push(0);
-        // SAFETY: plain integers and pointers, all zeros a valid start.
-        let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
-        startup.cb =
-            u32::try_from(std::mem::size_of::<STARTUPINFOW>()).map_err(io::Error::other)?;
-        // SAFETY: plain integers and handles, filled in below.
-        let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-        // SAFETY: each string ends with a zero, the settings' block with two; nothing is
-        // inherited; `process` takes the handles, closed below or by `Started`.
+        // The helper's standard handles: NUL, as `Stdio::null()` gives a child, and its only
+        // inherited handle.
+        let nul = Nul::open()?;
+        let attributes = HandleList::of(&nul.0)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb =
+            u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).map_err(io::Error::other)?;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = nul.0;
+        startup.StartupInfo.hStdOutput = nul.0;
+        startup.StartupInfo.hStdError = nul.0;
+        startup.lpAttributeList = attributes.list();
+        let mut process = PROCESS_INFORMATION::default();
+        let flags = DETACHED_PROCESS
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_UNICODE_ENVIRONMENT
+            | EXTENDED_STARTUPINFO_PRESENT;
+        // SAFETY: each string ends with a zero, the settings' block with two; the attribute list
+        // lets the child inherit only NUL; `process` takes the handles, closed below or by
+        // `Started`.
         let created = unsafe {
             CreateProcessW(
                 application.as_ptr(),
                 line.as_mut_ptr(),
                 std::ptr::null(),
                 std::ptr::null(),
-                0,
-                DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+                1,
+                flags,
                 block.as_ptr().cast(),
                 current.as_ptr(),
-                &startup,
+                (&raw const startup).cast::<STARTUPINFOW>(),
                 &mut process,
             )
         };
@@ -993,6 +1016,101 @@ mod windows {
         // SAFETY: the thread's handle, which nothing uses, closed once.
         unsafe { CloseHandle(process.hThread) };
         Ok(Started(process.hProcess))
+    }
+
+    /// The NUL device, opened for reading and writing, inheritable; closed on drop.
+    struct Nul(HANDLE);
+
+    impl Nul {
+        fn open() -> io::Result<Self> {
+            let name: Vec<u16> = "NUL\0".encode_utf16().collect();
+            let security = SECURITY_ATTRIBUTES {
+                nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                    .map_err(io::Error::other)?,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            // SAFETY: the name ends with a zero; the handle is closed on drop.
+            let handle = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    &security,
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Nul(handle))
+        }
+    }
+
+    impl Drop for Nul {
+        fn drop(&mut self) {
+            // SAFETY: the handle opened above, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A process's attribute list that names the only handle it inherits; deleted on drop.
+    struct HandleList<'h> {
+        /// The list's room, in words, which align it.
+        room: Vec<usize>,
+        /// The list in the room.
+        list: LPPROC_THREAD_ATTRIBUTE_LIST,
+        _handle: std::marker::PhantomData<&'h HANDLE>,
+    }
+
+    impl<'h> HandleList<'h> {
+        fn of(handle: &'h HANDLE) -> io::Result<Self> {
+            let mut size = 0;
+            // SAFETY: with no list, it only gives the size one needs.
+            unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size) };
+            let mut room = vec![0; size.div_ceil(std::mem::size_of::<usize>())];
+            let mut list = HandleList {
+                list: room.as_mut_ptr().cast(),
+                room,
+                _handle: std::marker::PhantomData,
+            };
+            // SAFETY: the room holds `size` bytes.
+            if unsafe { InitializeProcThreadAttributeList(list.list(), 1, 0, &mut size) } == 0 {
+                list.room.clear();
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the list initialized above; `handle` outlives it.
+            let updated = unsafe {
+                UpdateProcThreadAttribute(
+                    list.list(),
+                    0,
+                    usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST).map_err(io::Error::other)?,
+                    std::ptr::from_ref(handle).cast(),
+                    std::mem::size_of::<HANDLE>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            };
+            if updated == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(list)
+        }
+
+        fn list(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.list
+        }
+    }
+
+    impl Drop for HandleList<'_> {
+        fn drop(&mut self) {
+            if !self.room.is_empty() {
+                // SAFETY: the list initialized in `of`, deleted once.
+                unsafe { DeleteProcThreadAttributeList(self.list()) };
+            }
+        }
     }
 
     /// Adds `arg` to the command line `line` as programs built with the C runtime split it.
@@ -1037,6 +1155,67 @@ mod windows {
                 super::quote(&wide, &mut line);
                 assert_eq!(String::from_utf16(&line).unwrap(), quoted, "{arg:?}");
             }
+        }
+
+        /// The file whose presence in a run's working directory makes
+        /// [`a_started_process_has_nul_as_its_standard_handles`] act as the process it starts.
+        const PROBE: &str = "probe";
+
+        /// A process [`super::spawn`] starts has NUL as each of its standard handles, which its
+        /// writes reach.
+        #[test]
+        fn a_started_process_has_nul_as_its_standard_handles() {
+            use std::io::Write;
+
+            use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+
+            let here = std::env::current_dir().unwrap();
+            if here.join(PROBE).is_file() {
+                let kinds: Vec<String> = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+                    .into_iter()
+                    .map(|which| {
+                        // SAFETY: it reads the process's standard handle.
+                        let handle = unsafe { GetStdHandle(which) };
+                        if handle.is_null() || handle == super::INVALID_HANDLE_VALUE {
+                            return "none".to_owned();
+                        }
+                        // SAFETY: a standard handle of the process.
+                        let kind = unsafe { GetFileType(handle) };
+                        (if kind == FILE_TYPE_CHAR {
+                            "char"
+                        } else {
+                            "other"
+                        })
+                        .to_owned()
+                    })
+                    .collect();
+                let mut out = std::io::stdout();
+                let written = out.write_all(b"probe").and_then(|()| out.flush()).is_ok();
+                std::fs::write(here.join("said"), format!("{kinds:?} {written}")).unwrap();
+                return;
+            }
+            let dir = crate::test_dir::TestDir::new("helper-nul");
+            std::fs::write(dir.join(PROBE), "").unwrap();
+            let args = [
+                "helper::windows::tests::a_started_process_has_nul_as_its_standard_handles",
+                "--exact",
+            ]
+            .map(std::ffi::OsString::from);
+            let mut started =
+                super::spawn(&std::env::current_exe().unwrap(), &args, &dir, &[]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while started.try_wait().unwrap().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the process still runs"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let said = std::fs::read_to_string(dir.join("said")).unwrap();
+            assert_eq!(said, r#"["char", "char", "char"] true"#);
         }
     }
 }
