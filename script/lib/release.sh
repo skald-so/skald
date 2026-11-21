@@ -24,17 +24,27 @@ git_cliff_url=https://github.com/orhun/git-cliff/releases/download
 git_cliff_root=${CARGO_HOME:-$HOME/.cargo}/skald/git-cliff-$git_cliff_version
 PATH=$git_cliff_root/bin:$PATH
 
-# set_version <dir> <version>: sets the workspace version in [workspace.package] of <dir>/Cargo.toml
-# and of every crate of the workspace, the packages without a source, in <dir>/Cargo.lock. It needs
-# no cargo registry. False, changing nothing, when Cargo.toml has no such version.
+# The manifest of the Claude Code plugin, which has the workspace version ("Channels" in
+# docs/dev/infrastructure.md).
+plugin_manifest=plugins/claude-code/.claude-plugin/plugin.json
+
+# set_version <dir> <version>: sets the workspace version in [workspace.package] of <dir>/Cargo.toml,
+# of every crate of the workspace, the packages without a source, in <dir>/Cargo.lock, and of the
+# plugin in <dir>/$plugin_manifest. It needs no cargo registry. False, changing nothing, when
+# Cargo.toml has no such version or the plugin's manifest is not a JSON object.
 set_version() {
+  jq -e --arg version "$2" 'objects | .version = $version' "$1/$plugin_manifest" \
+    >"$1/$plugin_manifest.new" 2>/dev/null || {
+    rm -f "$1/$plugin_manifest.new"
+    return 1
+  }
   awk -v version="$2" '
     /^\[/ { section = $0 }
     section == "[workspace.package]" && /^version *=/ { $0 = "version = \"" version "\""; set = 1 }
     { print }
     END { exit !set }
   ' "$1/Cargo.toml" >"$1/Cargo.toml.new" || {
-    rm -f "$1/Cargo.toml.new"
+    rm -f "$1/Cargo.toml.new" "$1/$plugin_manifest.new"
     return 1
   }
   awk -v version="$2" '
@@ -45,6 +55,7 @@ set_version() {
   ' "$1/Cargo.lock" >"$1/Cargo.lock.new"
   mv "$1/Cargo.toml.new" "$1/Cargo.toml"
   mv "$1/Cargo.lock.new" "$1/Cargo.lock"
+  mv "$1/$plugin_manifest.new" "$1/$plugin_manifest"
 }
 
 # fixture_git <dir>: isolates the git of the release fixtures in <dir> from the user's config and
