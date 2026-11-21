@@ -6,8 +6,8 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
 |---|---|---|---|
 | Terminal | Yes, the cross-session socket | Yes, after the current tool | Channels, `asyncRewake`, the mod, hooks, the `inbox` tool, `/loop` |
-| Claude app | Yes, the cross-session socket | Yes | Channels, `asyncRewake`, hooks, `inbox`, `/loop` |
-| VS Code | Yes, the cross-session socket | Yes | Channels, `asyncRewake`, hooks, `inbox`, `/loop` |
+| Claude app | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
+| VS Code | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
 
 Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, a fallback wakes the session:
 - **Channels:** `skald mcp` declares Claude Code's channel capability and pushes each message as a channel event. Claude Code takes them only when you start it with its development channel flag for the `skald` server.

@@ -17,6 +17,7 @@ use skald_proto::MessageId;
 
 use crate::claude::claude_code;
 use crate::client::CLIENT;
+use crate::helped::Helped;
 use crate::hooks::{Bob, INBOX_WORD, api_sends};
 use crate::lines::{agent_line_of, agent_lines, reference};
 use crate::receipts::shows_read_once;
@@ -75,8 +76,10 @@ impl Fallback {
 /// request holds it once.
 fn own_wakes(id: u64, login: &str, fallback: Fallback, says: &str) {
     let solo = Solo::new(id, login);
+    let helped = Helped::new(solo.machine());
     let model = Model::start(|_| Reply::Done);
-    let Some(mut session) = idle_in_terminal(&solo, WEB, &model, fallback.options()) else {
+    let Some(mut session) = idle_in_terminal((&solo, &helped), WEB, &model, fallback.options())
+    else {
         return;
     };
 
@@ -103,8 +106,10 @@ fn peer_wakes(
 ) {
     let solo = Solo::new(id, login);
     let bob = Bob::join(&solo, bob_id, bob_login);
+    let helped = Helped::new(solo.machine());
     let model = inbox_when_asked(says);
-    let Some(mut session) = idle_in_terminal(&solo, WEB, &model, fallback.options()) else {
+    let Some(mut session) = idle_in_terminal((&solo, &helped), WEB, &model, fallback.options())
+    else {
         return;
     };
 
@@ -126,10 +131,20 @@ fn refusing(mut options: Options) -> Options {
 }
 
 /// Starts a session in a terminal in the folder of `agent`, as `agent` unless `options` say it
-/// is unnamed, on `model`, with `options`; gives it [`START`] and waits until its turn ended.
-fn idle_in_terminal(solo: &Solo, agent: &str, model: &Model, options: Options) -> Option<Session> {
+/// is unnamed, on `model`, with `options`, its `skald` the copy of `helped`, whose processes it
+/// kills on drop, before the test's folder goes; gives it [`START`] and waits until its turn ended.
+fn idle_in_terminal(
+    (solo, helped): (&Solo, &Helped),
+    agent: &str,
+    model: &Model,
+    options: Options,
+) -> Option<Session> {
     let claude = claude_code()?;
     let dir = solo.dir(agent);
+    let options = Options {
+        skald: Some(helped.exe().to_owned()),
+        ..options
+    };
     let mut session = Session::start_with(
         &claude,
         (solo.machine(), &dir),
@@ -226,6 +241,7 @@ fn default_agent(solo: &Solo) -> String {
 #[ignore = "e2e: runs the real Claude Code, in a job of its own"]
 fn idle_session_without_both_gets_own_text_by_the_mod_s_inbox_prompt() {
     let solo = Solo::new(4_919_553_001, "ada-wake-e2e-mod");
+    let helped = Helped::new(solo.machine());
     let plugin = PathBuf::from(MOD_DIR);
     assert!(plugin.is_dir(), "no mod at {}", plugin.display());
     let model = inbox_when_asked(MOD_SAYS);
@@ -235,7 +251,7 @@ fn idle_session_without_both_gets_own_text_by_the_mod_s_inbox_prompt() {
         skald_on_path: true,
         ..Options::default()
     });
-    let Some(mut session) = idle_in_terminal(&solo, "session", &model, options) else {
+    let Some(mut session) = idle_in_terminal((&solo, &helped), "session", &model, options) else {
         return;
     };
 

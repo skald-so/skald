@@ -575,9 +575,11 @@ const MIGRATIONS: &[&str] = &[
     ) STRICT",
     // Resending (`crate::resend`): the path that last took each kept message that waits for
     // an agent, `socket`, `channel`, `rewake` or `mod`, or `hooks` once the paths are done, none
-    // before the first; and until when, in Unix milliseconds, it waits for its confirmation there.
+    // before the first; until when, in Unix milliseconds, it waits for its confirmation there; and
+    // when the first path took it.
     "ALTER TABLE handover ADD COLUMN path TEXT;
-    ALTER TABLE handover ADD COLUMN due INTEGER;",
+    ALTER TABLE handover ADD COLUMN due INTEGER;
+    ALTER TABLE handover ADD COLUMN given INTEGER;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -2915,8 +2917,9 @@ impl State {
                 _ => i64::from(signalled.contains(seq)),
             };
             tx.execute(
-                "UPDATE handover SET path = ?3, due = ?4, signalled = ?5 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, path, due, signal],
+                "UPDATE handover SET path = ?3, due = ?4, signalled = ?5, given = COALESCE(given, ?6)
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, path, due, signal, unix_ms()],
             )?;
         }
         tx.commit()?;
@@ -2925,24 +2928,39 @@ impl State {
 
     /// The `seq` of each kept message that waits for the agent `agent`, which a path took, whose
     /// reference ([`crate::forms::whole_reference`]) starts with one of `references`, each of at
-    /// least [`crate::forms::SHORTEST`] characters.
-    pub fn by_reference(&self, agent: &str, references: &[String]) -> Result<Vec<u64>, Error> {
-        let references: Vec<&String> = (references.iter())
-            .filter(|reference| reference.len() >= crate::forms::SHORTEST)
+    /// least [`crate::forms::SHORTEST`] characters, with when a session's file got it, in Unix
+    /// milliseconds: since the first path took it.
+    pub fn by_reference(
+        &self,
+        agent: &str,
+        references: &[(String, i64)],
+    ) -> Result<Vec<u64>, Error> {
+        let references: Vec<&(String, i64)> = (references.iter())
+            .filter(|(reference, _)| reference.len() >= crate::forms::SHORTEST)
             .collect();
         if references.is_empty() {
             return Ok(Vec::new());
         }
-        let taken: Vec<(u64, Option<String>)> = self.lines(
-            "SELECT handover.seq, kept.msg_id FROM handover JOIN kept ON kept.seq = handover.seq
+        let mut query = self.db.prepare(
+            "SELECT handover.seq, kept.msg_id, handover.given FROM handover
+             JOIN kept ON kept.seq = handover.seq
              WHERE handover.agent = ?1 AND handover.path IS NOT NULL ORDER BY handover.seq",
-            params![agent],
         )?;
+        let rows = query.query_map(params![agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        let taken = rows.collect::<Result<Vec<_>, _>>()?;
         Ok((taken.into_iter())
-            .filter_map(|(seq, msg_id)| {
+            .filter_map(|(seq, msg_id, given)| {
+                let seq = u64::try_from(seq).ok()?;
                 let whole = crate::forms::whole_reference(msg_id?.parse().ok()?);
+                let given = given?;
                 (references.iter())
-                    .any(|reference| whole.starts_with(reference.as_str()))
+                    .any(|(reference, at)| *at >= given && whole.starts_with(reference.as_str()))
                     .then_some(seq)
             })
             .collect())
@@ -3149,16 +3167,18 @@ impl State {
         let tx = self.db.unchecked_transaction()?;
         for seq in messages {
             tx.execute(
-                "UPDATE handover SET written = ?3, failed = 0, path = 'socket', due = ?4
+                "UPDATE handover SET written = ?3, failed = 0, path = 'socket', due = ?4,
+                     given = COALESCE(given, ?5)
                  WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, session, due],
+                params![sql_seq(*seq)?, agent, session, due, unix_ms()],
             )?;
         }
         for seq in signalled {
             tx.execute(
-                "UPDATE handover SET signalled = 1, signal = ?3, path = 'socket', due = ?4
+                "UPDATE handover SET signalled = 1, signal = ?3, path = 'socket', due = ?4,
+                     given = COALESCE(given, ?5)
                  WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, signal, due],
+                params![sql_seq(*seq)?, agent, signal, due, unix_ms()],
             )?;
         }
         tx.commit()?;
@@ -5625,16 +5645,43 @@ pub(crate) mod tests {
         assert_eq!(kept, 0, "a message no one waits for is kept");
     }
 
+    /// A state in the test directory `name`, of a device named `laptop`.
+    fn with_device(name: &str) -> (TestDir, State) {
+        let dir = TestDir::new(name);
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
+            .unwrap();
+        (dir, state)
+    }
+
+    /// A reference confirms a message a path took only from an entry written since the first path
+    /// took it: one an earlier message had, reused, does not.
+    #[test]
+    fn a_reference_confirms_a_message_only_from_an_entry_since_a_path_took_it() {
+        let (_dir, state) = with_device("state-by-reference");
+        let space = space_of_kept();
+        state.add_agent(space, "claude").unwrap();
+        state.write_entries(&[(1, vec![1])]).unwrap();
+        let message = kept(&["claude"]);
+        let sender = DeviceId::from_signing_key(&[4; 32]);
+        state.keep(1, (sender, message.msg_id), &message).unwrap();
+        let reference = crate::forms::whole_reference(message.msg_id)[..4].to_owned();
+        let before = unix_ms();
+        (state.pushed((&[1], &[]), "claude", ("channel", Some(i64::MAX)))).unwrap();
+        let after = unix_ms();
+        let earlier = [(reference.clone(), before - 1)];
+        assert!(state.by_reference("claude", &earlier).unwrap().is_empty());
+        let since = [(reference, after)];
+        assert_eq!(state.by_reference("claude", &since).unwrap(), [1]);
+    }
+
     /// A message the person's run showed can be replied to by the person; one handed over to an
     /// agent, by that agent in its space only; each until its wait ends, after which it is dropped.
     /// A kept reply's `replied` is kept with it, for the person and the message's agent.
     #[test]
     fn shown_and_handed_over_messages_can_be_replied_to_until_their_wait_ends() {
-        let dir = TestDir::new("state-targets");
-        let state = State::open(&dir).unwrap();
-        state
-            .add_device(DeviceId::from_signing_key(&[3; 32]), "laptop", "0192")
-            .unwrap();
+        let (_dir, state) = with_device("state-targets");
         let space = space_of_kept();
         state.add_agent(space, "claude").unwrap();
         state.add_agent(space, "codex").unwrap();

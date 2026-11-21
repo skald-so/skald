@@ -1,11 +1,13 @@
 //! The `asyncRewake` hook on `SessionStart` and `Stop`: it waits for the agent's messages up to its
 //! timeout, gives them and starts a turn, `own` text as its line and a message below `own` only as
-//! the signal, within the hooks' limit; with none, it ends at its timeout printing nothing.
+//! the signal, within the hooks' limit; with none, it ends at its timeout printing nothing, and in
+//! a folder in no space at once.
 
+use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use crate::fallbacks::{Bare, long_text, session_start, woke};
+use crate::fallbacks::{Bare, long_text, rewake_of, session_start, woke};
 use crate::hooks::{Bob, Event, LIMIT, assert_cut, assert_own_line, assert_signal};
 use crate::solo::{API, WEB};
 
@@ -88,6 +90,30 @@ fn with_nothing_waiting_it_ends_at_its_timeout_printing_nothing() {
         ran >= Duration::from_millis(SHORT * 1_000 - 500),
         "ended after {ran:?}, before its timeout"
     );
+}
+
+/// `~/work/elsewhere/web` is in no space: an approved `.skald.toml` binds it to a space Ada's
+/// device is not in. web's `asyncRewake` hook starts on `SessionStart` there, waiting [`WAITS`]
+/// seconds: it exits with success at once, printing nothing, and no helper runs.
+#[test]
+fn in_a_folder_in_no_space_it_ends_at_once_printing_nothing() {
+    let ada = Bare::new(4_919_516_001, "ada-rewake-no-space");
+    let elsewhere = ["home", "work", "elsewhere", WEB].iter();
+    let machine = ada.solo.machine();
+    let elsewhere = machine
+        .root()
+        .join(elsewhere.collect::<std::path::PathBuf>());
+    fs::create_dir_all(&elsewhere).expect("make a folder");
+    fs::write(elsewhere.join(".skald.toml"), "space = \"nowhere\"\n").expect("bind the folder");
+    let folder = elsewhere.to_string_lossy();
+    let approved = (machine.start_in(&elsewhere, &["approve-binding", &folder])).finish();
+    assert!(approved.success, "not approved: {approved:?}");
+    let mut rewake = rewake_of(&ada.helped, &elsewhere, WEB, &session_start(), WAITS, &[]);
+
+    let (hooked, ran) = rewake.finished();
+    hooked.assert_silent("in no space");
+    assert!(ran < Duration::from_secs(5), "ended after {ran:?}");
+    ada.helped.assert_none();
 }
 
 /// What starts api's long message; it is nowhere else.

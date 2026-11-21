@@ -1,8 +1,8 @@
 //! Resending: a message goes by the session's first path, in the order socket, Channels,
 //! `asyncRewake`; without a confirmation within the timeout, by the next; after the last it waits
 //! for the hooks and `inbox`. A signal the agent does not follow with `inbox` goes again. One
-//! confirmation ends it, and a message the session file already shows goes by no other path. A
-//! helper killed while a message waits for its timeout leaves it to be resent, and `read` of it
+//! confirmation ends it, and a message the session file already shows, queued too, goes by no
+//! other path; the hooks and `inbox` give a message only after the last path. A helper killed while a message waits for its timeout leaves it to be resent, and `read` of it
 //! goes once.
 
 use std::thread;
@@ -93,9 +93,8 @@ fn nearly(timeout: u64) -> Duration {
 /// What api says to web; it is nowhere else.
 const ORDER_SAYS: &str = "resend test: api asks web, which never takes it in";
 
-/// web's session starts, with a timeout of [`TIMED`] seconds; it queues what comes and never takes
-/// it into the conversation. web's `skald mcp` and its `asyncRewake` hook run. api sends web a
-/// message; the socket gets its line. For a second more, no channel event comes and the hook still
+/// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. web's `skald mcp`
+/// and its `asyncRewake` hook run. api sends web a message; the socket gets its line. For a second more, no channel event comes and the hook still
 /// runs. Then, once the timeout passed, one channel event, the message's line from api at `own`,
 /// while the hook still runs; once it passed again, the hook exits with 2, its standard error the
 /// line. Then web's `PostToolUse` gives the line, and the person's `skald recv` shows `read` of it
@@ -103,7 +102,7 @@ const ORDER_SAYS: &str = "resend test: api asks web, which never takes it in";
 #[test]
 fn a_message_goes_by_the_socket_then_channels_then_async_rewake_then_the_hooks() {
     let ada = Ada::new(4_919_521_001, "ada-resend-in-order");
-    let session = Standin::new(Take::Queue);
+    let session = Standin::new(Take::Lose);
     let mut paths = started(&ada, &session, TIMED, true, true);
     let api = ada.web.api();
 
@@ -281,15 +280,14 @@ fn a_signal_the_agent_follows_with_inbox_goes_no_more() {
 /// What api says to web; it is nowhere else.
 const KILLED_SAYS: &str = "resend test: api asks web as the helper dies";
 
-/// web's session starts, with a timeout of [`TIMED`] seconds; it queues what comes and never takes
-/// it into the conversation. api sends web a message; once the socket has it, the helper is
-/// killed. web's `PostToolUse`, run until it gives something, gives the message's line from api at
+/// web's session starts, with a timeout of [`TIMED`] seconds; it loses what comes. api sends web a
+/// message; once the socket has it, the helper is killed. web's `PostToolUse`, run until it gives something, gives the message's line from api at
 /// `own`; the person's `skald recv` shows `read` of it once; the socket got it once, and the next
 /// `PostToolUse` prints nothing.
 #[test]
 fn a_helper_killed_while_a_message_waits_for_its_timeout_leaves_it_to_be_resent_once() {
     let ada = Ada::new(4_919_526_001, "ada-resend-helper-killed");
-    let session = Standin::new(Take::Queue);
+    let session = Standin::new(Take::Lose);
     let _paths = started(&ada, &session, TIMED, false, false);
 
     let msg_id = ada.web.own(KILLED_SAYS);
@@ -301,4 +299,85 @@ fn a_helper_killed_while_a_message_waits_for_its_timeout_leaves_it_to_be_resent_
     shows_read_once(ada.machine(), msg_id);
     lines_stay(&session, KILLED_SAYS, 1, Duration::from_secs(1));
     (ada.hook(WEB, &session, Event::PostToolUse)).assert_silent("PostToolUse once it gave it");
+}
+
+/// What api says to web; it is nowhere else.
+const QUEUED_SAYS: &str = "resend test: api asks web, which queues it behind a tool";
+
+/// web's session starts, with a timeout of 2 seconds; it queues what comes, as a session whose
+/// tool runs. web's `skald mcp` and its `asyncRewake` hook run. api sends web a message; the
+/// socket gets its line, which the session file shows queued. Over [`QUIET`] more, no channel
+/// event comes, the hook still runs and web's `PostToolUse` prints nothing. The tool ends: the
+/// session takes the line into the conversation, and the model replies. The person's `skald recv`
+/// shows `read` of it once, and the socket got it once.
+#[test]
+fn a_line_the_session_queued_goes_by_no_other_path() {
+    let ada = Ada::new(4_919_527_001, "ada-resend-queued");
+    let session = Standin::new(Take::Queue);
+    let mut paths = started(&ada, &session, 2, true, true);
+
+    let msg_id = ada.web.own(QUEUED_SAYS);
+    session.wait_lines(1);
+    thread::sleep(QUIET);
+    let sent = events(paths.channel(), 1, Duration::ZERO);
+    assert!(sent.is_empty(), "events for a queued line: {sent:#?}");
+    paths.rewake().assert_running("with the line queued");
+    (ada.hook(WEB, &session, Event::PostToolUse)).assert_silent("PostToolUse with the line queued");
+
+    session.dequeue();
+    session.model_replies();
+    shows_read_once(ada.machine(), msg_id);
+    lines_stay(&session, QUEUED_SAYS, 1, Duration::ZERO);
+}
+
+/// What api says to web; it is nowhere else.
+const WAITING_SAYS: &str = "resend test: api asks web, whose hooks wait for the last path";
+
+/// The timeout of the test of what the hooks and `inbox` give while the paths wait, in seconds:
+/// long enough for both to run within it.
+const CHECKED: u64 = 8;
+
+/// Fails unless web's `PostToolUse` prints nothing and its `inbox` shows no [`WAITING_SAYS`], as
+/// `when` says.
+fn nothing_yet(ada: &mut Ada, session: &Standin, when: &str) {
+    (ada.hook(WEB, session, Event::PostToolUse)).assert_silent(&format!("PostToolUse {when}"));
+    let shown = ada.web.session.inbox();
+    assert!(!shown.contains(WAITING_SAYS), "inbox {when}: {shown}");
+}
+
+/// web's session starts, with a timeout of [`CHECKED`] seconds; it loses what comes. web's `skald
+/// mcp` and its `asyncRewake` hook run. api sends web a message. Once the channel event comes,
+/// and again once the hook exits with 2, each within the timeout, web's `PostToolUse` prints
+/// nothing and its `inbox` shows no text of api's. Then `PostToolUse`, run until it gives
+/// something, gives the message's line from api at `own`.
+#[test]
+fn the_hooks_and_inbox_give_a_message_only_after_the_last_path() {
+    let mut ada = Ada::new(4_919_528_001, "ada-resend-hooks-wait");
+    let session = Standin::new(Take::Lose);
+    let mut paths = started(&ada, &session, CHECKED, true, true);
+    let api = ada.web.api();
+
+    let msg_id = ada.web.own(WAITING_SAYS);
+    session.wait_lines(1);
+    let sent = wait_events(paths.channel(), 1, WAIT);
+    let evented = Instant::now();
+    assert_own_line(&sent[0], WAITING_SAYS, msg_id, &api);
+    nothing_yet(&mut ada, &session, "while Channels waits");
+    paths.rewake().assert_running("while Channels waits");
+    assert!(
+        evented.elapsed() < Duration::from_secs(CHECKED),
+        "checked late"
+    );
+
+    let (hooked, _) = paths.rewake().finished();
+    let woken = Instant::now();
+    assert_own_line(&woke(&hooked), WAITING_SAYS, msg_id, &api);
+    nothing_yet(&mut ada, &session, "while asyncRewake waits");
+    assert!(
+        woken.elapsed() < Duration::from_secs(CHECKED),
+        "checked late"
+    );
+
+    let context = ada.hook_gives(WEB, &session);
+    assert_own_line(&context, WAITING_SAYS, msg_id, &api);
 }

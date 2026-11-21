@@ -1425,10 +1425,13 @@ const REWAKE_AGAIN: Duration = Duration::from_secs(1);
 /// `skald hook claude --wait` as `operation` says, by the state in `dir`: waits through the helper
 /// that runs, or one it starts unless `one_shot`, as the agent `--agent` names or, without it, the
 /// default one, for up to `wait`, until the agent's paths give it messages ([`resend`]); prints them
-/// on standard error and exits with 2, which starts a turn. With none, or without a helper, it
-/// exits with success, printing nothing.
+/// on standard error and exits with 2, which starts a turn. With none, without a helper, or in a
+/// folder in no space, at once, it exits with success, printing nothing.
 fn rewake(mut operation: Operation, dir: &Path, wait: Duration, one_shot: bool) -> ExitCode {
     let deadline = Instant::now() + wait;
+    if folders::working_space(dir).is_err() {
+        return ExitCode::SUCCESS;
+    }
     if operation.agent.is_none() {
         let Some(agent) = mcp::default_agent(dir, hook::CLAUDE_CODE) else {
             return ExitCode::SUCCESS;

@@ -94,9 +94,12 @@ pub struct Options {
     /// Neither its `skald mcp` nor its hooks get `--agent`: they act as the default agent of
     /// Claude Code's client name.
     pub unnamed: bool,
-    /// The directory of the machine's `skald` goes first on the session's `PATH`, for what runs
+    /// The directory of the session's `skald` goes first on the session's `PATH`, for what runs
     /// `skald` from there, such as the mod.
     pub skald_on_path: bool,
+    /// The `skald` its `skald mcp` and hooks run, and that [`Options::skald_on_path`] names, if not
+    /// the machine's: a copy whose processes, and so its helper, a test finds.
+    pub skald: Option<PathBuf>,
 }
 
 /// How long the `asyncRewake` hooks wait, in seconds, and the timeout Claude Code gives them.
@@ -157,8 +160,14 @@ impl Session {
             dir,
             &named(&[MCP]).iter().map(String::as_str).collect::<Vec<_>>(),
         );
-        let skald = lossy(mcp.get_program());
-        let helped = SOCKET || options.hooks.is_some();
+        let skald = (options.skald.as_deref())
+            .map_or_else(|| lossy(mcp.get_program()), |path| lossy(path.as_os_str()));
+        // A helper serves the socket and the fallbacks.
+        let helped = SOCKET
+            || options.hooks.is_some()
+            || options.channels
+            || options.rewake
+            || !options.plugin_dirs.is_empty();
         let mut settings: Vec<(String, String)> = (mcp.get_envs())
             .filter(|(name, _)| !helped || *name != OsStr::new(ONE_SHOT))
             .filter_map(|(name, value)| Some((lossy(name), lossy(value?))))

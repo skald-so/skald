@@ -16,7 +16,7 @@
 //! - The session file gets what Claude Code writes: a message the session queues as a
 //!   `queue-operation`, one it takes into the conversation as a `user` entry whose `origin` holds
 //!   the line's `from` and `msg_id`. The test adds the model's own entries and the other entries
-//!   a session writes.
+//!   a session writes. Each entry has the time it was written.
 
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -63,6 +63,8 @@ pub enum Take {
     Queue,
     /// Answers each with a receipt of this status and takes none.
     Receipt(&'static str),
+    /// Loses each: answers nothing and writes nothing of it.
+    Lose,
 }
 
 /// A user line the socket got.
@@ -421,6 +423,7 @@ fn take_line(shared: &Shared, got: &Line) {
                 shared.got().held.push(got.clone());
             }
         }
+        Take::Lose => {}
     }
 }
 
@@ -482,7 +485,10 @@ fn write_entry(shared: &Shared, recorded: &str, edit: impl FnOnce(&mut Value)) {
     append_line(shared, &entry);
 }
 
+/// Appends `entry` to the session file, as written now.
 fn append_line(shared: &Shared, entry: &Value) {
+    let mut entry = entry.clone();
+    entry["timestamp"] = json!(format!("{:.3}", jiff::Timestamp::now()));
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)

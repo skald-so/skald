@@ -98,7 +98,7 @@ pub fn end(dir: &Path, agent: &Name, session: &hook::Session) -> Result<(), Stri
 /// Records what the file of `session`, a session of `agent`, confirms, reading it whole: of a
 /// registered session, its registered file, of what its socket took and what the other paths took;
 /// otherwise, once a path took a message for `agent`, the file its hook input names, of what the
-/// paths took, by the references it names.
+/// paths took, by the references of the messages a path gave in it ([`given`]).
 pub fn confirm(
     state: &State,
     agent: &Name,
@@ -209,19 +209,24 @@ fn failing(line: &str) -> Option<String> {
     failed.then(|| value["orig_msg_id"].as_str().map(str::to_owned))?
 }
 
+/// A reference of a message a path gave a session, with when the session's file got it, in Unix
+/// milliseconds.
+pub type Given = (String, i64);
+
 /// A reading of a session file, from where the last one ended: the `msg_id`s of the entries that
-/// went to the model, and the references (`#<ref>`) their text names, whose model's own entry has
-/// not come yet.
+/// went to the model, and the references of the messages a path gave in them ([`given`]), whose
+/// model's own entry has not come yet.
 #[derive(Default)]
 pub struct Scan {
     offset: u64,
     seen: BTreeSet<String>,
-    seen_references: BTreeSet<String>,
+    seen_references: BTreeSet<Given>,
     /// The references the model got since they were last taken ([`Scan::references`]).
-    references: Vec<String>,
+    references: Vec<Given>,
     /// The `msg_id`s and references that went to the model since they were last taken, whose
-    /// model's own entry has not come yet ([`Scan::shown`]).
-    shown: (Vec<String>, Vec<String>),
+    /// model's own entry has not come yet, and the references of the lines the session queued
+    /// ([`Scan::shown`]).
+    shown: (Vec<String>, Vec<Given>, Vec<Given>),
 }
 
 /// A session file's entry, as far as a confirmation needs.
@@ -239,6 +244,13 @@ struct Entry {
     attachment: Option<Attachment>,
     #[serde(default)]
     message: Option<Said>,
+    /// What a `queue-operation` does, and the line it queues.
+    #[serde(default)]
+    operation: String,
+    #[serde(default)]
+    content: Option<serde_json::Value>,
+    #[serde(default)]
+    timestamp: Option<String>,
 }
 
 /// A queued line that went to the model during a turn, as the turn's attachment.
@@ -279,19 +291,56 @@ fn text_of(content: &serde_json::Value) -> String {
     }
 }
 
-/// The references `text` names as `#<ref>`: each word of `#` and at least
-/// [`crate::forms::SHORTEST`] characters of a reference's alphabet.
-pub fn references(text: &str) -> Vec<String> {
-    (text.split(|c: char| c != '#' && !c.is_ascii_alphanumeric()))
-        .filter_map(|word| word.strip_prefix('#'))
-        .filter(|word| {
-            word.len() >= crate::forms::SHORTEST
-                && word
-                    .bytes()
-                    .all(|byte| crate::forms::BASE32.contains(&byte))
-        })
-        .map(str::to_owned)
+/// How Claude Code opens a channel event in the conversation, before its source: the server's
+/// name, `skald`, or `plugin:<plugin>:skald` for a plugin's.
+const CHANNEL_TAG: &str = "<channel source=\"";
+
+/// What closes a channel event.
+const CHANNEL_END: &str = "</channel>";
+
+/// What comes before the output of an `asyncRewake` hook that exited with 2.
+const REWAKE_OUTPUT: &str = "hook blocking error from command";
+
+/// The references of the messages a path gave in `text`, a user entry's: in each channel event
+/// of the session's `skald mcp` and in an `asyncRewake` hook's output, those Skald's lines put as
+/// their own ([`own_reference`]).
+fn given(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(CHANNEL_TAG) {
+        let event = &rest[start + CHANNEL_TAG.len()..];
+        let end = event.find(CHANNEL_END).unwrap_or(event.len());
+        let source = event[..end].split('"').next().unwrap_or_default();
+        if source == "skald" || source.ends_with(":skald") {
+            parts.push(&event[source.len()..end]);
+        }
+        rest = &event[end..];
+    }
+    if let Some(start) = text.find(REWAKE_OUTPUT) {
+        parts.push(&text[start + REWAKE_OUTPUT.len()..]);
+    }
+    (parts.into_iter())
+        .flat_map(str::lines)
+        .filter_map(own_reference)
         .collect()
+}
+
+/// The reference `line` names as its message's own: right after the bracket of sender, device and
+/// trust level that opens Skald's short line ([`crate::forms::Message::shown`]), the first such
+/// in `line`, or in the line that ends a cut one ([`crate::hook::fitted`]). A reply's reference and
+/// those a text quotes are not its own.
+fn own_reference(line: &str) -> Option<String> {
+    let reference = match line.trim_start().strip_prefix("skald: #") {
+        Some(tail) => tail.split_once(" is cut here: ")?.0,
+        None => (line.match_indices('[')).find_map(|(at, _)| {
+            let (bracket, rest) = line[at + 1..].split_once("] #")?;
+            (bracket.split(" · ").count() == 3 && !bracket.contains('['))
+                .then(|| rest.split(|c: char| !c.is_ascii_alphanumeric()).next())?
+        })?,
+    };
+    let valid = reference.len() >= crate::forms::SHORTEST
+        && (reference.bytes()).all(|byte| crate::forms::BASE32.contains(&byte));
+    valid.then(|| reference.to_owned())
 }
 
 impl Scan {
@@ -328,18 +377,19 @@ impl Scan {
     }
 
     /// Takes the references the model got since this was last asked.
-    pub fn references(&mut self) -> Vec<String> {
+    pub fn references(&mut self) -> Vec<Given> {
         std::mem::take(&mut self.references)
     }
 
     /// Takes the `msg_id`s and references that went to the model since this was last asked, whose
-    /// model's own entry has not come yet.
-    pub fn shown(&mut self) -> (Vec<String>, Vec<String>) {
-        let (ids, references) = std::mem::take(&mut self.shown);
+    /// model's own entry has not come yet, and the references of the lines the session queued
+    /// since: Claude Code gives a queued line once its turn's tool ends.
+    pub fn shown(&mut self) -> (Vec<String>, Vec<Given>) {
+        let (ids, references, queued) = std::mem::take(&mut self.shown);
         let ids = ids.into_iter().filter(|id| self.seen.contains(id));
         let references =
             (references.into_iter()).filter(|reference| self.seen_references.contains(reference));
-        (ids.collect(), references.collect())
+        (ids.collect(), references.chain(queued).collect())
     }
 
     fn entry(&mut self, line: &[u8], confirmed: &mut Vec<String>) {
@@ -349,6 +399,9 @@ impl Scan {
         if entry.sidechain {
             return;
         }
+        let at = (entry.timestamp.as_deref())
+            .and_then(|timestamp| timestamp.parse::<jiff::Timestamp>().ok())
+            .map(jiff::Timestamp::as_millisecond);
         let (origin, text) = match entry.kind.as_str() {
             "user" => (
                 entry.origin,
@@ -360,6 +413,14 @@ impl Scan {
                 }
                 _ => (None, None),
             },
+            "queue-operation" if entry.operation == "enqueue" => {
+                let content = entry.content.as_ref().map(text_of).unwrap_or_default();
+                let queued = (content.lines()).filter_map(own_reference);
+                if let Some(at) = at {
+                    self.shown.2.extend(queued.map(|reference| (reference, at)));
+                }
+                (None, None)
+            }
             "assistant" if !entry.api_error => {
                 confirmed.extend(std::mem::take(&mut self.seen));
                 self.references
@@ -372,9 +433,12 @@ impl Scan {
             self.shown.0.push(msg_id.clone());
             self.seen.insert(msg_id);
         }
-        for reference in references(&text.unwrap_or_default()) {
-            self.shown.1.push(reference.clone());
-            self.seen_references.insert(reference);
+        let Some(at) = at else {
+            return;
+        };
+        for reference in given(&text.unwrap_or_default()) {
+            self.shown.1.push((reference.clone(), at));
+            self.seen_references.insert((reference, at));
         }
     }
 }
@@ -505,7 +569,7 @@ impl Live {
 fn confirmed_references(
     state: &State,
     agent: &str,
-    references: &[String],
+    references: &[Given],
 ) -> Result<usize, crate::state::Error> {
     let seqs = state.by_reference(agent, references)?;
     for seq in &seqs {
@@ -781,6 +845,105 @@ mod tests {
             .write_all(format!("{}\n", &reply[20..]).as_bytes())
             .unwrap();
         assert_eq!(scan.read(&file), [RECORDED]);
+    }
+
+    /// The own line of `reference`, a message from api, as Skald puts it, replying to `answered`, if
+    /// it does, and saying `says`.
+    fn own_line(reference: &str, answered: Option<&str>, says: &str) -> String {
+        let reply =
+            answered.map_or_else(String::new, |answered| format!(" (reply to #{answered})"));
+        format!("[clienta/api · laptop · own] #{reference}{reply}: {says}")
+    }
+
+    /// A user entry of `text`, written at `timestamp`.
+    fn user_entry(text: &str, timestamp: &str) -> String {
+        json!({"type": "user", "timestamp": timestamp, "message": {"role": "user", "content": text}})
+            .to_string()
+    }
+
+    /// When the entries of these tests were written, and that in Unix milliseconds.
+    const WRITTEN: &str = "2026-11-20T11:44:39.396Z";
+    const WRITTEN_MS: i64 = 1_795_175_079_396;
+
+    /// A session file of `entries` and a reply after them, scanned: the references it confirms.
+    fn confirming(entries: &[&str]) -> Vec<Given> {
+        static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let reply = REPLY.trim();
+        let mut all = entries.to_vec();
+        all.push(reply);
+        let name = FILES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = crate::test_dir::TestDir::new(&format!("claude-references-{name}"));
+        let file = dir.join("session.jsonl");
+        fs::write(&file, all.join("\n") + "\n").unwrap();
+        let mut scan = Scan::default();
+        scan.read(&file);
+        scan.references()
+    }
+
+    /// A channel event of Skald's, its server's or its plugin's, confirms its message by the
+    /// reference its line puts as its own, with when the file got it; not the reference of the
+    /// message it replies to, nor those its text quotes. Another server's event confirms nothing.
+    #[test]
+    fn a_channel_event_confirms_its_own_reference_only() {
+        let event = format!(
+            "<channel source=\"skald\" from=\"skald\">\n{}\n</channel>",
+            own_line(
+                "ab3d",
+                Some("xy7k"),
+                "as #qq4m and [a · b · own] #rr5n said"
+            )
+        );
+        let entry = user_entry(&event, WRITTEN);
+        assert_eq!(confirming(&[&entry]), [("ab3d".to_owned(), WRITTEN_MS)]);
+        let plugin = event.replace("\"skald\" from", "\"plugin:skald:skald\" from");
+        let other = event.replace("\"skald\" from", "\"other\" from");
+        let entries = [user_entry(&plugin, WRITTEN), user_entry(&other, WRITTEN)];
+        let references = confirming(&[&entries[0], &entries[1]]);
+        assert_eq!(references, [("ab3d".to_owned(), WRITTEN_MS)]);
+    }
+
+    /// The output of an `asyncRewake` hook confirms the messages whose lines it holds, or the
+    /// line that ends a cut one; not the signal.
+    #[test]
+    fn a_hook_s_output_confirms_the_messages_of_its_lines() {
+        let cut = crate::hook::fitted(&own_line("cd4e", None, &"x".repeat(12_000)), "cd4e");
+        let output = format!(
+            "Stop hook blocking error from command \"skald hook claude --wait 120\": {}\n{}\n{}",
+            crate::hook::SIGNAL,
+            own_line("ab3d", None, "first"),
+            cut.lines().last().unwrap(),
+        );
+        let entry = user_entry(&output, WRITTEN);
+        let references: Vec<String> = (confirming(&[&entry]).into_iter())
+            .map(|(reference, _)| reference)
+            .collect();
+        assert_eq!(references, ["ab3d", "cd4e"]);
+    }
+
+    /// A reference the person types, or Skald's line outside a channel event or a hook's output,
+    /// confirms nothing.
+    #[test]
+    fn references_outside_what_a_path_gave_confirm_nothing() {
+        let typed = user_entry("please answer #ab3d", WRITTEN);
+        let pasted = user_entry(&own_line("cd4e", None, "pasted"), WRITTEN);
+        assert!(confirming(&[&typed, &pasted]).is_empty());
+    }
+
+    /// A line the session queued is shown, by the reference of its own line, until the model gets
+    /// it; the model's entry after the queuing confirms nothing.
+    #[test]
+    fn a_queued_line_is_shown_and_not_confirmed() {
+        let mut queued: serde_json::Value = serde_json::from_str(QUEUED).unwrap();
+        queued["content"] = json!(own_line("ab3d", None, "queued"));
+        queued["timestamp"] = json!(WRITTEN);
+        let dir = crate::test_dir::TestDir::new("claude-queued-reference");
+        let file = dir.join("session.jsonl");
+        fs::write(&file, format!("{queued}\n{}\n", REPLY.trim())).unwrap();
+        let mut scan = Scan::default();
+        assert!(scan.read(&file).is_empty());
+        assert!(scan.references().is_empty());
+        let (_, shown) = scan.shown();
+        assert_eq!(shown, [("ab3d".to_owned(), WRITTEN_MS)]);
     }
 
     /// Only a receipt of a failing status says its line did not reach the model.
