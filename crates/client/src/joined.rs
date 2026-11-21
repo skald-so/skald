@@ -44,28 +44,24 @@ pub fn names_unfollowed(follower: &Follower, noticed: &BTreeSet<SpaceId>) -> boo
 
 /// Starts each space the account's spaces list names that the device does not follow and the
 /// anchors objects of the account's other valid `client` devices name and agree on; warns of each
-/// they disagree on, and of what fails. Gives the spaces it started.
-pub fn follow(follower: &mut Follower) -> Vec<SpaceId> {
+/// they disagree on, and of what fails.
+pub fn follow(follower: &mut Follower) {
     if follower.service.is_some() {
-        return Vec::new();
+        return;
     }
-    match started(follower) {
-        Ok(started) => started,
-        Err(err) => {
-            eprintln!(
-                "skald: warning: {err}; a later skald recv follows the spaces the account's other \
-                 devices joined"
-            );
-            Vec::new()
-        }
+    if let Err(err) = start(follower) {
+        eprintln!(
+            "skald: warning: {err}; a later skald recv follows the spaces the account's other \
+             devices joined"
+        );
     }
 }
 
 /// As [`follow`], failing on what the server does not give.
-fn started(follower: &mut Follower) -> Result<Vec<SpaceId>, String> {
+fn start(follower: &mut Follower) -> Result<(), String> {
     let unfollowed = unfollowed(follower)?;
     if unfollowed.is_empty() {
-        return Ok(Vec::new());
+        return Ok(());
     }
     let body = (follower.connection)
         .get_as(anchors::PATH, &follower.token)
@@ -88,7 +84,6 @@ fn started(follower: &mut Follower) -> Result<Vec<SpaceId>, String> {
             }
         }
     }
-    let mut started = Vec::new();
     for (space, hashes) in &by_space {
         let start = anchors::start(
             (&mut follower.connection, &follower.token, &follower.state),
@@ -101,12 +96,11 @@ fn started(follower: &mut Follower) -> Result<Vec<SpaceId>, String> {
                 (follower.state)
                     .add_linked_space(*space, start.body().name.as_str(), &start.to_cbor(), false)
                     .map_err(text)?;
-                started.push(*space);
             }
             Err(warning) => eprintln!("skald: warning: {warning}"),
         }
     }
-    Ok(started)
+    Ok(())
 }
 
 /// The spaces the account's spaces list names that the device does not follow.

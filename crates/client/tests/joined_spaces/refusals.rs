@@ -1,11 +1,12 @@
 //! The spaces a device does not follow from its account's anchors objects: one whose anchors are
 //! off one chain, with a warning; one only an anchors object of a revoked device, of another
-//! account's device or with a broken signature names. With the anchors objects withheld, it follows
-//! nothing new and keeps working. Each test has Ada's first machine create `globex` after her
+//! account's device, of a `browser` or `service` device or with a broken signature names. With the
+//! anchors objects withheld, it follows nothing new and keeps working. Each test has Ada's first machine create `globex` after her
 //! second machine was linked, which the second machine follows in the same run.
 
-use skald_proto::{Anchors, Role, Roster};
+use skald_proto::{Anchors, DeviceKind, Role, Roster};
 
+use crate::fixtures::{Issuer, add_device_of_kind};
 use crate::joined::{
     Account, GIVE_ANCHORS, Withheld, anchored, anchors_object, anchors_off_one_chain, follows,
     give_anchors_too, next_run, warn_of, with_broken_signature,
@@ -107,6 +108,44 @@ fn space_only_another_account_s_device_anchors_is_not_followed() {
                 anchors_object(bob.account, key, &[(space, third)]),
             ]
         },
+    );
+}
+
+/// A device of Ada's account of `kind`, with a valid certificate her first device issued, is
+/// written to the server's database; the relay gives its anchors object, signed with its key,
+/// naming `acme`.
+#[track_caller]
+fn assert_not_followed_by_kind(ada: (u64, &str), bob: (u64, &str), kind: DeviceKind) {
+    assert_not_followed(ada, bob, |account, _, third| {
+        let (cloud, ada) = (account.cloud(), &account.ada);
+        let issuer = Issuer::Device(ada);
+        let device = add_device_of_kind(cloud, (ada.account, kind), "ada-other", &issuer);
+        let key = (device.id, &device.signing);
+        vec![anchors_object(
+            ada.account,
+            key,
+            &[(third.body().space, third)],
+        )]
+    });
+}
+
+/// [`assert_not_followed_by_kind`], a `browser` device.
+#[test]
+fn space_only_a_browser_device_anchors_is_not_followed() {
+    assert_not_followed_by_kind(
+        (4_811_406_701, "ada-ignores-browser-anchors"),
+        (4_811_406_702, "bob-shares-past-the-browser"),
+        DeviceKind::Browser,
+    );
+}
+
+/// [`assert_not_followed_by_kind`], a `service` device.
+#[test]
+fn space_only_a_service_device_anchors_is_not_followed() {
+    assert_not_followed_by_kind(
+        (4_811_406_801, "ada-ignores-service-anchors"),
+        (4_811_406_802, "bob-shares-past-the-service"),
+        DeviceKind::Service,
     );
 }
 

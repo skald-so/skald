@@ -20,9 +20,10 @@
 //! The CLI, as these tests use it, beside the commands of the tests of spaces, channels, receiving
 //! and reading the history:
 //! - `skald recv`, a run that connects, follows each space it can start from its account's anchors
-//!   objects, and gets into the space's channels in the same run;
-//! - `skald recv --wait`, as the person, does so on a `space-notice` of a space it does not follow,
-//!   with no other command;
+//!   objects, and gets into the space's channels in the same run; it does so too on a
+//!   `space-notice` of a space it does not follow that comes while it syncs;
+//! - `skald recv --wait`, as the person, one-shot or through the helper, does so on a
+//!   `space-notice` of a space it does not follow, with no other command;
 //! - `skald spaces` lists the spaces the device follows, one line each, holding the space's name; a
 //!   warning is a line saying `warning`, and the one of a space it does not follow, as its anchors
 //!   disagree, holds the space's name or ID;
@@ -42,7 +43,8 @@ mod waiting;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices, the helpers of the tests of reading the
-// history, and the anchors objects of the tests of anchors.
+// history, the anchors objects of the tests of anchors, and the runs through a helper of the tests
+// of the helper.
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
@@ -50,5 +52,7 @@ use history_common::*;
 mod anchors;
 #[path = "../history_devices/devices.rs"]
 mod devices;
+#[path = "../helper/helped.rs"]
+mod helped;
 #[path = "../history_reading/reading.rs"]
 mod reading;

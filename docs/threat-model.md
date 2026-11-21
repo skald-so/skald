@@ -123,7 +123,7 @@ An attacker holding a device or its keys, before the device is revoked.
 - Enqueue tasks that its account's other devices run at the `own` trust level, with full rights ([queues.md](protocol/queues.md#security-considerations), [Running a task](protocol/queues.md#running-a-task)).
 - Change what the device itself runs from other accounts, and approve the tasks waiting on it ([Running a task](protocol/queues.md#running-a-task)).
 - Revoke the account's other devices; its revocations count even after another device revokes it ([Revocation](protocol/membership.md#revocation)).
-- From a `client` device, certify new devices of the account, but not under an existing device's ID; and, unless its user names it as stolen when linking a device with the recovery key, have its anchors count: in a space no other device anchored, make that device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
+- From a `client` device, certify new devices of the account, but not under an existing device's ID; and have its anchors count for the account's other `client` devices, and for a device linked with the recovery key unless its user names it as stolen: in a space no other device anchored, make such a device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
 - On an admin's device, do what [an admin](#an-admin-acting-against-others) does.
 - After its revocation: what [a revoked device](#a-revoked-device) does.
 
