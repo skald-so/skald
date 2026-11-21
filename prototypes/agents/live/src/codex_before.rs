@@ -13,7 +13,7 @@ use crate::before::{Before, Folder, Mode, SIGNAL, make_executable, signal_tasks,
 use crate::channel::{Files, TERM};
 use crate::{
     Agent, Call, Checks, Cue, Kind, Options, PLACEHOLDER, SERVER, STUB_KEY, StubLog,
-    codex_stub_provider, model_flag, pretty, queue, shell_quote,
+    codex_stub_provider, model_flag, pretty, queue,
 };
 
 /// Whether `check` runs on Codex with `options`: the signal with any; an executor check runs one
@@ -215,23 +215,21 @@ impl Executor {
 
     /// The shell command of `attempt`.
     pub fn command(&self, attempt: Attempt) -> String {
-        let quoted = |path: &Path| shell_quote(&path.to_string_lossy());
+        let read = |path: &Path| format!("{} {}", shell::READ, shell::quote(path));
+        let write = |path: &Path| format!("{} {}", shell::WRITE, shell::quote(path));
         match attempt {
-            Attempt::ReadInside => {
-                format!("cat {}", quoted(&self.folder.folder.join("inside.txt")))
-            }
-            Attempt::WriteInside => format!("printf written > {}", quoted(&self.folder.written())),
-            Attempt::WriteOutside => {
-                format!("printf written > {}", quoted(&self.written_outside()))
-            }
-            Attempt::Command => "echo ran-$((20+22))".to_owned(),
-            Attempt::LocalServer => format!("curl -s -m 5 {}", self.url),
-            Attempt::PublicHost => {
-                format!("curl -s -m 10 -o /dev/null {PUBLIC} && echo public-$((1+1))")
-            }
-            Attempt::ReadOutside => {
-                format!("cat {}", quoted(&self.folder.outside.join("secret.txt")))
-            }
+            Attempt::ReadInside => read(&self.folder.folder.join("inside.txt")),
+            Attempt::WriteInside => write(&self.folder.written()),
+            Attempt::WriteOutside => write(&self.written_outside()),
+            Attempt::Command => shell::RAN.to_owned(),
+            Attempt::LocalServer => format!("{} -s -m 5 {}", shell::CURL, self.url),
+            Attempt::PublicHost => format!(
+                "{} -s -m 10 -o {} {PUBLIC}{}",
+                shell::CURL,
+                shell::NULL,
+                shell::THEN_REACHED
+            ),
+            Attempt::ReadOutside => read(&self.folder.outside.join("secret.txt")),
         }
     }
 
@@ -500,16 +498,10 @@ pub fn plant(config: &Path, marks: &Path, marketplace: &Path) -> io::Result<Plan
         config.join(AUTH),
         pretty(&json!({ "auth_mode": "apikey", "OPENAI_API_KEY": PLACEHOLDER })),
     )?;
-    let mark = config.join("mark.sh");
-    fs::write(
-        &mark,
-        format!(
-            "#!/bin/sh\ntouch {}/\"$1\"\n",
-            shell_quote(&marks.to_string_lossy())
-        ),
-    )?;
+    let mark = config.join(shell::MARK);
+    fs::write(&mark, shell::mark_script(marks))?;
     make_executable(&mark)?;
-    let command = |name: &str| format!("{} {name}", shell_quote(&mark.to_string_lossy()));
+    let command = |name: &str| format!("{} {name}", shell::program(&mark));
 
     // A `-c` value and a `config.toml` value are TOML; a JSON string is a valid TOML string.
     fs::write(
@@ -568,8 +560,8 @@ pub fn plant(config: &Path, marks: &Path, marketplace: &Path) -> io::Result<Plan
     fs::write(
         config.join("rules/planted.rules"),
         format!(
-            "prefix_rule(pattern=[\"touch\", {}], decision=\"forbidden\")\n",
-            json!(planted.ruled)
+            "prefix_rule(pattern=[{}], decision=\"forbidden\")\n",
+            ruled_pattern(&planted.ruled)
         ),
     )?;
     skill(&config.join("skills/planted"), "planted", &planted.skill)?;
@@ -587,9 +579,96 @@ pub fn plant(config: &Path, marks: &Path, marketplace: &Path) -> io::Result<Plan
 /// [`PARENT_VAR`].
 pub fn clean_commands(planted: &Planted) -> [String; 2] {
     [
-        format!("touch {}", shell_quote(&planted.ruled.to_string_lossy())),
-        format!("echo \"parent: ${{{PARENT_VAR}:-unset}}\""),
+        format!(
+            "{} {}",
+            shell::MAKE_FILE.join(" "),
+            shell::quote(&planted.ruled)
+        ),
+        shell::print_parent(PARENT_VAR),
     ]
+}
+
+/// The words of the command the rule forbids, that which makes `ruled`, as Starlark strings.
+fn ruled_pattern(ruled: &Path) -> String {
+    let mut words: Vec<String> = shell::MAKE_FILE
+        .map(|word| json!(word).to_string())
+        .to_vec();
+    words.push(json!(ruled).to_string());
+    words.join(", ")
+}
+
+/// What the executor checks' commands are written in: POSIX `sh`, in which Codex runs commands on
+/// macOS and Linux.
+#[cfg(not(windows))]
+mod shell {
+    use std::path::Path;
+
+    use crate::shell_quote;
+
+    pub const READ: &str = "cat";
+    pub const WRITE: &str = "printf written >";
+    /// Prints [`super::RAN`].
+    pub const RAN: &str = "echo ran-$((20+22))";
+    pub const CURL: &str = "curl";
+    pub const NULL: &str = "/dev/null";
+    /// Prints [`super::REACHED`] if `curl` reached the host.
+    pub const THEN_REACHED: &str = " && echo public-$((1+1))";
+    /// The words of a command that makes a file, before its path.
+    pub const MAKE_FILE: [&str; 1] = ["touch"];
+    /// The script the planted MCP server and hooks run.
+    pub const MARK: &str = "mark.sh";
+
+    pub fn quote(path: &Path) -> String {
+        shell_quote(&path.to_string_lossy())
+    }
+
+    /// `program` as the first word of a command.
+    pub fn program(program: &Path) -> String {
+        quote(program)
+    }
+
+    /// A command that prints `parent: ` and the variable `var`, or `unset`.
+    pub fn print_parent(var: &str) -> String {
+        format!("echo \"parent: ${{{var}:-unset}}\"")
+    }
+
+    /// The [`MARK`] script: it makes the file named by its argument in `marks`.
+    pub fn mark_script(marks: &Path) -> String {
+        format!("#!/bin/sh\ntouch {}/\"$1\"\n", quote(marks))
+    }
+}
+
+/// On Windows, PowerShell, in which Codex runs commands there.
+#[cfg(windows)]
+mod shell {
+    use std::path::Path;
+
+    pub const READ: &str = "Get-Content -Raw";
+    pub const WRITE: &str = "Set-Content -NoNewline -Value written -Path";
+    pub const RAN: &str = "Write-Output \"ran-$(20+22)\"";
+    pub const CURL: &str = "curl.exe";
+    pub const NULL: &str = "NUL";
+    pub const THEN_REACHED: &str = "; if ($LASTEXITCODE -eq 0) { Write-Output \"public-$(1+1)\" }";
+    pub const MAKE_FILE: [&str; 4] = ["New-Item", "-ItemType", "File", "-Path"];
+    pub const MARK: &str = "mark.cmd";
+
+    pub fn quote(path: &Path) -> String {
+        format!("'{}'", path.to_string_lossy().replace('\'', "''"))
+    }
+
+    /// `program` as the first word of a command that `cmd` or PowerShell runs: a path with a space
+    /// in it would need each one's own quoting.
+    pub fn program(program: &Path) -> String {
+        program.to_string_lossy().into_owned()
+    }
+
+    pub fn print_parent(var: &str) -> String {
+        format!("Write-Output \"parent: $(if ($env:{var}) {{ $env:{var} }} else {{ 'unset' }})\"")
+    }
+
+    pub fn mark_script(marks: &Path) -> String {
+        format!("@echo off\r\ntype nul > \"{}\\%1\"\r\n", marks.display())
+    }
 }
 
 /// The clean check's prompt: its [`clean_commands`].
@@ -786,6 +865,7 @@ fn reached_summary(reached: &Reached) -> String {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell_quote;
     use crate::tests::read_json;
 
     use super::*;

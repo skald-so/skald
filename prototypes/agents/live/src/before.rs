@@ -6,7 +6,6 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::net::TcpListener;
-use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -379,12 +378,18 @@ impl Folder {
         let (folder, outside) = (dir.join("folder"), dir.join("outside"));
         fs::create_dir_all(&folder)?;
         fs::create_dir_all(&outside)?;
-        let (folder, outside) = (fs::canonicalize(folder)?, fs::canonicalize(outside)?);
+        let (folder, outside) = (real_path(&folder)?, real_path(&outside)?);
         let (secret, linked) = (crate::token(), crate::token());
         fs::write(folder.join("notes.txt"), "A file of the folder.\n")?;
         fs::write(outside.join("secret.txt"), format!("{secret}\n"))?;
         fs::write(outside.join("linked.txt"), format!("{linked}\n"))?;
-        symlink(outside.join("linked.txt"), folder.join("link.txt"))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(outside.join("linked.txt"), folder.join("link.txt"))?;
+        // Windows makes a symlink only in Developer Mode or for an administrator; no Codex check
+        // reads it.
+        #[cfg(windows)]
+        let _ =
+            std::os::windows::fs::symlink_file(outside.join("linked.txt"), folder.join("link.txt"));
         Ok(Self {
             folder,
             outside,
@@ -710,10 +715,33 @@ pub fn plant(config: &Path, folder: &Path, marks: &Path) -> io::Result<Planted> 
     Ok(planted)
 }
 
+/// `path` resolved, without the `\\?\` that Windows puts before it, which no shell takes.
+fn real_path(path: &Path) -> io::Result<PathBuf> {
+    let real = fs::canonicalize(path)?;
+    #[cfg(windows)]
+    if let Some(plain) = real
+        .to_str()
+        .and_then(|text| text.strip_prefix(r"\\?\"))
+        .filter(|text| !text.starts_with("UNC\\"))
+    {
+        return Ok(PathBuf::from(plain));
+    }
+    Ok(real)
+}
+
 /// Makes `path` executable.
 pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755))
+    }
+    // Windows runs a script by its extension.
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
 }
 
 /// Writes a skill `name` into `dir` whose description holds `token`.

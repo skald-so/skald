@@ -71,7 +71,10 @@ impl Agent {
     /// environment that [`Agent::replaces_sign_in`] names, so off the stub it runs on the owner's
     /// sign-in.
     pub fn command(self) -> Command {
-        self.command_for(self.cli())
+        let (program, script) = cli_program(self.cli());
+        let mut command = self.command_for(program);
+        command.args(script);
+        command
     }
 
     /// A command that runs `program` in the CLI's environment, such as a prototype that runs the
@@ -185,7 +188,8 @@ impl Agent {
         Ok(args)
     }
 
-    /// The CLI's environment on the model stub at `stub`: only `path` as `PATH`, `home` as `HOME`
+    /// The CLI's environment on the model stub at `stub`, and on Windows what a program needs
+    /// there ([`windows_environment`]): only `path` as `PATH`, `home` as `HOME`
     /// with an empty config home in it, the stub's address and the placeholder key. The CLI finds
     /// no sign-in there and no credential but the placeholder.
     pub fn environment(
@@ -211,6 +215,8 @@ impl Agent {
             ]),
             Self::Codex => env.push((STUB_KEY, PLACEHOLDER.to_owned())),
         }
+        #[cfg(windows)]
+        env.extend(windows_environment(home));
         Ok(env
             .into_iter()
             .map(|(name, value)| (name.to_owned(), value))
@@ -631,9 +637,76 @@ impl<'a> Options<'a> {
 /// The `inbox` server's binary, next to `live-check`.
 pub const INBOX_BIN: &str = "agent-inbox";
 
+/// The program that starts the CLI `name`, and the script it runs, if any: `name`, found on
+/// `PATH`.
+#[cfg(not(windows))]
+fn cli_program(name: &str) -> (PathBuf, Option<PathBuf>) {
+    (PathBuf::from(name), None)
+}
+
+/// On Windows npm installs a CLI as `<name>.cmd`, which `Command` neither finds nor hands a
+/// multi-line prompt: `<name>.exe` on `PATH`, else `node` with the npm package's script next to
+/// `<name>.cmd`.
+#[cfg(windows)]
+fn cli_program(name: &str) -> (PathBuf, Option<PathBuf>) {
+    let dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    if let Some(exe) = dirs
+        .iter()
+        .map(|dir| dir.join(format!("{name}.exe")))
+        .find(|exe| exe.is_file())
+    {
+        return (exe, None);
+    }
+    let script = match name {
+        "codex" => "node_modules/@openai/codex/bin/codex.js",
+        _ => "node_modules/@anthropic-ai/claude-code/cli.js",
+    };
+    for dir in dirs
+        .iter()
+        .filter(|dir| dir.join(format!("{name}.cmd")).is_file())
+    {
+        if dir.join(script).is_file() {
+            let node = dir.join("node.exe");
+            let node = if node.is_file() {
+                node
+            } else {
+                PathBuf::from("node")
+            };
+            return (node, Some(dir.join(script)));
+        }
+    }
+    (PathBuf::from(name), None)
+}
+
+/// What a program needs of the environment on Windows: the system's variables, from
+/// `live-check`'s own, and `home` as `USERPROFILE`.
+#[cfg(windows)]
+fn windows_environment(home: &Path) -> Vec<(&'static str, String)> {
+    const SYSTEM: [&str; 10] = [
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "USERNAME",
+    ];
+    let mut env: Vec<(&'static str, String)> = SYSTEM
+        .into_iter()
+        .filter_map(|name| Some((name, std::env::var(name).ok()?)))
+        .collect();
+    env.push(("USERPROFILE", home.to_string_lossy().into_owned()));
+    env
+}
+
 /// The binary `name` of the workspace next to `live-check`, the binary `exe`.
 pub fn binary(exe: &Path, name: &str) -> Result<PathBuf, String> {
-    let binary = exe.with_file_name(name);
+    let binary = exe.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     if binary.exists() {
         Ok(binary)
     } else {

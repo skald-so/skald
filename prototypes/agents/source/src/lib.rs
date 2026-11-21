@@ -17,6 +17,8 @@
 //! a message and marking it leaves its claim unlocked; the next [`Source::take`] in any process puts
 //! the message back, so a crash repeats the handover and never loses it.
 
+pub mod unix_socket;
+
 use std::fs::{self, File, TryLockError};
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
@@ -267,13 +269,13 @@ impl Source {
     /// Records the session the source's messages go to, replacing an earlier one, in a file only the
     /// user can read.
     pub fn register(&self, registration: &Registration) -> io::Result<()> {
-        use std::os::unix::fs::OpenOptionsExt;
         let tmp = self.dir.join(TMP).join(Uuid::now_v7().simple().to_string());
-        let mut file = File::options()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)?;
+        let mut options = File::options();
+        options.write(true).create_new(true);
+        // Windows has no mode bits: the file inherits the source directory's access list.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut file = options.open(&tmp)?;
         io::Write::write_all(&mut file, &serde_json::to_vec(registration)?)?;
         fs::rename(tmp, self.dir.join(SESSION))
     }

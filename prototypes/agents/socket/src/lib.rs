@@ -19,11 +19,11 @@
 
 use std::fs;
 use std::io::{self, BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use agent_inbox::render;
+use agent_source::unix_socket::{UnixListener, UnixStream};
 use agent_source::{Message, Registration, Source};
 use serde_json::{Value, json};
 
