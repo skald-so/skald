@@ -18,11 +18,15 @@
 //! `SessionStart` and `SessionEnd` hook (`socket_claude.rs`), on a stub that answers each turn by
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
+//!
+//! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
+//! marketplace of this checkout, and nothing else of Skald's.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
+mod plugin;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;
