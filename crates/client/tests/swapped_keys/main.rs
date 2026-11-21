@@ -54,13 +54,13 @@ mod devices;
 mod reading;
 
 use serde_json::Value;
-use skald_proto::{Cbor as _, Cert, DeviceId, Role, SpaceId};
+use skald_proto::{Cbor as _, Cert, DeviceId, SpaceId};
 
 use fixtures::{Issuer, Keyed, add_device, hex};
 use machine::{DEVICES, Finished, NOT_LINKED};
 use world::{
-    ACME, Person, World, create, devices_request, members, next_by, plain_lines, run, store,
-    warnings, words,
+    ACME, Person, World, create_with_member, devices_request, members, plain_lines, run, warnings,
+    words,
 };
 
 /// The host names of Ada's and Bob's machines, their certificates' `name`.
@@ -97,11 +97,7 @@ impl Scene {
         let cloud = &world.cloud;
         let laptop = add_device(cloud, ada.account, LAPTOP, &Issuer::Device(&ada));
         let cert = (cloud.cert(&ada.token, laptop.id)).expect("the laptop's certificate");
-        let second = create(cloud, &bob, ACME);
-        let third = next_by(&second, &bob, |members| {
-            members.push(ada.member(Role::Member));
-        });
-        store(cloud, &bob.token, &third);
+        let third = create_with_member(cloud, &bob, ACME, &ada);
         let scene = Scene {
             space: third.body().space,
             world,

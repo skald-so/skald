@@ -87,6 +87,7 @@ Watches or alters traffic between devices and the server, or the channel an invi
 **Defenses:**
 - The API is HTTPS only ([Encoding](protocol/README.md#encoding)), and content is end-to-end encrypted inside it, so breaking TLS gives no content ([Envelope](protocol/README.md#envelope)).
 - An invite's secret travels only in the link's fragment, which never reaches the server ([Invite](protocol/membership.md#invite)).
+- Two people who compare their accounts' fingerprints over a channel they trust find a member account made by whoever accepted its invite first: its fingerprint is not the one its person's own device shows ([Account fingerprint](protocol/membership.md#account-fingerprint)).
 
 ### The IdP or GitHub
 The provider that signs users in (GitHub, Google), and GitHub as the host of SSH keys and Actions.
@@ -113,6 +114,7 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
 - The user's first device, finding the attacker's master key, waits for linking and creates none ([Linking a device](protocol/membership.md#linking-a-device)).
+- Members who compare fingerprints with the user over a channel they trust find an account the attacker made by signing in first: the user's own device shows another fingerprint, or none ([Account fingerprint](protocol/membership.md#account-fingerprint)).
 - The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)). The issuing device tells its user to enter only a code shown on their own device.
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
 - Sign-in methods are linked and removed explicitly, by a web session from a sign-in of the last few minutes (the server setting `--link-sign-in-age`); a method of another account is refused, accounts are never merged by email, and the account's last method is never removed.
@@ -290,6 +292,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - Run as an agent, the CLI shows no recovery key or link code in its output and takes none, nor a new device's confirmation: they go only to the person's terminal or to the local page `--browser` opens, so they stay out of the agent's context ([Account](protocol/membership.md#account), [architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 - The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
 - `skald held` decides a `hold` only at a terminal, as the person, so an agent cannot pipe a decision in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device to agent](protocol/delivery.md#device-to-agent)).
+- `skald fingerprint` marks an account verified only on the person's yes at a terminal, never as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Account fingerprint](protocol/membership.md#account-fingerprint)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine

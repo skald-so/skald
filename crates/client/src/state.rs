@@ -1114,6 +1114,36 @@ impl State {
         Ok(())
     }
 
+    /// Whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn verified(&self, account: AccountId, master: &[u8; 32]) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT 1 FROM verified_account WHERE account = ?1 AND master = ?2",
+                params![account.to_string(), master.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Records whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn set_verified(
+        &self,
+        account: AccountId,
+        master: &[u8; 32],
+        verified: bool,
+    ) -> Result<(), Error> {
+        let sql = if verified {
+            "INSERT INTO verified_account (account, master) VALUES (?1, ?2) ON CONFLICT DO NOTHING"
+        } else {
+            "DELETE FROM verified_account WHERE account = ?1 AND master = ?2"
+        };
+        self.db
+            .execute(sql, params![account.to_string(), master.as_slice()])?;
+        Ok(())
+    }
+
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
     pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
         let sql = "SELECT epoch, prev FROM settled_link WHERE channel = ?1";
