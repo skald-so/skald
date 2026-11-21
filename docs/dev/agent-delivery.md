@@ -645,6 +645,7 @@ The dialog showed 0.1–0.4 s after the call, after each path told. The session 
 
 Findings:
 - The `PermissionRequest` hook and the app-server tell within 0.1 s, before the dialog shows, and name the session. The app-server passed with `--remote` and on the background app-server.
+- The `PermissionRequest` hook tells on both GUI surfaces as on the CLI.
 - Only the app-server tells that a prompt ended, after either answer.
 - The notification names no session and carries no end; it can only back up a wrapper of the terminal.
 
@@ -659,7 +660,7 @@ Not run there: the app-server, as each surface runs its own on stdio ([Results](
 | Surface and version | Result | Tells | Names the session | After "Yes" |
 |---|---|---|---|---|
 | `codex-desktop: ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1` | pass, with the earlier command `touch prompted.txt` in the project | 0.0 s after the call; carries `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`, `tool_input`, `tool_name`, `transcript_path`, `turn_id` | `session_id`, the session's | `PostToolUse` 9.6 s, `Stop` 10.7 s after the hook; the dialog waited for the driver |
-| `codex-vscode` | — | | | |
+| `codex-vscode: Codex for VS Code 26.1117.41037, codex 0.171.0-alpha.13`, Ask for approval | pass; the file was written | 0.0 s after the call; carries as on the desktop app | `session_id`, the session's | `PostToolUse` 11.5 s, `Stop` 12.4 s after the hook; the dialog waited for the driver |
 
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
@@ -738,9 +739,9 @@ Then a person or an agent drives the surface with `screencapture -l <window>`, `
 Steps, each on a new session in the check's project; Return did not always send the prompt, the send button did:
 - **Claude desktop app:** in a terminal in the project, `claude --desktop`, which needs a terminal: from a program, under `script`. It opens the app on a new session there. "Trust this workspace?": Trust workspace. Type the prompt; the send button, right of the prompt box.
 - **Claude Code for VS Code:** `open -n -a "Visual Studio Code" --args --user-data-dir <dir>/vscode <dir>/project`: a VS Code with an empty profile, so no other window opens. Continue without Signing In; close the welcome dialog; Restricted Mode, Manage: Trust; the Claude Code icon in the editor title opens a new session. Type the prompt; the send button, bottom right of the prompt box. Quit that VS Code.
-- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; the new chat button, top right of the panel. Close that window.
+- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; 26.1117.41037 showed no hooks icon after the warm-up turn: Codex settings → Hooks → the project, Trust on each hook. The new chat button, top right of the panel. Close that window.
 - **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer. For a hook, first send "Reply with only OK.": the untrusted hook does not run, and a hooks icon with a dot appears in the composer. It opens "Review hooks", which lists each new hook with its source ("This project"), event, command and timeout (600 s); check the hook, Allow selected; then New chat and the check's prompt.
-- **`gui permission-hook`, on either Codex surface:** Review hooks lists the four hooks: check each, Allow selected; then New chat and the check's prompt. When the agent asks to run `touch ../prompted.txt` outside the sandbox, the chat shows its approval request: Yes, the option that runs it once. Once the turn ends, `live-check gui-result <dir>`. Modes:
+- **`gui permission-hook`, on either Codex surface:** trust the four hooks as in the surface's steps; then New chat and the check's prompt. When the agent asks to run `touch ../prompted.txt` outside the sandbox, the chat shows its approval request: on the desktop app Yes, the option that runs it once; on Codex for VS Code "Allow writing ../prompted.txt just outside the workspace as requested?", Allow once, not Deny. Once the turn ends, `live-check gui-result <dir>`. Modes:
   - the desktop app ran the project's `read-only` sandbox: `touch prompted.txt` in the project asked;
   - Codex for VS Code offers Ask for approval, Approve for me and Full access, no read-only mode; Ask for approval ran the turn in `workspace-write`, over the project's `read-only`, so `touch prompted.txt` in the project ran unasked. Use Ask for approval.
 
