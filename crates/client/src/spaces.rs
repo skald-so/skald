@@ -1692,10 +1692,10 @@ pub fn own_account(state: &State) -> Result<Option<AccountId>, String> {
         .map_err(text)
 }
 
-/// Shows the members of `synced`, a space the device follows, their devices' SSH signatures
-/// checked against GitHub's API at `github` ([`ssh_checks`]); warns if the device's account is its
-/// only admin ([`only_admin`]).
-pub fn members(synced: Synced, github: &str) -> Result<(), String> {
+/// Shows the members of `synced`, a space the device follows, with what their devices' SSH
+/// signatures showed ([`ssh_checks`]); warns if the device's account is its only admin
+/// ([`only_admin`]).
+pub fn members(synced: Synced) -> Result<(), String> {
     let Synced {
         follower,
         roster,
@@ -1707,8 +1707,7 @@ pub fn members(synced: Synced, github: &str) -> Result<(), String> {
         .flat_map(|shown| shown.linked.iter().chain(&shown.revoked))
         .copied()
         .collect();
-    let (signatures, key_changes) =
-        ssh_checks::check(&follower.state, github, follower.timeout, &shown)?;
+    let (signatures, key_changes) = ssh_checks::check(&follower.state, &shown)?;
     warnings.extend(key_changes);
     warnings.extend(only_admin(&roster, follower.own.account));
     print!(

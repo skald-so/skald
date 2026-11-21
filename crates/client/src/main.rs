@@ -1561,6 +1561,7 @@ fn perform(operation: Operation) -> Result<(), String> {
 fn performed(operation: Operation) -> Result<(), String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
+    ssh_checks::set(&operation.github_api, operation.timeout);
     let Operation {
         speaks,
         timeout,
@@ -1676,10 +1677,8 @@ fn performed(operation: Operation) -> Result<(), String> {
                 result
             })
         }
-        Command::Devices => state::dir(state_dir).and_then(|dir| {
-            let person = agent.is_none();
-            devices::run(&dir, key_storage, (speaks, timeout), &github_api, person)
-        }),
+        Command::Devices => state::dir(state_dir)
+            .and_then(|dir| devices::run(&dir, key_storage, speaks, timeout, agent.is_none())),
         // It runs through `link`.
         Command::Link { .. } => Err("skald link runs only through its own process".to_owned()),
         Command::LinkStep { step } => state::dir(state_dir)
@@ -1709,7 +1708,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(|synced| spaces::members(synced, &github_api)),
+        .and_then(spaces::members),
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,
@@ -2035,6 +2034,7 @@ fn performed(operation: Operation) -> Result<(), String> {
 fn received(operation: &Operation) -> Result<bool, String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
+    ssh_checks::set(&operation.github_api, operation.timeout);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
     let shown = recv::run(

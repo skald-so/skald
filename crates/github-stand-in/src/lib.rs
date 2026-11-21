@@ -12,7 +12,8 @@
 //!   request with a `User-Agent`;
 //! - `GET /user/{id}`: a user by ID, and `GET /users/{login}/keys` and
 //!   `GET /users/{login}/ssh_signing_keys`: a user's public SSH authentication and signing keys,
-//!   unauthenticated, to a request with a `User-Agent`.
+//!   unauthenticated, to a request with a `User-Agent`, by pages: `per_page`, 30 by default and 100
+//!   at most, and `page`, from 1.
 //!
 //! Tests control its users and faults through [`GitHub`] in Rust, or from another process, such as a
 //! web test running the `skald-github-stand-in` binary, through the control endpoints:
@@ -310,8 +311,7 @@ fn router(shared: Shared) -> Router {
         .route("/login/oauth/access_token", post(access_token))
         .route("/user", get(user))
         .route("/user/{id}", get(user_by_id))
-        .route("/users/{login}/keys", get(keys))
-        .route("/users/{login}/ssh_signing_keys", get(signing_keys))
+        .route("/users/{login}/{list}", get(keys))
         .route("/_stand-in/sign-in", get(sign_in))
         .route("/_stand-in/users", put(put_user))
         .route("/_stand-in/ssh-keys", put(put_ssh_keys))
@@ -752,30 +752,44 @@ enum KeyKind {
     Signing,
 }
 
+/// `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys` ([`listed_keys`]).
 async fn keys(
     State(shared): State<Shared>,
     headers: HeaderMap,
-    Path(login): Path<String>,
+    Path((login, list)): Path<(String, String)>,
+    Query(params): Query<BTreeMap<String, String>>,
 ) -> Response {
-    listed_keys(&shared, &headers, &login, KeyKind::Authentication)
+    let kind = match list.as_str() {
+        "keys" => KeyKind::Authentication,
+        "ssh_signing_keys" => KeyKind::Signing,
+        _ => return status_response(404, "Not Found"),
+    };
+    listed_keys(&shared, &headers, (login, params), kind)
 }
 
-async fn signing_keys(
-    State(shared): State<Shared>,
-    headers: HeaderMap,
-    Path(login): Path<String>,
+/// The page `params` ask for of the SSH keys of `kind` of the user `login`, in any case, as GitHub
+/// lists them: an array of objects with `id` and `key`, and for signing keys `title` and
+/// `created_at`.
+fn listed_keys(
+    shared: &Shared,
+    headers: &HeaderMap,
+    (login, mut params): (String, BTreeMap<String, String>),
+    kind: KeyKind,
 ) -> Response {
-    listed_keys(&shared, &headers, &login, KeyKind::Signing)
-}
-
-/// The SSH keys of `kind` of the user `login`, in any case, as GitHub lists them: an array of
-/// objects with `id` and `key`, and for signing keys `title` and `created_at`.
-fn listed_keys(shared: &Shared, headers: &HeaderMap, login: &str, kind: KeyKind) -> Response {
     let endpoint = match kind {
         KeyKind::Authentication => Endpoint::Keys,
         KeyKind::Signing => Endpoint::SigningKeys,
     };
-    let params = BTreeMap::from([("login".to_owned(), login.to_owned())]);
+    let number = |name: &str, default: usize| {
+        params
+            .get(name)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(default)
+    };
+    let per_page = number("per_page", 30).clamp(1, 100);
+    let page = number("page", 1).max(1);
+    params.insert("login".to_owned(), login.clone());
+    let login = login.as_str();
     shared.record(endpoint, &params, headers);
     if let Some(refusal) = api_refusal(shared, headers) {
         return refusal;
@@ -791,6 +805,8 @@ fn listed_keys(shared: &Shared, headers: &HeaderMap, login: &str, kind: KeyKind)
         KeyKind::Signing => (keys.signing, 1_000_001),
     };
     let listed: Vec<Value> = (lines.iter().zip(first..))
+        .skip((page - 1) * per_page)
+        .take(per_page)
         .map(|(line, id)| match kind {
             KeyKind::Authentication => json!({ "id": id, "key": line }),
             KeyKind::Signing => json!({

@@ -459,6 +459,15 @@ fn api_gives_a_user_by_id_and_the_user_s_ssh_keys_unauthenticated() {
         keys("/users/ADA/ssh_signing_keys"),
         vec![json!("ssh-ed25519 AAAA3")]
     );
+    let pages: Vec<usize> = ["?per_page=1", "?per_page=1&page=2", "?per_page=1&page=3"]
+        .iter()
+        .map(|query| keys(&format!("/users/ada/keys{query}")).len())
+        .collect();
+    assert_eq!(pages, [1, 1, 0]);
+    assert_eq!(
+        keys("/users/ada/keys?per_page=1&page=2"),
+        vec![json!("ssh-rsa AAAA2")]
+    );
     github.put_user(User::new(1003, "bob"));
     assert_eq!(keys("/users/bob/keys"), Vec::<Value>::new());
     assert_eq!(api(&github, "/users/eve/keys").status, 404);
@@ -470,6 +479,10 @@ fn api_gives_a_user_by_id_and_the_user_s_ssh_keys_unauthenticated() {
             Endpoint::UserById,
             Endpoint::Keys,
             Endpoint::SigningKeys,
+            Endpoint::Keys,
+            Endpoint::Keys,
+            Endpoint::Keys,
+            Endpoint::Keys,
             Endpoint::Keys,
             Endpoint::Keys,
         ]

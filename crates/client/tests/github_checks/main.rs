@@ -51,6 +51,7 @@ mod failing;
 mod gate;
 mod passing;
 mod proxied;
+mod synced;
 mod unchecked;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`).

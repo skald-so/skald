@@ -45,14 +45,14 @@ struct Entry {
 }
 
 /// Lists the devices of the account the machine whose state is in `dir` signed in to, from the
-/// server of its session, its secrets in `storage`, their SSH signatures checked against GitHub's
-/// API at `github` ([`ssh_checks`]). A `person`'s run warns too of master keys its spaces give
+/// server of its session, its secrets in `storage`, with what their SSH signatures showed
+/// ([`ssh_checks`]). A `person`'s run warns too of master keys its spaces give
 /// ([`follow::master_warnings`]); an agent's names nothing of them.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
-    (speaks, timeout): (VersionRange, Duration),
-    github: &str,
+    speaks: VersionRange,
+    timeout: Duration,
     person: bool,
 ) -> Result<(), String> {
     let (state, server, token) = signed_in(dir, storage)?;
@@ -81,7 +81,7 @@ pub fn run(
         .chain(&checked.revoked)
         .copied()
         .collect();
-    let (signatures, key_changes) = ssh_checks::check(&state, github, timeout, &shown)?;
+    let (signatures, key_changes) = ssh_checks::check(&state, &shown)?;
     print!("{}", listing(&checked, this, &signatures));
     let changed = statuses(&state, &checked, None, "this account")?;
     let masters = if person {
@@ -119,9 +119,10 @@ pub fn own(
 }
 
 /// Records in `state` whether each device `checked` holds with a certificate that passes checks 1
-/// and 2, of `account` if given, is revoked, and keeps its certificate ([`kept_certs::keep`]);
-/// gives the warning of each that is revoked, valid again or new since the device last checked it,
-/// as a device of `whose` ("Device checks").
+/// and 2, of `account` if given, is revoked, keeps its certificate ([`kept_certs::keep`]) and
+/// checks its SSH signature ([`ssh_checks::check`]); gives the warning of each key change that
+/// check finds and of each device revoked, valid again or new since the device last checked it, as
+/// a device of `whose` ("Device checks").
 pub fn statuses(
     state: &State,
     checked: &Checked,
@@ -135,27 +136,26 @@ pub fn statuses(
         .collect();
     let certs: Vec<&Cert> = trusted.iter().map(|(cert, _)| *cert).collect();
     kept_certs::keep(state, &certs)?;
+    let (_, key_changes) = ssh_checks::check(state, &certs)?;
     let seen: Vec<(DeviceId, bool)> = (trusted.iter())
         .map(|(cert, revoked)| (cert.body().device, *revoked))
         .collect();
     let changed = state.device_statuses(&seen).map_err(text)?;
-    Ok(changed
-        .into_iter()
-        .map(|(device, change)| match change {
-            StatusChange::Revoked => format!(
-                "the device {device} of {whose} is revoked: this device no longer sends to it, \
-                 accepts content from it or admits it to a channel"
-            ),
-            StatusChange::Valid => format!(
-                "the device {device} of {whose} is valid again: a revocation by its account's \
-                 master key voided the revocation of it"
-            ),
-            StatusChange::Added => format!(
-                "the device {device} of {whose} is new: it was linked since this device last \
-                 checked"
-            ),
-        })
-        .collect())
+    let changed = changed.into_iter().map(|(device, change)| match change {
+        StatusChange::Revoked => format!(
+            "the device {device} of {whose} is revoked: this device no longer sends to it, \
+             accepts content from it or admits it to a channel"
+        ),
+        StatusChange::Valid => format!(
+            "the device {device} of {whose} is valid again: a revocation by its account's \
+             master key voided the revocation of it"
+        ),
+        StatusChange::Added => format!(
+            "the device {device} of {whose} is new: it was linked since this device last \
+             checked"
+        ),
+    });
+    Ok(key_changes.into_iter().chain(changed).collect())
 }
 
 /// The warning of each device in `checked` with certificates of two bodies
