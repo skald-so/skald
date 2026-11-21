@@ -2960,18 +2960,39 @@ impl State {
     /// The `seq` of each kept message the socket of the Claude Code session `session` took whose
     /// `msg_id` is one of `msg_ids`, but those left to the hooks.
     pub fn written_ids(&self, session: &str, msg_ids: &[String]) -> Result<Vec<u64>, Error> {
-        let mut seqs = Vec::new();
+        let written = self.written(session, msg_ids)?.into_iter();
+        Ok(
+            (written.filter(|(_, _, path)| path.as_deref() != Some(HOOKS)))
+                .map(|(seq, _, _)| seq)
+                .collect(),
+        )
+    }
+
+    /// Each kept message the socket of the Claude Code session `session` took whose `msg_id` is
+    /// one of `msg_ids`: its `seq`, its agent and its path ([`State::pending`]).
+    fn written(
+        &self,
+        session: &str,
+        msg_ids: &[String],
+    ) -> Result<Vec<(u64, String, Option<String>)>, Error> {
+        let mut written = Vec::new();
         for msg_id in msg_ids {
-            let rows: Vec<(u64, String)> = self.lines(
-                "SELECT handover.seq, handover.agent FROM handover
+            let mut query = self.db.prepare(
+                "SELECT handover.seq, handover.agent, handover.path FROM handover
                  JOIN kept ON kept.seq = handover.seq
-                 WHERE handover.written = ?1 AND kept.msg_id = ?2
-                     AND COALESCE(handover.path, '') != 'hooks'",
-                params![session, msg_id],
+                 WHERE handover.written = ?1 AND kept.msg_id = ?2",
             )?;
-            seqs.extend(rows.into_iter().map(|(seq, _)| seq));
+            let rows = query.query_map(params![session, msg_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?))
+            })?;
+            for row in rows {
+                let (seq, agent, path) = row?;
+                let seq =
+                    u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+                written.push((seq, agent, path));
+            }
         }
-        Ok(seqs)
+        Ok(written)
     }
 
     /// Records that the session file of the Claude Code session `session` shows the kept messages
@@ -3182,17 +3203,8 @@ impl State {
     /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]).
     /// Gives how many it confirms.
     pub fn confirmed(&self, session: &str, msg_ids: &[String]) -> Result<usize, Error> {
-        let mut confirmed = Vec::new();
-        for msg_id in msg_ids {
-            let rows: Vec<(u64, String)> = self.lines(
-                "SELECT handover.seq, handover.agent FROM handover
-                 JOIN kept ON kept.seq = handover.seq
-                 WHERE handover.written = ?1 AND kept.msg_id = ?2",
-                params![session, msg_id],
-            )?;
-            confirmed.extend(rows);
-        }
-        for (seq, agent) in &confirmed {
+        let confirmed = self.written(session, msg_ids)?;
+        for (seq, agent, _) in &confirmed {
             self.handed_over(*seq, agent)?;
         }
         Ok(confirmed.len())

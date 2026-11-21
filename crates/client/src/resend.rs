@@ -215,6 +215,12 @@ pub fn hand_over(
     }
     let references = References::new(state.kept_ids().map_err(text)?);
     for (way, taken) in ways {
+        let to = To {
+            state,
+            agent: agent_name,
+            references: &references,
+            due,
+        };
         let given = match way {
             Way::Mod => {
                 let seqs: Vec<u64> = taken.iter().map(|waiting| waiting.seq).collect();
@@ -227,12 +233,10 @@ pub fn hand_over(
                 match way {
                     Way::Socket => {
                         let session = socket.as_ref().expect("a socket path has a session");
-                        to_socket(state, (session, agent_name), &opened, (&references, due))?
+                        to_socket(&to, session, &opened)?
                     }
-                    Way::Channel => {
-                        to_channel(state, agent_name, &opened, (&references, due), pushed)?
-                    }
-                    _ => to_rewake(state, agent_name, &opened, (&references, due), pushed)?,
+                    Way::Channel => to_channel(&to, &opened, pushed)?,
+                    _ => to_rewake(&to, &opened, pushed)?,
                 }
             }
         };
@@ -291,16 +295,26 @@ fn split(opened: &[Opened]) -> (Vec<u64>, Vec<u64>) {
     )
 }
 
-/// Writes `opened` into the socket of `session`, the agent `agent`'s, with
-/// [`claude_socket::write`]: each `own` message as its line, those below `own` as one signal.
-/// Each is recorded as the socket's before the write, waiting until `due`, and as before it if
-/// the write fails, which ends the registration. Gives whether it wrote.
-fn to_socket(
-    state: &state::State,
-    (session, agent): (&state::ClaudeSession, &str),
-    opened: &[Opened],
-    (references, due): (&References, i64),
-) -> Result<bool, String> {
+/// Where a run gives messages: the state, the agent they wait for, their references, and until
+/// when, in Unix milliseconds, a path that takes them waits for their confirmation.
+struct To<'a> {
+    state: &'a state::State,
+    agent: &'a str,
+    references: &'a References,
+    due: i64,
+}
+
+/// Writes `opened` into the socket of `session`, the agent's, with [`claude_socket::write`]: each
+/// `own` message as its line, those below `own` as one signal. Each is recorded as the socket's
+/// before the write, and as before it if the write fails, which ends the registration. Gives
+/// whether it wrote.
+fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[Opened]) -> Result<bool, String> {
+    let To {
+        state,
+        agent,
+        references,
+        due,
+    } = *to;
     let mut lines: Vec<(String, String)> = (opened.iter())
         .filter_map(|each| each.own.as_ref())
         .map(|(line, msg_id)| {
@@ -329,19 +343,13 @@ fn to_socket(
     Ok(true)
 }
 
-/// Gives `opened` to the agent `agent`'s `skald mcp` as channel events, waiting until `due`: each
-/// `own` message as its line, those below `own` as one signal. Gives whether it gave any.
-fn to_channel(
-    state: &state::State,
-    agent: &str,
-    opened: &[Opened],
-    (references, due): (&References, i64),
-    pushed: &mut Pushed,
-) -> Result<bool, String> {
+/// Gives `opened` to the agent's `skald mcp` as channel events: each `own` message as its line,
+/// those below `own` as one signal. Gives whether it gave any.
+fn to_channel(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let (own, below) = split(opened);
     let mut events: Vec<String> = (opened.iter())
         .filter_map(|each| each.own.as_ref())
-        .map(|(line, msg_id)| hook::fitted(line, &references.of(*msg_id)))
+        .map(|(line, msg_id)| hook::fitted(line, &to.references.of(*msg_id)))
         .collect();
     if !below.is_empty() {
         events.push(hook::SIGNAL.to_owned());
@@ -349,26 +357,21 @@ fn to_channel(
     if events.is_empty() {
         return Ok(false);
     }
-    (state.pushed((&own, &below), agent, (Way::Channel.name(), Some(due)))).map_err(text)?;
+    let path = (Way::Channel.name(), Some(to.due));
+    (to.state.pushed((&own, &below), to.agent, path)).map_err(text)?;
     pushed.channel.extend(events);
     Ok(true)
 }
 
-/// Gives what of `opened` fits within the hooks' limit to the agent `agent`'s `asyncRewake` hook,
-/// waiting until `due` ([`hook::plain`]). Gives whether it gave any.
-fn to_rewake(
-    state: &state::State,
-    agent: &str,
-    opened: &[Opened],
-    (references, due): (&References, i64),
-    pushed: &mut Pushed,
-) -> Result<bool, String> {
+/// Gives what of `opened` fits within the hooks' limit to the agent's `asyncRewake` hook
+/// ([`hook::plain`]). Gives whether it gave any.
+fn to_rewake(to: &To, opened: &[Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let waiting: Vec<hook::Waiting> = (opened.iter())
         .map(|each| match &each.own {
             Some((line, msg_id)) => hook::Waiting::Own {
                 seq: each.seq,
                 line: line.clone(),
-                reference: references.of(*msg_id),
+                reference: to.references.of(*msg_id),
             },
             None => hook::Waiting::Below {
                 seq: each.seq,
@@ -379,8 +382,10 @@ fn to_rewake(
     let Some(given) = hook::plain(&waiting) else {
         return Ok(false);
     };
-    let path = (Way::Rewake.name(), Some(due));
-    (state.pushed((&given.handed, &given.signalled), agent, path)).map_err(text)?;
+    let path = (Way::Rewake.name(), Some(to.due));
+    (to.state
+        .pushed((&given.handed, &given.signalled), to.agent, path))
+    .map_err(text)?;
     pushed.rewake = Some(given.output);
     Ok(true)
 }

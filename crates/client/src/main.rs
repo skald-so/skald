@@ -1353,7 +1353,8 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
 /// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
-/// what the run gives the session, and exits with 1 on a failure, never 2.
+/// what the run gives the session, and exits with 1 on a failure; 2 only as the `asyncRewake`
+/// hook ([`rewake`]).
 fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
     let wait = match operation.command {
         Command::Hook { wait, .. } => wait,
@@ -1396,23 +1397,25 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     if let Some(seconds) = wait {
         return rewake(operation, &dir, Duration::from_secs(seconds), one_shot);
     }
-    // Only the run's output goes to the agent CLI; what else it says, such as its error, does not.
+    given_only(operation, &dir, one_shot)
+}
+
+/// Runs the hook's `operation` by the state in `dir`, through the helper that runs, or one it
+/// starts unless `one_shot`, or here: only the run's output goes to the agent CLI; what else it
+/// says, such as its error, does not. Exits with 1 on a failure.
+fn given_only(operation: Operation, dir: &Path, one_shot: bool) -> ExitCode {
     let given = |stream, bytes: &[u8]| match stream {
         output::Stream::Out => output::direct(stream, bytes),
         output::Stream::Err => Ok(()),
     };
-    let failed = |code| match code == ExitCode::SUCCESS {
-        true => code,
-        false => ExitCode::FAILURE,
-    };
-    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
-        Ok(helper::Route::Helped(code)) => failed(code),
+    match helper::route_into(dir, &operation, (false, !one_shot, false), &mut { given }) {
+        Ok(helper::Route::Helped(code)) if code == ExitCode::SUCCESS => code,
+        Ok(helper::Route::Helped(_)) | Err(_) => ExitCode::FAILURE,
         // Held until the run exits.
         Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         },
-        Err(_) => ExitCode::FAILURE,
     }
 }
 
@@ -1488,18 +1491,7 @@ fn mod_poll(mut operation: Operation, one_shot: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     operation.agent = Some(agent);
-    let given = |stream, bytes: &[u8]| match stream {
-        output::Stream::Out => output::direct(stream, bytes),
-        output::Stream::Err => Ok(()),
-    };
-    match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut { given }) {
-        Ok(helper::Route::Helped(code)) if code == ExitCode::SUCCESS => code,
-        Ok(helper::Route::Helped(_)) | Err(_) => ExitCode::FAILURE,
-        Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(_) => ExitCode::FAILURE,
-        },
-    }
+    given_only(operation, &dir, one_shot)
 }
 
 /// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
