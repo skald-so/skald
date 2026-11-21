@@ -194,13 +194,8 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
         );
     }
     let server = send::server_of(&mut follower)?;
-    if let Some(agent) = agent {
-        (follower.state)
-            .add_agent(space.id, agent.as_str())
-            .map_err(text)?;
-    }
     let (roster, devices) =
-        send::through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
+        queues::through_mailbox_as(&mut follower, (scope, space.id), agent, (roster, devices))?;
     let at = (space.id, channel);
     let queue = queues::named(&mut follower, at, &name)?;
     let queue_id = queue.id()?;
@@ -229,16 +224,13 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
         (channel, queue_id),
         &claim,
     )?;
-    let fence = |follower: &mut Follower, act: &str, extra: serde_json::Value| {
-        let path = task_path(at, queue_id, task, act);
-        let mut body = json!({
-            "claim_id": claim.claim_id.to_string(),
-            "generation": claim.generation,
-        });
-        if let (Some(body), serde_json::Value::Object(extra)) = (body.as_object_mut(), extra) {
-            body.extend(extra);
-        }
-        fenced(queues::proved_json(follower, Method::Post, &path, &body))
+    let claim_id = claim.claim_id.to_string();
+    let fencing = Fencing {
+        at,
+        queue: queue_id,
+        task,
+        claim_id: &claim_id,
+        generation: claim.generation,
     };
     let passed = match verdict {
         Verdict::Runs(passed) => passed,
@@ -248,7 +240,7 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
                 Some(_) => ("fail", json!({ "retry": true }), "failed with retry"),
                 None => ("release", json!({}), "released"),
             };
-            let answer = fence(&mut follower, act, extra);
+            let answer = fence(&mut follower, &fencing, act, extra);
             if answer != Fenced::Taken {
                 eprintln!(
                     "skald: warning: the task #{reference} is not {done}: {}",
@@ -277,7 +269,7 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
             return Ok(());
         }
         Verdict::Refused(why) => {
-            let answer = fence(&mut follower, "fail", json!({ "retry": false }));
+            let answer = fence(&mut follower, &fencing, "fail", json!({ "retry": false }));
             let failed = match answer {
                 Fenced::Taken => "is failed without retry".to_owned(),
                 other => format!(
@@ -337,7 +329,12 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
     };
     keep(&follower, &mut held, None)?;
     let extended = state::unix_now();
-    match fence(&mut follower, "extend", json!({ "progress": "started" })) {
+    match fence(
+        &mut follower,
+        &fencing,
+        "extend",
+        json!({ "progress": "started" }),
+    ) {
         Fenced::Taken => held.row.since = extended,
         Fenced::Lost => {
             drop_claim(&follower.state, task);
@@ -658,7 +655,7 @@ pub fn extend(
         lapsed(&follower.state, &held, &reference)?;
         let sent = state::unix_now();
         let body = json!({ "progress": progress.name() });
-        match fence(&mut follower, &held, "extend", body) {
+        match fence(&mut follower, &held.fencing(), "extend", body) {
             Fenced::Taken => {
                 held.row.since = sent;
                 keep(&follower, &mut held, None)?;
@@ -875,7 +872,7 @@ fn finish(
             true => json!({}),
             false => json!({ "retry": end.retry }),
         };
-        match fence(follower, held, end.act(), body) {
+        match fence(follower, &held.fencing(), end.act(), body) {
             Fenced::Taken => {
                 if let Some(end) = held.record.end.as_mut() {
                     end.taken = true;
@@ -1095,24 +1092,51 @@ fn lost(reference: &str, why: &str) -> String {
     )
 }
 
-/// The `act` request, such as `extend`, of the claim `held`, with the fields of `extra` besides
+/// What an extend, complete, fail or release names: the task, its queue in the channel `at`, and
 /// its claim.
-fn fence(follower: &mut Follower, held: &Held, act: &str, extra: serde_json::Value) -> Fenced {
-    let row = &held.row;
-    let path = task_path((row.space, row.channel), row.queue, row.task, act);
+struct Fencing<'a> {
+    at: (SpaceId, ChannelId),
+    queue: QueueId,
+    task: TaskId,
+    claim_id: &'a str,
+    generation: u64,
+}
+
+impl Held {
+    /// What its requests name.
+    fn fencing(&self) -> Fencing<'_> {
+        Fencing {
+            at: (self.row.space, self.row.channel),
+            queue: self.row.queue,
+            task: self.row.task,
+            claim_id: &self.record.claim_id,
+            generation: self.record.generation,
+        }
+    }
+}
+
+/// The `act` request, such as `extend`, that `fencing` names, with the fields of `extra` besides
+/// its claim.
+fn fence(
+    follower: &mut Follower,
+    fencing: &Fencing,
+    act: &str,
+    extra: serde_json::Value,
+) -> Fenced {
+    let path = format!(
+        "{}/{}/tasks/{}/{act}",
+        queues::queues_path(fencing.at),
+        fencing.queue,
+        fencing.task
+    );
     let mut body = json!({
-        "claim_id": held.record.claim_id,
-        "generation": held.record.generation,
+        "claim_id": fencing.claim_id,
+        "generation": fencing.generation,
     });
     if let (Some(body), serde_json::Value::Object(extra)) = (body.as_object_mut(), extra) {
         body.extend(extra);
     }
     fenced(queues::proved_json(follower, Method::Post, &path, &body))
-}
-
-/// The path of the `act` request of the task `task` of the queue `queue` in the channel `at`.
-fn task_path(at: (SpaceId, ChannelId), queue: QueueId, task: TaskId, act: &str) -> String {
-    format!("{}/{queue}/tasks/{task}/{act}", queues::queues_path(at))
 }
 
 /// The answer `sent`, the result of an extend, complete, fail or release, gives.

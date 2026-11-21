@@ -107,7 +107,7 @@ use connection::{Connection, TIMEOUT};
 use device::First;
 use person::Person;
 use serde::{Deserialize, Serialize};
-use skald_proto::{DeviceId, VersionRange};
+use skald_proto::{DeviceId, Name, VersionRange};
 use spaces::Scope;
 
 /// Message broker and task queue for AI agents.
@@ -1877,31 +1877,19 @@ fn performed(operation: Operation) -> Result<(), String> {
             (None, agent.is_some()),
             |run| claims::extend(run, &task, progress, agent.as_ref()),
         ),
-        Command::Complete { task, text } => queue_command(
+        Command::Complete { task, text } => end_command(
             state_dir,
             (key_storage, (speaks, timeout)),
-            (None, agent.is_some()),
-            |run| {
-                claims::end(
-                    run,
-                    (&task, &text),
-                    claims::Ending::Complete,
-                    agent.as_ref(),
-                )
-            },
+            (&task, &text),
+            claims::Ending::Complete,
+            agent.as_ref(),
         ),
-        Command::Fail { retry, task, text } => queue_command(
+        Command::Fail { retry, task, text } => end_command(
             state_dir,
             (key_storage, (speaks, timeout)),
-            (None, agent.is_some()),
-            |run| {
-                claims::end(
-                    run,
-                    (&task, &text),
-                    claims::Ending::Fail(retry),
-                    agent.as_ref(),
-                )
-            },
+            (&task, &text),
+            claims::Ending::Fail(retry),
+            agent.as_ref(),
         ),
         Command::Reply {
             message,
@@ -2073,6 +2061,23 @@ fn queue_command(
         channel,
         agent,
     })
+}
+
+/// Ends the claim of `task` with `text` as `ending` says ([`claims::end`]), on the state in
+/// `state_dir`, its secrets in `storage`, with `settings`, as `agent` if given.
+fn end_command(
+    state_dir: Option<PathBuf>,
+    (storage, settings): (secrets::Storage, (VersionRange, Duration)),
+    (task, text): (&str, &str),
+    ending: claims::Ending,
+    agent: Option<&Name>,
+) -> Result<(), String> {
+    queue_command(
+        state_dir,
+        (storage, settings),
+        (None, agent.is_some()),
+        |run| claims::end(run, (task, text), ending, agent),
+    )
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
