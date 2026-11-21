@@ -33,7 +33,8 @@
 //     stay as Cargo.toml sets them, and nextest runs its default profile;
 //   - .config/nextest.toml sets no default-filter, which would leave tests out, and no retries,
 //     which would pass a flaky test;
-//   - each test that calls alone() itself matches an override of .config/nextest.toml,
+//   - alone() is called only directly in top-level #[test] fns of the crates' test files, and each
+//     such test matches an override of .config/nextest.toml,
 //     `package(<package>) & binary(<binary>) & test(=<path>)`, that sets threads-required =
 //     'num-test-threads': under nextest, alone() holds back no other test's process;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
@@ -501,8 +502,16 @@ for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
     const binary = parts.length === 1 ? parts[0].slice(0, -3) : parts[0];
     const modules = parts.length === 1 ? [] : parts.slice(1).map((part) => part.replace(/\.rs$/, '')).filter((part, i, all) => !(i === all.length - 1 && (part === 'main' || part === 'mod')));
     const text = fs.readFileSync(path.join(testsDir, file), 'utf8');
+    // Calls of alone(), not its definition or a method of the same name.
+    const calls = (code) => [...code.matchAll(/(^|[^\w.])alone\(\)/gm)].filter((m) => !/\bfn\s*$/.test(code.slice(0, m.index + m[1].length))).length;
+    let counted = 0;
     for (const [, name, body] of text.matchAll(/^#\[test\]\n(?:#\[[^\n]*\]\n)*(?:pub )?fn (\w+)\([^)]*\)[^{]*\{([\s\S]*?)^\}$/gm)) {
-      if (/(^|[^\w.])alone\(\)/.test(body)) callers.push(`${pkg} ${binary} ${[...modules, name].join('::')}`);
+      if (calls(body) > 0) callers.push(`${pkg} ${binary} ${[...modules, name].join('::')}`);
+      counted += calls(body);
+    }
+    // A call anywhere else, a helper's or a nested module's test's, escapes the check.
+    if (calls(text) > counted) {
+      fail(`crates/${crate}/tests/${file} calls alone() other than directly in a top-level #[test] fn, which the check of the tests nextest runs alone cannot name`);
     }
   }
 }
