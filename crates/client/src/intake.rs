@@ -29,7 +29,7 @@ use crate::output::{self, Stream};
 use crate::receipts;
 use crate::recv::{self, Checks};
 use crate::spaces::{Follower, Scope};
-use crate::{key_chain, wraps};
+use crate::{key_chain, queue_keys, wraps};
 
 /// What a run wrote to its outputs, in order.
 pub type Said = Vec<(Stream, Vec<u8>)>;
@@ -176,6 +176,8 @@ impl Intake {
             key_chain::upload_missing(follower, link, Scope::All);
             wraps::upload_missing(follower, link, Scope::All);
         }
+        // A Commit of another device starts an epoch with no roster change.
+        queue_keys::upload_missing(follower, link, Scope::All);
         Ok(())
     }
 
