@@ -7,7 +7,7 @@ use skald_proto::DeviceId;
 
 use crate::fixtures::{Issuer, add_device, fronted};
 use crate::kit::RECV;
-use crate::machine::{DEVICES, FIRST_DEVICE, Machine, NO};
+use crate::machine::{DEVICES, Machine};
 use crate::relay::Lose;
 use crate::revocations::{
     STORE_REVOCATION, account_certs, account_revocations, assert_listed, revoke_device,
@@ -125,12 +125,7 @@ fn devices_of_other_accounts_or_without_a_certificate_are_not_revoked_nor_by_one
     let unknown = DeviceId::from_signing_key(&SigningKey::generate().public_key());
     let second = Machine::new().with_host_name("ada-second-desk");
     // The machine signs in and waits for linking.
-    let _ = cloud.signed_in(
-        &world.browser.page(),
-        &second,
-        &ada.user,
-        &[FIRST_DEVICE, NO],
-    );
+    let _ = cloud.signed_in(&world.browser.page(), &second, &ada.user, &[]);
     let mark = cloud.relay.mark();
 
     for device in [bob.device, uncertified.id, unknown] {

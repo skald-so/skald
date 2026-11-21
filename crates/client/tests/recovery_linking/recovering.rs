@@ -11,7 +11,7 @@ use skald_proto::DeviceId;
 use crate::at_terminal::{approve, first_at_terminal, shown_key};
 use crate::cloud::Cloud;
 use crate::fixtures::strs;
-use crate::machine::{FIRST_DEVICE, Machine, NO, RUN_LIMIT, SERVER, SIGN_IN};
+use crate::machine::{Machine, RUN_LIMIT, SERVER, SIGN_IN};
 use crate::terminal::{Shown, Terminal};
 use crate::world::{Person, World};
 
@@ -115,21 +115,10 @@ pub fn play(
     }
 }
 
-/// The arguments of `skald <before> sign-in --server <cloud> --first-device no
-/// --with-recovery-key`, then each of `named`'s options with its device.
+/// The arguments of `skald <before> sign-in --server <cloud> --with-recovery-key`, then each of `named`'s options with its device.
 pub fn recovery_args(cloud: &Cloud, before: &[&str], named: &[(&str, DeviceId)]) -> Vec<String> {
     let mut args: Vec<String> = before.iter().map(|arg| (*arg).to_owned()).collect();
-    args.extend(
-        [
-            SIGN_IN,
-            SERVER,
-            &cloud.url,
-            FIRST_DEVICE,
-            NO,
-            WITH_RECOVERY_KEY,
-        ]
-        .map(str::to_owned),
-    );
+    args.extend([SIGN_IN, SERVER, &cloud.url, WITH_RECOVERY_KEY].map(str::to_owned));
     for (option, device) in named {
         args.extend([(*option).to_owned(), device.to_string()]);
     }

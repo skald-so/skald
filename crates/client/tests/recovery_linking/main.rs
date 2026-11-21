@@ -1,6 +1,6 @@
 //! Linking a new device with the recovery key (`docs/protocol/membership.md`, "Linking a device",
-//! "Anchors", "Revocation" and "Device checks"). The new device, signed in as no first device at a
-//! terminal, reads the recovery key there without echo and pins the account's master key only
+//! "Anchors", "Revocation" and "Device checks"). The new device, signed in at a terminal
+//! to an account with a master key, reads the recovery key there without echo and pins the account's master key only
 //! from an account record and a master backup that opens in PSK mode with that key. It issues its
 //! own certificate with the master key, shows the account's devices, revoked or not, then revokes
 //! with the master key the devices its user names stolen, stores its certificate, starts from the
@@ -18,7 +18,7 @@
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of spaces and of revoking
 //! devices:
-//! - `skald sign-in --server <URL> --first-device no --with-recovery-key`, on an account with a
+//! - `skald sign-in --server <URL> --with-recovery-key`, on an account with a
 //!   master key, links the device with the recovery key instead of a link code, and shows no code.
 //!   `--stolen <device>`, `--lost <device>`, `--keep <device>` and `--keep-revoked <device>`, each
 //!   once per device, by its ID, name the devices its user names stolen, lost or wiped, kept valid

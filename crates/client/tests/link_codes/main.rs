@@ -1,6 +1,6 @@
 //! Linking a new device with a link code (`docs/protocol/membership.md`, "Linking a device", "Link
-//! code" and "Device checks"). The new device, signed in as no first device at a terminal, shows a
-//! code; its person types the code into `skald link` on a linked `client` device of the account at
+//! code" and "Device checks"). The new device, signed in at a terminal to an account with a master
+//! key, shows a code; its person types the code into `skald link` on a linked `client` device of the account at
 //! a terminal and confirms the new device's name and kind. The two run CPace through the server's
 //! relay, which never sees the code; the linked device issues the new device's certificate and a
 //! link object, and the new device stores its certificate, pins the master key, starts from the
@@ -12,7 +12,7 @@
 //!
 //! The CLI, as these tests use it, besides what the tests of signing in, spaces, channels, devices
 //! and the history use:
-//! - `skald sign-in --server <URL> --first-device no` at a terminal, on an account with a master
+//! - `skald sign-in --server <URL>` at a terminal, on an account with a master
 //!   key: once the device is registered, it shows a code, 6 characters of the base32 alphabet in two
 //!   groups of three joined by `-`, such as `K7Q-M2X`, and a line holding `skald link`, which says
 //!   where to type it, then waits. Each run of the code that fails it reports on a line holding

@@ -632,7 +632,7 @@ pub struct Device {
 /// How the device is linked to its account.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Link {
-    /// Not yet: it has not learned whether it is the account's first device.
+    /// Not yet: it has not learned whether the account has a master key.
     New,
     /// As the account's first device: it created the master key, pinned its public key `master`,
     /// issued its certificate `cert` and signed the account record `record` with it, and sealed it

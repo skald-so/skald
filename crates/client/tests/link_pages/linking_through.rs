@@ -74,8 +74,7 @@ fn assert_takes_only_its_secret(what: &str, opening: &Opening) {
 
 /// Ada's account follows `globex`, which she created, and her personal space. Without its page, an
 /// agent's `skald link` on her first machine refuses and sends nothing. Her new machine signs in as
-/// an agent with `--browser`; on its page she answers that it is not the first device and reads its
-/// code. As an agent, `skald link --browser` on her first machine opens its page, where she reads
+/// an agent with `--browser`; she reads its code on its page. As an agent, `skald link --browser` on her first machine opens its page, where she reads
 /// the reminder, enters the code and confirms the new device's name and kind. Both commands exit
 /// with success. The new device's certificate is issued by her first device and is valid against
 /// her master key; the new device lists itself as linked, follows her spaces and starts from her
