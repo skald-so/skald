@@ -3,7 +3,7 @@
 
 use crate::agents::assert_not_handed;
 use crate::inbound::{
-    ACCEPT, REFUSE, b_shows_it_marked, claude_set_to, shows_no_refused, shows_refused_once,
+    ACCEPT, REFUSE, REFUSED, b_shows_it_marked, claude_set_to, shows_not, shows_refused_once,
 };
 use crate::kit::received;
 use crate::receipts::{Roles, assert_shows_once, shows_read_once};
@@ -45,5 +45,10 @@ fn message_kept_for_the_agent_when_taken_in_is_handed_over_after_the_mode_turns_
 
     assert_shows_once(&roles.claude_reads(false).shown(), text);
     shows_read_once(roles.a(), msg_id);
-    shows_no_refused(roles.a(), msg_id, "a message kept before the change");
+    shows_not(
+        roles.a(),
+        msg_id,
+        REFUSED,
+        "a message kept before the change",
+    );
 }

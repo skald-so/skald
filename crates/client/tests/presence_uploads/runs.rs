@@ -7,10 +7,11 @@ use crate::agents::{Agents, CLAUDE};
 use crate::fixtures::{ALL, CHANNEL, Issuer, SEND, add_device};
 use crate::helped::{Helped, IDLE_SETTING, LONG_IDLE, VERSION_SETTING, newer};
 use crate::kit::RECV;
+use crate::presence::assert_between;
 use crate::revocations::{self, signed, store_revocation};
 use crate::values::{
-    acme_channels, ada_s_body, addresses, assert_between, await_available, await_in_each, listed,
-    ran_as, run_with, shows, uploads,
+    acme_channels, ada_s_body, addresses, await_available, await_in_each, listed, ran_as, run_with,
+    shows, uploads,
 };
 use crate::world::{AGENT, now};
 

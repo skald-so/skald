@@ -12,9 +12,8 @@ use skald_proto::{MessageId, ReceiptStatus};
 
 use crate::agents::CLAUDE;
 use crate::cloud::WAIT;
-use crate::inbound::claude_set_to;
+use crate::inbound::{claude_set_to, status_lines};
 use crate::kit::received;
-use crate::lines::{agent_line, assert_no_uuid, lines_referring_to};
 use crate::machine::Machine;
 use crate::receipts::{Got, Roles, assert_shows_once, shows_read_once};
 use crate::senders::holds_word;
@@ -136,24 +135,6 @@ pub fn says_none_waiting(machine: &Machine, when: &str) {
     assert!(lines.is_empty(), "{when}: {lines:?} in {shown}");
 }
 
-/// The lines of `shown`, a person's output, that hold `msg_id` and the word `status`.
-pub fn status_lines(shown: &str, msg_id: MessageId, status: &str) -> Vec<String> {
-    let id = msg_id.to_string();
-    (shown.lines())
-        .filter(|line| line.contains(&id) && holds_word(line, status))
-        .map(str::to_owned)
-        .collect()
-}
-
-/// The lines of `shown`, an agent's output, that say the word `status` of `msg_id` by its
-/// reference and are no message.
-pub fn agent_status_lines(shown: &str, msg_id: MessageId, status: &str) -> Vec<String> {
-    let lines = lines_referring_to(shown, msg_id);
-    (lines.into_iter())
-        .filter(|line| holds_word(line, status) && agent_line(line).is_none())
-        .collect()
-}
-
 /// Runs the person's `skald recv` on `machine` every half second, for up to [`WAIT`], until a run
 /// shows `status` of `msg_id`; then once more. Fails unless the runs show it on one line in all,
 /// the last one not at all. Gives that line.
@@ -174,30 +155,6 @@ pub fn shows_once(machine: &Machine, msg_id: MessageId, status: &str) -> String 
     let [line] = seen.as_slice() else {
         panic!("{status} of {msg_id} not on one line: {seen:?}");
     };
-    line.clone()
-}
-
-/// Runs the person's `skald recv` on `machine`; fails if it shows `status` of `msg_id`.
-#[track_caller]
-pub fn shows_not(machine: &Machine, msg_id: MessageId, status: &str, when: &str) {
-    let shown = received(machine).shown();
-    let lines = status_lines(&shown, msg_id, status);
-    assert!(lines.is_empty(), "{when}: {lines:?} in {shown}");
-}
-
-/// A's agent's next `skald recv` says `status` of `msg_id` on one line, with no UUID, and the one
-/// after does not. Gives that line.
-#[track_caller]
-pub fn a_agent_says_once(roles: &Roles, msg_id: MessageId, status: &str) -> String {
-    let first = roles.a_agent_reads(&[]).shown();
-    let lines = agent_status_lines(&first, msg_id, status);
-    let [line] = lines.as_slice() else {
-        panic!("{status} of {msg_id} not on one line: {first}");
-    };
-    assert_no_uuid(&first);
-    let then = roles.a_agent_reads(&[]).shown();
-    let again = agent_status_lines(&then, msg_id, status);
-    assert!(again.is_empty(), "{status} again: {then}");
     line.clone()
 }
 

@@ -610,13 +610,19 @@ impl Follower {
     /// devices, as a service token reads them.
     fn anchors_objects(&mut self) -> Result<Vec<Anchors>, String> {
         let keys = self.keys()?;
-        let proof = (self.connection)
-            .request_proof(&self.token, keys.id(), keys.signing())
-            .map_err(text)?;
+        let proof = self.proof(&keys)?;
         let body = (self.connection)
             .get_proved(anchors::PATH, (&self.token, &proof))
             .map_err(|err| format!("the account's anchors objects are not read: {}", text(err)))?;
         anchors::objects(&body)
+    }
+
+    /// The proof of an HTTPS request of the device, whose keys are `keys`, on a new challenge of
+    /// its session: the value of its `Skald-Device-Proof` header.
+    pub fn proof(&mut self, keys: &device::Keys) -> Result<String, String> {
+        (self.connection)
+            .request_proof(&self.token, keys.id(), keys.signing())
+            .map_err(text)
     }
 
     /// The device's keys.

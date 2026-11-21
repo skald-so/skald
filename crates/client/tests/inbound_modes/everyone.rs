@@ -3,7 +3,7 @@
 
 use crate::agents::{CODEX, assert_not_handed};
 use crate::fixtures::ALL;
-use crate::inbound::{REFUSE, claude_set_to, refused_lines, shows_refused_once};
+use crate::inbound::{REFUSE, REFUSED, claude_set_to, shows_refused_once, status_lines};
 use crate::receipts::{Roles, assert_shows_once};
 
 /// What A's agent sends; none is anywhere else.
@@ -39,6 +39,6 @@ fn message_to_everyone_reaches_no_agent_in_refuse_and_gets_no_receipt() {
         "a receipt of a message to everyone: {of_all:#?}"
     );
     let shown = shows_refused_once(roles.a(), to_claude);
-    assert!(refused_lines(&shown, to_all).is_empty(), "{shown}");
+    assert!(status_lines(&shown, to_all, REFUSED).is_empty(), "{shown}");
     assert_not_handed(&roles.claude_reads(false).shown(), TO_ALL);
 }

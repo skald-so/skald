@@ -6,7 +6,7 @@ use skald_proto::{Body, ChannelId, MessageId, NonEmpty, Receipt, ReceiptStatus, 
 use crate::{
     agents::{Agents, CLAUDE},
     fixtures::{CHANNEL, SEND, TO},
-    inbound::{REFUSED, refused_lines, shows_refused_once},
+    inbound::{REFUSED, shows_refused_once, status_lines},
     kit::{RECV, received},
     lines::{JSON_FLAG, json_objects},
     talk::{Line, one_message_sent},
@@ -86,20 +86,23 @@ fn refused_counts_only_from_the_to_agent_for_a_message_sent_in_the_receipt_s_cha
 
     let shown = received(&agents.talk.ada.machine).shown();
 
-    let forged = refused_lines(&shown, in_channel);
+    let forged = status_lines(&shown, in_channel, REFUSED);
     assert!(forged.is_empty(), "from another agent: {forged:?}");
-    let elsewhere = refused_lines(&shown, in_default);
+    let elsewhere = status_lines(&shown, in_default, REFUSED);
     assert!(elsewhere.is_empty(), "in another channel: {elsewhere:?}");
 
     bob_refuses(&mut agents, (BOB_AGENT, 3), in_channel);
 
     let shown = shows_refused_once(&agents.talk.ada.machine, in_channel);
-    let lines = refused_lines(&shown, in_channel);
+    let lines = status_lines(&shown, in_channel, REFUSED);
     assert!(
         lines.iter().all(|line| line.contains(REASON)),
         "{REFUSED} without its reason: {lines:?}"
     );
-    assert!(refused_lines(&shown, in_default).is_empty(), "{shown}");
+    assert!(
+        status_lines(&shown, in_default, REFUSED).is_empty(),
+        "{shown}"
+    );
 }
 
 /// claude sends a message `--to` Bob's agent, and Bob's device sends a `refused` receipt of it with
@@ -120,7 +123,7 @@ fn refused_with_no_reason_shows_none() {
     bob_refuses_for(&mut agents, (BOB_AGENT, 1), msg_id, None);
 
     let shown = shows_refused_once(&agents.talk.ada.machine, msg_id);
-    let lines = refused_lines(&shown, msg_id);
+    let lines = status_lines(&shown, msg_id, REFUSED);
     let after = lines[0].rsplit_once(REFUSED).map(|(_, after)| after);
     assert!(
         after.is_some_and(|after| !after.contains(':')),

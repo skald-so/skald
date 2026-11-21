@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::linking::{
     EXPIRED, HELLO, LIFETIME_SETTING, LINK, NEW_CODE, NewDevice, OWN_DEVICE, RELAYED, THREE_TIMES,
-    YES, codes_in, link_failing, other_code, says, typed, waiting,
+    YES, codes_in, link_failing, other_code, says, typed, until_not_waiting, waiting,
 };
 use crate::machine::Machine;
 use crate::terminal::Terminal;
@@ -20,6 +20,14 @@ const LAPTOP: &str = "ada-laptop";
 
 /// How long a test watches for what must not happen.
 const QUIET: Duration = Duration::from_secs(3);
+
+/// A code counts only as a whole token: the digits of a device ID shaped like one do not.
+#[test]
+fn codes_are_whole_tokens_not_parts_of_an_id() {
+    let text = "Linked: issued by the device 84bc7bab-7813-89aa-b475-365c9d616798.\n\
+                Type this code there: VZK-MP5 (or ab1-CDE2, XYZ-ABC-DEF).";
+    assert_eq!(codes_in(text), ["VZK-MP5"]);
+}
 
 /// Whether a request to the link code relay went through the relay since `since`.
 fn relayed_since(world: &World, since: Instant) -> bool {
@@ -101,11 +109,7 @@ fn a_code_expires_and_a_fresh_one_links() {
 
     new.run()
         .wait_for("that the code expired", |shown| says(shown, &[EXPIRED]));
-    let deadline = Instant::now() + crate::cloud::WAIT;
-    while waiting(cloud, &ada, new.device) {
-        assert!(Instant::now() < deadline, "the expired code's run is open");
-        thread::sleep(Duration::from_millis(100));
-    }
+    until_not_waiting(cloud, &ada, new.device);
     link_failing(&ada, &typed(&code));
 
     let fresh = new.fresh_code();

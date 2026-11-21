@@ -27,6 +27,7 @@ use skald_proto::{
 use crate::connection::{self, Connection, Method};
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::follow::SpaceDevices;
+use crate::person;
 use crate::secrets;
 use crate::spaces::now;
 use crate::state::{self, Link, State};
@@ -225,16 +226,11 @@ pub fn ask_ids(
     shown: &[DeviceId],
 ) -> io::Result<Option<Vec<DeviceId>>> {
     loop {
-        write!(
-            output,
-            "{question} Their IDs, separated by spaces, or nothing for none: "
-        )?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
+        let prompt = format!("{question} Their IDs, separated by spaces, or nothing for none: ");
+        let Some(line) = person::read(input, output, &prompt)? else {
             writeln!(output)?;
             return Ok(None);
-        }
+        };
         let named: Result<Vec<DeviceId>, String> = line
             .split(|c: char| c.is_whitespace() || c == ',')
             .filter(|word| !word.is_empty())

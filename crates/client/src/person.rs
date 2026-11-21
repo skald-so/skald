@@ -36,7 +36,8 @@ impl Person<'_> {
     /// `None` once the terminal's input ends.
     pub fn ask(self, question: &str) -> Result<Option<bool>, String> {
         match self {
-            Person::Terminal => ask(&mut io::stdin().lock(), &format!("{question} [yes/no]: ")),
+            Person::Terminal => ask(&mut io::stdin().lock(), &mut io::stdout(), question)
+                .map_err(|err| format!("cannot ask the user: {err}")),
             Person::Page(page) => {
                 let answers = page.ask(question, &["Yes", "No"], None, true)?;
                 Ok(answers
@@ -51,7 +52,12 @@ impl Person<'_> {
     /// end; `None` once the terminal's input ends.
     pub fn enter(self, label: &str, button: &str) -> Result<Option<String>, String> {
         match self {
-            Person::Terminal => read(&mut io::stdin().lock(), &format!("{label}: ")),
+            Person::Terminal => read(
+                &mut io::stdin().lock(),
+                &mut io::stdout(),
+                &format!("{label}: "),
+            )
+            .map_err(|err| format!("cannot read the answer: {err}")),
             Person::Page(page) => {
                 let answers = page.ask("", &[button], Some(label), true)?;
                 Ok(answers.recv().ok().map(|answer| match answer {
@@ -104,31 +110,36 @@ fn enters() -> Receiver<()> {
     enters
 }
 
-/// The line its person enters on `input` after `prompt`, without its end; `None` once the input
-/// ends.
-fn read(input: &mut impl BufRead, prompt: &str) -> Result<Option<String>, String> {
-    let mut output = io::stdout();
-    let asked = write!(output, "{prompt}").and_then(|()| output.flush());
-    asked.map_err(|err| format!("cannot ask: {err}"))?;
+/// The line its person enters on `input` after `prompt` on `output`, without its end; `None` once
+/// the input ends.
+pub fn read(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    prompt: &str,
+) -> io::Result<Option<String>> {
+    write!(output, "{prompt}")?;
+    output.flush()?;
     let mut line = String::new();
-    let read = input
-        .read_line(&mut line)
-        .map_err(|err| format!("cannot read the answer: {err}"))?;
+    let read = input.read_line(&mut line)?;
     Ok((read > 0).then(|| line.trim_end_matches(['\r', '\n']).to_owned()))
 }
 
-/// Whether its person answers yes to `prompt` on `input`, asked again until yes or no; `None` once
-/// the input ends.
-fn ask(input: &mut impl BufRead, prompt: &str) -> Result<Option<bool>, String> {
+/// Whether its person answers yes to `question` on `input`, asked on `output` again until yes or
+/// no; `None` once the input ends.
+pub fn ask(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    question: &str,
+) -> io::Result<Option<bool>> {
     loop {
-        let Some(answer) = read(input, prompt)? else {
-            println!();
+        let Some(answer) = read(input, output, &format!("{question} [yes/no]: "))? else {
+            writeln!(output)?;
             return Ok(None);
         };
         match answer.trim().to_lowercase().as_str() {
             "yes" | "y" => return Ok(Some(true)),
             "no" | "n" => return Ok(Some(false)),
-            _ => println!("Please answer yes or no."),
+            _ => writeln!(output, "Please answer yes or no.")?,
         }
     }
 }

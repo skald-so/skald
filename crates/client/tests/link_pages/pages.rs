@@ -17,7 +17,7 @@ use skald_proto::DeviceId;
 use crate::at_terminal::{as_agent, keys_in};
 use crate::browser::{APPROVE, Browser, CODE_FIELD, Page};
 use crate::cloud::{Cloud, WAIT, ids};
-use crate::linking::{HELLO, LINK, OWN_DEVICE, codes_in, forms, says, typed, waiting};
+use crate::linking::{LINK, OWN_DEVICE, codes_in, forms, says, typed, until_run_open};
 use crate::machine::{Finished, Machine, RUN_LIMIT, Run, SERVER, SIGN_IN};
 use crate::world::{Person, World};
 
@@ -443,9 +443,7 @@ impl<'b> NewOnPage<'b> {
             !codes_in(text).is_empty() && says(text, &["skald link"])
         });
         let token = cloud.last_token();
-        let mut new = ids(&cloud.devices(&token));
-        new.retain(|device| !known.contains(device));
-        assert_eq!(new.len(), 1, "the new device: {new:?}");
+        let device = cloud.new_device(&token, &known);
         NewOnPage {
             run: Some(run),
             paged,
@@ -453,7 +451,7 @@ impl<'b> NewOnPage<'b> {
             machine,
             host,
             token,
-            device: new[0],
+            device,
             started,
             runs: 0,
         }
@@ -480,16 +478,8 @@ impl<'b> NewOnPage<'b> {
     #[track_caller]
     pub fn open_run(&mut self, cloud: &Cloud, first: &Person) {
         self.runs += 1;
-        let deadline = Instant::now() + WAIT;
-        loop {
-            let hellos = cloud.count_sent(self.started, HELLO);
-            if hellos >= self.runs && waiting(cloud, first, self.device) {
-                return;
-            }
-            let shown = self.run().shown();
-            assert!(Instant::now() < deadline, "no run {}: {shown}", self.runs);
-            thread::sleep(Duration::from_millis(50));
-        }
+        let (device, started, run) = (self.device, self.started, self.runs);
+        until_run_open(cloud, first, device, (started, run), || self.run().shown());
     }
 
     /// The person asks on its page for a fresh code; gives it once shown, and fails unless it is

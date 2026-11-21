@@ -9,6 +9,7 @@ use crate::cloud::{Cloud, WAIT};
 use crate::kit::{assert_members, group, received};
 use crate::linking::{NewDevice, STORE_CERT, YES, start_link, typed};
 use crate::machine::{DEVICES, NOT_LINKED};
+use crate::revocations::account_certs;
 use crate::talk::Talk;
 use crate::world::{Person, World, run};
 
@@ -65,9 +66,7 @@ fn a_new_device_killed_before_it_stores_its_certificate_stores_it_at_its_next_ru
         "{later:?}"
     );
     assert!(certified(cloud, &ada, new.device), "no certificate stored");
-    let certs: Vec<_> = (cloud.devices(&ada.token).into_iter())
-        .filter_map(|device| device.cert)
-        .collect();
+    let certs = account_certs(cloud, &ada.token);
     assert!(
         skald_crypto::check_valid_device(&ada.master, &certs, &[], new.device).is_ok(),
         "the stored certificate is not valid"

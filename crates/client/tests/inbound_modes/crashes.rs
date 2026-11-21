@@ -3,7 +3,7 @@
 
 use crate::agents::assert_not_handed;
 use crate::fixtures::kill_once;
-use crate::inbound::{REFUSE, claude_set_to, shows_no_refused, shows_refused_once};
+use crate::inbound::{REFUSE, REFUSED, claude_set_to, shows_not, shows_refused_once};
 use crate::receipts::Roles;
 use crate::talk::messages_sent;
 
@@ -32,7 +32,7 @@ fn refusal_of_a_cli_killed_before_its_receipt_went_is_sent_by_the_next_run_once(
     });
 
     front.swallow(false);
-    shows_no_refused(roles.a(), msg_id, "with the receipt swallowed");
+    shows_not(roles.a(), msg_id, REFUSED, "with the receipt swallowed");
 
     let next = roles.claude_reads(false);
 

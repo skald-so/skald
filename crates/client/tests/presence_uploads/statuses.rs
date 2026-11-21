@@ -6,10 +6,11 @@ use skald_proto::AgentState;
 use crate::agents::{Agents, CLAUDE};
 use crate::client::{CLIENT, session_in};
 use crate::helped::Helped;
+use crate::presence::{AVAILABLE, BUSY, assert_between};
 use crate::values::{
-    AVAILABLE, BUSY, NOTE_FLAG, NOTE_LIMIT, NOTE_MAX, SET_STATUS, acme_channels, ada_s_body,
-    assert_between, await_available, await_in_each, claude_code_session, listed, note_of, run_with,
-    set_status_tool, shows_with_note,
+    NOTE_FLAG, NOTE_LIMIT, NOTE_MAX, SET_STATUS, acme_channels, ada_s_body, await_available,
+    await_in_each, claude_code_session, listed, note_of, run_with, set_status_tool,
+    shows_with_note,
 };
 use crate::world::{AGENT, now};
 

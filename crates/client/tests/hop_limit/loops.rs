@@ -8,8 +8,8 @@ use skald_proto::{ChannelId, Content, MessageId};
 
 use crate::agents::CLAUDE;
 use crate::client::{
-    CHANNEL_FIELD, CLIENT, MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, Session, TEXT_FIELD, TO_FIELD,
-    session_in,
+    CHANNEL_FIELD, CLIENT, Called, MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, Session, TEXT_FIELD,
+    TO_FIELD, session_in,
 };
 use crate::fixtures::{CHANNEL, SEND, TO};
 use crate::kit::received;
@@ -79,6 +79,15 @@ impl From<Finished> for Said {
         Said {
             ok: finished.success,
             shown: finished.shown(),
+        }
+    }
+}
+
+impl From<Called> for Said {
+    fn from(called: Called) -> Self {
+        Said {
+            ok: !called.error,
+            shown: called.text,
         }
     }
 }
@@ -203,11 +212,7 @@ impl Chain {
             _ => {
                 let arguments = json!({ TO_FIELD: to, CHANNEL_FIELD: channel, TEXT_FIELD: text });
                 let session = &mut self.sessions[side.index()];
-                let called = session.call(SEND_TOOL, arguments);
-                Said {
-                    ok: !called.error,
-                    shown: called.text,
-                }
+                session.call(SEND_TOOL, arguments).into()
             }
         }
     }
@@ -217,16 +222,7 @@ impl Chain {
     pub fn answer(&mut self, side: Side, (taken, answering): (&str, &str), text: &str) -> Said {
         match self.way {
             Way::ReplyTool => {
-                let message = format!("#{}", reference_of(taken, answering));
-                let session = &mut self.sessions[side.index()];
-                let called = session.call(
-                    REPLY_TOOL,
-                    json!({ MESSAGE_FIELD: message, TEXT_FIELD: text }),
-                );
-                Said {
-                    ok: !called.error,
-                    shown: called.text,
-                }
+                replies_with_tool(&mut self.sessions[side.index()], (taken, answering), text)
             }
             _ => self.send(side, text),
         }
@@ -287,6 +283,22 @@ pub fn texts(way: Way) -> Vec<String> {
     (0..=LIMIT + 1)
         .map(|hop| format!("hop limit test ({way:?}): the loop's message at hop {hop:02}"))
         .collect()
+}
+
+/// `session` replies with the reply tool, with `text`, to the message whose line in `taken`, what
+/// it took, holds `answering`.
+pub fn replies_with_tool(
+    session: &mut Session,
+    (taken, answering): (&str, &str),
+    text: &str,
+) -> Said {
+    let message = format!("#{}", reference_of(taken, answering));
+    session
+        .call(
+            REPLY_TOOL,
+            json!({ MESSAGE_FIELD: message, TEXT_FIELD: text }),
+        )
+        .into()
 }
 
 /// The reference of the message whose line in `shown`, an agent's output, has the text `text`,
