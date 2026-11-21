@@ -32,7 +32,7 @@ mod spa;
 use access::rows_holding;
 use browser::{Browser, Page};
 use cloud::{Cloud, certified};
-use machine::{FIRST_DEVICE, Machine, NO};
+use machine::Machine;
 use spa::{Spa, answers_without_secrets, wait_for_cabinet, wait_until};
 
 /// A host of the server's public address that the machines resolve, as Chrome does.
@@ -74,7 +74,7 @@ fn wait_for_machines(page: &Page, spa: &Spa, username: &str, devices: &[(&str, &
 
 /// Ida's laptop signs in with `skald` as her account's first device, approved in the browser she
 /// then opens the web app in: the cabinet opens on Machines, which lists the laptop as linked. Her
-/// desk machine then signs in as not the first device: Machines lists it as waiting for linking.
+/// desk machine then signs in: Machines lists it as waiting for linking.
 /// Once the laptop revokes itself, Machines lists it as revoked and the desk still waiting. The web
 /// app got the devices from the server, and no answer it got holds a secret.
 #[test]
@@ -95,7 +95,7 @@ fn machines_lists_the_first_machine_linked_a_second_waiting_and_a_revoked_one_re
 
     let desk = Machine::new().with_host_name("ida-desk");
     // The machine signs in and waits for linking.
-    let _ = cloud.signed_in(&page, &desk, &user, &[FIRST_DEVICE, NO]);
+    let _ = cloud.signed_in(&page, &desk, &user, &[]);
     wait_for_machines(
         &page,
         &spa,

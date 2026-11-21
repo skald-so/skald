@@ -32,7 +32,7 @@ use std::path::PathBuf;
 
 use browser::{Browser, Page};
 use cloud::{Cloud, Device, GIVE_MASTER, Providers, REGISTER, ids};
-use machine::{FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, SIGN_OUT, YES};
+use machine::{Finished, Machine, SERVER, SIGN_IN, SIGN_OUT};
 use serde_json::Value;
 use skald_github_stand_in::User;
 use skald_oidc_stand_in::Person;
@@ -105,8 +105,7 @@ fn first_with_google(
 ) -> First {
     let machine = Machine::new().with_host_name(host);
     let before = cloud.tokens().len();
-    let finished =
-        cloud.signed_in_with_google(&browser.page(), &machine, person, &[FIRST_DEVICE, YES]);
+    let finished = cloud.signed_in_with_google(&browser.page(), &machine, person, &[]);
     assert!(finished.success, "{finished:?}");
     assert!(finished.shown().contains(username), "{finished:?}");
     assert_says_created(&finished);
@@ -138,10 +137,7 @@ fn first_with_google(
 /// for no new code.
 fn assert_finds_its_session(cloud: &Cloud, first: &First, username: &str) {
     let grants = cloud.grants().len();
-    let again = first
-        .machine
-        .start(&[SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, YES])
-        .finish();
+    let again = first.machine.start(&[SIGN_IN, SERVER, &cloud.url]).finish();
     assert!(again.success, "{again:?}");
     assert!(again.shown().contains(username), "{again:?}");
     assert_eq!(cloud.grants().len(), grants, "a new code: {again:?}");
@@ -165,12 +161,7 @@ fn assert_resumes_with_google(
     username: &str,
 ) {
     let mark = cloud.relay.mark();
-    let again = cloud.signed_in_with_google(
-        &browser.page(),
-        &first.machine,
-        person,
-        &[FIRST_DEVICE, YES],
-    );
+    let again = cloud.signed_in_with_google(&browser.page(), &first.machine, person, &[]);
     assert!(again.success, "{again:?}");
     assert!(again.shown().contains(username), "{again:?}");
     let token = &cloud.last_token();
@@ -286,12 +277,7 @@ fn approval_by_the_google_user_of_another_account_is_refused_and_ends_that_sessi
     let mark = cloud.relay.mark();
     let tokens = cloud.tokens().len();
 
-    let refused = cloud.signed_in_with_google(
-        &browser.page(),
-        &first.machine,
-        &carol,
-        &[FIRST_DEVICE, YES],
-    );
+    let refused = cloud.signed_in_with_google(&browser.page(), &first.machine, &carol, &[]);
 
     assert!(!refused.success, "{refused:?}");
     assert!(refused.shown().contains("carol-other"), "{refused:?}");

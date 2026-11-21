@@ -13,10 +13,10 @@ use skald_proto::{
 };
 
 use crate::browser::Browser;
-use crate::cloud::{Cloud, unb64};
+use crate::cloud::{Cloud, GIVE_MASTER, unb64};
 use crate::fixtures::{Issuer, Keyed, add_device, hex};
 use crate::kit::b64;
-use crate::machine::{FIRST_DEVICE, Finished, Machine, NO};
+use crate::machine::{Finished, Machine};
 use crate::played::Played;
 use crate::world::{Person, devices_request, handle_of, lines_naming, now, post_as, run};
 
@@ -278,7 +278,7 @@ pub fn assert_listed(shown: &Finished, name: &str, revoked: bool) {
 
 /// A fixture account whose master key the test holds, with two `client` devices it certified,
 /// which the test writes to the server's database, and the session of a machine that signed in to
-/// it as no first device would.
+/// it.
 pub struct Fixture {
     pub master: SigningKey,
     /// Its first device, as a person whose machine holds that device's keys: the machine is the
@@ -289,8 +289,8 @@ pub struct Fixture {
 }
 
 impl Fixture {
-    /// GitHub user `id` with `login` signs in on a new machine that says it is no first device;
-    /// the test sets the account's master key and writes the devices `names` to the server's
+    /// GitHub user `id` with `login` signs in on a new machine, which creates no master key; the
+    /// test sets the account's master key and writes the devices `names` to the server's
     /// database, each certified by it.
     pub fn new(
         cloud: &Cloud,
@@ -300,8 +300,11 @@ impl Fixture {
     ) -> Self {
         let user = cloud.user(id, login);
         let machine = Machine::new().with_host_name(&format!("{login}-machine"));
-        // The machine signs in, and says the account has no master key.
-        let _ = cloud.signed_in(&browser.page(), &machine, &user, &[FIRST_DEVICE, NO]);
+        // The machine signs in and, as the server refuses its master key as another device's taken
+        // first, keeps none and waits for linking.
+        cloud.relay.refuse(GIVE_MASTER, "409 Conflict");
+        let _ = cloud.signed_in(&browser.page(), &machine, &user, &[]);
+        cloud.relay.stop_refusing();
         let token = cloud.last_token();
         let (account, handle) = (cloud.account_of(&token), handle_of(cloud, &token));
         let master = SigningKey::generate();

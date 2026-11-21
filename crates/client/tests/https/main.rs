@@ -26,7 +26,7 @@ use browser::{APPROVE, Browser};
 use cloud::{Cloud, shown_grant};
 use common::{Server, Stub, response};
 use front::Front;
-use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, SERVER, SIGN_IN, THIS_DEVICE, YES};
+use machine::{DEVICES, Finished, Machine, SERVER, SIGN_IN, THIS_DEVICE};
 use skald_proto::PROTOCOL_VERSION;
 use tls::Ca;
 
@@ -126,7 +126,7 @@ fn signs_in_over_https_and_keeps_the_session_on_it() {
     let front = Front::start(address(&cloud.url), vec![ca.issue(NAMES)]);
     let url = front.url("127.0.0.1");
 
-    let mut run = machine.start(&[SIGN_IN, SERVER, &url, FIRST_DEVICE, YES]);
+    let mut run = machine.start(&[SIGN_IN, SERVER, &url]);
     let grant = shown_grant(&cloud, &mut run, 0);
     cloud.decide(&page, &ada, &grant, APPROVE);
     let finished = run.finish();
