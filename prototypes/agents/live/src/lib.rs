@@ -190,10 +190,10 @@ impl Agent {
         Ok(args)
     }
 
-    /// The CLI's environment on the model stub at `stub`, and on Windows what a program needs
-    /// there: only `path` as `PATH`, `home` as `HOME`
+    /// The CLI's environment on the model stub at `stub`: only `path` as `PATH`, `home` as `HOME`
     /// with an empty config home in it, the stub's address and the placeholder key. The CLI finds
-    /// no sign-in there and no credential but the placeholder.
+    /// no sign-in there and no credential but the placeholder. On Windows it also gets the system's
+    /// variables and `home` as `USERPROFILE`.
     pub fn environment(
         self,
         home: &Path,
