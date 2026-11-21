@@ -144,8 +144,13 @@ impl Standin {
     /// session file there; it takes messages as `take` says.
     pub fn new(take: Take) -> Self {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let dir = PathBuf::from(format!(
-            "/tmp/skc-{}-{}",
+        // On Windows `/tmp` is on the working directory's drive, which the helper's may not be.
+        #[cfg(unix)]
+        let base = PathBuf::from("/tmp");
+        #[cfg(windows)]
+        let base = std::env::temp_dir();
+        let dir = base.join(format!(
+            "skc-{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
