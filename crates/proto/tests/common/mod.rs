@@ -8,12 +8,12 @@ use std::num::NonZeroU64;
 
 use skald_proto::{
     Acceptance, AcceptanceBody, AccountBody, AccountId, AccountRecord, Address, Anchors,
-    AnchorsBody, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
-    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
-    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, Invite, InviteBody, Link,
-    LinkBody, MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt, ReceiptStatus,
-    RequestProof, Revocation, RevocationBody, Role, Scheme, SendKey, ServerStatus, SpaceId, Stored,
-    Unknown,
+    AnchorsBody, Attachment, Body, Cbor, Cert, CertBody, ChannelId, Content, DecodeError,
+    Delegation, DelegationBody, DeliveryStatus, DeviceId, DeviceKind, Envelope, FieldProblem,
+    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, Invite,
+    InviteBody, Link, LinkBody, MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
+    ReceiptStatus, RequestProof, Revocation, RevocationBody, Role, Scheme, SendKey, ServerStatus,
+    SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -300,6 +300,33 @@ fn master_backup() -> MasterBackup {
     }
 }
 
+/// The certificate of Alice's device by the master key, with an SSH signature by the Ed25519 SSH
+/// key of RFC 8032, §7.1, "TEST 1024", that `ssh-keygen -Y sign -n skald.so` made, and the GitHub
+/// user 583231.
+fn ssh_cert() -> Cert {
+    let body = CertBody {
+        account: account(),
+        device: alice_device(),
+        kind: DeviceKind::Client,
+        signing: hex(KEY_1).try_into().unwrap(),
+        hpke: [0x22; 32],
+        issuer: None,
+        issued: 1_762_819_200,
+        ssh: Some(hex(
+            "53534853494700000001000000330000000b7373682d6564323535313900000020
+             278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e00
+             000008736b616c642e736f0000000000000006736861353132000000530000000b
+             7373682d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43
+             677d743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe
+             93100f5f9c090dbbc9d0b30505",
+        )),
+        name: "Laptop".to_owned(),
+        github: Some(583_231),
+        unknown: Unknown::default(),
+    };
+    Cert::from_parts(body.to_cbor(), SIGNATURE, [0xa5; 64]).unwrap()
+}
+
 /// Alice's personal space.
 pub fn personal_space() -> SpaceId {
     "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5ea".parse().unwrap()
@@ -579,6 +606,7 @@ pub fn vectors() -> Vec<Vector> {
         ),
         vector("Account record", account_record()),
         vector("Master backup", master_backup()),
+        vector("Certificate with an SSH signature", ssh_cert()),
         vector("Anchors object", anchors()),
         vector("Link object", link()),
         vector("Invite", invite()),
