@@ -34,7 +34,7 @@ Also whoever takes over the server or its database.
 - Withhold, delay or drop envelopes. Gap detection reports a drop only once a later message from the same sending device in the same channel under the same scheme arrives: [delivery.md](protocol/delivery.md#security-considerations).
 - Report `stored`, `delivered` and `expired` falsely: they are its word ([Receipts](protocol/delivery.md#receipts)).
 - Withhold certificates, revocations and roster revisions: a hidden revocation keeps a device trusted for those who do not see it, a hidden revision keeps clients on an older roster, and withholding a revocation from every member device delays the revoked device's Remove ([membership.md](protocol/membership.md#security-considerations)).
-- Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space ([membership.md](protocol/membership.md#security-considerations)).
+- Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space, and a device stays out of a space another device of its account created or joined ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
@@ -143,7 +143,7 @@ An attacker holding a device or its keys, before the device is revoked.
 - Enqueue tasks that its account's other devices run at the `own` trust level, with full rights ([queues.md](protocol/queues.md#security-considerations), [Running a task](protocol/queues.md#running-a-task)).
 - Change what the device itself runs from other accounts, and approve the tasks waiting on it ([Running a task](protocol/queues.md#running-a-task)).
 - Revoke the account's other devices; its revocations count even after another device revokes it ([Revocation](protocol/membership.md#revocation)).
-- From a `client` device, certify new devices of the account, but not under an existing device's ID; and, unless its user names it as stolen when linking a device with the recovery key, have its anchors count: in a space no other device anchored, make that device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
+- From a `client` device, certify new devices of the account, but not under an existing device's ID; and have its anchors count for the account's other `client` devices, and for a device linked with the recovery key unless its user names it as stolen: in a space no other device anchored, make such a device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
 - With its key and certificate, get a session of its account again after its sessions end ([Device key session](protocol/membership.md#device-key-session)).
 - On an admin's device, do what [an admin](#an-admin-acting-against-others) does.
 - After its revocation: what [a revoked device](#a-revoked-device) does.

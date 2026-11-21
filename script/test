@@ -19,9 +19,10 @@
 #              WASM
 #   agents     the delivery prototypes in prototypes/agents
 #   edits      the edit comparison prototype in prototypes/edits
-#   repository copied code in crates/ and prototypes/ (script/duplicates); cargo-deny; the Release
-#              PR and the release tags on fixture repositories, with git-cliff, and the CHANGELOG
-#              section of v0.1.0 from the history; the Claude Code plugin's manifests and the version
+#   repository copied code in crates/ and prototypes/ (script/duplicates); that the schema
+#              migrations stay append-only (script/check-migrations); cargo-deny; the Release PR and
+#              the release tags on fixture repositories, with git-cliff, and the CHANGELOG section
+#              of v0.1.0 from the history; the Claude Code plugin's manifests and the version
 #              script/release-update gives it (script/claude-plugin-test)
 #   tooling    copied code in script/; tests of the scripts in script/, the staging deploy's against a
 #              local sshd and the staging status check's on recorded GitHub API responses, of the CI
@@ -195,6 +196,7 @@ web_packages() {
 
 if checks repository; then
   script/duplicates crates prototypes
+  script/check-migrations
 fi
 
 if checks workspace; then
@@ -277,6 +279,7 @@ if checks tooling; then
   script/duplicates script
   script/duplicates-test
   script/check-pr-title-test
+  script/check-migrations-test
   script/changed-parts-test
   script/mutants-test
   script/tag-edge-test
