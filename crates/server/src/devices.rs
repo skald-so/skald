@@ -67,13 +67,15 @@ impl Device {
     }
 }
 
-/// `Devices` in the spec; with `records`, `SpaceDevices`.
+/// `Devices` in the spec; with `records` and `deleted`, `SpaceDevices`.
 #[derive(Serialize)]
 pub(crate) struct Devices {
     devices: Vec<Device>,
     revocations: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     records: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    deleted: Vec<String>,
 }
 
 impl Devices {
@@ -92,6 +94,7 @@ impl Devices {
             devices,
             revocations,
             records: None,
+            deleted: Vec::new(),
         }
     }
 
@@ -103,6 +106,11 @@ impl Devices {
             records: Some(records),
             ..self
         }
+    }
+
+    /// As it is, with `deleted`, the IDs of the devices' accounts that are deleted.
+    pub(crate) fn with_deleted(self, deleted: Vec<String>) -> Self {
+        Devices { deleted, ..self }
     }
 }
 

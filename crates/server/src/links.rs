@@ -216,20 +216,13 @@ pub(crate) async fn remove(
             .execute(&mut *tx)
             .await
             .map_err(failed)?;
-        let recent: Option<(bool,)> = sqlx::query_as(
-            "SELECT created_at > now() - make_interval(secs => $2) FROM sessions
-             WHERE token_hash = $1",
+        sessions::recent(
+            &mut tx,
+            &session,
+            settings.link_age,
+            "remove a sign-in method",
         )
-        .bind(&session.token_hash)
-        .bind(settings.link_age.as_secs_f64())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(failed)?;
-        match recent {
-            None => return Err(Refusal::NotSignedIn),
-            Some((false,)) => return Err(Refusal::SignInTooOld),
-            Some((true,)) => {}
-        }
+        .await?;
         // As text: an ID that is no UUID is no method.
         let (found, count): (bool, i64) = sqlx::query_as(
             "SELECT coalesce(bool_or(id::text = lower($2)), false), count(*) FROM sign_in_methods

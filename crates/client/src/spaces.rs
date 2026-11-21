@@ -363,6 +363,9 @@ pub struct Follower {
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
     /// For a service agent's run ([`crate::service`]), its space and the key secret's anchor.
     pub service: Option<service::Member>,
+    /// Whether the run covers every space the device follows ([`Scope::All`]), so its warnings of
+    /// master keys compare them ([`follow::master_warnings`]); otherwise only the synced one's.
+    every_space: bool,
 }
 
 impl Follower {
@@ -376,10 +379,11 @@ impl Follower {
         timeout: Duration,
     ) -> Result<Option<Self>, String> {
         let mut follower = Self::open(dir, storage, speaks, timeout)?;
-        if let Some(follower) = follower.as_mut()
-            && let Err(err) = follower.take_personal()
-        {
-            personal_warning(&err);
+        if let Some(follower) = follower.as_mut() {
+            follower.every_space = true;
+            if let Err(err) = follower.take_personal() {
+                personal_warning(&err);
+            }
         }
         Ok(follower)
     }
@@ -462,6 +466,7 @@ impl Follower {
             anchors_unsent: false,
             given: BTreeMap::new(),
             service: None,
+            every_space: false,
         }))
     }
 
@@ -578,6 +583,7 @@ impl Follower {
                 anchor: key.anchor,
                 stateless: agent.stateless,
             }),
+            every_space: false,
         })
     }
 
@@ -827,7 +833,7 @@ impl Follower {
             &mut self.connection,
             (&self.state, &self.token),
             space,
-            &self.own,
+            (&self.own, self.every_space),
             start.as_ref(),
         )?;
         self.given.insert(space.id, followed.2.clone());

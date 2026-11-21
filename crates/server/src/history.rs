@@ -3,10 +3,11 @@
 //! session alone uploads none. The server keeps the first link per channel, epoch and `prev` and
 //! the first wrap per channel, epoch and recipient, each from a member device of its epoch, and the
 //! first entry per sending device and `msg_id`, of the channel's current or previous epoch, from a
-//! member device of the current one. It gives them, as the bytes it got, to sessions of the
-//! accounts the latest revision lists as the channel's members; to those without `history`, only
-//! from their account's join ("Access"). It refuses links and wraps of epochs before the channel's
-//! cutoff, which the history retention sets ([`crate::history_retention`]).
+//! member device of the current one, and no wrap to a deleted account's recovery key or browsers.
+//! It gives them, as the bytes it got, to sessions of the accounts the latest revision lists as the
+//! channel's members; to those without `history`, only from their account's join ("Access"). It
+//! refuses links and wraps of epochs before the channel's cutoff, which the history retention sets
+//! ([`crate::history_retention`]).
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -191,6 +192,11 @@ async fn keep(
     if member != Some((true,)) || receiving(tx, &[sender.device]).await?.is_empty() {
         return Ok(Err(Problem::NotAMember));
     }
+    if let Upload::Wrap { recipient, .. } = &upload
+        && to_deleted(tx, recipient).await?
+    {
+        return Ok(Err(Problem::NotAMember));
+    }
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let channel = channel.to_string();
     let insert = match &upload {
@@ -236,6 +242,23 @@ async fn keep(
     };
     insert.execute(&mut *tx).await?;
     Ok(Ok(()))
+}
+
+/// Whether `recipient` is the recovery key or a browser of a deleted account.
+async fn to_deleted(tx: &mut PgConnection, recipient: &WrapRecipient) -> Result<bool, sqlx::Error> {
+    let (query, id) = match recipient {
+        WrapRecipient::Browser(device) => (
+            "SELECT EXISTS (SELECT 1 FROM devices d JOIN accounts a ON a.id = d.account_id
+                 WHERE d.id = $1::uuid AND a.deleted_at IS NOT NULL)",
+            device.to_string(),
+        ),
+        WrapRecipient::Recovery(account) => (
+            "SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL)",
+            account.to_string(),
+        ),
+    };
+    let (deleted,): (bool,) = sqlx::query_as(query).bind(id).fetch_one(tx).await?;
+    Ok(deleted)
 }
 
 /// `epoch` as the database keeps it.
