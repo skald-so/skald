@@ -60,7 +60,7 @@ Each path's section answers, for each agent:
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared fixtures, assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the [Claude Code checks before implementation](#claude-code) and [`permission claude`](#permission-prompts) have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the [Claude Code checks before implementation](#claude-code), [`permission claude`](#permission-prompts) and the [Codex permission prompts](#codex-permission-prompts) checks have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 - GUI live checks, on the desktop apps and IDE extensions: [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 
 ## Model stub
@@ -607,6 +607,50 @@ Open questions:
 - What tells that a prompt answered "No" ended: such as the next `UserPromptSubmit` or `Stop`.
 - Whether Remote Control relays a prompt and takes its answer: in the VS Code run a "Yes" came from outside VS Code.
 
+## Codex permission prompts
+Paths that tell that a Codex session waits on Codex's own permission prompt, for the person's notification ([architecture.md, "Notifications"](architecture.md#notifications)). Candidates, from Codex's docs:
+- **App-server request** `item/commandExecution/requestApproval`: the app-server asks its client to approve a command; `serverRequest/resolved` follows once the request is answered or dropped ([docs](https://developers.openai.com/codex/app-server)). Its `thread/status/changed` also gives the thread the flag `waitingOnApproval`. Checked on an app-server the terminal UI shares with the check's watcher:
+  - one the check starts with `codex app-server --listen unix://<socket>`, which the terminal UI joins with `--remote unix://<socket>`;
+  - the background app-server, which a terminal UI without `--no-daemon` joins in its config home.
+- **`PermissionRequest` hook:** runs when Codex is about to ask for approval ([docs](https://developers.openai.com/codex/hooks)).
+- **Terminal notification:** `tui.notifications = ["approval-requested"]` with `tui.notification_method = "osc9"` and `tui.notification_condition = "always"`: the terminal UI writes an OSC 9 sequence to its terminal ([docs](https://developers.openai.com/codex/config-advanced#notifications)).
+
+Left out: `notify` runs a program only on `agent-turn-complete` ([docs](https://developers.openai.com/codex/config-advanced#notifications)); the docs give no session file entry for a pending approval.
+
+`live-check <permission-remote|permission-daemon|permission-hook|permission-notification> codex [--all] [--model <model>] [--keep]`, `--real` on all but `permission-daemon`: a terminal UI in a pseudo-terminal with `approval_policy = "on-request"` and `sandbox_mode = "read-only"`; Codex 0.162.1 refuses `untrusted`. Every hook event runs `live-check timed-hook <file> true`, which records the input and the time and decides nothing. The check types the prompt; the stub runs `sleep 2`, then calls `touch prompted.txt` with `sandbox_permissions: "require_escalated"`, which waits on the person. When the dialog shows, the check waits 10 s, then answers it in the terminal:
+- **A:** `y`, "Yes, proceed".
+- **B, with `--all`:** Esc, "No".
+- **C, with `--all`:** a terminal UI without a prompt next to A, on the same app-server and config home; the path must not name it.
+
+The app-server checks watch with a client of their own that answers nothing: it lists the loaded threads every 300 ms and subscribes to each with `thread/resume`, which fails until the thread's first turn has saved it; `sleep 2` gives it the time. Each line also reports what the session file holds between the call and its end.
+
+Session flags: `--no-daemon`, or `--remote unix://<socket>`, with `--disable plugins --dangerously-bypass-hook-trust -C <project>` and the config as `-c` values; the app-server the check starts gets the same config. On the background app-server, any config override makes the terminal UI run an app-server of its own, so the session gets only `-C <project>` and the config goes to the config home's `config.toml`. In a new config home the terminal UI runs its app-server in-process: the check starts the background one with `codex app-server daemon start`, which installs it from the CLI into the config home, and ends it with `codex app-server daemon stop`. Environment: [Model stub](#model-stub). Each delay is from the call: the `PreToolUse` run or the app-server's `item/started`.
+
+Results on 2026-11-21, Codex 0.162.1, on the stub:
+
+| Command | Result | Tells | Names the session | After "Yes" | After "No" |
+|---|---|---|---|---|---|
+| `live-check permission-remote codex --all` | pass | A, B: 0.0 s, the status and the request together | `threadId`; C not named | `serverRequest/resolved` 0.0 s, `item/completed` `completed` 0.1 s, status `idle` 0.2 s | `serverRequest/resolved` 0.0 s, `item/completed` `declined` 0.0 s, status `idle` 0.0 s |
+| `live-check permission-daemon codex --all` | fail | Nothing: no prompt reached the stub | A, B, C: each terminal UI joined the background app-server 33–125 s after it started, after the check's 60 s wait, when the next terminal UI started or the session ended; the prompt typed before was lost | | |
+| `live-check permission-hook codex --all` | pass | A, B: 0.1 s | `session_id`, `transcript_path`, `cwd`, `turn_id`; C not named | `PostToolUse` 0.1 s, `Stop` 0.2 s | nothing |
+| `live-check permission-notification codex --all` | pass | A, B: 0.0 s | No: the text "Approval requested: <command, cut>"; only the terminal it came from tells the session. C wrote none | nothing | nothing |
+
+The dialog showed 0.1–0.4 s after the call, after each path told. The session file held only a `token_usage_record` between the call and its end: the call, then its output 10 s later, "aborted by user" after "No".
+
+| Check | App-server request | `PermissionRequest` hook | Terminal notification |
+|---|---|---|---|
+| Carries | `threadId`, `turnId`, `itemId`, `command`, `cwd`, `availableDecisions`; the status carries `threadId` and the flag | `session_id`, `transcript_path`, `cwd`, `turn_id`, `permission_mode`, `tool_name` `Bash`, `tool_input` (the command and the model's justification) | The text only |
+| Tells the end | Yes: `serverRequest/resolved`, then `item/completed` with `completed` or `declined` | "Yes": the call's `PostToolUse`. "No": no hook runs | No |
+| Needs | A client on an app-server the terminal UI joins, subscribed to its thread; a person's answer stays in the terminal | The hook in config, trusted | The setting, `notification_condition = "always"` (default `unfocused`), and a program that owns the terminal |
+
+Findings:
+- The `PermissionRequest` hook and the app-server tell within 0.1 s, before the dialog shows, and name the session. The app-server passed with `--remote`; the background app-server is open.
+- Only the app-server tells that a prompt ended, after either answer.
+- The notification names no session and carries no end; it can only back up a wrapper of the terminal.
+
+Open questions:
+- Why a terminal UI joins the background app-server late in a new config home, and whether the request reaches a watcher there.
+
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
@@ -764,6 +808,7 @@ Live checks to add before the adapters take tasks and run executors ([delivery.m
 - A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over [`codex queue`](#codex-queue).
 - Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
 - A Codex executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment.
+- [Codex permission prompts](#codex-permission-prompts): what tells that a Codex session waits on its own permission prompt.
 
 ### Claude Code
 `live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]`; `--real`: [Model stub](#model-stub). With `--real`, each check runs one session at the lowest effort with a short prompt.

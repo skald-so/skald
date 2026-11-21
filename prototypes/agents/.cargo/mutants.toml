@@ -10,6 +10,7 @@ exclude_globs = [
   "live/src/wake_run.rs",
   "live/src/read_run.rs",
   "live/src/permission_run.rs",
+  "live/src/codex_permission_run.rs",
   "live/src/before_run.rs",
   "testing/src/lib.rs",
 ]

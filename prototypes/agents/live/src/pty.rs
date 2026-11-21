@@ -22,6 +22,7 @@ use agent_live::channel::{
     CHANNEL_BIN, Case, ChannelCheck, Files, HookEvent, IN_A_ROW, LISTENING, PtySession, Screen,
     Sent, TERM, add_message, extra_environment, hook_events, session, stub_environment,
 };
+use agent_live::codex_permission::{Notified, Osc9, notified_line};
 use agent_live::limits::quiet_app_server;
 use agent_live::queue::{self, QUEUE_BIN, QueueCheck, thread};
 use agent_live::read;
@@ -425,6 +426,7 @@ impl Prepared {
         let mut session = PtySession::new(now_ms());
         session.channel_listening = self.channel.then_some(false);
         Ok(Live {
+            notifications: None,
             log: File::create(&self.files.screen)?,
             writer: File::from(master),
             session,
@@ -448,11 +450,34 @@ pub(crate) struct Live {
     session: PtySession,
     /// The tokens whose arrival at the model is timed.
     tokens: Vec<String>,
+    /// Finds the terminal UI's OSC 9 notifications, and the file that records each with its time.
+    notifications: Option<(Osc9, File)>,
 }
 
 impl Live {
     pub(crate) fn watch(&mut self, token: &str) {
         self.tokens.push(token.to_owned());
+    }
+
+    /// Records each OSC 9 notification the terminal UI emits from now on in `file`, with its time.
+    pub(crate) fn record_notifications(&mut self, file: &Path) -> Result<()> {
+        self.notifications = Some((Osc9::default(), File::create(file)?));
+        Ok(())
+    }
+
+    /// Writes the terminal's output `chunk` to the screen log and records its notifications.
+    fn received(&mut self, chunk: &[u8]) -> Result<()> {
+        self.log.write_all(chunk)?;
+        if let Some((osc9, file)) = &mut self.notifications {
+            for text in osc9.feed(chunk) {
+                let notified = Notified {
+                    at_ms: now_ms(),
+                    text,
+                };
+                writeln!(file, "{}", notified_line(&notified))?;
+            }
+        }
+        Ok(())
     }
 
     /// Adds a check's message with `token` to the session's source.
@@ -624,14 +649,14 @@ impl Live {
         let mut alive = true;
         match self.output.recv_timeout(TICK) {
             Ok(chunk) => {
-                self.log.write_all(&chunk)?;
+                self.received(&chunk)?;
                 if let Some((_, keys)) = self.screen.feed(&chunk) {
                     // The terminal UI reads a key after it draws the dialog.
                     thread::sleep(Duration::from_millis(300));
                     self.writer.write_all(keys)?;
                 }
                 while let Ok(chunk) = self.output.try_recv() {
-                    self.log.write_all(&chunk)?;
+                    self.received(&chunk)?;
                     if let Some((_, keys)) = self.screen.feed(&chunk) {
                         thread::sleep(Duration::from_millis(300));
                         self.writer.write_all(keys)?;
