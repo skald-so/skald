@@ -57,7 +57,7 @@ fn inline_peer_text_reaches_a_busy_session_by_its_hooks_without_inbox() {
 
     let turn = model.wait_turn_holding(BY_HOOK, "review's message by a hook");
     assert!(after_a_tool(&turn), "not after a tool: {turn}");
-    assert_inline(&last_user_text(&turn), BY_HOOK, asked, &bob);
+    assert_inline(&conversation(&turn), BY_HOOK, asked, &bob);
     let turn = model.wait_turn_holding(OWN_BY_HOOK, "api's message by a hook");
     assert_own_by_hook(&turn, OWN_BY_HOOK, own, &solo.short(API));
     shows_read_once(&bob.person.machine, asked);

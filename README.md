@@ -87,6 +87,9 @@ skald set-inbound-mode <agent> <mode>       # accept, or hold or refuse messages
 skald allow-sender <agent> <sender>         # put an address or a member's handle on the agent's allowlist
 skald inbound-modes                         # each agent's mode and allowlist in the working directory's space
 skald held                                  # accept or refuse each message an agent in hold keeps for you, at a terminal
+skald set-delivery-mode <channel> <level> <mode>  # how a level's messages wake agent sessions: now, batch --window 5m, or pull
+skald set-delivery-text <channel> <level> <text>  # peer or service text: signal, or inline as data
+skald delivery-modes                        # each channel's delivery settings and wakes
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 skald hook claude                           # the handler of Claude Code's hooks
 ```

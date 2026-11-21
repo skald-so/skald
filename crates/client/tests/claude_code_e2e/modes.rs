@@ -14,7 +14,8 @@ use skald_proto::MessageId;
 
 use crate::delivery::{
     BATCH, INLINE, PULL, api_sends_in, api_sends_ten, assert_inline, assert_wakes,
-    bob_joins_other_channel, other_channel, review_sends_in, set_mode, set_text, wakes,
+    bob_joins_other_channel, other_channel, review_sends_in, set_mode, set_text, shows_reads_once,
+    wakes,
 };
 use crate::hooks::{Bob, INBOX_WORD, assert_signal};
 use crate::receipts::shows_read_once;
@@ -204,9 +205,7 @@ fn in_pull_no_message_reaches_the_model_until_inbox_returns_them_all() {
     );
     assert_hooks_silent(&session, &["SessionStart", "PostToolUse", "Stop"]);
     assert_eq!(wakes(&solo, default), 0, "a pulled message woke it");
-    for msg_id in pulled {
-        shows_read_once(solo.machine(), msg_id);
-    }
+    shows_reads_once(solo.machine(), &pulled);
     model.assert_no_foreign_credential();
 }
 

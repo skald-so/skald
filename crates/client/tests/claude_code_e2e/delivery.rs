@@ -17,6 +17,7 @@ use crate::hooks::{Bob, REVIEW};
 use crate::kit::{Change, latest, received, revise};
 use crate::lines::{JSON_FLAG, agent_line, json_objects, refers_to};
 use crate::machine::{Finished, Machine};
+use crate::receipts::{READ, read_lines, shows_read};
 use crate::senders::{DATA, OWN, PEER, holds_word};
 use crate::solo::{API, Solo, WEB, assert_got};
 use crate::talk::{BOB_HOST, one_message_sent};
@@ -238,6 +239,24 @@ pub fn api_sends_ten(solo: &Solo, prefix: &str) -> Vec<(String, MessageId)> {
             (text, msg_id)
         })
         .collect()
+}
+
+/// Runs the person's `skald recv` on `machine` until the runs showed `read` of each of `msg_ids`,
+/// as [`shows_read`] does; fails unless they showed each once and the next run shows none. One run
+/// may show the `read` of several.
+#[track_caller]
+pub fn shows_reads_once(machine: &Machine, msg_ids: &[MessageId]) {
+    let mut shown = String::new();
+    for msg_id in msg_ids {
+        if read_lines(&shown, *msg_id) == 0 {
+            shown += &shows_read(machine, *msg_id);
+        }
+    }
+    let next = received(machine).shown();
+    for msg_id in msg_ids {
+        assert_eq!(read_lines(&shown, *msg_id), 1, "{READ} not once: {shown}");
+        assert_eq!(read_lines(&next, *msg_id), 0, "{READ} again: {next}");
+    }
 }
 
 /// Fails unless the listing gives one wake for each of `clienta`'s two channels, and web's

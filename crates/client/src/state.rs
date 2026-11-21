@@ -561,6 +561,23 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE handover ADD COLUMN written TEXT;
     ALTER TABLE handover ADD COLUMN failed INTEGER NOT NULL DEFAULT 0 CHECK (failed IN (0, 1));
     ALTER TABLE handover ADD COLUMN signal TEXT;",
+    // Delivery settings ([`crate::delivery`]): when the device kept each message, in Unix
+    // milliseconds, none for one an older client kept; the mode, `now`, `batch` with its window in
+    // seconds, or `pull`, and the text setting, `signal` or `inline`, the person set for each
+    // channel and sender trust level; and the wakes the device caused in each channel.
+    "ALTER TABLE kept ADD COLUMN came INTEGER CHECK (came >= 0);
+    CREATE TABLE delivery_setting (
+        channel TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('own', 'peer', 'service')),
+        mode TEXT NOT NULL DEFAULT 'now' CHECK (mode IN ('now', 'batch', 'pull')),
+        window INTEGER CHECK (window >= 1),
+        text TEXT NOT NULL DEFAULT 'signal' CHECK (text IN ('signal', 'inline')),
+        PRIMARY KEY (channel, level)
+    ) STRICT;
+    CREATE TABLE channel_wakes (
+        channel TEXT PRIMARY KEY,
+        wakes INTEGER NOT NULL CHECK (wakes >= 0)
+    ) STRICT;",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -892,6 +909,20 @@ pub struct Held {
     pub space: SpaceId,
     pub taken: u64,
     pub line: Vec<u8>,
+}
+
+/// A delivery setting the person set for a channel and sender trust level, as the device keeps it
+/// ([`crate::delivery`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeliverySetting {
+    pub channel: String,
+    /// `own`, `peer` or `service`.
+    pub level: String,
+    /// `now`, `batch` or `pull`, and the window of `batch`, in seconds.
+    pub mode: String,
+    pub window: Option<u64>,
+    /// `signal` or `inline`.
+    pub text: String,
 }
 
 /// An agent's inbound mode in a space, as the device keeps it, and the senders on its allowlist.
@@ -2738,6 +2769,107 @@ impl State {
             .collect()
     }
 
+    /// Sets the delivery mode of the sender trust level `level` in the channel `channel` to `mode`,
+    /// with `window`, in seconds, for `batch`.
+    pub fn set_delivery_mode(
+        &self,
+        channel: ChannelId,
+        level: &str,
+        mode: &str,
+        window: Option<u64>,
+    ) -> Result<(), Error> {
+        let window = window.map(sql_u64).transpose()?;
+        self.db.execute(
+            "INSERT INTO delivery_setting (channel, level, mode, window) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT DO UPDATE SET mode = excluded.mode, window = excluded.window",
+            params![channel.to_string(), level, mode, window],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the text setting of the sender trust level `level` in the channel `channel` to `text`.
+    pub fn set_delivery_text(
+        &self,
+        channel: ChannelId,
+        level: &str,
+        text: &str,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO delivery_setting (channel, level, text) VALUES (?1, ?2, ?3)
+             ON CONFLICT DO UPDATE SET text = excluded.text",
+            params![channel.to_string(), level, text],
+        )?;
+        Ok(())
+    }
+
+    /// The delivery settings the person set, by channel and level.
+    pub fn delivery_settings(&self) -> Result<Vec<DeliverySetting>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel, level, mode, window, text FROM delivery_setting")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                [row.get::<_, String>(0)?, row.get(1)?, row.get(2)?],
+                row.get::<_, Option<i64>>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let ([channel, level, mode], window, text) = row?;
+            let window = (window.map(u64::try_from).transpose())
+                .map_err(|_| Error::Malformed(format!("the window of {channel}")))?;
+            Ok(DeliverySetting {
+                channel,
+                level,
+                mode,
+                window,
+                text,
+            })
+        })
+        .collect()
+    }
+
+    /// Counts one wake in each of `channels`.
+    pub fn count_wakes(&self, channels: &BTreeSet<String>) -> Result<(), Error> {
+        let tx = self.db.unchecked_transaction()?;
+        for channel in channels {
+            tx.execute(
+                "INSERT INTO channel_wakes (channel, wakes) VALUES (?1, 1)
+                 ON CONFLICT DO UPDATE SET wakes = wakes + 1",
+                params![channel],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The wakes the device caused in each channel that has any.
+    pub fn wakes(&self) -> Result<BTreeMap<String, u64>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT channel, wakes FROM channel_wakes")?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        rows.map(|row| {
+            let (channel, wakes) = row?;
+            Ok((channel, u64::try_from(wakes).unwrap_or(0)))
+        })
+        .collect()
+    }
+
+    /// When the device kept each kept message in the space `space`, by `seq`, in Unix
+    /// milliseconds; 0 for one an older client kept.
+    pub fn kept_came(&self, space: SpaceId) -> Result<BTreeMap<u64, u64>, Error> {
+        let came: Vec<(u64, i64)> = self.lines(
+            "SELECT seq, COALESCE(came, 0) FROM kept WHERE space = ?1",
+            params![space.to_string()],
+        )?;
+        Ok((came.into_iter())
+            .map(|(seq, came)| (seq, u64::try_from(came).unwrap_or(0)))
+            .collect())
+    }
+
     /// The kept messages the person's run has yet to show, by `seq`, each with its sealed line.
     pub fn for_person(&self) -> Result<Vec<(u64, Vec<u8>)>, Error> {
         self.lines(
@@ -3608,6 +3740,15 @@ pub fn unix_now() -> u64 {
         .map_or(0, |since| since.as_secs())
 }
 
+/// Now, in Unix milliseconds.
+pub fn unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| {
+            u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
 /// Keeps the message of the inbox entry `seq` for the person and the agents `kept` names, in `tx`;
 /// it waits for them `kept.wait` after the device wrote the entry, or after now if it did not
 /// record when.
@@ -3615,9 +3756,9 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
          SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
-             ?7, ?8, ?9
+             ?7, ?8, ?9, ?10
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -3629,7 +3770,8 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             kept.channel.to_string(),
             kept.target,
             // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
-            i64::try_from(kept.hops).unwrap_or(i64::MAX)
+            i64::try_from(kept.hops).unwrap_or(i64::MAX),
+            sql_u64(unix_millis())?
         ],
     )?;
     if let Some(replied) = &kept.replied {
@@ -4010,10 +4152,10 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     let msg_id = msg_id.to_string();
     let now = sql_u64(unix_now())?;
     let kept = tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops)
-         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops FROM own_message
-         WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
-        params![msg_id, now],
+        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
+         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops, ?3
+         FROM own_message WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
+        params![msg_id, now, sql_u64(unix_millis())?],
     )?;
     if kept > 0 {
         // Each agent of the device in its space the message is for, but its sender and those

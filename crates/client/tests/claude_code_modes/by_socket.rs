@@ -120,9 +120,7 @@ fn in_batch_ten_messages_within_one_window_go_into_the_socket_in_one_handover() 
     let lines = session.lines();
     thread::sleep(QUIET);
     assert_eq!(session.lines().len(), lines.len(), "{:#?}", session.lines());
-    for (_, msg_id) in [&sent[0], &sent[9]] {
-        shows_read_once(ada.machine(), *msg_id);
-    }
+    delivery::shows_reads_once(ada.machine(), &[sent[0].1, sent[9].1]);
     assert_wakes(solo, default, 1);
 }
 
@@ -153,8 +151,8 @@ fn in_pull_nothing_goes_into_the_socket_and_inbox_returns_every_message() {
     let shown = ada.web.session.inbox();
     for (text, msg_id) in PULLED.into_iter().zip(&pulled) {
         assert_handed_line(&shown, text, *msg_id);
-        shows_read_once(ada.machine(), *msg_id);
     }
+    delivery::shows_reads_once(ada.machine(), &pulled);
     assert_eq!(
         delivery::wakes(&ada.web.solo, default),
         0,

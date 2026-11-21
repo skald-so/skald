@@ -37,6 +37,7 @@ mod claude_socket;
 mod clock;
 mod connection;
 mod copies;
+mod delivery;
 mod device;
 mod devices;
 mod events;
@@ -707,6 +708,48 @@ enum Command {
     /// Lists each agent of this device in the space of the working directory with its inbound mode
     /// and the senders on its allowlist.
     InboundModes,
+    /// Sets how messages from senders of a trust level in a channel of the working directory's
+    /// space reach this device's agent sessions by the paths that push them in: now, each as it
+    /// comes; batch, those of each window together once it ends, the window opened by the first of
+    /// them; pull, none, so the agent takes them with inbox or skald recv.
+    SetDeliveryMode {
+        /// The channel's ID, as skald channels shows it.
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// The senders' trust level.
+        #[arg(value_name = "LEVEL")]
+        level: delivery::Level,
+        #[arg(value_name = "MODE")]
+        mode: delivery::Mode,
+        /// The window of batch: whole seconds, minutes or hours, such as 30s, 5m or 2h.
+        #[arg(long, value_name = "WINDOW", value_parser = delivery::window)]
+        window: Option<u64>,
+    },
+    /// Sets how the text of messages from peer or service senders in a channel of the working
+    /// directory's space reaches this device's agent sessions by the paths that push them in:
+    /// signal pushes only a line that tells the agent to call inbox; inline pushes the text,
+    /// labelled as data from its sender, which lets another person's text into the agent's context
+    /// unasked.
+    SetDeliveryText {
+        /// The channel's ID, as skald channels shows it.
+        #[arg(value_name = "CHANNEL")]
+        channel: String,
+        /// The senders' trust level: peer or service.
+        #[arg(value_name = "LEVEL")]
+        level: delivery::Level,
+        #[arg(value_name = "TEXT")]
+        text: delivery::Text,
+    },
+    /// Lists, for each channel of the working directory's space this device is in, the delivery
+    /// mode of each sender trust level, the text setting of peer and service, and the wakes this
+    /// device caused there: each handover a path pushed into an agent's session counts one in each
+    /// channel whose messages it carried.
+    DeliveryModes {
+        /// Shows each channel as a JSON object on a line of its own: channel, wakes, and own, peer
+        /// and service, each with mode, window in seconds or null, and, but for own, text.
+        #[arg(long)]
+        json: bool,
+    },
     /// Shows each message an agent in hold keeps for your decision, one at a time, and takes your
     /// decision at the terminal: accept hands it to the agent; refuse, then a reason or an empty
     /// line, tells its sender it was refused. Only as the person at a terminal.
@@ -802,7 +845,8 @@ enum Command {
     /// SessionEnd ends that. PostToolUse and Stop give the agent's waiting messages to the session
     /// as additional context, each once, within the CLI's hook output limit, 10,000 characters: a
     /// message from the person's own devices as its line, as skald recv shows it; for those from
-    /// others, only a line that tells the agent to call inbox. A message longer than the limit is
+    /// others, only a line that tells the agent to call inbox, or their lines under inline. Both
+    /// follow the delivery settings, skald delivery-modes. A message longer than the limit is
     /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
     /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
     /// failure, which exits with 1.
@@ -852,6 +896,9 @@ impl Command {
             Command::SetInboundMode { .. } => Some("set-inbound-mode"),
             Command::AllowSender { .. } => Some("allow-sender"),
             Command::InboundModes => Some("inbound-modes"),
+            Command::SetDeliveryMode { .. } => Some("set-delivery-mode"),
+            Command::SetDeliveryText { .. } => Some("set-delivery-text"),
+            Command::DeliveryModes { .. } => Some("delivery-modes"),
             Command::Held | Command::HeldStep { .. } => Some("held"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
@@ -936,6 +983,7 @@ impl Command {
             Command::Status { .. }
             | Command::Rules
             | Command::InboundModes
+            | Command::DeliveryModes { .. }
             | Command::Folder { .. }
             | Command::Update { .. }
             | Command::Helper { .. } => None,
@@ -1702,6 +1750,21 @@ fn performed(operation: Operation) -> Result<(), String> {
             state::dir(state_dir).and_then(|dir| inbound::allow(&dir, &name, &sender))
         }
         Command::InboundModes => state::dir(state_dir).and_then(|dir| inbound::list(&dir)),
+        Command::SetDeliveryMode {
+            channel,
+            level,
+            mode,
+            window,
+        } => state::dir(state_dir)
+            .and_then(|dir| delivery::set_mode(&dir, &channel, level, (mode, window))),
+        Command::SetDeliveryText {
+            channel,
+            level,
+            text,
+        } => state::dir(state_dir).and_then(|dir| delivery::set_text(&dir, &channel, level, text)),
+        Command::DeliveryModes { json } => {
+            state::dir(state_dir).and_then(|dir| delivery::list(&dir, json))
+        }
         Command::ApproveBinding { folder } => {
             state::dir(state_dir).and_then(|dir| folders::approve(&dir, &folder))
         }
