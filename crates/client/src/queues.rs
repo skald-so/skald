@@ -395,6 +395,7 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         claimers.others(follower.own.account).then_some(now + WEEK)
     });
     let from = send::sender(&follower, &roster, server, agent)?;
+    let whose = (from.to_string(), to.as_ref().map(ToString::to_string));
     let task = TaskId::generate();
     let request = json!({
         "messageId": task.to_string(),
@@ -438,7 +439,11 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         record: record.to_cbor(),
     };
     (follower.state)
-        .keep_task(&outgoing, agent.map(Name::as_str))
+        .keep_task(
+            &outgoing,
+            agent.map(Name::as_str),
+            (&whose.0, whose.1.as_deref()),
+        )
         .map_err(text)?;
     let answered = upload_waiting(&mut follower, scope);
     let reference = reference(&follower.state, task);
