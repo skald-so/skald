@@ -312,23 +312,90 @@ impl Candidate {
                 (notice.at_ms, params, says)
             }
         };
-        let names: Vec<&str> = fields
-            .as_object()
-            .map(|fields| fields.keys().map(String::as_str).collect())
-            .unwrap_or_default();
-        Some((at_ms, format!("{} ({says})", names.join(", "))))
+        Some((at_ms, carries(fields, &says)))
     }
 }
 
+/// The names of `fields` and what `says`, such as `threadId, command (command: touch …)`.
+pub(crate) fn carries(fields: &Value, says: &str) -> String {
+    let names: Vec<&str> = fields
+        .as_object()
+        .map(|fields| fields.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    format!("{} ({says})", names.join(", "))
+}
+
+/// Whether a session waited on its prompt, and the details of its line: `summary`, whether the
+/// agent called the prompted `command`, at `called`, and when the dialog showed, `shown`, which the
+/// check waited for if `dialog`.
+pub(crate) fn prompted_details(
+    summary: &str,
+    command: &str,
+    called: Option<u64>,
+    shown: Option<u64>,
+    dialog: bool,
+) -> (bool, String) {
+    let showed = match (called, shown) {
+        (Some(called), Some(shown)) => format!("; the dialog showed {}", signed(shown, called)),
+        _ if dialog => "; the dialog never showed".to_owned(),
+        _ => String::new(),
+    };
+    let waited = called.is_some() && (!dialog || shown.is_some());
+    let details = format!(
+        "{summary}{}the agent {} `{command}`{showed}",
+        if summary.is_empty() { "" } else { "; " },
+        if called.is_some() {
+            "called"
+        } else {
+            "never called"
+        }
+    );
+    (waited, details)
+}
+
+/// The details of a candidate's line: when it `told` and what it carried, after the call at
+/// `called` and the dialog's showing at `shown`.
+pub(crate) fn told_details(
+    told: Option<&(u64, String)>,
+    called: Option<u64>,
+    shown: Option<u64>,
+) -> String {
+    match (told, called) {
+        (Some((at_ms, carries)), Some(called)) => {
+            let dialog = shown.map_or_else(String::new, |shown| {
+                format!(", {} after the dialog showed", signed(*at_ms, shown))
+            });
+            format!(
+                "told {} after the call{dialog}; carries {carries}",
+                signed(*at_ms, called)
+            )
+        }
+        (Some((_, carries)), None) => format!("told without the call; carries {carries}"),
+        (None, _) => "did not tell".to_owned(),
+    }
+}
+
+/// What came once a prompt was answered, each with its delay, or `nothing`.
+pub(crate) fn came(after: &[(String, u64)]) -> String {
+    if after.is_empty() {
+        return "nothing".to_owned();
+    }
+    after
+        .iter()
+        .map(|(what, delay)| format!("{what} {}", seconds(*delay)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// A JSON value as text: a string as it is, anything else as JSON.
-fn text(value: &Value) -> String {
+pub(crate) fn text(value: &Value) -> String {
     value
         .as_str()
         .map_or_else(|| value.to_string(), String::from)
 }
 
 /// `to_ms` less `from_ms`, in seconds with a sign, such as `-0.1 s`.
-fn signed(to_ms: u64, from_ms: u64) -> String {
+pub(crate) fn signed(to_ms: u64, from_ms: u64) -> String {
     // Less than what rounds to 0.1 s is no sign.
     if to_ms + 50 > from_ms {
         seconds(to_ms.saturating_sub(from_ms))
@@ -356,61 +423,31 @@ impl PermissionCheck {
         summary: &str,
     ) -> Vec<String> {
         let called = observed.called_ms();
-        let shown = match (called, observed.shown_ms) {
-            (Some(called), Some(shown)) => format!("; the dialog showed {}", signed(shown, called)),
-            _ if answer.is_some() => "; the dialog never showed".to_owned(),
-            _ => String::new(),
-        };
-        let waited = called.is_some() && (answer.is_none() || observed.shown_ms.is_some());
-        let mut lines = vec![self.checks.report(
-            &format!("{name}, prompt"),
-            waited,
-            &format!(
-                "{summary}{}the agent {} `{PROMPTED}`{shown}",
-                if summary.is_empty() { "" } else { "; " },
-                if called.is_some() {
-                    "called"
-                } else {
-                    "never called"
-                }
-            ),
-        )];
+        let (waited, details) = prompted_details(
+            summary,
+            PROMPTED,
+            called,
+            observed.shown_ms,
+            answer.is_some(),
+        );
+        let mut lines = vec![
+            self.checks
+                .report(&format!("{name}, prompt"), waited, &details),
+        ];
         for candidate in candidates {
             let told = candidate.told(observed);
             let pass = matches!((told.as_ref(), called), (Some((at, _)), Some(called)) if at.saturating_sub(called) <= WITHIN_MS);
-            let details = match (&told, called) {
-                (Some((at_ms, carries)), Some(called)) => {
-                    let dialog = observed.shown_ms.map_or_else(String::new, |shown| {
-                        format!(", {} after the dialog showed", signed(*at_ms, shown))
-                    });
-                    format!(
-                        "told {} after the call{dialog}; carries {carries}",
-                        signed(*at_ms, called)
-                    )
-                }
-                (Some((_, carries)), None) => format!("told without the call; carries {carries}"),
-                (None, _) => "did not tell".to_owned(),
-            };
             lines.push(self.checks.report(
                 &format!("{name}, {}", candidate.name()),
                 pass,
-                &details,
+                &told_details(told.as_ref(), called, observed.shown_ms),
             ));
         }
-        let after = observed.after_answer();
         let from = match answer {
             Some(answer) => format!("after answering {} in the terminal", answer.name()),
             None => "after the call".to_owned(),
         };
-        let came = if after.is_empty() {
-            "nothing".to_owned()
-        } else {
-            after
-                .iter()
-                .map(|(what, delay)| format!("{what} {}", seconds(*delay)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
+        let came = came(&observed.after_answer());
         lines.push(format!("  {name}, {from}: {came}"));
         lines
     }

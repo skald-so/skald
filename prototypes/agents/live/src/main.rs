@@ -4,6 +4,7 @@
 
 mod app;
 mod before_run;
+mod codex_permission_run;
 mod gui_run;
 mod permission_gui;
 mod permission_run;
@@ -18,6 +19,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use agent_live::before::Before;
+use agent_live::codex_permission::Candidate;
 use agent_live::gui::{GuiPath, Surface};
 use agent_live::hook::{self, Hook};
 use agent_live::wake::Wake;
@@ -44,6 +46,17 @@ fn main() -> ExitCode {
         ["channel", "claude", options @ ..] => check(options, pty::channel),
         ["permission", "claude", options @ ..] => check(options, permission_run::permission),
         ["queue", "codex", options @ ..] => check(options, pty::queue),
+        [name, "codex", options @ ..] if Candidate::parse(name).is_some() => {
+            let (Some(candidate), Some(options)) =
+                (Candidate::parse(name), Options::parse(options))
+            else {
+                return usage();
+            };
+            if options.real && !candidate.takes_real() {
+                return usage();
+            }
+            ended(codex_permission_run::permission(candidate, &options))
+        }
         ["app-server", "codex", options @ ..] => check(options, app::app_server),
         [path, "claude", options @ ..] if Wake::parse(path).is_some() => {
             let (Some(wake), Some(options)) = (Wake::parse(path), Options::parse(options)) else {
@@ -86,6 +99,12 @@ fn main() -> ExitCode {
             };
             ended(subscription::status_line(&options))
         }
+        ["gui", "permission-hook", surface] => match Surface::parse(surface) {
+            Some(surface @ (Surface::CodexDesktop | Surface::CodexVsCode)) => {
+                ended(permission_gui::codex_gui(surface))
+            }
+            _ => usage(),
+        },
         ["gui", path, surface, flags @ ..] => {
             let (Some(path), Some(surface)) = (GuiPath::parse(path), Surface::parse(surface))
             else {
@@ -126,7 +145,11 @@ fn main() -> ExitCode {
             };
             ended(gui_run::queue(Path::new(work), cli))
         }
+        ["gui-result", work, "--keep"] => {
+            ended(permission_gui::codex_gui_result(Path::new(work), true))
+        }
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
+        ["gui-result", work] => ended(permission_gui::codex_gui_result(Path::new(work), false)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -207,6 +230,8 @@ fn usage() -> ExitCode {
          live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check channel claude [--all] [--real] [--model <model>] [--keep]\n       \
          live-check permission claude [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check <permission-remote|permission-hook|permission-notification> codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check permission-daemon codex [--all] [--model <model>] [--keep]\n       \
          live-check <post-tool-use|stop> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
@@ -225,11 +250,12 @@ fn usage() -> ExitCode {
          live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]\n       \
          live-check gui socket <claude-desktop|claude-vscode> --bypass\n       \
          live-check gui read <codex-desktop|codex-vscode> [--busy]\n       \
+         live-check gui permission-hook <codex-desktop|codex-vscode>\n       \
          live-check gui-socket <check-dir> [--no-auth] [--listen <seconds>]\n       \
          live-check gui-add <check-dir>\n       \
          live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
-         live-check gui-result <check-dir> <token>\n       \
+         live-check gui-result <check-dir> [<token>|--keep]\n       \
          live-check gui-permission <claude-desktop|claude-vscode>\n       \
          live-check gui-permission-link <check-dir>\n       \
          live-check gui-permission-result <check-dir>\n       \

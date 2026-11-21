@@ -55,12 +55,9 @@ pub fn permission(options: &Options) -> Result<bool> {
         } else {
             eprintln!("live-check: session {name}'s channel never got ready");
         }
-        if ready && shows(&mut session, DIALOG, TURN)? {
-            observed.shown_ms = Some(now_ms());
-            session.pump_for(HOLD)?;
-            session.press(answer.keys())?;
-            observed.answered_ms = Some(now_ms());
-            session.pump_for(AFTER)?;
+        if ready {
+            (observed.shown_ms, observed.answered_ms) =
+                answer_dialog(&mut session, name, DIALOG, answer.keys(), AFTER)?;
         } else {
             eprintln!("live-check: session {name} showed no permission dialog");
         }
@@ -85,8 +82,30 @@ pub fn permission(options: &Options) -> Result<bool> {
     Ok(finish(work, options, &verdict, check.pass()))
 }
 
+/// Waits for the session `name`'s `dialog`, holds it [`HOLD`], answers it `keys` and runs the
+/// session `after`; when the dialog showed and when the check answered it, or neither if it never
+/// showed.
+pub(crate) fn answer_dialog(
+    live: &mut Live,
+    name: &str,
+    dialog: &str,
+    keys: &[u8],
+    after: Duration,
+) -> Result<(Option<u64>, Option<u64>)> {
+    if !shows(live, dialog, TURN)? {
+        eprintln!("live-check: session {name} showed no permission dialog");
+        return Ok((None, None));
+    }
+    let shown = now_ms();
+    live.pump_for(HOLD)?;
+    live.press(keys)?;
+    let answered = now_ms();
+    live.pump_for(after)?;
+    Ok((Some(shown), Some(answered)))
+}
+
 /// Runs the session until its terminal shows `text` or `limit` passes; whether it showed.
-fn shows(live: &mut Live, text: &str, limit: Duration) -> Result<bool> {
+pub(crate) fn shows(live: &mut Live, text: &str, limit: Duration) -> Result<bool> {
     let deadline = Instant::now() + limit;
     while Instant::now() < deadline {
         if live.showed(text) {
