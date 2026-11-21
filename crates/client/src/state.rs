@@ -3332,9 +3332,9 @@ impl State {
         Ok(())
     }
 
-    /// Keeps `outgoing`, a task enqueued as `agent`, if any, until the server answers it; the
-    /// agent's next message or task counts only the `hops` of what is handed to it from now on, as
-    /// a message it sends does.
+    /// Keeps `outgoing`, a task enqueued as `agent`, if any, until the server answers it, and
+    /// whose it is for good; the agent's next message or task counts only the `hops` of what is
+    /// handed to it from now on, as a message it sends does.
     pub fn keep_task(&self, outgoing: &TaskOutgoing, agent: Option<&str>) -> Result<(), Error> {
         let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
         let space = outgoing.space.to_string();
@@ -3348,6 +3348,10 @@ impl State {
                 outgoing.queue.to_string(),
                 outgoing.record
             ],
+        )?;
+        tx.execute(
+            "INSERT INTO enqueued_task (task, space, agent) VALUES (?1, ?2, ?3)",
+            params![outgoing.task.to_string(), space, agent],
         )?;
         if let Some(agent) = agent {
             tx.execute(
@@ -3382,6 +3386,17 @@ impl State {
                 })
             })
             .collect()
+    }
+
+    /// The tasks the device enqueued in `space` as `agent`.
+    pub fn enqueued_by(&self, space: SpaceId, agent: &str) -> Result<BTreeSet<TaskId>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT task FROM enqueued_task WHERE space = ?1 AND agent = ?2")?;
+        let tasks = query.query_map(params![space.to_string(), agent], |row| {
+            row.get::<_, String>(0)
+        })?;
+        tasks.map(|task| id("task ID", &task?)).collect()
     }
 
     /// Takes the task `task` out of the outbox: the server answered it.
@@ -4937,7 +4952,8 @@ pub(crate) mod tests {
 
     /// A task waits in the outbox, in order and across a reopening, until it is taken out; one
     /// enqueued as an agent restarts the agent's count of `hops` in its space, one of the person's
-    /// changes no count.
+    /// changes no count. Each stays the task of the agent it was enqueued as, in its space, after it
+    /// leaves the outbox.
     #[test]
     fn tasks_wait_in_order_until_answered_and_restart_the_agent_s_hops() {
         let dir = TestDir::new("state-task-outbox");
@@ -4963,7 +4979,14 @@ pub(crate) mod tests {
         state.remove_task(second.task).unwrap();
 
         let state = State::open(&dir).unwrap();
+        let codex_s = third.task;
         assert_eq!(state.task_outbox().unwrap(), [first, third]);
+        let own = |agent| state.enqueued_by(space, agent).unwrap();
+        assert_eq!(own("claude"), BTreeSet::from([second.task]));
+        assert_eq!(own("codex"), BTreeSet::from([codex_s]));
+        assert_eq!(own("gemini"), BTreeSet::new());
+        let elsewhere = state.enqueued_by(SpaceId::generate(), "claude").unwrap();
+        assert_eq!(elsewhere, BTreeSet::new());
     }
 
     /// The highest `hops` handed over to an agent in a space counts until the device sends a

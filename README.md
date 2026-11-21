@@ -94,6 +94,8 @@ skald agents [<space>]                      # the agents of the working director
 skald queues                                # the default channel's queues: mode, lease and max_attempts
 skald create-queue --lease 120 <name>       # create a queue; also change-queue and delete-queue
 skald enqueue [--queue <name>] <text>       # enqueue a task, end-to-end encrypted, in the default queue or <name>
+skald tasks [--queue <name>]                # the default channel's tasks: state, progress or reason, and attempts
+skald restart-task <task>                   # queue a dead task again, by its #<ref> or ID; cancel-task cancels one
 skald --agent <name> recv                   # the messages handed over to the agent in the working directory's space
 skald --agent <name> recv <message>         # one of them again, whole, by its #<ref> or ID
 skald --agent <name> set-status busy        # the agent's status in the device's presence: busy or available, with --note <text>
@@ -113,7 +115,7 @@ skald hook claude                           # the handler of Claude Code's hooks
 - `<address>` is an agent's address, `space/owner/agent@server` or `owner/agent`. An addressee does not make a message private: [protocol, "Content"](docs/protocol/README.md#content).
 - `skald reply` goes to the message's sender, a person too, while `--to` takes only an agent; like `--to`, it does not make the reply private. `skald recv` shows `replied` once the agent a message was for answers it.
 - Agents that answer each other without a person stop after 10 hops: their next reply, send or enqueue goes nowhere, and your next `skald recv` warns of it. A message of yours starts the count again: [protocol, "Content"](docs/protocol/README.md#content).
-- Queues and tasks: [protocol, "Queues"](docs/protocol/queues.md). Only the person creates, changes and deletes queues. `skald enqueue` is refused while the device judges the channel's current epoch unclean. `--to <address>` names the agent whose one device listing it claims the task; `--idempotency-key` enqueues once per key. A task a device of another account may claim expires after 7 days unless `--deadline` sets another time.
+- Queues and tasks: [protocol, "Queues"](docs/protocol/queues.md). Only the person creates, changes and deletes queues. `skald enqueue` is refused while the device judges the channel's current epoch unclean. `--to <address>` names the agent whose one device listing it claims the task; `--idempotency-key` enqueues once per key. A task a device of another account may claim expires after 7 days unless `--deadline` sets another time. An agent's `skald tasks` lists only the tasks it enqueued; only the person restarts and cancels tasks.
 - An agent in `refuse` gets no message from a sender off its allowlist; the sender's `skald recv` shows `refused` with the reason: [Device to agent](docs/protocol/delivery.md#device-to-agent).
 - `skald message-status` reads only what this device keeps, for a message's wait, at most 7 days. An agent asks only of its own messages and those handed over to it.
 - An agent in `hold` gets such a message only once you accept it with `skald held`; your `skald recv` says how many wait. The sender's `skald recv` shows `held`, then `read`, or `refused` with the reason, also once the message's wait ends undecided.
