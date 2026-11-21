@@ -1,6 +1,7 @@
-//! Link codes: `docs/protocol/membership.md`, "Link code". The code, its shown form and its entry;
-//! the run of CPace it keys between the new device, A, and the issuing device, B; and the request
-//! and grant keys of the run's ISK, each sealing one plaintext.
+//! Link codes: `docs/protocol/membership.md`, "Link code". The code, its shown form and its entry,
+//! with a run's pairing for a new device without a session; the run of CPace it keys between the
+//! new device, A, and the issuing device, B; and the request and grant keys of the run's ISK, each
+//! sealing one plaintext.
 
 use std::fmt;
 
@@ -15,7 +16,7 @@ use crate::cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
 
 /// The base32 alphabet of RFC 4648, §6.
 const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-/// The characters of a code.
+/// The characters of a code, and of a pairing.
 const LEN: usize = 6;
 /// The label of the CPace channel identifier.
 const CI_LABEL: &str = "skald link code";
@@ -26,6 +27,114 @@ const GRANT_LABEL: &[u8] = b"skald link grant";
 /// A link code: its 6 characters of the base32 alphabet, in uppercase ASCII, which are its PRS.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LinkCode([u8; LEN]);
+
+/// A run's pairing: 6 characters of the base32 alphabet, in uppercase ASCII, which the server picks
+/// for a run of a new device without a session and the run's CI binds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkPairing([u8; LEN]);
+
+/// What the person enters on the issuing device: a code, or a run's pairing and its code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkEntry {
+    /// 6 characters: the code of a run of the account, its latest hello's.
+    Code(LinkCode),
+    /// 12 characters: the pairing of a run without a session, then its code.
+    Paired {
+        pairing: LinkPairing,
+        code: LinkCode,
+    },
+}
+
+/// An entry that is not 6 or 12 characters of the alphabet, read as "Link code" says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkEntryError;
+
+impl fmt::Display for LinkEntryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a link code is 6 or 12 characters of A to Z and 2 to 7")
+    }
+}
+
+impl std::error::Error for LinkEntryError {}
+
+/// The characters of the alphabet in `entry`, read as "Link code" says: case, spaces and `-`
+/// ignored, `0`, `1` and `8` read as `O`, `I` and `B`. `None` for any other character.
+fn read(entry: &str) -> Option<Vec<u8>> {
+    entry
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '-'))
+        .map(|c| {
+            let c = match c.to_ascii_uppercase() {
+                '0' => 'O',
+                '1' => 'I',
+                '8' => 'B',
+                c => c,
+            };
+            u8::try_from(c).ok().filter(|byte| ALPHABET.contains(byte))
+        })
+        .collect()
+}
+
+/// 6 characters of the alphabet from the cryptographically secure generator.
+fn generate() -> [u8; LEN] {
+    let mut random = [0; 4];
+    getrandom::fill(&mut random).expect("the random generator failed");
+    let bits = u32::from_le_bytes(random);
+    std::array::from_fn(|at| ALPHABET[((bits >> (5 * at)) & 0x1f) as usize])
+}
+
+impl LinkEntry {
+    /// What `entry` holds, read as "Link code" says.
+    ///
+    /// # Errors
+    /// [`LinkEntryError`] unless the rest is 6 or 12 characters of the alphabet.
+    pub fn from_entry(entry: &str) -> Result<Self, LinkEntryError> {
+        let read = read(entry).ok_or(LinkEntryError)?;
+        match read.len() {
+            LEN => Ok(Self::Code(LinkCode(read.try_into().expect("6 characters")))),
+            12 => {
+                let (pairing, code) = read.split_at(LEN);
+                Ok(Self::Paired {
+                    pairing: LinkPairing(pairing.try_into().expect("6 characters")),
+                    code: LinkCode(code.try_into().expect("6 characters")),
+                })
+            }
+            _ => Err(LinkEntryError),
+        }
+    }
+}
+
+impl LinkPairing {
+    /// A fresh pairing: 30 bits from the cryptographically secure generator of the operating
+    /// system, or in WASM of the browser or Node.js.
+    ///
+    /// # Panics
+    /// If the random generator fails.
+    pub fn generate() -> Self {
+        Self(generate())
+    }
+
+    /// The pairing `text` holds, read as an entry of a code is.
+    ///
+    /// # Errors
+    /// [`LinkEntryError`] unless the rest is 6 characters of the alphabet.
+    pub fn from_entry(text: &str) -> Result<Self, LinkEntryError> {
+        let read = read(text).ok_or(LinkEntryError)?;
+        Ok(Self(read.try_into().map_err(|_| LinkEntryError)?))
+    }
+
+    /// Its 6 characters, in uppercase ASCII.
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.0).expect("ASCII")
+    }
+}
+
+/// Its 6 characters.
+impl fmt::Display for LinkPairing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 /// An entry that is not 6 characters of the alphabet, read as "Link code" says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,12 +155,7 @@ impl LinkCode {
     /// # Panics
     /// If the random generator fails.
     pub fn generate() -> Self {
-        let mut random = [0; 4];
-        getrandom::fill(&mut random).expect("the random generator failed");
-        let bits = u32::from_le_bytes(random);
-        Self(std::array::from_fn(|at| {
-            ALPHABET[((bits >> (5 * at)) & 0x1f) as usize]
-        }))
+        Self(generate())
     }
 
     /// The code `entry` holds: case, spaces and `-` ignored, `0`, `1` and `8` read as `O`, `I` and
@@ -60,26 +164,8 @@ impl LinkCode {
     /// # Errors
     /// [`LinkCodeError`] unless the rest is 6 characters of the alphabet.
     pub fn from_entry(entry: &str) -> Result<Self, LinkCodeError> {
-        let mut code = [0; LEN];
-        let mut len = 0;
-        for c in entry.chars().filter(|c| !matches!(c, ' ' | '-')) {
-            let c = match c.to_ascii_uppercase() {
-                '0' => 'O',
-                '1' => 'I',
-                '8' => 'B',
-                c => c,
-            };
-            let byte = u8::try_from(c).map_err(|_| LinkCodeError)?;
-            if !ALPHABET.contains(&byte) || len == LEN {
-                return Err(LinkCodeError);
-            }
-            code[len] = byte;
-            len += 1;
-        }
-        if len < LEN {
-            return Err(LinkCodeError);
-        }
-        Ok(Self(code))
+        let read = read(entry).ok_or(LinkCodeError)?;
+        Ok(Self(read.try_into().map_err(|_| LinkCodeError)?))
     }
 
     /// The new device's side, A, of a run with this code on `account`'s link with the `session`
@@ -106,6 +192,45 @@ impl LinkCode {
         share: &[u8; 32],
     ) -> Result<([u8; 32], Isk), CpaceError> {
         CpaceResponder::respond(&self.0, &ci(account), session, &[], share, &[])
+    }
+
+    /// The new device's side, A, of a run with this code started without a session, with the
+    /// run's `pairing` and the `session` it chose: A's state and its share Ya, as
+    /// [`LinkCode::initiate`] gives them.
+    ///
+    /// # Panics
+    /// If the random generator fails.
+    pub fn initiate_paired(
+        &self,
+        pairing: &LinkPairing,
+        session: &[u8; 16],
+    ) -> (CpaceInitiator, [u8; 32]) {
+        CpaceInitiator::start(&self.0, &paired_ci(pairing), session, &[])
+    }
+
+    /// The issuing device's side, B, of a run with this code started without a session, with the
+    /// `pairing` its user entered, as [`LinkCode::respond`] gives it.
+    ///
+    /// # Errors
+    /// [`CpaceError`] if Ya does not decode or K is the identity.
+    ///
+    /// # Panics
+    /// If the random generator fails.
+    pub fn respond_paired(
+        &self,
+        pairing: &LinkPairing,
+        session: &[u8; 16],
+        share: &[u8; 32],
+    ) -> Result<([u8; 32], Isk), CpaceError> {
+        CpaceResponder::respond(&self.0, &paired_ci(pairing), session, &[], share, &[])
+    }
+
+    /// The shown form of this code with the run's `pairing`: its 12 characters, the pairing first,
+    /// in three groups of four joined by `-`.
+    pub fn shown_with(&self, pairing: &LinkPairing) -> String {
+        let all = [pairing.0, self.0].concat();
+        let text = |group: &[u8]| std::str::from_utf8(group).expect("ASCII").to_owned();
+        all.chunks(4).map(text).collect::<Vec<_>>().join("-")
     }
 }
 
@@ -138,6 +263,11 @@ pub fn link_session() -> [u8; 16] {
 /// The CI of a run on `account`: the encoded `["skald link code", account]`.
 fn ci(account: AccountId) -> Vec<u8> {
     signed_data(CI_LABEL, &[account.as_bytes()])
+}
+
+/// The CI of a run started without a session: the encoded `["skald link code", pairing]`.
+fn paired_ci(pairing: &LinkPairing) -> Vec<u8> {
+    signed_data(CI_LABEL, &[&pairing.0])
 }
 
 impl Isk {
@@ -244,6 +374,10 @@ mod tests {
         assert_eq!(
             LinkCodeError.to_string(),
             "a link code is 6 characters of A to Z and 2 to 7"
+        );
+        assert_eq!(
+            LinkEntryError.to_string(),
+            "a link code is 6 or 12 characters of A to Z and 2 to 7"
         );
         assert_eq!(
             LinkOpenError.to_string(),
