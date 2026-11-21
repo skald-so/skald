@@ -239,13 +239,7 @@ pub fn start(dir: &Path, timeout: Duration) {
     if let Ok(dir) = std::path::absolute(dir)
         && !running(&dir)
     {
-        let spawned = spawn(&dir, timeout);
-        crate::trace::line(&format!(
-            "start spawned={:?}",
-            spawned.as_ref().map(|c| c.id())
-        ));
-    } else {
-        crate::trace::line("start: one runs");
+        let _ = spawn(&dir, timeout);
     }
 }
 
@@ -573,12 +567,8 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
                 dir.display()
             ));
         }
-        Taken::GaveWay => {
-            crate::trace::line("helper gave way");
-            return Ok(());
-        }
+        Taken::GaveWay => return Ok(()),
     };
-    crate::trace::line("helper took the lock");
     let path = socket(&dir);
     // A socket a killed helper left.
     let _ = fs::remove_file(&path);
@@ -617,10 +607,7 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
                 sessions.keep_presence(&dir, false);
                 match looked {
                     Some(true) => last = Instant::now(),
-                    Some(false) if last.elapsed() >= idle => {
-                        crate::trace::line("helper idle exit");
-                        break None;
-                    }
+                    Some(false) if last.elapsed() >= idle => break None,
                     Some(false) => {}
                     None => break None,
                 }

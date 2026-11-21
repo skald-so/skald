@@ -191,14 +191,6 @@ pub fn parent() -> Option<u32> {
     return windows::parent(launcher.map(|(launcher, _)| launcher));
 }
 
-/// TEMPORARY: this process's ancestors, with their executables' names.
-pub fn chain() -> Vec<(u32, String)> {
-    #[cfg(windows)]
-    return windows::chain();
-    #[cfg(unix)]
-    return vec![(std::os::unix::process::parent_id(), String::new())];
-}
-
 /// The launcher's process ID and its parent's, as [`LAUNCHER`] gives them.
 fn launcher_of(given: &str) -> Option<(u32, u32)> {
     let (launcher, above) = given.trim().split_once(' ')?;
@@ -265,27 +257,6 @@ mod windows {
             }
         }
         Some(process)
-    }
-
-    /// TEMPORARY: this process's ancestors.
-    pub fn chain() -> Vec<(u32, String)> {
-        let Some(processes) = snapshot() else {
-            return Vec::new();
-        };
-        let mut chain = Vec::new();
-        let mut pid = std::process::id();
-        for _ in 0..8 {
-            let Some((_, parent, _)) = processes.iter().find(|(each, _, _)| *each == pid) else {
-                break;
-            };
-            let name = (processes.iter())
-                .find(|(each, _, _)| each == parent)
-                .map(|(_, _, name)| name.clone())
-                .unwrap_or_default();
-            chain.push((*parent, name));
-            pid = *parent;
-        }
-        chain
     }
 
     /// Each process's ID, its parent's and its executable's name.
@@ -362,10 +333,6 @@ impl Live {
             return true;
         }
         let runs = runs(self.session.process);
-        crate::trace::line(&format!(
-            "served thread={} process={:?} runs={runs}",
-            self.session.thread, self.session.process
-        ));
         self.seen = runs.then(Instant::now);
         runs
     }
