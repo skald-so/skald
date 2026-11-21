@@ -4,6 +4,8 @@
 //! the session's `SessionStart` hooks with the session's inbox socket; and the report of their
 //! results.
 
+#![cfg(unix)] // Its stand-ins are shell scripts or Unix sockets.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Read, Write};

@@ -25,9 +25,7 @@ use crate::world::{Person, World};
 pub const PAGE: &str = "--browser";
 pub const BROWSER: &str = "BROWSER";
 
-/// What the page of `skald sign-in` asks first, and what the confirmation of `skald link` asks at a
-/// terminal.
-pub const FIRST_DEVICE_QUESTION: &str = "first device";
+/// What the confirmation of `skald link` asks at a terminal.
 pub const CONFIRMATION: &str = "link it to this account";
 
 /// The buttons of the pages, as patterns of their names, case aside: yes, no, a fresh code, and the
@@ -413,9 +411,8 @@ pub struct NewOnPage<'b> {
 
 impl<'b> NewOnPage<'b> {
     /// A new machine with the host name `host` and the settings `settings` signs in to `first`'s
-    /// account as an agent with `--browser`; its person approves its code, then answers no on its
-    /// page to whether it is the account's first device. Gives it once its page shows a link code
-    /// and where it goes.
+    /// account as an agent with `--browser`; its person approves its code. Gives it once its page
+    /// shows a link code and where it goes.
     pub fn start(
         world: &'b World,
         first: &Person,
@@ -434,11 +431,8 @@ impl<'b> NewOnPage<'b> {
         let args = as_agent(&[SIGN_IN, SERVER, &cloud.url, PAGE]);
         let mut run = start_with(&machine, opener.program(), &args);
         approve_next_as(world, &first.user, grants, &mut run);
-        let paged = Paged::opened(&world.browser, &opener, 0, &mut run);
-        paged.wait_for(&mut run, "whether it is the first device", |text| {
-            says(text, &[FIRST_DEVICE_QUESTION])
-        });
-        paged.press(NO_BUTTON);
+        // The stand-in's first run opened the sign-in page; its next, the command's page.
+        let paged = Paged::opened(&world.browser, &opener, 1, &mut run);
         paged.wait_for(&mut run, "a link code and where it goes", |text| {
             !codes_in(text).is_empty() && says(text, &["skald link"])
         });

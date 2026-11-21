@@ -36,6 +36,7 @@ signed<body> = [
 - A [certificate](#device-certificate) also carries a second signature, its device's `proof`.
 - Labels: `skald account`, `skald cert`, `skald proof`, `skald link`, `skald anchors`, `skald revocation`, `skald roster`, `skald invite`, `skald acceptance`, `skald wrap`, `skald history`. The [SSH signature](#device-certificate) has its own form, with the label `skald ssh`.
 - [Link code](#link-code) labels: `skald link code` in the CPace channel identifier; `skald link request` and `skald link grant` in key derivation.
+- [Device key session](#device-key-session) label: `skald device session`.
 
 ## Account
 Each account has two keys, both created on its first device:
@@ -116,16 +117,12 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - An MLS credential names the device: [MLS profile](#mls-profile).
 
 ## Linking a device
-A `service` device does not link: [Service device](#service-device). A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it has with other keys or `name`, or on another account; the same registration sent again counts as stored. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key.
+A `service` device does not link: [Service device](#service-device). A new device generates its keys, derives its ID from its signing key and registers its public keys and `name` with the server, which refuses an ID it has with other keys or `name`, or on another account; the same registration sent again counts as stored. It then gets a certificate: as the account's first device, from a linked device, or with the recovery key. A new `client` device without a session links from a linked device without registering: its certificate registers it ([Device key session](#device-key-session)).
 
-A new `client` device first asks its user whether it is the account's first device, before it learns from the server whether the account has a master key:
-
-| The user says | The server reports | The device |
-|---|---|---|
-| First | No master key | Creates the master key, the recovery key, the account record and the master backup, issues its own certificate with the master key, then deletes the master private key |
-| First | A master key | MUST NOT link: warns its user that someone else may have created the account's master key, and stops |
-| Not first | No master key | MUST NOT create a master key: warns its user that the server reports none, and stops |
-| Not first | A master key | Links from a linked device or with the recovery key |
+A new `client` device asks its user nothing; it asks the server whether the account has a master key:
+- **None:** the device is the account's first. It creates the master key, the recovery key, the account record and the master backup, issues its own certificate with the master key, then deletes the master private key. Of two devices that create one at once, the server keeps the first master key it receives; the other device drops its own, with its recovery key, and links as below.
+- **A master key:** the device links from a linked device or with the recovery key.
+- A device to link with the recovery key MUST NOT create a master key: told there is none, it says so and stops.
 
 - **From a linked device:** the new device shows a [link code](#link-code), and its user enters it on a `client` device of the account, which issues the certificate. The new device takes a certificate and the master key only through a link code or the recovery key, never from a device the server names.
   - A `browser` is linked only this way: it shows the code, and its user enters it on a linked `client` device.
@@ -156,10 +153,11 @@ link-body = {
 A one-time code the new device shows keys a run of CPace [[draft-irtf-cfrg-cpace-21](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/21/)], a balanced PAKE, between the new device and the issuing device. The server relays the run and never sees the code. The issuing device takes the new device's keys only from the run, and the new device takes its certificate and the master key only from it.
 
 - **Code:** 6 characters of the base32 alphabet [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §6], from a cryptographically secure generator: 30 bits. Shown in two groups of three joined by `-`, e.g. `K7Q-M2X`. Entry ignores case, spaces and `-`, and reads `0`, `1` and `8` as `O`, `I` and `B`.
+- **Pairing:** a run of a new device without a session also has a pairing, 6 characters of the same alphabet that the server picks at random, unique among its open runs. The new device shows the run's pairing and its code as one code of 12 characters, the pairing first, in three groups of four joined by `-`, e.g. `PQRS-TUK7-QM2X`. Each run has its own pairing, so the first 6 characters change with each run. Entry reads them as the code's.
 - **Attempts at the new device:** a run is one attempt. The new device runs a code at most 3 times, each time with a fresh `session` and scalar, and spends an attempt when it takes a reply. After the third failed run the code ends: the new device tells its user that the code failed 3 times, and that someone else may have tried if its user did not.
 - **Expiry:** a code ends 5 minutes after the new device shows it, and once a run with it succeeds. A run still open then fails.
 - **Fresh codes:** the new device MUST NOT show a fresh code unless its user asks for one, after a code ends or at any time; asking ends the current code.
-- **Attempts at the issuing device:** it MUST reject an entry that is not 6 characters of the alphabet, read as above, without a run. It runs each entry once. After 3 failed runs in a row it stops, tells its user to get a new code on the new device, and runs no entry until its user confirms the new device shows one.
+- **Attempts at the issuing device:** it MUST reject an entry that is not 6 or 12 characters of the alphabet, read as above, without a run. It runs each entry once. After 3 failed runs in a row it stops, tells its user to get a new code on the new device, and runs no entry until its user confirms the new device shows one.
 
 ```cddl
 link-message = link-hello / link-reply / link-request / link-grant / link-abort
@@ -191,22 +189,43 @@ link-grant-body = {
 }
 ```
 
-- **Relay:** each message is a CBOR item carried as [Encoding](README.md#encoding) says. The new device sends a hello for each run; a `client` device of the account takes the account's latest hello, and the server relays the run's later messages by `session`. Paths: [api/openapi.json](../../api/openapi.json).
-- **CPace:** cipher suite CPACE-RISTR255-SHA512, initiator-responder: the new device is A, the issuing device B. PRS is the code's 6 characters as read above, in uppercase ASCII; CI the encoded `["skald link code", account]`, the account ID as a byte string; sid `session`; ADa and ADb empty. A side MUST fail the run on a share that does not decode or a K that is the identity, and MUST NOT reuse a scalar.
+- **Relay:** each message is a CBOR item carried as [Encoding](README.md#encoding) says. The new device sends a hello for each run, and the server relays the run's later messages by `session`. A device's new hello replaces its open run. Paths: [api/openapi.json](../../api/openapi.json).
+  - With a session, the new device sends its hello as its account's, naming its device registered there; a `client` device of the account takes the account's latest hello.
+  - Without a session, it sends its hello naming its device, which has no certificate. The server answers with the run's pairing and a token for the run's later messages, which is no session. The first account whose session enters the pairing takes the hello, and the run is then its account's. The server refuses the pairing to other accounts. Once the run's device registers on an account, only that account pairs the run, and a run paired with another account ends.
+  - A run without a session is not given as waiting until its device registers on an account; it goes on after that.
+  - The server bounds runs without a session: a run's token sends at most 8 later messages, each of at most 4096 bytes; an account enters at most 10 pairings the server does not hold within 15 minutes, then none until the oldest is 15 minutes old.
+- **CPace:** cipher suite CPACE-RISTR255-SHA512, initiator-responder: the new device is A, the issuing device B. PRS is the code's 6 characters as read above, in uppercase ASCII; CI the encoded `["skald link code", account]`, the account ID as a byte string, or in a run started without a session `["skald link code", pairing]`, the pairing's 6 characters in uppercase ASCII as a byte string, also after its device signs in; sid `session`; ADa and ADb empty. A side MUST fail the run on a share that does not decode or a K that is the identity, and MUST NOT reuse a scalar.
 - **Keys:** `HKDF-SHA256(salt = "", IKM = ISK, info = label, L = 16)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)] over the run's ISK, with the label `skald link request` for the request and `skald link grant` for the grant. Each key MUST seal exactly one plaintext, with AEAD_AES_128_GCM [[RFC 5116](https://www.rfc-editor.org/rfc/rfc5116)], a nonce of 12 zero bytes and empty associated data; a resend repeats the same `sealed`.
 
 The new device:
 1. sends a hello and takes the first reply with its `session`;
 2. sends the request: its kind, keys and `name`;
 3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check;
-4. then pins `master`, signs `proof` and stores the complete certificate on the server.
+4. then pins `master`, signs `proof` and stores the complete certificate on the server: with its session, or without one in the request for its [device key session](#device-key-session).
 
 The issuing device:
-1. tells its user to enter only a code shown on their own device, takes the account's latest hello and sends a reply;
+1. tells its user to enter only a code shown on their own device, takes the account's latest hello, or for 12 characters the hello of their pairing, and sends a reply;
 2. MUST fail the run unless the request opens, and takes the new device's kind, keys and `name` only from it, never from the server;
 3. shows its user that `name` and kind, and once its user confirms, issues the certificate for them and sends the grant.
 
 - A side whose run fails sends a `link-abort` and tells its user. A `link-abort` is not authenticated: it only ends the run, and the new device spent the attempt when it took the reply.
+
+### Device key session
+A `client` device with a certificate gets a device session of its account with its signing key and no sign-in: a new device without a session once a linked device certified it, or a device that signed out, with no code.
+
+1. The device gets a challenge for its ID: 32 random bytes. The server gives one for any ID.
+2. It signs, with the label `skald device session`, `["skald device session", challenge, origin]`, `origin` as in `auth` ([Connecting](delivery.md#connecting)), and sends the signature with its complete certificate.
+
+The server issues the session only if:
+- the challenge is one it issued for the device less than a minute ago, and no other request used it;
+- the certificate is the one it holds of the device, or it holds none and stores the one sent;
+- the device is a `client` device that checks 3 and 4 of [Device checks](#device-checks) do not revoke, against the account's revocations;
+- the signature verifies with the certificate's `signing` over `origin` set to the origin of the server's public address.
+
+It stores the certificate sent only if the certificate is of the device as a `client` device, issued by a `client` device of its account, passes the proof check and checks 1 and 2 of [Device checks](#device-checks) against that account's master key and the certificates its devices hold, and matches the device's registration if there is one: on that account, with its keys and `name`. A device without a registration is registered by it. With the devices limit, a certificate the account has no place for is refused and gives no session.
+
+- The session is of the certificate's account, has no sign-in method and is listed with its device. The server takes it as any device session. It ends when its device is revoked, when it signs out, when a web session ends it, and when the device gets another session this way: a device has one such session at a time.
+- A refused request uses its challenge up. The same request again, a retry after a lost answer, works until the challenge expires, and its session replaces the first one.
 
 ### Anchors
 Each `client` device keeps on the server an anchors object: the roster revisions a device linked with the recovery key starts from.
@@ -227,6 +246,8 @@ anchors-body = {
 - A device linked with the recovery key takes the anchors objects after it revokes the stolen devices. It MUST reject one unless `account` is its own and the signature verifies with the certificate of `device`, a `client` device whose certificate passes checks 1 and 2 of [Device checks](#device-checks) and that no master-key revocation marks as stolen. Other revocations do not matter here, so anchors of lost or wiped devices count.
 - For each space, it starts from the anchor with the lowest revision number and accepts later revisions as [Roster](#roster) says. Every other anchor of the space MUST be a revision it so accepts; otherwise it warns its user and does not join the space. It does not join a space no valid anchors object names.
 - It pins as its personal space the `personal` of the valid anchors objects that have one. When they name different spaces, it pins none and warns its user.
+
+A linked `client` device also starts each space it does not follow that the server lists among its account's spaces, such as one another device of the account created or joined after it was linked. It takes the anchors objects when it connects and on a `space-notice` of such a space ([Frames](delivery.md#frames)), and starts the space as a device linked with the recovery key does, with one difference: an anchors object counts only if its `device` is another `client` device of the account with a valid certificate (checks 1–4 of [Device checks](#device-checks)). A device linked with the recovery key keeps the rule above while it links.
 
 A `service` device's run starts its space's roster from the latest revision named by an anchors object of its account whose `device` is a `client` device with a valid certificate ([Device checks](#device-checks), against the pinned master key) and whose signature verifies with that certificate. It does so when the revisions from its [key secret](#service-device)'s `anchor` up to it pass through every other revision such objects name. Otherwise it starts from `anchor` and warns.
 - Named revisions at or below `anchor` do not count.
@@ -383,7 +404,7 @@ channel-member = [
 - A revision that lists a `service` device revoked later stays acceptable to a device that walks past it, a stateless run included (check 4). A revoked device is trusted for nothing else ([Device checks](#device-checks)).
 - A revision an admin's device signs drops the entries and `services` of revoked `service` devices and of the accounts it removes. The server refuses a new revision that lists, in an entry or in `services`, a `service` device that is revoked or not on a member's account.
 
-A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or [anchors](#anchors). A `service` device starts as [Anchors](#anchors) says. A client MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
+A client starts from an anchor: revision 1 of a space it created, the revision its [invite](#invite) link names, or one from its [link object](#linking-a-device) or the [anchors](#anchors) objects of its account's devices. A `service` device starts as [Anchors](#anchors) says. A client MUST NOT accept revision n+1 before it has accepted revision n, nor unless:
 1. its signature verifies with the certificate of `signer`, an admin's device in revision n;
 2. `space` and `name` are those of revision n, `revision` is n+1, and `prev` is the hash of revision n;
 3. it has at least one admin; no list repeats an account, device, channel or invite; `name`, handles, owners and agents are valid names ([Agent address](README.md#agent-address)); no two members share a handle, and no owner is a handle; service agents may share an owner, but not an owner and agent;
@@ -657,11 +678,15 @@ A reader MUST drop an entry unless:
 - Only a holder of the recovery key seals a master backup that opens in PSK mode, so the server cannot give a device linked with the recovery key another master key. It can withhold the backup: the device then cannot link with the recovery key.
 - A link code holds 30 bits, and a CPace run gives a server or network attacker one online guess at it and no offline test. Each code takes an action of the new device's user, and the new device runs it at most 3 times, whoever answers: an attacker that answers its hellos gives it a certificate, a master key and a link object of its choice with a chance of at most 3 in 2^30 per user action, about 3 in a billion.
 - The new device does not count the issuing device's runs, which the issuing device counts itself: an attacker that answers its entries with hellos of its own gets at most 3 more guesses at each issuing device before it stops. Each issuing device counts only its own runs, so a code allows at most 3 at the new device plus 3 at each issuing device its user enters it on, each guess with a chance of 1 in 2^30. A success there still needs the issuing device's user to confirm the `name` and kind the attacker chose.
+- A run without a session is no account's until a session enters its pairing. A session of any account that knows a pairing can pair the run first and answer the new device's hellos, as the server can: the new device counts its runs whoever answers, so the chance stays at most 3 in 2^30 per action of its user. It spends one of those runs, and the person's issuing device then finds no run. A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes.
+- In a run started without a session, CI binds the pairing: an issuing device completes the run only with a new device that ran it with the pairing its user entered.
+- A device's signing key with its certificate gives a session of its account with no sign-in. A stolen device thus gets a session again after its sessions end, until it is revoked; its revocation ends that session.
 - The issuing device certifies the device whose code its user enters, with the `name` and kind that device chose. A user persuaded to enter someone else's code, such as one a sign-in thief sends, links the thief's device; the issuing device's reminder to enter only a code shown on their own device is the only defense.
-- A device learns whether its account has a master key only from the server. Whoever signs in before the user's first device, such as the IdP, a thief of the user's sign-in or the server, creates the master key and holds the account's root of trust for good: the master key cannot be rotated. The user's first device, whose user says it is the first, warns and stops. The holder links none of the user's devices: that takes a code the user enters on the holder's device. A server that holds such a key can instead report none: the user's first device then rightly says it is the first and creates a second master key, as below, with no warning.
+- A device learns whether its account has a master key only from the server. Whoever signs in before the user's first device, such as the IdP, a thief of the user's sign-in or the server, creates the master key and holds the account's root of trust for good: the master key cannot be rotated. The user's first device then waits for linking, and the holder links none of the user's devices: that takes a code the user enters on the holder's device. A server that holds such a key can instead report none: the user's first device then creates a second master key, as below, with no warning.
 - Members pin an account's master key from the roster, which takes it from the account's device that created the space or accepted the invite. So members of a space the holder created or joined trust the holder's devices as the account's, and get no key change warning: no other master key came first. The `ssh` signature is optional, so its absence shows nothing.
-- A server that reports no master key for an existing account stops a new device whose user says it is not the first. If its user says it is the first, the device creates a second master key, and the account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the device rejects those chained to the first. The server gains no signing power: the device deletes the second master private key, and only its user sees the second recovery key. No device set change warns of the device: the account's other devices do not count it as theirs.
+- A server that reports no master key for an existing account makes a new device create a second master key, and the account splits into two sets of devices that do not trust each other: devices and members that pinned the first master key reject certificates chained to the second, and the device rejects those chained to the first. The server gains no signing power: the device deletes the second master private key, and only its user sees the second recovery key. No device set change warns of the device: the account's other devices do not count it as theirs. Only key verification, planned ([roadmap.md, "MVP"](../dev/roadmap.md#mvp)), shows the second master key.
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
+- A linked `client` device trusts the revisions anchored by its account's other `client` devices with a valid certificate. Until a stolen one is revoked, in a space no other device anchored, it can make the device start from a revision the server forged. The server can withhold anchors objects: the device then stays out of a space another device of its account created or joined.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
 - A channel member whose `history` is false holds the key of every epoch from its join on, and each opens that epoch's link: the join epoch's link, or a later one whose uploader judged the epochs between unclean, gives a key from before the join. Only the server withholding those links keeps it from earlier history.
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.

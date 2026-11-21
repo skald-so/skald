@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use agent_live::before::{
@@ -13,6 +12,7 @@ use agent_live::before::{
 use agent_live::channel::{Files, extra_environment, stub_environment};
 use agent_live::hook::HOOK_BIN;
 use agent_live::{Agent, Call, INBOX_BIN, Options, Run, Session, Stub, binary, token};
+use agent_source::unix_socket::UnixStream;
 use agent_source::{Source, State};
 use serde_json::json;
 use tempfile::TempDir;

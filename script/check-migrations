@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+# Fails when the changes break the append-only schema migrations, the files of
+# crates/server/migrations/ and crates/client/migrations/ (CONTRIBUTING.md, "Schema migrations"):
+# when they add one whose name sorts before one that dev has, or change or remove one that dev had
+# where HEAD branched off it.
+# Dev: SKALD_TEST_SINCE when set; else, in GitHub Actions, HEAD^1, as CI checks out a PR merged
+# into dev, dev its first parent; else origin/dev.
+# The changes count from where HEAD branched off dev, their merge base, to the working tree,
+# uncommitted and untracked files included, as script/changed-parts --since counts them: a migration
+# dev got later is not one they remove.
+# Usage: script/check-migrations, in the repository.
+set -euo pipefail
+export LC_ALL=C
+
+if [[ $# -ne 0 ]]; then
+  echo "usage: $0" >&2
+  exit 2
+fi
+
+if [[ -n ${SKALD_TEST_SINCE:-} ]]; then
+  base=$SKALD_TEST_SINCE
+elif [[ ${GITHUB_ACTIONS:-} == true ]]; then
+  base=HEAD^1
+else
+  base=origin/dev
+fi
+if ! dev=$(git rev-parse --verify --quiet "$base^{commit}"); then
+  echo "check-migrations: no commit $base to check the migrations against; set SKALD_TEST_SINCE" >&2
+  exit 2
+fi
+fork=$(git merge-base "$dev" HEAD)
+cd "$(git rev-parse --show-toplevel)"
+
+failures=0
+fail() {
+  echo "check-migrations: $*" >&2
+  failures=$((failures + 1))
+}
+
+for dir in crates/server/migrations crates/client/migrations; do
+  last=$(git -c core.quotePath=false ls-tree --name-only "$dev" "$dir/" | sort | tail -n 1)
+  # Each change as `<status>\t<path>`; untracked files as added.
+  changes=$(
+    git -c core.quotePath=false diff --name-status --no-renames "$fork" -- "$dir"
+    git -c core.quotePath=false ls-files --others --exclude-standard -- "$dir" |
+      awk '{ print "A\t" $0 }'
+  )
+  while IFS=$'\t' read -r status path; do
+    case $status in
+      '') ;;
+      A)
+        # One dev got since HEAD branched off it is dev's.
+        if git cat-file -e "$dev:$path" 2>/dev/null; then continue; fi
+        if [[ -n $last && $path < $last ]]; then
+          fail "$path sorts before $last, which dev has; name a new migration so it sorts last"
+        fi
+        ;;
+      D) fail "removes $path, a migration dev has; migrations are append-only" ;;
+      *) fail "changes $path, a migration dev has; add a new migration instead" ;;
+    esac
+  done <<<"$changes"
+done
+
+exit $((failures > 0))

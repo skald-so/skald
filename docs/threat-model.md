@@ -9,6 +9,7 @@ What Skald protects against and what it does not. Formats and checks are in the 
   - [The server or its operator](#the-server-or-its-operator)
   - [A network observer](#a-network-observer)
   - [The IdP or GitHub](#the-idp-or-github)
+  - [Anyone without a session](#anyone-without-a-session)
   - [A stolen device](#a-stolen-device)
   - [A revoked device](#a-revoked-device)
   - [A removed member](#a-removed-member)
@@ -33,7 +34,7 @@ Also whoever takes over the server or its database.
 - Withhold, delay or drop envelopes. Gap detection reports a drop only once a later message from the same sending device in the same channel under the same scheme arrives: [delivery.md](protocol/delivery.md#security-considerations).
 - Report `stored`, `delivered` and `expired` falsely: they are its word ([Receipts](protocol/delivery.md#receipts)).
 - Withhold certificates, revocations and roster revisions: a hidden revocation keeps a device trusted for those who do not see it, a hidden revision keeps clients on an older roster, and withholding a revocation from every member device delays the revoked device's Remove ([membership.md](protocol/membership.md#security-considerations)).
-- Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space ([membership.md](protocol/membership.md#security-considerations)).
+- Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space, and a device stays out of a space another device of its account created or joined ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
@@ -47,8 +48,8 @@ Also whoever takes over the server or its database.
 - Serve a linked browser a modified web app: the browser trusts the build it is served ([Trade-offs](#trade-offs)).
 - Show false devices, members, roles and usage in the web app's non-secret sections: they show what the server says.
 - Guess a link code online: at most 3 guesses at the new device per action of its user, and 3 more at each issuing device its user enters the code on before that device stops, each guess with a chance of 1 in 2^30 ([membership.md](protocol/membership.md#security-considerations)).
-- Report no master key for an existing account: a new device whose user says it is the first then creates a second one, and the account splits into two sets of devices that do not trust each other ([membership.md](protocol/membership.md#security-considerations)).
-- Create an account's master key on a device of its own before the user's first device, as [the IdP](#the-idp-or-github) can, then report none: the user's first device rightly says it is the first and creates a second one, with no warning, and members of a space the server's device created or joined as the account trust that device as the account's ([membership.md](protocol/membership.md#security-considerations)).
+- Report no master key for an existing account: a new device then creates a second one, and the account splits into two sets of devices that do not trust each other; only key verification, planned, shows it ([membership.md](protocol/membership.md#security-considerations)).
+- Create an account's master key on a device of its own before the user's first device, as [the IdP](#the-idp-or-github) can, then report none: the user's first device creates a second one, with no warning, and members of a space the server's device created or joined as the account trust that device as the account's ([membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
 - Content, tasks, presence values and history are encrypted end to end ([Envelope](protocol/README.md#envelope), [Queue key](protocol/queues.md#queue-key), [Presence](protocol/agents.md#presence), [History](protocol/membership.md#history)).
@@ -58,7 +59,7 @@ Also whoever takes over the server or its database.
 - A new device takes its certificate, the master key and its link object only from a CPace run keyed by the link code its user enters on the issuing device, and that device takes the new device's keys only from the run. Unless one of its guesses at the code succeeds, the server cannot join the run, so it cannot certify a new device itself, give it another master key or have its own keys certified ([Link code](protocol/membership.md#link-code)).
 - The master backup is sealed in HPKE PSK mode with a key derived from the recovery key, so the server cannot give a device linked with the recovery key another master key ([Account](protocol/membership.md#account)).
 - Member devices wrap history keys only to the recovery key of an account record that verifies with the account's pinned or roster `master`, and warn when its `recovery` changes, so the server cannot have them wrapped to a key of its own ([Account](protocol/membership.md#account), [Device checks](protocol/membership.md#device-checks)).
-- A new `client` device whose user says it is not the account's first creates no master key: told there is none, it warns its user and stops ([Linking a device](protocol/membership.md#linking-a-device)). A second master key gives the server no signing power, and devices and members that pinned the first reject certificates chained to the second ([Device checks](protocol/membership.md#device-checks)).
+- A second master key gives the server no signing power, and devices and members that pinned the first reject certificates chained to the second ([Device checks](protocol/membership.md#device-checks)).
 - Devices warn of a certificate the server swaps for a device they trusted, and of two master keys of one account: in two of their spaces, or other than the one they pinned. A device whose key signed two certificate bodies stays untrusted ([Device certificate](protocol/membership.md#device-certificate), [Device checks](protocol/membership.md#device-checks)).
 - Two valid revisions with the same number show a forked roster; the client keeps the one it accepted and warns its user ([Roster](protocol/membership.md#roster)).
 - A device the server joins to a channel is not admitted: members commit its Remove and send nothing until it is gone, and its epoch is not clean, so member devices upload no link, wrap or entry of it ([Admitted devices](protocol/membership.md#admitted-devices), [Clean epochs](protocol/membership.md#clean-epochs)).
@@ -110,11 +111,26 @@ The provider that signs users in (GitHub, Google), and GitHub as the host of SSH
 - A session alone creates no service token: that takes a proof by a `client` device of an admin, and a grant signed by an admin's device (`createServiceToken` in the [OpenAPI spec](../api/openapi.json)).
 - A sign-in is not a device: a device needs a certificate from a linked `client` device or the recovery key, chained to the account's master key ([Linking a device](protocol/membership.md#linking-a-device), [Device checks](protocol/membership.md#device-checks)).
 - The SSH signature is checked on top of the certificate chain, never instead of it ([Device checks](protocol/membership.md#device-checks)).
-- The user's first device, whose user says it is the first, finds the attacker's master key, warns its user that someone else may have created it, and stops ([Linking a device](protocol/membership.md#linking-a-device)).
+- The user's first device, finding the attacker's master key, waits for linking and creates none ([Linking a device](protocol/membership.md#linking-a-device)).
 - The attacker links none of the user's devices: a new device takes a certificate only through the link code its user enters on the issuing device ([Link code](protocol/membership.md#link-code)). The issuing device tells its user to enter only a code shown on their own device.
 - The web UI's non-secret sections list the account's devices and sign-in sessions, the attacker's included ([roadmap.md, "MVP"](dev/roadmap.md#mvp)).
 - Sign-in methods are linked and removed explicitly, by a web session from a sign-in of the last few minutes (the server setting `--link-sign-in-age`); a method of another account is refused, accounts are never merged by email, and the account's last method is never removed.
 - A task from a comment runs at the `service` trust level: only where a device's user turned on `service` tasks, within the policy's ceiling unless that user approves it ([Trust levels](protocol/membership.md#trust-levels), [Running a task](protocol/queues.md#running-a-task)).
+
+### Anyone without a session
+Anyone who reaches the server: with no session, or with a session of an account of its own.
+
+**Can:**
+- Open link code runs without a session, each naming a device ID without a certificate: at most one per ID, which ends at the code's 5 minutes. No rate limit applies yet, so a flood loads the server's database, as device flow requests do ([Link code](protocol/membership.md#link-code)).
+- Knowing a new device's ID, replace that device's open run with a run of its own, which ends the person's run.
+- Get challenges for any device ID, each for a minute ([Device key session](protocol/membership.md#device-key-session)).
+- With a session of its own account, pair a run without a session whose pairing it knows before the person enters it: it then answers the new device's hellos with the server's chance at the code, at most 3 in 2^30 per action of the new device's user, and spends one of the device's runs ([membership.md](protocol/membership.md#security-considerations)).
+
+**Defenses:**
+- A run's token takes only that run's messages; it is no session ([Link code](protocol/membership.md#link-code)).
+- The new device counts its runs whoever answers them, and the issuing device counts its own ([Link code](protocol/membership.md#link-code)).
+- A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes; a run's token sends at most 8 later messages of at most 4096 bytes each ([Link code](protocol/membership.md#link-code)).
+- A session by a device's key takes the key's signature over a fresh challenge and a certificate from a linked `client` device of the account, which the server checks against the account's master key ([Device key session](protocol/membership.md#device-key-session)).
 
 ### A stolen device
 An attacker holding a device or its keys, before the device is revoked.
@@ -125,7 +141,8 @@ An attacker holding a device or its keys, before the device is revoked.
 - Enqueue tasks that its account's other devices run at the `own` trust level, with full rights ([queues.md](protocol/queues.md#security-considerations), [Running a task](protocol/queues.md#running-a-task)).
 - Change what the device itself runs from other accounts, and approve the tasks waiting on it ([Running a task](protocol/queues.md#running-a-task)).
 - Revoke the account's other devices; its revocations count even after another device revokes it ([Revocation](protocol/membership.md#revocation)).
-- From a `client` device, certify new devices of the account, but not under an existing device's ID; and, unless its user names it as stolen when linking a device with the recovery key, have its anchors count: in a space no other device anchored, make that device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
+- From a `client` device, certify new devices of the account, but not under an existing device's ID; and have its anchors count for the account's other `client` devices, and for a device linked with the recovery key unless its user names it as stolen: in a space no other device anchored, make such a device start from a revision the server forged ([membership.md](protocol/membership.md#security-considerations)).
+- With its key and certificate, get a session of its account again after its sessions end ([Device key session](protocol/membership.md#device-key-session)).
 - On an admin's device, do what [an admin](#an-admin-acting-against-others) does.
 - After its revocation: what [a revoked device](#a-revoked-device) does.
 
@@ -133,7 +150,7 @@ An attacker holding a device or its keys, before the device is revoked.
 - Keys live in the OS key store, or a file in the state directory ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - Clients warn when an account's device set changes, so the devices it certifies or revokes show ([Device checks](protocol/membership.md#device-checks)).
 - Its settings of what it runs are its own: it changes them on no other device ([Running a task](protocol/queues.md#running-a-task)).
-- Another `client` or `browser` device of the account revokes it ([Revocation](protocol/membership.md#revocation)): see [A revoked device](#a-revoked-device).
+- Another `client` or `browser` device of the account revokes it ([Revocation](protocol/membership.md#revocation)): see [A revoked device](#a-revoked-device). Its revocation ends its session by key ([Device key session](protocol/membership.md#device-key-session)).
 - A device linked with the recovery key revokes it with the master key: that one object voids every revocation it and the devices it certified signed, and lists in `also` the devices that stay revoked ([Revocation](protocol/membership.md#revocation), [Linking a device](protocol/membership.md#linking-a-device)).
 
 ### A revoked device
@@ -289,6 +306,7 @@ An OS account on the device's machine other than the one that runs the client.
 - accounts: sign-in methods and usernames;
 - the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
+- link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
 - IP addresses and times of connections and requests;
