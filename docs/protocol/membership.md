@@ -94,6 +94,9 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
 - Kinds: [Identifiers](README.md#identifiers). Keys are generated on the device and never leave it, except a `service` device's: [Service device](#service-device).
 - **Proof check:** a client MUST discard a certificate unless `device` is the ID derived from `signing` ([Identifiers](README.md#identifiers)) and `proof` verifies with `signing`. A discarded certificate counts nowhere and is not shown: the certificate of a device ID, a device's chain and issuers, the signer of an object and the devices a device certified come only from certificates that pass this check, here and in [README.md](README.md). So only the holder of a device's signing key makes a certificate for its ID: no other device can certify an existing device's ID, with other keys or with its own.
 - A device signs `proof` for one certificate only, the one issued for it when it joins the account. Certificates of one `device` with the same `body` are one certificate: a client uses a copy whose `signature` passes check 1 of [Device checks](#device-checks). A client that sees two certificates of one `device` with different bodies that pass the proof check treats neither as valid and warns its user.
+- **Kept certificates:** a client keeps the certificate of each device it trusted, one that passed checks 1 and 2 of [Device checks](#device-checks). When the server later gives that device with another certificate in its place, the client warns once of a key change, until the server gives the kept one again:
+  - one that fails the proof check or check 1 still counts nowhere, so the device is not trusted until then;
+  - one of another body that passes the proof check makes neither valid, as two bodies given at once do; the client keeps it too, so neither is valid also once the server gives only one of them.
 - A device ID thus names one device everywhere it appears, such as a revocation's `device`, `keep` and `also`, a member's `excluded` and an MLS credential.
 - Issuers:
   - the master key: a `client` device, the account's first one or one linked with the recovery key;
@@ -305,6 +308,8 @@ A client MUST warn its user when:
 - an account record's `recovery` changes;
 - a member's `master` changes in the roster;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
+- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
+- the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
 
 ## Trust levels
@@ -442,7 +447,7 @@ acceptance-body = {
 ```
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
-- **Link:** `https://<server>/invite/<invite>#<fragment>`; the fragment is base64url without padding of the secret followed by the hash of the roster revision the admin's device last accepted. Browsers do not send a fragment to the server.
+- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
 - The server stores the invite and the acceptance. Revoking an invite deletes it on the server.
 
 The newcomer's device MUST, from the link:
