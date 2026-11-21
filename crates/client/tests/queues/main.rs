@@ -108,5 +108,7 @@ mod senders;
 // The presence values of the tests of the agent directory, with the MCP client they use.
 #[path = "../mcp_inbox/client.rs"]
 mod client;
+#[path = "../presence_uploads/presence.rs"]
+mod presence;
 #[path = "../presence_directory/values.rs"]
 mod values;

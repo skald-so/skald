@@ -153,6 +153,17 @@ pub fn proved(
     (method, path): (&str, &str),
     body: Option<&Value>,
 ) -> (u16, Value) {
+    let body = body.map(|json| ("application/json", json.to_string().into_bytes()));
+    proved_with(cloud, person, (method, path), body)
+}
+
+/// As [`proved`], with the body `(media type, bytes)` if any, such as a task's CBOR bytes.
+pub fn proved_with(
+    cloud: &Cloud,
+    person: &Person,
+    (method, path): (&str, &str),
+    body: Option<(&str, Vec<u8>)>,
+) -> (u16, Value) {
     let header = proof_of(cloud, person);
     let mut request = ureq::http::Request::builder()
         .method(method)
@@ -161,13 +172,9 @@ pub fn proved(
         .header("authorization", format!("Bearer {}", person.token))
         .header(PROOF_HEADER, header);
     let sent = match body {
-        Some(json) => {
-            request = request.header("content-type", "application/json");
-            agent().run(
-                request
-                    .body(json.to_string().into_bytes())
-                    .expect("a request"),
-            )
+        Some((media, bytes)) => {
+            request = request.header("content-type", media);
+            agent().run(request.body(bytes).expect("a request"))
         }
         None => agent().run(request.body(()).expect("a request")),
     };
