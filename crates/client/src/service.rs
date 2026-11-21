@@ -34,9 +34,11 @@ use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::groups;
+use crate::queues;
 use crate::secrets::{self, Keyring, KeyringError, Secrets};
 pub use crate::service_agents::{KEY_VARIABLE, TOKEN_VARIABLE};
 use crate::spaces::{Follower, now};
+use crate::stateless;
 
 /// The token's own record, `GET`.
 const OWN_RECORD: &str = "/service-token";
@@ -196,7 +198,7 @@ pub fn sender(
     at: (ChannelId, ServerName),
 ) -> Result<(Address, Grant), String> {
     let (grant, _) = own_record(&mut follower.connection, &follower.token)?;
-    entry_sender(follower, space, at, grant, "nothing is sent")
+    entry_sender(follower, space, at, grant, stateless::NOTHING_SENT)
 }
 
 /// As [`sender`], for a task: also fails, naming `not-a-member`, if the token lacks `queues`, as
@@ -206,7 +208,7 @@ pub fn enqueuer(
     space: (&Roster, &SpaceDevices),
     at: (ChannelId, ServerName),
 ) -> Result<(Address, Grant), String> {
-    let nothing = "nothing is enqueued";
+    let nothing = queues::NOTHING;
     let (grant, permissions) = own_record(&mut follower.connection, &follower.token)?;
     if !permissions.iter().any(|permission| permission == QUEUES) {
         return Err(format!(

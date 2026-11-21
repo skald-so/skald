@@ -486,7 +486,7 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
 }
 
 /// What a refused enqueue says of the task.
-const NOTHING: &str = "nothing is enqueued";
+pub const NOTHING: &str = "nothing is enqueued";
 
 /// What a run says of a task the server has not answered.
 const KEPT: &str =

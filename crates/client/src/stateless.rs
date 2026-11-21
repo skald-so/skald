@@ -27,6 +27,7 @@ use skald_proto::{
 use crate::follow::SpaceDevices;
 use crate::groups;
 use crate::queue_keys;
+use crate::queues::NOTHING as NOTHING_ENQUEUED;
 use crate::send::{self, Answer, Draft, Key, Reported, Shown, Wire};
 use crate::service;
 use crate::spaces::Follower;
@@ -134,10 +135,7 @@ fn recipients(
 }
 
 /// What a run that sends nothing ends its reason with.
-const NOTHING_SENT: &str = "nothing is sent";
-
-/// What a run that enqueues nothing ends its reason with.
-const NOTHING_ENQUEUED: &str = "nothing is enqueued";
+pub const NOTHING_SENT: &str = "nothing is sent";
 
 /// The latest GroupInfo of `channel` and the devices `roster`, the space's last accepted revision,
 /// and `devices`, its accounts' devices, admit to the channel, once the GroupInfo passes its

@@ -80,16 +80,13 @@ fn object(link: &Link, channel: ChannelId, epoch: u64, key: [u8; 32]) -> Option<
 }
 
 /// Uploads the object of `epoch` of `channel` in `space`, which this device's Commit there started
-/// once the server stored it, if the device judged it clean; warns of what fails.
+/// once the server stored it and the device judged clean; warns of what fails.
 pub fn upload_new(
     follower: &mut Follower,
     link: &mut Link,
     (space, channel): (SpaceId, ChannelId),
     epoch: u64,
 ) {
-    if !judged_clean(follower, channel, epoch) {
-        return;
-    }
     match groups::read(follower, &link.keys, |device| {
         made(device, link, channel, epoch)
     }) {
@@ -97,12 +94,6 @@ pub fn upload_new(
         Ok(None) => {}
         Err(err) => eprintln!("skald: warning: {err}"),
     }
-}
-
-/// Whether the device judged `epoch` of `channel` clean; warns if the state fails.
-fn judged_clean(follower: &Follower, channel: ChannelId, epoch: u64) -> bool {
-    key_chain::judged(follower, channel, |_, _| Ok(()))
-        .is_some_and(|(judgments, ())| judgments.get(&epoch) == Some(&true))
 }
 
 /// After the catch-up of a run within `scope`: of each channel of [`key_chain::own_channels`]
