@@ -5,6 +5,7 @@
 //! desktop app and Codex for VS Code, `gui permission-hook` prepares the check of the
 //! `PermissionRequest` hook and `gui-result` without a token reads its hook runs.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -17,18 +18,20 @@ use crate::Result;
 use crate::gui_run::{home, installed, open, user_claude};
 use crate::subscription::user_codex_config;
 
-/// Prepares a GUI check on `surface` with `write`, given the check's new temporary directory, which
+/// Prepares a GUI check on `surface` with `write`, given the check's new directory in `base`, which
 /// stays, the surface's version line and `live-check`: prints the version, the project `write`
 /// returns and `prompt`; returns the directory.
 fn prepare(
     surface: Surface,
+    base: &Path,
     prompt: &str,
     write: impl FnOnce(&Path, &str, &Path) -> io::Result<PathBuf>,
 ) -> Result<PathBuf> {
     let version = surface.version(&installed()?)?;
+    fs::create_dir_all(base)?;
     let work = tempfile::Builder::new()
         .prefix("skald-live-")
-        .tempdir()?
+        .tempdir_in(base)?
         .keep();
     let project = write(&work, &version, &std::env::current_exe()?)?;
     println!("{version}");
@@ -41,9 +44,12 @@ fn prepare(
 /// open, the prompt to type and the commands to run next.
 pub fn gui(surface: Surface) -> Result<bool> {
     let user = user_claude(&home()?);
-    let work = prepare(surface, &permission::prompt(), |work, version, live| {
-        permission::prepare_gui(work, surface, version, live, &user)
-    })?;
+    let work = prepare(
+        surface,
+        &std::env::temp_dir(),
+        &permission::prompt(),
+        |work, version, live| permission::prepare_gui(work, surface, version, live, &user),
+    )?;
     if surface == Surface::ClaudeDesktop {
         println!(
             "while the prompt waits: live-check gui-permission-link {}",
@@ -92,13 +98,16 @@ pub fn gui_result(work: &Path) -> Result<bool> {
     Ok(check.pass())
 }
 
-/// Prepares the GUI check of the `PermissionRequest` hook on the Codex `surface`: prints the
-/// surface's version, the project to open, the prompt to type and the command to run next.
+/// Prepares the GUI check of the `PermissionRequest` hook on the Codex `surface` in
+/// `~/Library/Caches`: out of `$TMPDIR` and `/tmp`, which the `workspace-write` sandbox may let the
+/// agent write. Prints the surface's version, the project to open, the prompt to type and the
+/// command to run next.
 pub fn codex_gui(surface: Surface) -> Result<bool> {
     let user = mcp_servers(&user_codex_config());
     let work = prepare(
         surface,
-        &codex_permission::prompt(),
+        &home()?.join("Library/Caches"),
+        &codex_permission::gui_prompt(),
         |work, version, live| codex_permission::prepare_gui(work, surface, version, live, &user),
     )?;
     println!(

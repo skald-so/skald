@@ -92,6 +92,19 @@ pub fn prompt() -> String {
     format!("Run the shell command `{PROMPTED}`. Then reply with only OK.")
 }
 
+/// The file a GUI check's command writes, in the check's directory: outside the project, which the
+/// `workspace-write` sandbox of Codex for VS Code's "Ask for approval" mode lets the agent write.
+pub const WRITTEN: &str = "prompted.txt";
+
+/// The command of a GUI check's session, run in the project: it writes [`WRITTEN`] in the check's
+/// directory, which waits on the person in the `read-only` and the `workspace-write` sandbox alike.
+pub const GUI_PROMPTED: &str = "touch ../prompted.txt";
+
+/// The prompt of a GUI check's session, which runs [`GUI_PROMPTED`].
+pub fn gui_prompt() -> String {
+    format!("Run the shell command `{GUI_PROMPTED}`. Then reply with only OK.")
+}
+
 /// A path that may tell that a session waits on its permission prompt; each has a check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Candidate {
@@ -736,12 +749,12 @@ fn status(status: &Value) -> String {
     }
 }
 
-/// Whether a hook's `input` is about the check's prompted shell command.
+/// Whether a hook's `input` is about the check's prompted shell command: the CLI's or the GUI's.
 fn prompted(input: &Value) -> bool {
     input["tool_name"] == "Bash"
         && input["tool_input"]["command"]
             .as_str()
-            .is_some_and(|command| command.contains(PROMPTED))
+            .is_some_and(|command| command.contains(PROMPTED) || command.contains(GUI_PROMPTED))
 }
 
 /// How the check answers the terminal's permission dialog.
@@ -793,7 +806,8 @@ impl PermissionCheck {
         summary: &str,
     ) -> Vec<String> {
         let called = observed.called_ms();
-        let (waited, details) = prompted_details(summary, called, observed.shown_ms, true);
+        let (waited, details) =
+            prompted_details(summary, PROMPTED, called, observed.shown_ms, true);
         let mut lines = vec![
             self.checks
                 .report(&format!("{name}, prompt"), waited, &details),
@@ -857,8 +871,8 @@ impl PermissionCheck {
     /// The GUI session `name`, whose dialog a person answered: whether the agent called the
     /// prompted command, whether the `PermissionRequest` hook told within [`WITHIN_MS`] of its last
     /// `PreToolUse` run, whether it named only this session, and whether the command ran once
-    /// answered: its `PostToolUse` run after the hook's.
-    pub fn gui(&mut self, name: &str, observed: &Observed) -> Vec<String> {
+    /// answered: its `PostToolUse` run after the hook's, and whether it `wrote` [`WRITTEN`].
+    pub fn gui(&mut self, name: &str, observed: &Observed, wrote: bool) -> Vec<String> {
         let told = observed.told(Candidate::Hook);
         let told_ms = told.as_ref().map(|(at_ms, _)| *at_ms);
         let called = observed.called_before(told_ms);
@@ -866,7 +880,7 @@ impl PermissionCheck {
             Some(thread) => format!("session {thread}"),
             None => "no hook ran in the project".to_owned(),
         };
-        let (_, details) = prompted_details(&summary, called, None, false);
+        let (_, details) = prompted_details(&summary, GUI_PROMPTED, called, None, false);
         let mut lines =
             vec![
                 self.checks
@@ -901,6 +915,11 @@ impl PermissionCheck {
             ran,
             &format!("after the PermissionRequest hook: {}", came(&after)),
         ));
+        lines.push(self.checks.report(
+            &format!("{name}, {WRITTEN} outside the project"),
+            wrote,
+            if wrote { "written" } else { "missing" },
+        ));
         lines
     }
 
@@ -924,7 +943,8 @@ impl PermissionCheck {
 /// Writes the GUI check of the `PermissionRequest` hook on `surface`, whose version line is
 /// `version`, into `work` and returns the project to open: its config, as every Codex GUI check's
 /// with the user's MCP servers `user_mcp_servers` off, has [`APPROVAL`] and runs the hook recorder
-/// of `live`, `live-check`, on each of [`GUI_EVENTS`] into `work`'s [`HOOK_RUNS`].
+/// of `live`, `live-check`, on each of [`GUI_EVENTS`] into `work`'s [`HOOK_RUNS`]. [`GUI_PROMPTED`]
+/// writes into `work`, which no sandbox may let the agent write.
 pub fn prepare_gui(
     work: &Path,
     surface: Surface,
@@ -947,7 +967,8 @@ pub fn prepare_gui(
 }
 
 /// The output of the GUI check prepared in `work`: the surface's version line, the lines of
-/// [`PermissionCheck::gui`] and the verdict; and whether it passed.
+/// [`PermissionCheck::gui`], given whether `work` holds [`WRITTEN`], and the verdict; and whether
+/// it passed.
 pub fn gui_result(work: &Path) -> io::Result<(Vec<String>, bool)> {
     let (surface, version) = gui_check(work)?;
     if surface.agent() != Agent::Codex {
@@ -957,7 +978,7 @@ pub fn gui_result(work: &Path) -> io::Result<(Vec<String>, bool)> {
     observed.thread = observed.thread_in(&work.join("project"));
     let mut check = PermissionCheck::new(Candidate::Hook);
     let mut lines = vec![version];
-    lines.extend(check.gui(surface.name(), &observed));
+    lines.extend(check.gui(surface.name(), &observed, work.join(WRITTEN).is_file()));
     let verdict = if check.pass() { "pass" } else { "fail" };
     lines.push(format!(
         "{} on {}: {verdict}",
@@ -1588,33 +1609,52 @@ mod tests {
         assert_eq!(osc9.feed(b"\x1b]9;a\x1bxb\x07"), ["a\x1bxb"]);
     }
 
+    /// `runs` of the CLI's sessions, with the GUI's command for the CLI's.
+    fn gui_runs(runs: &str) -> String {
+        runs.replace(PROMPTED, GUI_PROMPTED)
+    }
+
     #[test]
     fn a_gui_session_passes_once_the_hook_names_it_and_the_command_runs() {
-        let a = observed("a", &only(HOOK_RUNS, A), "", "");
+        assert!(GUI_PROMPTED.ends_with(&format!("../{WRITTEN}")));
+        assert_eq!(
+            gui_prompt(),
+            "Run the shell command `touch ../prompted.txt`. Then reply with only OK."
+        );
+        let a = observed("a", &gui_runs(&only(HOOK_RUNS, A)), "", "");
         let mut check = PermissionCheck::new(Candidate::Hook);
         assert_eq!(
-            check.gui("codex-vscode", &a),
+            check.gui("codex-vscode", &a, true),
             [
                 format!(
                     "  codex-vscode, prompt: pass — session {A}; the agent called `touch \
-                     prompted.txt`"
+                     ../prompted.txt`"
                 ),
                 "  codex-vscode, PermissionRequest hook: pass — told 0.1 s after the call; carries \
                  cwd, hook_event_name, model, permission_mode, session_id, tool_input, tool_name, \
-                 transcript_path, turn_id (Bash: touch prompted.txt)"
+                 transcript_path, turn_id (Bash: touch ../prompted.txt)"
                     .to_owned(),
                 "  codex-vscode, session_id: pass — the session's".to_owned(),
                 "  codex-vscode, after the dialog: pass — after the PermissionRequest hook: \
                  PostToolUse hook 10.3 s, Stop hook 10.4 s"
                     .to_owned(),
+                "  codex-vscode, prompted.txt outside the project: pass — written".to_owned(),
             ]
         );
         assert!(check.pass());
+        // Without the file, the command did not write outside the project.
+        let mut check = PermissionCheck::new(Candidate::Hook);
+        let lines = check.gui("a", &a, false);
+        assert_eq!(
+            lines[4],
+            "  a, prompted.txt outside the project: fail — missing"
+        );
+        assert!(!check.pass());
 
         // Next to another session's prompt, the hook names it too.
-        let beside = observed("a", HOOK_RUNS, "", "");
+        let beside = observed("a", &gui_runs(HOOK_RUNS), "", "");
         let mut check = PermissionCheck::new(Candidate::Hook);
-        let lines = check.gui("a", &beside);
+        let lines = check.gui("a", &beside, true);
         assert_eq!(
             lines[2],
             format!("  a, session_id: fail — named other sessions: {B}")
@@ -1622,9 +1662,9 @@ mod tests {
         assert!(!check.pass());
 
         // Answered no: the command never ran.
-        let b = observed("b", HOOK_RUNS, "", "");
+        let b = observed("b", &gui_runs(HOOK_RUNS), "", "");
         let mut check = PermissionCheck::new(Candidate::Hook);
-        let lines = check.gui("b", &b);
+        let lines = check.gui("b", &b, true);
         assert!(
             lines[1].starts_with("  b, PermissionRequest hook: pass — told 0.0 s after the call")
         );
@@ -1636,20 +1676,21 @@ mod tests {
 
         let mut check = PermissionCheck::new(Candidate::Hook);
         assert_eq!(
-            check.gui("c", &observed("c", "", "", "")),
+            check.gui("c", &observed("c", "", "", ""), false),
             [
                 "  c, prompt: fail — no hook ran in the project; the agent never called `touch \
-                 prompted.txt`",
+                 ../prompted.txt`",
                 "  c, PermissionRequest hook: fail — did not tell",
                 "  c, session_id: fail — no PermissionRequest run",
                 "  c, after the dialog: fail — after the PermissionRequest hook: nothing",
+                "  c, prompted.txt outside the project: fail — missing",
             ]
         );
     }
 
     #[test]
     fn a_gui_session_times_the_hook_from_the_call_it_asks_about() {
-        let touch = Some(PROMPTED);
+        let touch = Some(GUI_PROMPTED);
         // The model ran the command in the sandbox first, then asked to run it outside.
         let runs = |asked: u64| {
             [
@@ -1671,7 +1712,7 @@ mod tests {
         assert_eq!(a.called_before(Some(6_999)), Some(1_000));
         assert_eq!(a.called_before(Some(999)), None);
         let mut check = PermissionCheck::new(Candidate::Hook);
-        let lines = check.gui("a", &a);
+        let lines = check.gui("a", &a, true);
         assert!(
             lines[1].starts_with("  a, PermissionRequest hook: pass — told 0.2 s after the call")
         );
@@ -1683,7 +1724,7 @@ mod tests {
 
         for (asked, pass) in [(7_000 + WITHIN_MS, true), (7_001 + WITHIN_MS, false)] {
             let mut check = PermissionCheck::new(Candidate::Hook);
-            check.gui("a", &observed("a", &runs(asked), "", ""));
+            check.gui("a", &observed("a", &runs(asked), "", ""), true);
             assert_eq!(check.pass(), pass, "{asked}");
         }
     }
@@ -1718,19 +1759,29 @@ mod tests {
 
         let (lines, pass) = gui_result(work).unwrap();
         assert!(!pass);
-        assert_eq!(lines.len(), 6);
+        assert_eq!(lines.len(), 7);
         assert_eq!(lines[0], "ChatGPT 1");
-        assert_eq!(lines[5], "permission-hook on codex-desktop: fail");
-        let runs =
-            only(HOOK_RUNS, A).replace("/tmp/skald-live/a/project", &project.to_string_lossy());
+        assert_eq!(lines[6], "permission-hook on codex-desktop: fail");
+        let runs = gui_runs(&only(HOOK_RUNS, A))
+            .replace("/tmp/skald-live/a/project", &project.to_string_lossy());
         fs::write(work.join("hook-runs.jsonl"), runs).unwrap();
+        let (lines, pass) = gui_result(work).unwrap();
+        assert!(!pass, "{lines:?}");
+        assert_eq!(
+            lines[5],
+            "  codex-desktop, prompted.txt outside the project: fail — missing"
+        );
+        // The file the command writes in the check's directory, not in the project.
+        fs::write(project.join(WRITTEN), "").unwrap();
+        assert!(!gui_result(work).unwrap().1);
+        fs::write(work.join(WRITTEN), "").unwrap();
         let (lines, pass) = gui_result(work).unwrap();
         assert!(pass, "{lines:?}");
         assert_eq!(
             lines[3],
             "  codex-desktop, session_id: pass — the session's"
         );
-        assert_eq!(lines[5], "permission-hook on codex-desktop: pass");
+        assert_eq!(lines[6], "permission-hook on codex-desktop: pass");
 
         let claude = tempfile::tempdir().unwrap();
         assert!(prepare_gui(claude.path(), Surface::ClaudeVsCode, "v", live, &user).is_err());

@@ -326,10 +326,11 @@ pub(crate) fn carries(fields: &Value, says: &str) -> String {
 }
 
 /// Whether a session waited on its prompt, and the details of its line: `summary`, whether the
-/// agent called the prompted command, at `called`, and when the dialog showed, `shown`, which the
+/// agent called the prompted `command`, at `called`, and when the dialog showed, `shown`, which the
 /// check waited for if `dialog`.
 pub(crate) fn prompted_details(
     summary: &str,
+    command: &str,
     called: Option<u64>,
     shown: Option<u64>,
     dialog: bool,
@@ -341,7 +342,7 @@ pub(crate) fn prompted_details(
     };
     let waited = called.is_some() && (!dialog || shown.is_some());
     let details = format!(
-        "{summary}{}the agent {} `{PROMPTED}`{showed}",
+        "{summary}{}the agent {} `{command}`{showed}",
         if summary.is_empty() { "" } else { "; " },
         if called.is_some() {
             "called"
@@ -422,8 +423,13 @@ impl PermissionCheck {
         summary: &str,
     ) -> Vec<String> {
         let called = observed.called_ms();
-        let (waited, details) =
-            prompted_details(summary, called, observed.shown_ms, answer.is_some());
+        let (waited, details) = prompted_details(
+            summary,
+            PROMPTED,
+            called,
+            observed.shown_ms,
+            answer.is_some(),
+        );
         let mut lines = vec![
             self.checks
                 .report(&format!("{name}, prompt"), waited, &details),
