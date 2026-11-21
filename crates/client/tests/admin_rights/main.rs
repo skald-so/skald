@@ -43,6 +43,7 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
+mod gone;
 mod handover;
 mod lost;
 mod recovery;

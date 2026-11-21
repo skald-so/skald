@@ -1087,7 +1087,7 @@ impl Change {
             |member| member.handle.as_str().to_owned(),
         );
         Some(format!(
-            "{handle}, whose role it sets, is no member of the space {} in its revision {}",
+            "{handle}, whose role it sets, is gone from the space {} in its revision {}",
             latest.body().name.as_str(),
             latest.body().revision
         ))
@@ -2425,8 +2425,8 @@ pub(crate) mod tests {
         assert_eq!(needing, expected);
     }
 
-    /// A change that sets the role of a member a later revision lacks does not apply to it, naming
-    /// the member and that revision; one whose members are all in it does.
+    /// A change that sets the role of a member a later revision lacks does not apply to it, saying
+    /// the member is gone, by its handle, and naming that revision; one whose members are all in it does.
     #[test]
     fn role_change_of_a_member_gone_from_a_later_revision_does_not_apply() {
         let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
@@ -2445,7 +2445,10 @@ pub(crate) mod tests {
         let why = change.role_gone(&handed, &later(bob)).expect("refused");
 
         let handle = handed.member(bob).unwrap().handle.as_str();
-        assert!(why.contains(handle) && why.contains("revision 7"), "{why}");
+        assert!(
+            why.contains(handle) && why.contains("gone") && why.contains("revision 7"),
+            "{why}"
+        );
         assert_eq!(change.role_gone(&handed, &later(carol)), None);
     }
 
