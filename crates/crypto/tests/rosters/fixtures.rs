@@ -183,6 +183,7 @@ pub fn certs() -> Vec<Cert> {
                 issuer,
                 issued: TIMESTAMP,
                 ssh: None,
+                github: None,
                 name: format!("Device {seed}"),
                 unknown: Unknown::default(),
             };

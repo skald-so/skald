@@ -1827,6 +1827,7 @@ pub(crate) mod tests {
             issuer: None,
             issued: 1_800_000_000,
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: skald_proto::Unknown::default(),
         };
@@ -2033,6 +2034,7 @@ pub(crate) mod tests {
                 issuer: Some(DeviceId::from_signing_key(&issuer.public_key())),
                 issued: 1_800_000_000,
                 ssh: None,
+                github: None,
                 name: "ci/bot".to_owned(),
                 unknown: Unknown::default(),
             };
@@ -2405,6 +2407,7 @@ pub(crate) mod tests {
             issuer: None,
             issued: 0,
             ssh: None,
+            github: None,
             name: "Laptop".to_owned(),
             unknown: skald_proto::Unknown::default(),
         };
