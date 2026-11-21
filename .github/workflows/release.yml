@@ -20,6 +20,7 @@ on:
     tags: ['v*']
   pull_request:
     branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - .github/workflows/release.yml
       - dist-workspace.toml
@@ -64,6 +65,7 @@ defaults:
 jobs:
   plan:
     name: Plan
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -287,7 +289,7 @@ jobs:
   # archives with tar, on Windows System32's.
   update:
     name: Test skald update on ${{ matrix.runner }}
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' && github.event.pull_request.draft != true
     strategy:
       fail-fast: false
       matrix:
@@ -309,7 +311,7 @@ jobs:
   # The dry run's build of the release image, as job publish-image builds it.
   image:
     name: Image
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     permissions:
       contents: read

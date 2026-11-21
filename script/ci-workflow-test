@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Tests .github/workflows/ci.yml:
-//   - it runs on a PR into dev, and on every push to dev, whatever the push changes; a push's run is
-//     in a concurrency group of its own commit, which no other push and no PR shares, and is not
-//     cancelled by a newer run; a PR's run is in the PR's group and cancels the PR's older run;
+//   - it runs on a PR into dev, and on every push to dev, whatever the push changes; the pushes to
+//     dev share a concurrency group, which no PR shares, and a push's run cancels no running run;
+//     a PR's run is in the PR's group and cancels the PR's older run;
 //   - the checks the ruleset of dev requires, Changed parts, Rust, Tooling, Web and Site, are each
 //     the name of one job;
 //   - each check script/test runs, run with stand-ins for its scripts and tools
@@ -109,7 +109,7 @@ const [prRun, prRerun, otherPr] = [concurrency(pr, 'c'.repeat(40), 7), concurren
 if ([first, second, prRun, prRerun, otherPr].some((run) => run.group === undefined || isUnknown(run.group))) {
   fail('the concurrency group of a run cannot be told from its event');
 } else {
-  if (first.group === second.group) fail(`two pushes to dev share the concurrency group ${first.group}`);
+  if (first.group !== second.group) fail('two pushes to dev are in different concurrency groups');
   if ([prRun, otherPr].some((run) => run.group === first.group)) fail(`a PR shares the concurrency group of a push to dev: ${first.group}`);
   if (prRun.group !== prRerun.group) fail('two pushes to a PR are in different concurrency groups');
   if (prRun.group === otherPr.group) fail(`two PRs share the concurrency group ${prRun.group}`);
