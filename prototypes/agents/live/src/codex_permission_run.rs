@@ -226,10 +226,10 @@ impl Check<'_> {
         };
         let mut observed = Observed::default();
         session.press(codex_permission::prompt().as_bytes())?;
-        // The terminal UI takes text typed at once as a paste, and Enter after it as sending it.
         if !shows(&mut session, TYPED, Duration::from_secs(2))? {
             eprintln!("live-check: session {name}'s composer never showed its prompt");
         }
+        // The terminal UI takes text typed at once as a paste, and Enter after it as sending it.
         session.pump_for(Duration::from_millis(500))?;
         session.press(ENTER)?;
         (observed.shown_ms, observed.answered_ms) =

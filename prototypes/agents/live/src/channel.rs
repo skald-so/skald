@@ -864,6 +864,9 @@ pub(crate) mod tests {
         // The composer before the question does not count.
         assert!(!screen.showed_after(HOOKS, "? for shortcuts"));
         assert!(!screen.showed_after("never", "Trust"));
+        let mut right_after = Screen::default();
+        right_after.feed(b"? for shortcuts Trust all and continue");
+        assert!(!right_after.showed_after(HOOKS, "? for shortcuts"));
         screen.feed(b"Ask Codex \x1b[1C? for shortcuts");
         assert!(screen.showed_after(HOOKS, "? for shortcuts"));
         assert!(screen.showed_after("Trust all and continue", "Ask Codex"));

@@ -1381,6 +1381,10 @@ mod tests {
             ]
         );
         assert_eq!(check.broke("lost"), "  the check: fail — broke off: lost");
+        assert_eq!(
+            check.verdict(&Options::default()),
+            "permission-notification on codex with the model stub: fail"
+        );
     }
 
     #[test]
