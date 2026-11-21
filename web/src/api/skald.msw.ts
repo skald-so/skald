@@ -12,6 +12,7 @@ import type {
 
 import { ServicePermission, SignInProvider } from "./skald.schemas";
 import type {
+  AcceptanceRequest,
   AccountAnchors,
   AccountDeletion,
   AccountUsage,
@@ -30,6 +31,8 @@ import type {
   HistoryEntries,
   HistoryLinks,
   HistoryWraps,
+  InviteRequest,
+  InviteWithSpace,
   KeyPackageCount,
   KeyPackageRequest,
   KeyPackageUpload,
@@ -42,6 +45,7 @@ import type {
   MasterKey,
   MasterKeyRequest,
   NewChannel,
+  NewInvite,
   Problem,
   Protocol,
   ProtocolProblem,
@@ -60,10 +64,13 @@ import type {
   SpaceRequest,
   SpaceUsage,
   Spaces,
+  StoredAcceptance,
   StoredAnchors,
+  StoredInvite,
   StoredRevocation,
   StoredRosterRevision,
   UsernameRequest,
+  WaitingAcceptances,
   WaitingDevices,
 } from "./skald.schemas";
 
@@ -2282,6 +2289,255 @@ export const getGetHealthResponseMock503 = (
   ...overrideResponse,
 });
 
+export const getGetInviteResponseMock = (
+  overrideResponse: Partial<Extract<InviteWithSpace, object>> = {},
+): InviteWithSpace => ({
+  invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  revisions: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  devices: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    cert: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      null,
+    ]),
+  })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  records: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  deleted: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() =>
+      faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+    ),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetInviteResponseMock200 = (
+  overrideResponse: Partial<Extract<InviteWithSpace, object>> = {},
+): InviteWithSpace => ({
+  invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  revisions: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  devices: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    device: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    cert: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      null,
+    ]),
+  })),
+  revocations: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  records: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  deleted: faker.helpers.arrayElement([
+    Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() =>
+      faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+    ),
+    undefined,
+  ]),
+  ...overrideResponse,
+});
+
+export const getGetInviteResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetInviteResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetInviteResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetInviteResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock = (
+  overrideResponse: Partial<Extract<StoredAcceptance, object>> = {},
+): StoredAcceptance =>
+  faker.helpers.arrayElement([
+    {
+      acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+    {
+      acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getStoreAcceptanceResponseMock200 = (
+  overrideResponse: Partial<Extract<StoredAcceptance, object>> = {},
+): StoredAcceptance => ({
+  acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock201 = (
+  overrideResponse: Partial<Extract<StoredAcceptance, object>> = {},
+): StoredAcceptance => ({
+  acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getStoreAcceptanceResponseProtocolProblemMock() },
+    { ...getStoreAcceptanceResponseProblemMock() },
+  ]);
+
+export const getStoreAcceptanceResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreAcceptanceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getHandOutKeyPackagesResponseMock = (
   overrideResponse: Partial<Extract<HandedOutKeyPackages, object>> = {},
 ): HandedOutKeyPackages => ({
@@ -2746,6 +3002,120 @@ export const getCreateSpaceResponseMock409 = (
 });
 
 export const getCreateSpaceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock = (
+  overrideResponse: Partial<Extract<WaitingAcceptances, object>> = {},
+): WaitingAcceptances => ({
+  acceptances: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    devices: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+    })),
+    revocations: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  })),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock200 = (
+  overrideResponse: Partial<Extract<WaitingAcceptances, object>> = {},
+): WaitingAcceptances => ({
+  acceptances: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+    devices: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => ({
+      device: faker.helpers.fromRegExp(
+        "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      ),
+      cert: faker.helpers.arrayElement([
+        faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+        null,
+      ]),
+    })),
+    revocations: Array.from(
+      { length: faker.number.int({ min: 1, max: 10 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  })),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetWaitingAcceptancesResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -3347,6 +3717,198 @@ export const getGetSpaceDevicesResponseMock404 = (
 });
 
 export const getGetSpaceDevicesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock = (
+  overrideResponse: Partial<Extract<NewInvite, object>> = {},
+): NewInvite => ({
+  invite: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock201 = (
+  overrideResponse: Partial<Extract<NewInvite, object>> = {},
+): NewInvite => ({
+  invite: faker.helpers.fromRegExp(
+    "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+  ),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getCreateInviteResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock = (
+  overrideResponse: Partial<Extract<StoredInvite, object>> = {},
+): StoredInvite =>
+  faker.helpers.arrayElement([
+    {
+      invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+    {
+      invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getStoreInviteResponseMock200 = (
+  overrideResponse: Partial<Extract<StoredInvite, object>> = {},
+): StoredInvite => ({
+  invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock201 = (
+  overrideResponse: Partial<Extract<StoredInvite, object>> = {},
+): StoredInvite => ({
+  invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock400 = (): ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getStoreInviteResponseProtocolProblemMock() },
+    { ...getStoreInviteResponseProblemMock() },
+  ]);
+
+export const getStoreInviteResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getStoreInviteResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -8408,6 +8970,451 @@ export const getGetHealthMockHandler503 = (
   );
 };
 
+export const getGetInviteMockHandler = (
+  overrideResponse?:
+    | InviteWithSpace
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<InviteWithSpace> | InviteWithSpace),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetInviteMockHandler200 = (
+  overrideResponse?:
+    | InviteWithSpace
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<InviteWithSpace> | InviteWithSpace),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetInviteMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetInviteMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetInviteMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetInviteMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ invite: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ invite: string }>(
+    "*/invites/:invite",
+    async (info: Parameters<HttpResponseResolver<{ invite: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetInviteResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler = (
+  overrideResponse?:
+    | StoredAcceptance
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<StoredAcceptance> | StoredAcceptance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler200 = (
+  overrideResponse?:
+    | StoredAcceptance
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<StoredAcceptance> | StoredAcceptance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler201 = (
+  overrideResponse?:
+    | StoredAcceptance
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<StoredAcceptance> | StoredAcceptance),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreAcceptanceMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ invite: string }, AcceptanceRequest>(
+    "*/invites/:invite/acceptance",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ invite: string }, AcceptanceRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreAcceptanceResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getHandOutKeyPackagesMockHandler = (
   overrideResponse?:
     | HandedOutKeyPackages
@@ -9339,6 +10346,189 @@ export const getCreateSpaceMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getCreateSpaceResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler = (
+  overrideResponse?:
+    | WaitingAcceptances
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<WaitingAcceptances> | WaitingAcceptances),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler200 = (
+  overrideResponse?:
+    | WaitingAcceptances
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<WaitingAcceptances> | WaitingAcceptances),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetWaitingAcceptancesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/acceptances",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetWaitingAcceptancesResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -10889,6 +12079,478 @@ export const getGetSpaceDevicesMockHandler500 = (
   );
 };
 
+export const getCreateInviteMockHandler = (
+  overrideResponse?:
+    | NewInvite
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<NewInvite> | NewInvite),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler201 = (
+  overrideResponse?:
+    | NewInvite
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<NewInvite> | NewInvite),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getCreateInviteMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getCreateInviteResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler = (
+  overrideResponse?:
+    | StoredInvite
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<StoredInvite> | StoredInvite),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler200 = (
+  overrideResponse?:
+    | StoredInvite
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<StoredInvite> | StoredInvite),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler201 = (
+  overrideResponse?:
+    | StoredInvite
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<StoredInvite> | StoredInvite),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getStoreInviteMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.put<{ space: string; invite: string }, InviteRequest>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }, InviteRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getStoreInviteResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getListSpaceMembersMockHandler = (
   overrideResponse?:
     | ListedMembers
@@ -12232,6 +13894,8 @@ export const getSkaldAPIMock = () => [
   getGetKeyPackageCountMockHandler(),
   getUploadKeyPackagesMockHandler(),
   getGetHealthMockHandler(),
+  getGetInviteMockHandler(),
+  getStoreAcceptanceMockHandler(),
   getHandOutKeyPackagesMockHandler(),
   getGetOpenApiSpecMockHandler(),
   getGetProtocolMockHandler(),
@@ -12240,6 +13904,7 @@ export const getSkaldAPIMock = () => [
   getEndSessionMockHandler(),
   getGetSpacesMockHandler(),
   getCreateSpaceMockHandler(),
+  getGetWaitingAcceptancesMockHandler(),
   getCreateChannelMockHandler(),
   getGetGroupInfoMockHandler(),
   getUploadGroupInfoMockHandler(),
@@ -12247,6 +13912,8 @@ export const getSkaldAPIMock = () => [
   getGetHistoryLinksMockHandler(),
   getGetHistoryWrapsMockHandler(),
   getGetSpaceDevicesMockHandler(),
+  getCreateInviteMockHandler(),
+  getStoreInviteMockHandler(),
   getListSpaceMembersMockHandler(),
   getGetRosterRevisionsMockHandler(),
   getStoreRosterRevisionMockHandler(),
