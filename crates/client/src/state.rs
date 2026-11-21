@@ -2879,15 +2879,16 @@ impl State {
         Ok(())
     }
 
-    /// Counts one wake in each of `channels` for the write `write`, an ID no other write has, of
-    /// the lines `lines` to the socket of the Claude Code session `session`; the session saying
-    /// that none of them reached the model takes it back ([`State::not_taken`]).
+    /// Counts one wake in each of `channels` for a write of the lines `lines` to the socket of the
+    /// Claude Code session `session`, under an ID of its own; the session saying that none of them
+    /// reached the model takes it back ([`State::not_taken`]).
     pub fn socket_wakes(
         &self,
-        (session, write): (&str, &str),
+        session: &str,
         lines: &[String],
         channels: &BTreeSet<String>,
     ) -> Result<(), Error> {
+        let write = MessageId::generate().to_string();
         let tx = self.db.unchecked_transaction()?;
         for line in lines {
             tx.execute(
@@ -4576,8 +4577,8 @@ pub(crate) mod tests {
         let state = State::in_memory().unwrap();
         let line = ["m".to_owned()];
         let channels = BTreeSet::from(["c".to_owned()]);
-        state.socket_wakes(("a", "w1"), &line, &channels).unwrap();
-        state.socket_wakes(("b", "w2"), &line, &channels).unwrap();
+        state.socket_wakes("a", &line, &channels).unwrap();
+        state.socket_wakes("b", &line, &channels).unwrap();
         assert_eq!(state.wakes().unwrap()["c"], 2);
         state
     }
