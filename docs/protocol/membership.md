@@ -12,6 +12,7 @@ CDDL rules not defined here, such as `id`, `address` and `timestamp`, are in [RE
 - [Service device](#service-device)
 - [Revocation](#revocation)
 - [Device checks](#device-checks)
+- [Account fingerprint](#account-fingerprint)
 - [Trust levels](#trust-levels)
 - [Roster](#roster)
 - [Policy](#policy)
@@ -323,11 +324,20 @@ The master key is the one the client pinned: its own account's on linking or, fo
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
 - an account record's `recovery` changes;
-- a member's `master` changes in the roster;
+- a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
+
+## Account fingerprint
+Two people check that their devices see the same master key for each other's accounts by comparing fingerprints.
+
+- **Fingerprint:** SHA-256 over the encoded `["skald fingerprint", account, master]`, the account ID and the master public key as byte strings. Each of its eight 4-byte words, as a big-endian integer modulo 100000, gives five decimal digits with leading zeros; the groups are joined by one space, 40 digits in all, about 132 bits. Vector: [test-vectors.md](test-vectors.md#account-fingerprint).
+- A device shows its own account's fingerprint from the master key it pinned, and a member's from the `master` the roster gives.
+- Two people compare the fingerprints their devices show for their own accounts over a channel they trust, such as in person or on a call; a fingerprint the server or a message gives proves nothing.
+- A device marks an account verified, for that master key, only on its person's yes to whether the fingerprint matches; an agent never marks one. A verification stays on the device that made it.
+- A verified account whose `master` changes in an accepted revision is no longer verified, and the device warns ([Device checks](#device-checks)).
 
 ## Trust levels
 A recipient device sets the level of each message it accepts from the sending device, the one its scheme authenticates ([Envelope](README.md#envelope)), and of each task it claims from its `sender` ([Claim checks](queues.md#claim-checks)). The level sets how a message's text reaches the agent ([Device to agent](delivery.md#device-to-agent)) and a task's rights ([Running a task](queues.md#running-a-task)).

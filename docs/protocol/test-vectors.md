@@ -2,7 +2,7 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector but [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task), [Queue key object](#queue-key-object), [Invite key](#invite-key) and [Invite link](#invite-link) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Account fingerprint](#account-fingerprint), [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task), [Queue key object](#queue-key-object), [Invite key](#invite-key) and [Invite link](#invite-link) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
@@ -11,7 +11,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
 - The invite key and the invite link are genuine: of the secret `000102…1f`, the 32 bytes 00 to 1f.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object), and an [invite](membership.md#invite), its acceptance, the invite key of a fixed secret and an invite link. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), the [fingerprint](membership.md#account-fingerprint) of that account, a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object), and an [invite](membership.md#invite), its acceptance, the invite key of a fixed secret and an invite link. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -44,6 +44,7 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Revocation by the master key](#revocation-by-the-master-key)
 - [Account record](#account-record)
 - [Master backup](#master-backup)
+- [Account fingerprint](#account-fingerprint)
 - [Certificate with an SSH signature](#certificate-with-an-ssh-signature)
 - [Anchors object](#anchors-object)
 - [Link object](#link-object)
@@ -723,6 +724,14 @@ d38b3cd73ed94bec2c5e1e01da5b9b917a0ecf6f1e7a6d4a64d741ce774dbbe4
 71c91b58300ab1244bbe800adae44ce071a7489d8519f58458edf9b4d1e6c376
 adc97b8c6cfd6dfd3e6ec094b32961bb7fc2b97e44
 ```
+
+## Account fingerprint
+
+The fingerprint of Alice's account with the master key "TEST 1": the encoded `["skald fingerprint", account, master]`, its SHA-256 and the fingerprint. Hex, then digits.
+
+- Encoded: `8371736b616c642066696e6765727072696e7450019a6f1e2b3c7d4e8f5061a2b3c4d5e95820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`
+- SHA-256: `6d913e7ddf35e43b0d6477449da6bd6c9026571685819726fb31a58675522480`
+- Fingerprint: `35261 51003 87940 50380 31766 62566 34854 17568`
 
 ## Certificate with an SSH signature
 

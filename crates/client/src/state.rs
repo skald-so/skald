@@ -627,6 +627,13 @@ const MIGRATIONS: &[&str] = &[
         space TEXT NOT NULL,
         agent TEXT
     ) STRICT",
+    // The accounts the person verified by fingerprint ([`crate::fingerprints`]), each with the
+    // master key it was verified for.
+    "CREATE TABLE verified_account (
+        account TEXT NOT NULL,
+        master BLOB NOT NULL CHECK (length(master) = 32),
+        PRIMARY KEY (account, master)
+    ) STRICT",
 ];
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
@@ -1716,6 +1723,36 @@ impl State {
              ON CONFLICT (account) DO UPDATE SET record = excluded.record",
             params![account.to_string(), record],
         )?;
+        Ok(())
+    }
+
+    /// Whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn verified(&self, account: AccountId, master: &[u8; 32]) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT 1 FROM verified_account WHERE account = ?1 AND master = ?2",
+                params![account.to_string(), master.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Records whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn set_verified(
+        &self,
+        account: AccountId,
+        master: &[u8; 32],
+        verified: bool,
+    ) -> Result<(), Error> {
+        let sql = if verified {
+            "INSERT INTO verified_account (account, master) VALUES (?1, ?2) ON CONFLICT DO NOTHING"
+        } else {
+            "DELETE FROM verified_account WHERE account = ?1 AND master = ?2"
+        };
+        self.db
+            .execute(sql, params![account.to_string(), master.as_slice()])?;
         Ok(())
     }
 
