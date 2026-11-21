@@ -23,14 +23,15 @@ use skald_crypto::{
 };
 use skald_proto::{
     AccountId, AccountRecord, Anchors, Cbor as _, Cert, DeviceId, DeviceKind, MasterBackup,
-    NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, Roster, SpaceId, Unknown,
+    NonEmpty, REVOCATION_LABEL, Revocation, RevocationBody, SpaceId, Unknown,
 };
 use zeroize::Zeroizing;
 
+use crate::anchors;
 use crate::connection::{Connection, printable};
 use crate::device::{self, Keys, MasterKey};
 use crate::devices::{self, text};
-use crate::follow::{self, Own, SpaceDevices};
+use crate::follow::{Own, SpaceDevices};
 use crate::link_code;
 use crate::output::{self, Stream};
 use crate::recovery_wraps;
@@ -76,7 +77,7 @@ pub struct NewDevice<'a> {
 }
 
 /// The run that sends again what a run with the recovery key signed and did not send.
-const AGAIN: &str = "the next skald sign-in --first-device no --with-recovery-key";
+const AGAIN: &str = "the next skald sign-in --with-recovery-key";
 
 /// What the run says when it stops: nothing is signed but what it says it signed.
 fn refused(why: &str) -> sign_in::Error {
@@ -170,7 +171,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
             return Err(sign_in::Error::Recovery(
                 "the account has as many devices as it may on this server, so the server does not \
                  store this device's certificate. Name a device stolen, or revoke one on a linked \
-                 device, then run skald sign-in --first-device no --with-recovery-key again"
+                 device, then run skald sign-in --with-recovery-key again"
                     .to_owned(),
             ));
         }
@@ -339,7 +340,14 @@ impl NewDevice<'_> {
             _ => None,
         };
         for (space, hashes) in &by_space {
-            match self.start(*space, hashes, own)? {
+            let start = anchors::start(
+                (&mut *self.connection, self.token, self.state),
+                *space,
+                hashes,
+                own,
+            )
+            .map_err(sign_in::Error::Io)?;
+            match start {
                 Ok(start) => self.state.add_linked_space(
                     *space,
                     start.body().name.as_str(),
@@ -350,53 +358,6 @@ impl NewDevice<'_> {
             }
         }
         Ok(())
-    }
-
-    /// The revision of `space` the device starts from: of those whose `hashes` the anchors give,
-    /// the one with the lowest number, if every other one is a revision it accepts after it
-    /// ("Roster"); otherwise why it does not join the space.
-    fn start(
-        &mut self,
-        space: SpaceId,
-        hashes: &[[u8; 32]],
-        own: &Own,
-    ) -> Result<Result<Roster, String>, sign_in::Error> {
-        let given =
-            follow::given(self.connection, self.token, space).map_err(sign_in::Error::Io)?;
-        let anchored: Option<Vec<&Roster>> = hashes
-            .iter()
-            .map(|hash| {
-                given
-                    .iter()
-                    .find(|revision| revision.hash() == *hash && revision.body().space == space)
-            })
-            .collect();
-        let Some(start) = anchored.as_ref().and_then(|anchored| {
-            anchored
-                .iter()
-                .min_by_key(|revision| revision.body().revision)
-        }) else {
-            return Ok(Err(format!(
-                "the server does not give a revision of the space {space} that the anchors of the \
-                 account's devices name, so this device does not join the space"
-            )));
-        };
-        let devices = follow::space_devices(self.connection, self.token, self.state, space)
-            .map_err(sign_in::Error::Io)?;
-        let followed = follow::follow(start, &BTreeMap::new(), &given, &devices, own);
-        let accepted: Vec<[u8; 32]> = std::iter::once(*start)
-            .chain(&followed.accepted)
-            .map(Roster::hash)
-            .collect();
-        if hashes.iter().all(|hash| accepted.contains(hash)) {
-            return Ok(Ok((*start).clone()));
-        }
-        Ok(Err(format!(
-            "the anchors of the account's devices of the space {} ({space}) disagree: one names a \
-             revision this device does not accept after the earliest one, so it does not join the \
-             space",
-            start.body().name.as_str()
-        )))
     }
 }
 

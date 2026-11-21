@@ -60,6 +60,11 @@ Plain `http://` goes only to a server on this machine, as here: [Network](docs/d
 
 Web UI: [web/README.md](web/README.md).
 
+## Schema migrations
+- A migration is a new file, `<YYYYMMDDHHMMSS>_<name>.sql`, a timestamp that sorts after the last migration in its directory: the server's in `crates/server/migrations/`, the client's in `crates/client/migrations/`, opening with an SQL comment on what it keeps.
+- Both apply them in the order of their names; the client when it opens its local state, whose `user_version` counts those applied.
+- They are append-only: a new one sorts after every migration on `dev`, and one on `dev` is never changed, renamed or removed. `script/check-migrations` fails otherwise; after merging `dev`, rename a new migration that sorts before one it brought.
+
 ## Tests
 `./script/test` builds everything and runs all checks; exit code 0 only if all of them pass. It starts its own PostgreSQL container and removes it afterwards. CI runs the same script. To run only the parts your changes touch: [infrastructure.md](docs/dev/infrastructure.md#pr-checks), "Path filters".
 
