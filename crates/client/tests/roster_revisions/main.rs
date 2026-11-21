@@ -105,6 +105,7 @@ fn certified_by_the_server(account: AccountId, name: &str) -> (DeviceId, Signing
         issuer: None,
         issued: now(),
         ssh: None,
+        github: None,
         name: name.to_owned(),
         unknown: Unknown::default(),
     };
@@ -481,6 +482,7 @@ fn members_warn_of_two_bodies_and_shared_names() {
             issuer: Some(bob.device),
             issued: now(),
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: Unknown::default(),
         };

@@ -46,6 +46,7 @@ fn cert_with(seed: u8, device: u8, signing: [u8; 32]) -> Cert {
         issuer: None,
         issued: 0,
         ssh: None,
+        github: None,
         name: "Test".to_owned(),
         unknown: Unknown::default(),
     };

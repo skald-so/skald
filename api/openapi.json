@@ -6,6 +6,111 @@
     "description": "A server has two addresses. `<public URL>`, the server setting `--public-url`, is where the CLI and devices reach it. `<web URL>`, the setting `--web-url`, by default the public URL, is where browsers sign in: the providers' callbacks, the pages a sign-in returns to, its cookies, the `Origin` its browser forms are taken from and the verification page."
   },
   "paths": {
+    "/account": {
+      "delete": {
+        "operationId": "deleteAccount",
+        "summary": "Delete the account",
+        "description": "Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused while sign-up is closed; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The account is deleted.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>` of a device session, such as a service token's.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Nothing is deleted. The problem `https://skald.so/problems/not-allowed`: a web session's request does not come from a page of the web URL. The problem `https://skald.so/problems/sign-in-too-old`: the session's sign-in is older than `--link-sign-in-age`; the person signs in again first.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Nothing is deleted. The problem `https://skald.so/problems/deletion-blocked`: the spaces that block the deletion.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletionBlockedProblem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/account/anchors": {
       "get": {
         "operationId": "listAnchors",
@@ -182,6 +287,88 @@
           },
           "401": {
             "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/account/deletion": {
+      "get": {
+        "operationId": "getAccountDeletion",
+        "summary": "What a deletion of the account deletes and what blocks it",
+        "description": "The spaces the session's account gets that its deletion deletes, and those that block it. A space's other members are the accounts of its latest revision but this one and those already deleted.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What a deletion now deletes and what blocks it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDeletion"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown, ended or expired one, or an `Authorization` header that is not `Bearer <token>`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -8420,7 +8607,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate or is revoked, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; a `service` device, in a service agent entry or a channel's `services`, that is revoked or no certified `service` device on the account of a member of the revision; or a channel whose ID the server did not issue for this space.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate or is revoked, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; a `service` device, in a service agent entry or a channel's `services`, that is revoked or no certified `service` device on the account of a member of the revision; a channel whose ID the server did not issue for this space; or members whose accounts are not all deleted with no admin whose account is not.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -9260,6 +9447,30 @@
         },
         "additionalProperties": false
       },
+      "AccountDeletion": {
+        "type": "object",
+        "required": [
+          "deletes",
+          "blocks"
+        ],
+        "properties": {
+          "deletes": {
+            "description": "The spaces where the account is the only member, its personal space included, which its deletion deletes.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletionSpace"
+            }
+          },
+          "blocks": {
+            "description": "The spaces where the account is the only admin and that have other members: while one is listed, `DELETE /account` deletes nothing.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletionSpace"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "AccountId": {
         "description": "An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
         "type": "string",
@@ -9405,6 +9616,61 @@
           "without_template": {
             "description": "Whether it takes a task without a template.",
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeletionBlockedProblem": {
+        "description": "A problem details object (RFC 9457) that refuses an account's deletion while spaces block it.",
+        "type": "object",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail",
+          "spaces"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "https://skald.so/problems/deletion-blocked"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "enum": [
+              409
+            ]
+          },
+          "detail": {
+            "type": "string"
+          },
+          "spaces": {
+            "description": "The spaces that block it, as `blocks` of `GET /account/deletion`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeletionSpace"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeletionSpace": {
+        "type": "object",
+        "required": [
+          "space",
+          "name"
+        ],
+        "properties": {
+          "space": {
+            "$ref": "#/components/schemas/SpaceId"
+          },
+          "name": {
+            "$ref": "#/components/schemas/SpaceName"
           }
         },
         "additionalProperties": false
@@ -9961,6 +10227,10 @@
             "description": "When the server stored the revision that added the member, after which every revision lists it.",
             "type": "string",
             "format": "date-time"
+          },
+          "deleted": {
+            "description": "`true` when the member's account is deleted: the server's word; absent otherwise.",
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -10921,6 +11191,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/AccountRecord"
+            }
+          },
+          "deleted": {
+            "description": "The IDs of those accounts that are deleted, once each: the server's word; absent when none is. Their devices, certificates and revocations are still given.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
             }
           }
         },
