@@ -18,8 +18,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_crypto::{
-    RecoveryKey, SigningKey, check_account, check_anchors, check_device, counts, marked_stolen,
-    open_recovery, sign_revocation, verify,
+    PASTE_END, PASTE_START, RecoveryKey, SigningKey, check_account, check_anchors, check_device,
+    counts, marked_stolen, open_recovery, sign_revocation, verify,
 };
 use skald_proto::{
     AccountId, AccountRecord, Anchors, Cbor as _, Cert, DeviceId, DeviceKind, MasterBackup,
@@ -729,10 +729,6 @@ fn ask(
     Ok(Some(named))
 }
 
-/// A terminal's bracketed-paste markers.
-const PASTE_START: &str = "\x1b[200~";
-const PASTE_END: &str = "\x1b[201~";
-
 /// Reads what its person types or pastes at the terminal, with echo off, after showing `prompt`:
 /// the lines up to the first that is not blank, and on to the end of a paste still open there;
 /// `None` once the input ends before.
@@ -765,10 +761,21 @@ fn read_key(input: &mut impl BufRead) -> io::Result<Option<Zeroizing<String>>> {
 /// and no paste still open. A selection copied from the end of the line above the key pastes a
 /// line end before it: Windows Terminal sends it as a blank line first.
 fn holds_key(text: &str) -> bool {
-    let unmarked = text.replace(PASTE_START, "").replace(PASTE_END, "");
-    let blank = unmarked
-        .chars()
-        .all(|c| c.is_whitespace() || c.is_control());
+    let mut rest = text;
+    let mut blank = true;
+    while let Some(c) = rest.chars().next() {
+        if let Some(after) = [PASTE_START, PASTE_END]
+            .iter()
+            .find_map(|marker| rest.strip_prefix(marker))
+        {
+            rest = after;
+        } else if c.is_whitespace() || c.is_control() {
+            rest = &rest[c.len_utf8()..];
+        } else {
+            blank = false;
+            break;
+        }
+    }
     let open = text.rfind(PASTE_START) > text.rfind(PASTE_END);
     !blank && !open
 }

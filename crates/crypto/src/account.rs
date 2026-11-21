@@ -19,8 +19,11 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// The characters of a recovery key, and of each group of its shown form.
 const DIGITS: usize = 12;
 const GROUP: usize = 4;
-/// A terminal's bracketed-paste markers, removed whole from an input.
-const PASTE_MARKERS: [&str; 2] = ["\x1b[200~", "\x1b[201~"];
+/// A terminal's bracketed-paste markers, before and after what is pasted; removed whole from an
+/// input.
+pub const PASTE_START: &str = "\x1b[200~";
+pub const PASTE_END: &str = "\x1b[201~";
+const PASTE_MARKERS: [&str; 2] = [PASTE_START, PASTE_END];
 /// What comes before the account ID in the salt of the recovery key's derivation.
 const SALT_PREFIX: &[u8] = b"skald recovery";
 /// Argon2id's memory in KiB, passes and lanes: "Account".
@@ -40,7 +43,14 @@ impl RecoveryKey {
     /// If the random generator fails.
     pub fn generate() -> Self {
         let random = random_secret();
-        let mut bits = Zeroizing::new(u64::from_le_bytes(random[..8].try_into().expect("8 bytes")));
+        let bits = Zeroizing::new(u64::from_le_bytes(random[..8].try_into().expect("8 bytes")));
+        Self::from_bits(*bits)
+    }
+
+    /// The key of the low 60 bits of `bits`: its first character the lowest 5, each next one the
+    /// next 5.
+    fn from_bits(bits: u64) -> Self {
+        let mut bits = Zeroizing::new(bits);
         let mut key = Zeroizing::new([0; DIGITS]);
         for digit in key.iter_mut() {
             *digit = ALPHABET[usize::try_from(*bits & 0x1f).expect("5 bits")];
@@ -303,3 +313,28 @@ impl fmt::Display for AccountError {
 }
 
 impl std::error::Error for AccountError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Each character is the value of its own 5 bits, the first the lowest: each of the 60 bits
+    /// sets only its character's bit.
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn each_character_takes_its_own_5_of_the_60_bits() {
+        assert_eq!(
+            RecoveryKey::from_bits(0x0fed_cba9_8765_4321)
+                .shown()
+                .as_str(),
+            "1SGA-P36N-BEVZ"
+        );
+        for bit in 0..60 {
+            let mut digits = [b'0'; DIGITS];
+            digits[bit / 5] = ALPHABET[1 << (bit % 5)];
+            let key = RecoveryKey::from_bits(1 << bit);
+            assert_eq!(*key.0, digits, "bit {bit}");
+        }
+        assert_eq!(*RecoveryKey::from_bits(0xf << 60).0, [b'0'; DIGITS]);
+    }
+}

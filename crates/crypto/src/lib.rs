@@ -19,8 +19,8 @@ mod trust;
 mod wrap;
 
 pub use account::{
-    AccountError, Recovered, RecoveryKey, RecoveryKeyError, check_account, new_recovery,
-    new_recovery_with_nonce, open_recovery, sign_account,
+    AccountError, PASTE_END, PASTE_START, Recovered, RecoveryKey, RecoveryKeyError, check_account,
+    new_recovery, new_recovery_with_nonce, open_recovery, sign_account,
 };
 pub use anchors::{check_anchors, check_link, sign_anchors, sign_link};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue};

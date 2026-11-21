@@ -20,14 +20,14 @@ const SALT_PREFIX: &[u8] = b"skald recovery";
 /// The 12 characters of `shown`, a key in its shown form: 3 groups of 4 characters of [`ALPHABET`]
 /// joined by `-`; `None` for any other text.
 pub fn digits(shown: &str) -> Option<[u8; 12]> {
-    let groups: Vec<&str> = shown.split('-').collect();
-    let shaped = groups.len() == 3
-        && groups
-            .iter()
-            .all(|group| group.len() == 4 && group.chars().all(|c| ALPHABET.contains(c)));
+    let shaped = shown.len() == 14
+        && shown.bytes().enumerate().all(|(at, c)| match at {
+            4 | 9 => c == b'-',
+            _ => ALPHABET.as_bytes().contains(&c),
+        });
     shaped.then(|| {
-        groups
-            .concat()
+        shown
+            .replace('-', "")
             .into_bytes()
             .try_into()
             .expect("12 characters")
