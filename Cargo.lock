@@ -3239,14 +3239,14 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skald-adapters"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "skald-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
@@ -3295,7 +3295,7 @@ dependencies = [
 
 [[package]]
 name = "skald-crypto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "base64 0.23.1",
@@ -3322,7 +3322,7 @@ dependencies = [
 
 [[package]]
 name = "skald-github-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3337,11 +3337,11 @@ dependencies = [
 
 [[package]]
 name = "skald-mcp"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "skald-oidc-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3353,7 +3353,7 @@ dependencies = [
 
 [[package]]
 name = "skald-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ciborium-io",
  "ciborium-ll",
@@ -3366,7 +3366,7 @@ dependencies = [
 
 [[package]]
 name = "skald-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
