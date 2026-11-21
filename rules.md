@@ -30,3 +30,6 @@
    - In a prototype, a mishandled edge case that does not change the iteration's answer is a nit: the author adds it to the report as an open question.
    - After a story's last iteration, a PR of its own removes duplication across the story's iterations; the story is done once it is merged, or after its last iteration if there is none to remove.
    - This rule overrides a review tool's own split of issues and nits, its re-review scope and when it counts a story done.
+8. **User-facing text is as short as possible:** CLI output, prompts, errors, local pages and web pages.
+   - It says what happened and what to do next, one short line each where it fits.
+   - Everything else goes to `--help` and the docs.
