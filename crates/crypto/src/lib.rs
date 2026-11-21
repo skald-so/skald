@@ -28,7 +28,10 @@ pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
 pub use grant::{GrantError, check_grant};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
-pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError, link_session};
+pub use link::{
+    LinkCode, LinkCodeError, LinkEntry, LinkEntryError, LinkKey, LinkOpenError, LinkPairing,
+    link_session,
+};
 pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,

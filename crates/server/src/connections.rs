@@ -37,7 +37,7 @@ use crate::{AppState, database_failed};
 use crate::{error_reports, history};
 
 /// How long a challenge works.
-const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
+pub(crate) const CHALLENGE_LIFETIME: Duration = Duration::from_secs(60);
 /// How long the server waits for a connection's `auth`.
 const PROOF_WAIT: Duration = Duration::from_secs(5);
 /// How long a proved connection waits for the instance to listen to the others.

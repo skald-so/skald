@@ -23,6 +23,7 @@ mod connections;
 mod delivery;
 mod device_certs;
 mod device_flow;
+mod device_sessions;
 mod devices;
 mod error_reports;
 mod events;
@@ -257,6 +258,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(link_runs::messages).layer(checked(Statement::Header)),
         )
         .route(
+            "/account/links/pairing",
+            post(link_runs::pair).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/links/waiting",
             get(link_runs::waiting).layer(checked(Statement::Header)),
         )
@@ -335,6 +340,14 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             put(device_certs::store).layer(checked(Statement::Header)),
         )
         .route(
+            "/devices/{device}/challenge",
+            post(device_sessions::challenge).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/devices/{device}/session",
+            post(device_sessions::start).layer(checked(Statement::Header)),
+        )
+        .route(
             "/devices/{device}/key-packages",
             get(key_packages::status)
                 .post(key_packages::upload)
@@ -344,6 +357,16 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/key-packages",
             post(key_packages::hand_out).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/links",
+            post(link_runs::open_sessionless).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/links/messages",
+            get(link_runs::run_messages)
+                .post(link_runs::run_relay)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/mailbox/ack",

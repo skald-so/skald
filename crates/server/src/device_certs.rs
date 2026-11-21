@@ -8,6 +8,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use serde::{Deserialize, Serialize};
 use skald_proto::{Cbor as _, Cert, DeviceId, DeviceKind};
+use sqlx::PgConnection;
 
 use crate::AppState;
 use crate::devices::{base64, bytes, taken};
@@ -89,21 +90,11 @@ pub(crate) async fn store(
             "the certificate does not match its device's registration on this account".to_owned()
         }));
     }
-    let (master, mut certs) = account_certs(&state, &account).await?;
-    let master = master.ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;
-    certs.push(cert.clone());
-    skald_crypto::check_device(&master, &certs, id)
-        .map_err(|err| Refusal::Cert(err.to_string()))?;
+    check_on_account(&state, &account, &cert, id).await?;
 
     let failed = |err| Refusal::Database("store a certificate", err);
     let mut tx = db.begin().await.map_err(failed)?;
-    // The account's row lock orders the certificates of its devices, so of those sent at once the
-    // count of each sees the ones before it.
-    sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR UPDATE")
-        .bind(&account)
-        .execute(&mut *tx)
-        .await
-        .map_err(failed)?;
+    lock_account(&mut tx, &account).await.map_err(failed)?;
     // One sent at once with this one may have been stored meanwhile.
     let (held,): (Option<Vec<u8>>,) =
         sqlx::query_as("SELECT cert FROM devices WHERE id = $1::uuid")
@@ -114,19 +105,7 @@ pub(crate) async fn store(
     if let Some(held) = held {
         return again(device, &sent, &held);
     }
-    if let Some(limit) = state.devices_limit.filter(|_| !service) {
-        let (certified,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM devices
-             WHERE account_id = $1::uuid AND cert IS NOT NULL AND kind <> 'service' AND NOT revoked",
-        )
-        .bind(&account)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(failed)?;
-        if certified >= i64::from(limit) {
-            return Err(Refusal::DevicesLimit(limit));
-        }
-    }
+    within_limit(&mut tx, state.devices_limit.filter(|_| !service), &account).await?;
     let stored = sqlx::query("UPDATE devices SET cert = $1 WHERE id = $2::uuid AND cert IS NULL")
         .bind(&sent)
         .bind(&device)
@@ -169,17 +148,72 @@ impl Stored {
     }
 }
 
-/// The master key of `account` and the certificates its devices hold that decode.
+/// Locks the row of `account`, which orders the certificates of its devices, so of those sent at
+/// once the count of each sees the ones before it.
+pub(crate) async fn lock_account(
+    conn: &mut PgConnection,
+    account: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR UPDATE")
+        .bind(account)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Refuses a certificate that would give `account` more devices with a certificate than `limit`,
+/// `service` and revoked devices aside.
+pub(crate) async fn within_limit(
+    conn: &mut PgConnection,
+    limit: Option<u32>,
+    account: &str,
+) -> Result<(), Refusal> {
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    let (certified,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM devices
+         WHERE account_id = $1::uuid AND cert IS NOT NULL AND kind <> 'service' AND NOT revoked",
+    )
+    .bind(account)
+    .fetch_one(conn)
+    .await
+    .map_err(|err| Refusal::Database("store a certificate", err))?;
+    if certified >= i64::from(limit) {
+        return Err(Refusal::DevicesLimit(limit));
+    }
+    Ok(())
+}
+
+/// Checks 1 and 2 of "Device checks" for `cert`, of device `id`, against the master key of
+/// `account` and the certificates its devices hold.
+pub(crate) async fn check_on_account(
+    state: &AppState,
+    account: &str,
+    cert: &Cert,
+    id: DeviceId,
+) -> Result<(), Refusal> {
+    let (master, mut certs) = account_certs(state, account).await?;
+    let master = master.ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;
+    certs.push(cert.clone());
+    skald_crypto::check_device(&master, &certs, id)
+        .map_err(|err| Refusal::Cert(err.to_string()))?;
+    Ok(())
+}
+
+/// The master key of `account` and the certificates its devices hold that decode; no master key for
+/// an account the server does not have.
 async fn account_certs(
     state: &AppState,
     account: &str,
 ) -> Result<(Option<[u8; 32]>, Vec<Cert>), Refusal> {
-    let (master,): (Option<Vec<u8>>,) =
+    let master: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
             .bind(account)
-            .fetch_one(&state.db)
+            .fetch_optional(&state.db)
             .await
             .map_err(|err| Refusal::Database("read the master key", err))?;
+    let master = master.and_then(|(master,)| master);
     let held: Vec<(Vec<u8>,)> =
         sqlx::query_as("SELECT cert FROM devices WHERE account_id = $1::uuid AND cert IS NOT NULL")
             .bind(account)
