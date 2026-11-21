@@ -139,10 +139,10 @@ impl InviteLink {
             .strip_prefix(PATH)
             .and_then(|invite| invite.parse().ok())
             .ok_or(InviteLinkError::Path)?;
+        // 86 characters of base64url without padding decode to 64 bytes.
         let mut bytes = Zeroizing::new(Vec::with_capacity(64));
         if fragment.len() != FRAGMENT_LEN
             || URL_SAFE_NO_PAD.decode_vec(fragment, &mut bytes).is_err()
-            || bytes.len() != 64
         {
             return Err(InviteLinkError::Fragment);
         }
@@ -210,6 +210,27 @@ mod tests {
     const FRAGMENT: &str =
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh-hoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoQ";
     const INVITE: &str = "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1";
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn the_secret_is_never_shown_and_errors_name_the_part() {
+        assert_eq!(
+            format!("{:?}", InviteSecret::from_bytes(&[0x5e; 32])),
+            "InviteSecret(..)"
+        );
+        assert_eq!(
+            InviteLinkError::Web.to_string(),
+            "an invite link starts with the server's web address, such as https://skald.example"
+        );
+        assert_eq!(
+            InviteLinkError::Path.to_string(),
+            "an invite link's path is /invite/ and the invite's ID"
+        );
+        assert_eq!(
+            InviteLinkError::Fragment.to_string(),
+            "an invite link ends with # and 86 characters of base64url"
+        );
+    }
 
     /// The link of `web` with the fixed invite and fragment.
     fn link(web: &str) -> String {
