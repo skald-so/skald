@@ -2879,18 +2879,15 @@ impl State {
         Ok(())
     }
 
-    /// Counts one wake in each of `channels` for a write of the lines `lines` to the socket of the
-    /// Claude Code session `session`; the session saying that none of them reached the model takes
-    /// it back ([`State::not_taken`]).
+    /// Counts one wake in each of `channels` for the write `write`, an ID no other write has, of
+    /// the lines `lines` to the socket of the Claude Code session `session`; the session saying
+    /// that none of them reached the model takes it back ([`State::not_taken`]).
     pub fn socket_wakes(
         &self,
-        session: &str,
+        (session, write): (&str, &str),
         lines: &[String],
         channels: &BTreeSet<String>,
     ) -> Result<(), Error> {
-        let Some(write) = lines.first() else {
-            return Ok(());
-        };
         let tx = self.db.unchecked_transaction()?;
         for line in lines {
             tx.execute(
@@ -4572,6 +4569,35 @@ pub(crate) mod tests {
         (state.db)
             .query_row(&format!("PRAGMA {name}"), [], |row| row.get(column))
             .unwrap()
+    }
+
+    /// One message is the line of a write to each of two sessions; each counts a wake in `c`.
+    fn written_to_two_sessions() -> State {
+        let state = State::in_memory().unwrap();
+        let line = ["m".to_owned()];
+        let channels = BTreeSet::from(["c".to_owned()]);
+        state.socket_wakes(("a", "w1"), &line, &channels).unwrap();
+        state.socket_wakes(("b", "w2"), &line, &channels).unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 2);
+        state
+    }
+
+    #[test]
+    fn a_line_both_sessions_refuse_takes_back_both_writes_wakes() {
+        let state = written_to_two_sessions();
+        state.not_taken("a", "m").unwrap();
+        state.not_taken("b", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 0);
+    }
+
+    #[test]
+    fn a_line_one_session_confirms_keeps_its_wake_and_the_other_s_refusal_takes_back_its_own() {
+        let state = written_to_two_sessions();
+        state.confirmed("a", &["m".to_owned()]).unwrap();
+        state.not_taken("b", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
+        state.not_taken("a", "m").unwrap();
+        assert_eq!(state.wakes().unwrap()["c"], 1);
     }
 
     #[test]

@@ -1368,7 +1368,8 @@ fn hand_over_socket(
         return Ok(0);
     }
     let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
-    (state.socket_wakes(&session.session, &ids, &channels)).map_err(text)?;
+    let write = MessageId::generate().to_string();
+    (state.socket_wakes((&session.session, &write), &ids, &channels)).map_err(text)?;
     Ok(0)
 }
 
