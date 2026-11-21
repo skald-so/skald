@@ -2,15 +2,16 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector but [Account fingerprint](#account-fingerprint), [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task) and [Queue key object](#queue-key-object) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Account fingerprint](#account-fingerprint), [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task), [Queue key object](#queue-key-object), [Invite key](#invite-key) and [Invite link](#invite-link) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
 - Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
 - The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `000102…1f`, the 32 bytes 00 to 1f; the backup seals that master private key to that recovery key with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.2.
 - The `ssh` of the certificate with an SSH signature is genuine: by the Ed25519 SSH key of the secret key "TEST 1024" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, over the certificate's `account`, `device` and `signing`; the certificate's own signatures are placeholders.
 - The presence value is genuine: signed by Alice's device's key "TEST 1" and sealed under the presence key of the history key `000102…0f`, the 16 bytes 00 to 0f.
 - The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
+- The invite key and the invite link are genuine: of the secret `000102…1f`, the 32 bytes 00 to 1f.
 - Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), the [fingerprint](membership.md#account-fingerprint) of that account, a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), and an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object). `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), the [fingerprint](membership.md#account-fingerprint) of that account, a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object), and an [invite](membership.md#invite), its acceptance, the invite key of a fixed secret and an invite link. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -52,6 +53,10 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Queue key pair](#queue-key-pair)
 - [Sealed task](#sealed-task)
 - [Queue key object](#queue-key-object)
+- [Invite key](#invite-key)
+- [Invite](#invite)
+- [Acceptance](#acceptance)
+- [Invite link](#invite-link)
 
 ## Envelope under `mls`
 
@@ -1036,3 +1041,83 @@ The queue key object of epoch 2 of the channel, its key the public key of [Queue
 b263bdb472a63f08d933cf6809bdf256043ad162417b7628c37e5ed51bc4248b
 faa92e88ce23b48c9c195e5c2c3d03
 ```
+
+## Invite key
+
+The invite key pair of this secret. Hex.
+
+- Secret: `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`
+- Private key: `22a87520d8720b891e2ea1201d017e0022be6bb4cf015b5387291038819ce64b`
+- Public key: `8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a`
+
+## Invite
+
+Alice's device invites Bob as a member to two channels, reading the first one's history; its `key` is the public key of [Invite key](#invite-key).
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f1',
+    2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+    3: h'8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a',
+    4: 2,
+    5: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+        true
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e8',
+        false
+      ]
+    ],
+    6: h'19ac5f784938823586a6c5809a18f6dd',
+    7: 1763424000
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+82588aa70150019a6f1e2b3c7d4e8f5061a2b3c4d5f10250019a6f1e2b3c7d4e
+8f5061a2b3c4d5e60358208d214134fbf6785e26bcb5404b753ea7235410ed0e
+b5b17c3c651d253788859a040205828250019a6f1e2b3c7d4e8f5061a2b3c4d5
+e7f58250019a6f1e2b3c7d4e8f5061a2b3c4d5e8f4065019ac5f784938823586
+a6c5809a18f6dd071a691bb70058405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Acceptance
+
+Bob accepts the invite of [Invite](#invite) with his account, his master key "TEST 2" and the handle `bob`.
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f1',
+    2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f2',
+    3: h'3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c',
+    4: "bob"
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+82584da40150019a6f1e2b3c7d4e8f5061a2b3c4d5f10250019a6f1e2b3c7d4e
+8f5061a2b3c4d5f20358203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2e
+c4968cc0cd55f12af4660c0463626f6258405a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Invite link
+
+The link of the invite of [Invite](#invite) with the secret of [Invite key](#invite-key).
+
+- Web address: `https://skald.example`
+- Invite: `019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1`
+- Secret: `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`
+- Revision: `a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1`
+- Link: `https://skald.example/invite/019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh-hoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoQ`

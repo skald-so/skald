@@ -55,14 +55,14 @@ mod helped;
 #[path = "../recovery_key/terminal.rs"]
 mod terminal;
 
-use skald_proto::{Role, Roster};
+use skald_proto::Roster;
 
 use machine::{Finished, Machine};
 use talk::{ADA_HOST, BOB_HOST};
 use terminal::{Shown, Terminal};
 use world::{
-    ACME, ADD_RULE, AGENT, Person, World, create, dir_of, members, next_by, path, plain_lines, run,
-    store, words,
+    ACME, ADD_RULE, AGENT, Person, World, create_with_member, dir_of, members, path, plain_lines,
+    run, words,
 };
 
 /// The command that shows fingerprints.
@@ -96,11 +96,7 @@ impl Pair {
         let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
         let bob = world.sign_up(ids[1], logins[1], BOB_HOST);
         let cloud = &world.cloud;
-        let second = create(cloud, &bob, ACME);
-        let third = next_by(&second, &bob, |members| {
-            members.push(ada.member(Role::Member));
-        });
-        store(cloud, &bob.token, &third);
+        let third = create_with_member(cloud, &bob, ACME, &ada);
         let accepted = members(&bob.machine, ACME);
         assert!(
             words(&accepted.stdout).contains(&ada.handle.as_str()),

@@ -3,10 +3,12 @@
  */
 import type {
   AccountAnchors,
+  AccountDeletion,
   AccountUsage,
   AnchorsRequest,
   CertUpload,
   ChannelGroup,
+  DeletionBlockedProblem,
   Device,
   DeviceRegistration,
   Devices,
@@ -58,6 +60,80 @@ import type {
   UsernameRequest,
   WaitingDevices,
 } from "./skald.schemas";
+
+export type deleteAccountResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type deleteAccountResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type deleteAccountResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type deleteAccountResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type deleteAccountResponse409 = {
+  data: DeletionBlockedProblem;
+  status: 409;
+};
+
+export type deleteAccountResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type deleteAccountResponseSuccess = deleteAccountResponse204 & {
+  headers: Headers;
+};
+export type deleteAccountResponseError = (
+  | deleteAccountResponse400
+  | deleteAccountResponse401
+  | deleteAccountResponse403
+  | deleteAccountResponse409
+  | deleteAccountResponse500
+) & {
+  headers: Headers;
+};
+
+export type deleteAccountResponse =
+  deleteAccountResponseSuccess | deleteAccountResponseError;
+
+export const getDeleteAccountUrl = () => {
+  return `/account`;
+};
+
+/**
+ * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused while sign-up is closed; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
+ * @summary Delete the account
+ */
+export const deleteAccount = async (
+  options?: RequestInit,
+): Promise<deleteAccountResponse> => {
+  const res = await fetch(getDeleteAccountUrl(), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: deleteAccountResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as deleteAccountResponse;
+};
 
 export type listAnchorsResponse200 = {
   data: AccountAnchors;
@@ -207,6 +283,67 @@ export const storeAnchors = async (
     status: res.status,
     headers: res.headers,
   } as storeAnchorsResponse;
+};
+
+export type getAccountDeletionResponse200 = {
+  data: AccountDeletion;
+  status: 200;
+};
+
+export type getAccountDeletionResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type getAccountDeletionResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type getAccountDeletionResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type getAccountDeletionResponseSuccess =
+  getAccountDeletionResponse200 & {
+    headers: Headers;
+  };
+export type getAccountDeletionResponseError = (
+  | getAccountDeletionResponse400
+  | getAccountDeletionResponse401
+  | getAccountDeletionResponse500
+) & {
+  headers: Headers;
+};
+
+export type getAccountDeletionResponse =
+  getAccountDeletionResponseSuccess | getAccountDeletionResponseError;
+
+export const getGetAccountDeletionUrl = () => {
+  return `/account/deletion`;
+};
+
+/**
+ * The spaces the session's account gets that its deletion deletes, and those that block it. A space's other members are the accounts of its latest revision but this one and those already deleted.
+ * @summary What a deletion of the account deletes and what blocks it
+ */
+export const getAccountDeletion = async (
+  options?: RequestInit,
+): Promise<getAccountDeletionResponse> => {
+  const res = await fetch(getGetAccountDeletionUrl(), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: getAccountDeletionResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as getAccountDeletionResponse;
 };
 
 export type listAccountDevicesResponse200 = {

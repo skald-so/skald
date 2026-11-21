@@ -58,6 +58,32 @@ pub(crate) fn random_secret() -> Zeroizing<[u8; 32]> {
     secret
 }
 
+/// Gives `$type`, a newtype of 32 secret bytes in a `Zeroizing<[u8; 32]>`, `generate`, `from_bytes`
+/// and `to_bytes`.
+macro_rules! secret_bytes {
+    ($type:ty) => {
+        impl $type {
+            /// New bytes from the cryptographically secure generator of the operating system, or in
+            /// WASM of the browser or Node.js.
+            ///
+            /// # Panics
+            /// If the random generator fails.
+            pub fn generate() -> Self {
+                Self($crate::sign::random_secret())
+            }
+
+            pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+                Self(zeroize::Zeroizing::new(*bytes))
+            }
+
+            pub fn to_bytes(&self) -> zeroize::Zeroizing<[u8; 32]> {
+                self.0.clone()
+            }
+        }
+    };
+}
+pub(crate) use secret_bytes;
+
 /// A signature does not verify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignatureError;
