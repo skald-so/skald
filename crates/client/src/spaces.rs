@@ -839,9 +839,9 @@ impl Follower {
     /// takes it; gives the revision it took. When another revision came first, it accepts the new
     /// revisions and signs what `pending` changes into the latest, as the next pending one
     /// ([`Change`]). It drops the pending revision when the server refuses it, when it accepts no
-    /// revision that came first, when the latest makes this device no admin's or when the change
-    /// signed into the latest fails the checks of accepting it; and, giving the latest, when
-    /// nothing of it is left to change.
+    /// revision that came first, when the latest makes this device no admin's or lacks a member
+    /// whose role the change sets, or when the change signed into the latest fails the checks of
+    /// accepting it; and, giving the latest, when nothing of it is left to change.
     pub fn store(&mut self, space: &state::Space, mut pending: Vec<u8>) -> Result<Roster, Unsent> {
         let (id, name) = (space.id, space.name.as_str());
         for _ in 0..follow::ATTEMPTS {
@@ -876,14 +876,16 @@ impl Follower {
                         .into_iter()
                         .find(|given| Some(given.hash()) == prev)
                         .unwrap_or_else(|| latest.clone());
+                    let change = Change::between(base.body(), roster.body());
                     if latest.hash() == base.hash() {
                         "the server gives no revision this device accepts in its place, or not \
                          the one it was signed on"
                             .to_owned()
                     } else if !admin_device(&latest, self.own.account, self.this) {
                         no_admin(&latest)
+                    } else if let Some(why) = change.role_gone(roster.body(), &latest) {
+                        why
                     } else {
-                        let change = Change::between(base.body(), roster.body());
                         let mut body = latest.body().clone();
                         change.onto(&mut body, needs_default(&latest));
                         if body == *latest.body() {
@@ -1075,6 +1077,22 @@ struct Change {
 }
 
 impl Change {
+    /// Why the change does not apply to `latest`, a later revision than `signed`, the one it made:
+    /// a member whose role it sets is in `latest` no more.
+    fn role_gone(&self, signed: &RosterBody, latest: &Roster) -> Option<String> {
+        let (account, _) =
+            (self.roles.iter()).find(|(account, _)| latest.body().member(*account).is_none())?;
+        let handle = signed.member(*account).map_or_else(
+            || account.to_string(),
+            |member| member.handle.as_str().to_owned(),
+        );
+        Some(format!(
+            "{handle}, whose role it sets, is no member of the space {} in its revision {}",
+            latest.body().name.as_str(),
+            latest.body().revision
+        ))
+    }
+
     /// What `next` changes in `base`.
     fn between(base: &RosterBody, next: &RosterBody) -> Self {
         let mut change = Change::default();
@@ -1148,13 +1166,12 @@ impl Change {
 
     /// Makes the change in `body`, so far as it still applies: a member it removes leaves every
     /// channel; it bars a device, sets a role and adds a member to a channel only of a member of
-    /// `body`; it
-    /// removes no member from the default channel, the first one, which keeps every member; and
-    /// it puts its default channel first, with every member, only if `needs_default`; it sets the
-    /// policy's `history`; it removes a service agent's entry and its device from every channel's
-    /// `services`; it adds a service agent only while `body` has neither its device nor its
-    /// address, and its owner is no member's handle; and it adds a `service` device to a channel's
-    /// `services` only while `body` has the device's service agent entry.
+    /// `body`; it removes no member from the default channel, the first one, which keeps every
+    /// member; and it puts its default channel first, with every member, only if `needs_default`;
+    /// it sets the policy's `history`; it removes a service agent's entry and its device from every
+    /// channel's `services`; it adds a service agent only while `body` has neither its device nor
+    /// its address, and its owner is no member's handle; and it adds a `service` device to a
+    /// channel's `services` only while `body` has the device's service agent entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
@@ -2270,9 +2287,8 @@ pub(crate) mod tests {
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
     /// channel, adds Dave to it, makes Dave an admin and Ada a member, adds a channel, sets the
     /// history period and adds a service agent, listed in a channel's `services`, changes the same
-    /// in a later revision that added Eve, who
-    /// stays in every channel she is in, and another service agent; a service agent all of them
-    /// list stays once.
+    /// in a later revision that added Eve, who stays in every channel she is in, and another
+    /// service agent; a service agent all of them list stays once.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
@@ -2359,13 +2375,13 @@ pub(crate) mod tests {
         assert_eq!(latest, expected);
     }
 
-    /// Of a change, what no longer applies to a later revision is left out: a removed, barred or
-    /// promoted member that is gone, a member added to a channel who left the space or is in it already, a
+    /// Of a change, what no longer applies to a later revision is left out: a removed or barred
+    /// member that is gone, a member added to a channel who left the space or is in it already, a
     /// member removed from the default channel, a default channel the revision does not need, and a
     /// service agent whose device or address the revision has or whose owner is a member's handle,
     /// a removed service agent the revision does not list, and a `service` device in a channel the
-    /// revision lacks, or without the device's entry. One
-    /// that needs it gets it first, with every member.
+    /// revision lacks, or without the device's entry. One that needs it gets it first, with every
+    /// member.
     #[test]
     fn change_leaves_out_what_no_longer_applies() {
         let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
@@ -2379,7 +2395,7 @@ pub(crate) mod tests {
             channels: Vec::new(),
             removed: vec![carol],
             excluded: vec![(carol, DeviceId::from_signing_key(&[9; 32]))],
-            roles: vec![(carol, Role::Admin)],
+            roles: Vec::new(),
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
             history: None,
@@ -2407,6 +2423,30 @@ pub(crate) mod tests {
         let mut expected = latest.clone();
         expected.channels.insert(0, default_channel(added, &latest));
         assert_eq!(needing, expected);
+    }
+
+    /// A change that sets the role of a member a later revision lacks does not apply to it, naming
+    /// the member and that revision; one whose members are all in it does.
+    #[test]
+    fn role_change_of_a_member_gone_from_a_later_revision_does_not_apply() {
+        let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
+        let base = acme(&[ada, bob, carol], &[]);
+        let mut handed = base.clone();
+        make(&mut handed, bob, Role::Admin);
+        make(&mut handed, ada, Role::Member);
+        let change = Change::between(&base, &handed);
+        let later = |removed: AccountId| {
+            let mut body = base.clone();
+            remove_members(&mut body, &[removed]).unwrap();
+            body.revision = 7;
+            skald_crypto::sign_roster(&body, &SigningKey::generate()).expect("a revision")
+        };
+
+        let why = change.role_gone(&handed, &later(bob)).expect("refused");
+
+        let handle = handed.member(bob).unwrap().handle.as_str();
+        assert!(why.contains(handle) && why.contains("revision 7"), "{why}");
+        assert_eq!(change.role_gone(&handed, &later(carol)), None);
     }
 
     /// Only the only admin of a space with another member is warned, naming the command that makes

@@ -537,18 +537,29 @@ fn signer_unrevoked(
     devices: &SpaceDevices,
     own: &Own,
 ) -> Result<(), RosterError> {
-    let revoked = previous.body().members.iter().any(|admin| {
-        master_of(previous, own, admin.account).is_some_and(|master| {
-            check_device(&master, &devices.certs, signer)
-                .is_ok_and(|cert| cert.body().account == admin.account)
-                && check_valid_device(&master, &devices.certs, &devices.revocations, signer)
-                    .is_err()
-        })
+    let revoked = chained_to(previous, signer, devices, own).any(|(_, master)| {
+        check_valid_device(&master, &devices.certs, &devices.revocations, signer).is_err()
     });
     if revoked {
         return Err(RosterError::Signer(signer));
     }
     Ok(())
+}
+
+/// Each member of `roster`, with its master key as [`master_of`] gives it, whose account the
+/// certificate of `device` among `devices` chains to by checks 1 and 2 of "Device checks".
+fn chained_to<'r>(
+    roster: &'r Roster,
+    device: DeviceId,
+    devices: &SpaceDevices,
+    own: &Own,
+) -> impl Iterator<Item = (&'r Member, [u8; 32])> {
+    roster.body().members.iter().filter_map(move |member| {
+        let master = master_of(roster, own, member.account)?;
+        check_device(&master, &devices.certs, device)
+            .is_ok_and(|cert| cert.body().account == member.account)
+            .then_some((member, master))
+    })
 }
 
 /// What the device tells its user of `next`, accepted after `previous`, for each member whose role
@@ -569,16 +580,11 @@ fn changed_roles(
         return Vec::new();
     }
     let signer = body.signer;
-    let by = (before.members.iter())
-        .find(|admin| {
-            master_of(previous, own, admin.account).is_some_and(|master| {
-                check_device(&master, &devices.certs, signer)
-                    .is_ok_and(|cert| cert.body().account == admin.account)
-            })
-        })
+    let by = chained_to(previous, signer, devices, own)
+        .next()
         .map_or_else(
             || format!("the device {signer}"),
-            |admin| admin.handle.as_str().to_owned(),
+            |(admin, _)| admin.handle.as_str().to_owned(),
         );
     (changed.into_iter())
         .map(|member| {

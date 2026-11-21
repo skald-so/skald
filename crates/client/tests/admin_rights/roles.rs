@@ -7,7 +7,7 @@ use skald_crypto::accept_next;
 use skald_proto::{AccountId, DeviceId, Name, NonEmpty, Role, Roster, RosterBody, SpaceId};
 
 use crate::cloud::Cloud;
-use crate::edits::{SPACE_CHANGE, last_two};
+use crate::edits::{SPACE_CHANGE, in_order, last_two};
 use crate::fixtures::strs;
 use crate::front::Front;
 use crate::kit::{Change, create_space, issue_channel, latest, received, revise, rosters};
@@ -71,15 +71,6 @@ pub fn role_set(machine: &Machine, command: RoleCommand, space: &str, member: &P
         member.handle
     );
     ran
-}
-
-/// `body` with its members in account order.
-fn in_order(body: &RosterBody) -> RosterBody {
-    let mut body = body.clone();
-    let mut members = body.members.clone().into_vec();
-    members.sort_by_key(|member| member.account);
-    body.members = NonEmpty::from_vec(members).expect("a member");
-    body
 }
 
 /// Fails unless `next`, a revision the server holds, is the one after `previous` that the device

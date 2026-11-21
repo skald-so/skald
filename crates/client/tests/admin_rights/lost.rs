@@ -1,18 +1,13 @@
 //! A lost answer to the revision a role command sends: the next run leaves one revision with the
 //! change.
 
-use std::thread;
-use std::time::Duration;
-
 use skald_proto::Role;
 
-use crate::edits::last_two;
+use crate::edits::{ada_and_bob, last_two, run_losing_the_answer};
 use crate::fixtures::{fronted, strs};
-use crate::kit::{channels, rosters};
 use crate::relay::Lose;
 use crate::roles::{RoleCommand, assert_roles, space_with};
-use crate::talk::{ADA_HOST, BOB_HOST};
-use crate::world::{ACME, store_request};
+use crate::world::ACME;
 
 /// Ada's machine created `acme`, with Bob a member. The relay loses the server's answer to the
 /// revision of Ada's `command` about Bob as `how` says: it closes the connection, or it withholds
@@ -21,28 +16,15 @@ use crate::world::{ACME, store_request};
 fn one_revision_after_a_lost_answer(
     command: RoleCommand,
     how: Lose,
-    (ids, logins): ([u64; 2], [&str; 2]),
+    people: ([u64; 2], [&str; 2]),
 ) {
     let (world, _front) = fronted();
     let cloud = &world.cloud;
-    let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
-    let bob = world.sign_up(ids[1], logins[1], BOB_HOST);
+    let (ada, bob) = ada_and_bob(&world, people);
     let (space, _) = space_with(cloud, &ada, ACME, &[(&bob, Role::Member)]);
-    let held = rosters(cloud, &ada.token, space).len();
-    let request = store_request(space);
-    cloud.relay.lose_answer(&request, how);
 
-    let started = ada.machine.start(&strs(&command.args(ACME, &bob.handle)));
-    if how == Lose::Close {
-        // It may try again itself and finish.
-        drop(started.finish());
-    } else {
-        cloud.kill_once_lost(started, &request);
-    }
-    assert_eq!(cloud.relay.lost(), 1, "{request} lost no answer");
-    // Signed again, a revision has another timestamp, and so other bytes.
-    thread::sleep(Duration::from_millis(1100));
-    channels(&ada.machine, ACME);
+    let args = command.args(ACME, &bob.handle);
+    let held = run_losing_the_answer(cloud, (space, ACME), &ada, &strs(&args), how);
 
     let (previous, next) = last_two(cloud, &ada.token, space, held);
     let roles = command.roles(ada.account, bob.account);
