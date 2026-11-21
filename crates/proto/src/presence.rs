@@ -259,25 +259,38 @@ fn note(item: &Item<'_>) -> Result<String, DecodeError> {
     }
 }
 
-impl Codec for AgentState {
-    fn encode(&self) -> Vec<u8> {
-        cbor::uint(match self {
+impl AgentState {
+    /// Its code in `agent-state`.
+    pub fn code(self) -> u8 {
+        match self {
             Self::Available => 1,
             Self::Busy => 2,
             Self::Waiting => 3,
             Self::Offline => 4,
-        })
+        }
+    }
+
+    /// The state of `code` in `agent-state`, if it is one.
+    pub fn of_code(code: u64) -> Option<Self> {
+        match code {
+            1 => Some(Self::Available),
+            2 => Some(Self::Busy),
+            3 => Some(Self::Waiting),
+            4 => Some(Self::Offline),
+            _ => None,
+        }
+    }
+}
+
+impl Codec for AgentState {
+    fn encode(&self) -> Vec<u8> {
+        cbor::uint(u64::from(self.code()))
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         const FIELD: &str = "agent-status.state";
-        match item.uint(FIELD)? {
-            1 => Ok(Self::Available),
-            2 => Ok(Self::Busy),
-            3 => Ok(Self::Waiting),
-            4 => Ok(Self::Offline),
-            other => Err(field_error(FIELD, FieldProblem::Value(other))),
-        }
+        let code = item.uint(FIELD)?;
+        Self::of_code(code).ok_or_else(|| field_error(FIELD, FieldProblem::Value(code)))
     }
 }
 

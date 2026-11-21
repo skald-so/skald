@@ -4,8 +4,8 @@
 use std::process::Stdio;
 
 use crate::agents::{CLAUDE, assert_not_handed};
-use crate::held::{ACCEPTS, DECIDE, accepted_then_read, holding, says_waiting, shows_not};
-use crate::inbound::REFUSED;
+use crate::held::{ACCEPTS, DECIDE, accepted_then_read, holding, says_waiting};
+use crate::inbound::{REFUSED, shows_not};
 use crate::machine::{Finished, Run};
 use crate::receipts::READ;
 use crate::terminal::Terminal;

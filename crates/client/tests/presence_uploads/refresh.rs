@@ -9,9 +9,10 @@ use skald_proto::AgentState;
 
 use crate::agents::{Agents, CLAUDE};
 use crate::helped::{EXIT_LIMIT, Helped, IDLE_SETTING};
+use crate::presence::assert_between;
 use crate::values::{
-    EXPIRES_SETTING, ada_s_value, assert_between, await_available, body_of, claude_session_with,
-    helpers_beside, listed, one_helper_beside, shows,
+    EXPIRES_SETTING, ada_s_value, await_available, body_of, claude_session_with, helpers_beside,
+    listed, one_helper_beside, shows,
 };
 use crate::world::now;
 

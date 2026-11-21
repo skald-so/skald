@@ -6,12 +6,12 @@ use skald_proto::{AgentState, DeviceId};
 
 use crate::agents::CLAUDE;
 use crate::lines::assert_no_uuid;
+use crate::presence::{AVAILABLE, BUSY};
 use crate::senders::{BOB_AGENT, LAPTOP, LAPTOP_AGENT, OWN, PEER};
 use crate::talk::BOB_HOST;
 use crate::values::{
-    AVAILABLE, BUSY, Directory, Listed, OFFLINE, VALID, agent_and_tool_list,
-    assert_warned_before_peers, listed_json, listed_of, object_of, person_line_of, person_lists,
-    status, uploads_until,
+    Directory, Listed, OFFLINE, VALID, agent_and_tool_list, assert_warned_before_peers,
+    listed_json, listed_of, object_of, person_line_of, person_lists, status, uploads_until,
 };
 use crate::world::{now, words};
 

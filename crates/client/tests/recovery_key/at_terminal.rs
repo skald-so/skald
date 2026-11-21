@@ -1,5 +1,6 @@
 //! Signing in at the person's terminal, as the tests of the recovery key and of linking with it do:
-//! the run's arguments, approving its code, and reading the recovery key it shows.
+//! the run's arguments, approving its code, reading the recovery key it shows, and the lines that
+//! say one waits.
 
 use skald_github_stand_in::User;
 
@@ -83,4 +84,13 @@ pub fn shown_key(run: &mut Terminal) -> String {
     let keys = keys_in(&text);
     assert_eq!(keys.len(), 1, "keys shown: {text}");
     keys[0].clone()
+}
+
+/// The lines of `text` that say a recovery key waits: those that hold `recovery key`, in any
+/// case, and the command `skald sign-in --server <cloud>`.
+pub fn waiting_lines<'t>(cloud: &Cloud, text: &'t str) -> Vec<&'t str> {
+    let command = format!("skald sign-in --server {}", cloud.url);
+    text.lines()
+        .filter(|line| line.contains(&command) && line.to_lowercase().contains("recovery key"))
+        .collect()
 }

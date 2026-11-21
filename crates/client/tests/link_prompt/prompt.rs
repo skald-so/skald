@@ -1,11 +1,7 @@
 //! What the tests share: Ada's new machine waiting for linking, and the line that names it.
 
-use std::thread;
-use std::time::{Duration, Instant};
-
-use crate::cloud::{Cloud, WAIT};
 use crate::lines::assert_no_uuid;
-use crate::linking::{NewDevice, waiting};
+use crate::linking::NewDevice;
 use crate::world::{Person, World};
 
 /// The host name of Ada's new machine, the `name` it registers.
@@ -66,15 +62,4 @@ pub fn assert_not_prompted(shown: &str, name: &str) {
         .filter(|line| line.to_lowercase().contains("skald link"))
         .collect();
     assert!(linking.is_empty(), "{name:?} to link: {shown}");
-}
-
-/// Waits for up to [`WAIT`] until the server holds no open run of `new`'s device for `ada`'s
-/// account.
-#[track_caller]
-pub fn until_not_waiting(cloud: &Cloud, ada: &Person, new: &NewDevice) {
-    let deadline = Instant::now() + WAIT;
-    while waiting(cloud, ada, new.device) {
-        assert!(Instant::now() < deadline, "the run of {} is open", new.host);
-        thread::sleep(Duration::from_millis(100));
-    }
 }

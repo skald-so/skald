@@ -12,8 +12,10 @@ use crate::held::{
 };
 use crate::talk::Line;
 
-/// The `ttl` of the message, in seconds: how long it waits for a decision.
-const TTL: u64 = 10;
+/// The `ttl` of the message, in seconds: how long it waits for a decision. Its wait starts when
+/// B's device takes it in, and the person's run that does says it waits only at its end: room for
+/// that run on a slow machine.
+const TTL: u64 = 30;
 
 /// What Bob's agent sends; it is nowhere else.
 const TEXT: &str = "hold expiry test: claude, renew the wildcard certificate";

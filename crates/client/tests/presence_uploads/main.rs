@@ -40,6 +40,7 @@
 
 mod epochs;
 mod one_shot;
+mod presence;
 mod refresh;
 mod revisions;
 mod runs;

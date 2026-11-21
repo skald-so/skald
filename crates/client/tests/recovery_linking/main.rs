@@ -88,7 +88,7 @@ mod terminal;
 use std::time::Instant;
 
 use skald_crypto::{DeviceCheckError, RecoveryKey, check_valid_device, open_master_backup};
-use skald_proto::{Cbor as _, Cert, DeviceId, MasterBackup, Revocation, Role, Roster, SpaceId};
+use skald_proto::{Cbor as _, DeviceId, MasterBackup, Revocation, Role, Roster, SpaceId};
 
 use anchors::ANCHORS_REQUEST;
 use cloud::{Cloud, certified, unb64};
@@ -97,15 +97,6 @@ use revocations::{STORE_REVOCATION, account_certs, account_revocations, naming};
 use world::{ACME, Person, World, create, next_by, store, words};
 
 pub use recovering::*;
-
-/// The certificate the server holds of `device`, of `ada`'s account, if any.
-pub fn cert_of(cloud: &Cloud, ada: &Person, device: DeviceId) -> Option<Cert> {
-    cloud
-        .devices(&ada.token)
-        .into_iter()
-        .find(|held| held.id == device)
-        .and_then(|held| held.cert)
-}
 
 /// How a device of `ada`'s account checks `device`: with her master key and the certificates and
 /// revocations the server holds of her account.
@@ -146,7 +137,7 @@ pub fn revoked_once_by(
 /// `issuer`, valid for `ada`'s devices.
 #[track_caller]
 pub fn assert_certified_by_the_master_key(cloud: &Cloud, ada: &Person, device: DeviceId) {
-    let cert = cert_of(cloud, ada, device).expect("the new device's certificate");
+    let cert = (cloud.cert(&ada.token, device)).expect("the new device's certificate");
     assert_eq!(cert.body().issuer, None, "its issuer: {:?}", cert.body());
     assert!(
         checked(cloud, ada, device).is_ok(),

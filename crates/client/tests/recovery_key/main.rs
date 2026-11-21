@@ -48,7 +48,9 @@ mod shown;
 mod system;
 mod terminal;
 
-pub use at_terminal::{AGENT, approve, as_agent, first_at_terminal, keys_in, shown_key, sign_in};
+pub use at_terminal::{
+    AGENT, approve, as_agent, first_at_terminal, keys_in, shown_key, sign_in, waiting_lines,
+};
 use browser::{APPROVE, Browser};
 use cloud::{Cloud, unb64};
 use machine::{FIRST_DEVICE, Machine, YES};
@@ -87,15 +89,6 @@ pub fn holds_key(text: &str, key: &[u8; 32]) -> bool {
 /// bytes in any of [`keys`]'s encodings, or as text in any of [`holds_key`]'s forms.
 pub fn bytes_hold_key(bytes: &[u8], key: &[u8; 32]) -> bool {
     keys::holds(bytes, key) || holds_key(&String::from_utf8_lossy(bytes), key)
-}
-
-/// The lines of `text` that say a recovery key waits: those that hold `recovery key`, in any
-/// case, and the command `skald sign-in --server <cloud>`.
-pub fn waiting_lines<'t>(cloud: &Cloud, text: &'t str) -> Vec<&'t str> {
-    let command = format!("skald sign-in --server {}", cloud.url);
-    text.lines()
-        .filter(|line| line.contains(&command) && line.to_lowercase().contains("recovery key"))
-        .collect()
 }
 
 /// Fails unless `text`, what a run printed while the recovery key waits, says so in one line and
