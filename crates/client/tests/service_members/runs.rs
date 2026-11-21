@@ -1,5 +1,5 @@
-//! What a run with the agent's secrets takes: only `skald send` and `skald recv`, as no agent, and
-//! only with both secrets.
+//! What a run with the agent's secrets takes: only `skald send`, `skald recv` and a member's task
+//! commands, as no agent, and only with both secrets.
 
 use crate::member::{Bot, Runner};
 use crate::service_kit::{KEY_VARIABLE, TOKEN_VARIABLE};

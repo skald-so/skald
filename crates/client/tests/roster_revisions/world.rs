@@ -394,6 +394,17 @@ pub fn store(cloud: &Cloud, token: &str, roster: &Roster) {
     );
 }
 
+/// `owner`'s machine creates the space `name`, and revision 3, signed by its device, adds `member`
+/// as a member; gives revision 3, which the server stores.
+pub fn create_with_member(cloud: &Cloud, owner: &Person, name: &str, member: &Person) -> Roster {
+    let second = create(cloud, owner, name);
+    let third = next_by(&second, owner, |members| {
+        members.push(member.member(Role::Member));
+    });
+    store(cloud, &owner.token, &third);
+    third
+}
+
 /// The request for `space`'s revisions, as its line starts.
 pub fn revisions_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/revisions")

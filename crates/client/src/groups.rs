@@ -40,7 +40,8 @@
 //! - It encrypts a channel message in the channel's group only while every member device is
 //!   admitted, no Commit of its own there waits for the server and another device is in it; the
 //!   message goes into the outbox with the state, its history entry ([`crate::history`]) and its
-//!   content's `counter`, the device's next in the channel.
+//!   content's `counter`, the device's next in the channel. A task's result goes so too, or, to a
+//!   sending device outside the group, under `hpke` with the counter the device keeps for it.
 
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -57,7 +58,7 @@ use skald_crypto::{
 };
 use skald_proto::{
     Cbor as _, Cert, Channel, ChannelId, Content, DeviceId, Envelope, Frame, Header, MessageId,
-    NonEmpty, Push, RawEnvelope, Roster, Scheme, SpaceId, Unknown,
+    NonEmpty, Push, RawEnvelope, Roster, Scheme, SpaceId, TaskId, Unknown,
 };
 
 use crate::clock;
@@ -1649,12 +1650,44 @@ pub fn encrypt_receipt(
     Ok(sent.map(|(msg_id, _)| msg_id))
 }
 
+/// As [`encrypt`], the result of the task `task` its claim held (`docs/protocol/queues.md`,
+/// "Results"), from `agent` if given: in the channel's group when `sender`, the task's sending
+/// device, is a member device of its current epoch, otherwise under `hpke` to `sender`, with the
+/// counter the device keeps for it in the channel and `cert`, its certificate. It has no copies,
+/// and nothing on this device keeps it; the device's claim of the task ends with it. Gives why it
+/// waits, as [`encrypt`] says why it sends nothing, and fails only if the device or its state
+/// does.
+pub fn encrypt_result(
+    follower: &Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    (channel, agent, task): (ChannelId, Option<&str>, TaskId),
+    (sender, cert): (DeviceId, Option<&Cert>),
+    content: impl FnOnce(MessageId, NonZeroU64) -> Content,
+) -> Result<Result<MessageId, String>, String> {
+    let sending = Sending::Result {
+        agent,
+        task,
+        sender,
+        cert,
+    };
+    let sent = encrypted(follower, (roster, devices), channel, sending, content)?;
+    Ok(sent.map(|(msg_id, _)| msg_id))
+}
+
 /// What the device encrypts in a channel.
 enum Sending<'a, 'r> {
     /// A message of its user's, from the agent if given, with its copies to the readers.
     Message(Option<&'a str>, &'r [Reader]),
     /// A receipt, with the `seq` of each receipt it reports, `held` ones if true.
     Receipt(Vec<u64>, bool),
+    /// The result of the task `task`, from the agent if given, to the task's sending device
+    /// `sender`, of the certificate `cert` if the device has a valid one.
+    Result {
+        agent: Option<&'a str>,
+        task: TaskId,
+        sender: DeviceId,
+        cert: Option<&'a Cert>,
+    },
 }
 
 /// [`encrypt`] of what `sending` says; gives why it sends nothing in place of the message ID and
@@ -1685,10 +1718,26 @@ fn encrypted<'r>(
             }
             Err(err) => return Err(failed(channel, err)),
         };
+        // A result to a device outside the group goes under `hpke`, whatever the group holds.
+        let hpke_to = match &sending {
+            Sending::Result { sender, cert, .. }
+                if !members.iter().any(|member| member.device == *sender) =>
+            {
+                let Some(cert) = cert else {
+                    return unsent(format!(
+                        "the task's sending device {sender} is outside the group of the channel \
+                         {channel} and has no valid certificate, so its result has no key to go \
+                         to"
+                    ));
+                };
+                Some(*cert)
+            }
+            _ => None,
+        };
         let strangers: Vec<String> = (unadmitted(&admitted, &members).iter())
             .map(ToString::to_string)
             .collect();
-        if !strangers.is_empty() {
+        if hpke_to.is_none() && !strangers.is_empty() {
             return unsent(format!(
                 "the group of the channel {channel} holds the devices {}, which are not admitted \
                  to the channel; nothing is sent there until the server stores this device's \
@@ -1696,13 +1745,17 @@ fn encrypted<'r>(
                 strangers.join(", ")
             ));
         }
-        if waiting {
+        if hpke_to.is_none() && waiting {
             return unsent(format!(
                 "this device's Commit in the channel {channel} waits for the server's answer; \
                  nothing is sent there until the server stores it"
             ));
         }
-        let last = follower.state.channel_counter(channel).map_err(text)?;
+        let last = match hpke_to {
+            Some(cert) => (follower.state).copy_counter(channel, cert.body().device),
+            None => follower.state.channel_counter(channel),
+        }
+        .map_err(text)?;
         let counter = last
             .checked_add(1)
             .and_then(NonZeroU64::new)
@@ -1717,14 +1770,17 @@ fn encrypted<'r>(
                 let (own, gets) = recv::own_message(follower, &key, at, (&content, *agent))?;
                 (Some(own), gets)
             }
-            Sending::Receipt(..) => (None, false),
+            Sending::Receipt(..) | Sending::Result { .. } => (None, false),
         };
-        let (agent, readers, issued) = match sending {
-            Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None),
-            Sending::Receipt(issued, held) => (None, &[][..], Some((issued, held))),
+        let (agent, readers, issued, ended) = match sending {
+            Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None, None),
+            Sending::Receipt(issued, held) => (None, &[][..], Some((issued, held)), None),
+            Sending::Result { agent, task, .. } => {
+                (agent.map(str::to_owned), &[][..], None, Some(task))
+            }
         };
         let alone = members.iter().all(|member| member.device == follower.this);
-        if alone && !gets && readers.is_empty() {
+        if hpke_to.is_none() && alone && !gets && readers.is_empty() {
             return unsent(format!(
                 "no device can receive the message: the group of the channel {channel} holds no \
                  other device, no agent of this device in the space, nor its person, gets it, and \
@@ -1740,15 +1796,37 @@ fn encrypted<'r>(
             msg_id,
             &content,
         );
-        let payload = device
-            .encrypt(channel, &content.to_cbor())
-            .map_err(|err| failed(channel, err))?;
+        let (envelope, recipient) = match hpke_to {
+            Some(cert) => {
+                let to = cert.body().device;
+                let header = Header {
+                    v: version,
+                    space,
+                    channel,
+                    msg_id,
+                    scheme: Scheme::Hpke,
+                    recipients: Some(NonEmpty::new(to)),
+                    ttl: None,
+                    unknown: Unknown::default(),
+                };
+                let payload = seal_message(&header, &content, keys.signing(), &cert.body().hpke)
+                    .map_err(|err| format!("the result to the device {to} does not seal: {err}"))?;
+                (Envelope { header, payload }.to_cbor(), Some(to))
+            }
+            None => {
+                let payload = device
+                    .encrypt(channel, &content.to_cbor())
+                    .map_err(|err| failed(channel, err))?;
+                let envelope = mls_envelope(version, (space, channel), msg_id, payload, None);
+                (envelope, None)
+            }
+        };
         let message = Counted {
             outgoing: Outgoing {
                 msg_id,
-                recipient: None,
+                recipient,
                 space,
-                envelope: mls_envelope(version, (space, channel), msg_id, payload, None),
+                envelope,
                 report: issued.is_none(),
             },
             channel,
@@ -1756,8 +1834,8 @@ fn encrypted<'r>(
             agent,
             addressee: content.to.as_ref().map(ToString::to_string),
         };
-        // A receipt is no message of the device's user: nothing reports on it.
-        let tracked = issued.is_none().then(|| {
+        // A receipt is no message of the device's user: nothing reports on it; nor on a result.
+        let tracked = (issued.is_none() && ended.is_none()).then(|| {
             let to = (&members[..], readers);
             message_status::tracked(follower.this, (roster, devices), msg_id, to)
         });
@@ -1782,6 +1860,7 @@ fn encrypted<'r>(
             issued_held,
             own: own.into_iter().collect(),
             tracked: tracked.into_iter().collect(),
+            ended: ended.into_iter().collect(),
             ..MlsChanges::default()
         };
         Ok((Some(device.seal()), changes, Ok((msg_id, first))))
