@@ -268,7 +268,7 @@ impl Market {
         let skill = self.plugin.join("skills").join("e2e-newer-version");
         fs::create_dir_all(&skill).expect("make the newer version's skill");
         let body =
-            format!("---\nname: e2e-newer-version\ndescription: {marker}\n---\n\n{marker}\n");
+            format!("---\nname: e2e-newer-version\ndescription: \"{marker}\"\n---\n\n{marker}\n");
         fs::write(skill.join("SKILL.md"), body).expect("write the newer version's skill");
         self.commit("a newer version");
         if let Some(listed) = self.file["plugins"][0].get_mut("version") {
