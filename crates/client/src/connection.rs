@@ -611,6 +611,60 @@ impl Resolver for Deferred {
     }
 }
 
+/// The proxy the client reaches `base`, a URL it connects to, through: the one
+/// [`Proxy::for_host`] gives for an `https://` URL, none for plain HTTP to this machine.
+fn proxy_of(base: &str) -> Result<Option<Proxy>, Error> {
+    match scheme(base)? {
+        Scheme::Https => {
+            let uri: Uri = base.parse().map_err(|_| Error::Url(base.to_owned()))?;
+            Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)
+        }
+        Scheme::Loopback => Ok(None),
+    }
+}
+
+/// The agent of HTTP requests that dials as [`dial`] says, through `proxy` if given, with
+/// `resolver`, over TLS trusting `roots` if given; it follows no redirect, and each request fails
+/// after `timeout`.
+fn http_agent(
+    roots: Option<&Roots>,
+    proxy: Option<Proxy>,
+    resolver: Pinned,
+    timeout: Duration,
+) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        // A redirect could take a request to another host, in the clear.
+        .max_redirects(0)
+        .timeout_global(Some(timeout));
+    if let Some(roots) = roots {
+        config = config.tls_config(roots.ureq());
+    }
+    let dial = Dial {
+        proxy,
+        resolver,
+        timeout,
+    };
+    ureq::Agent::with_parts(
+        config.build(),
+        ().chain(dial).chain(RustlsConnector::default()),
+        Deferred,
+    )
+}
+
+/// An agent of plain HTTP requests, with none of a connection's headers, to the service at `base`,
+/// such as `https://api.github.com`, that reaches it as a connection reaches its server: over
+/// HTTPS through the proxy `HTTPS_PROXY` names, or in plain HTTP to this machine only.
+pub fn agent_to(base: &str, timeout: Duration) -> Result<ureq::Agent, Error> {
+    let proxy = proxy_of(base)?;
+    let roots = (scheme(base)? == Scheme::Https).then(Roots::load);
+    let resolver = Pinned {
+        system: Arc::new(DefaultResolver::default()),
+    };
+    Ok(http_agent(roots.as_ref(), proxy, resolver, timeout))
+}
+
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
@@ -745,13 +799,7 @@ impl Connection {
         timeout: Duration,
         system: Arc<dyn Resolver>,
     ) -> Result<Self, Error> {
-        let proxy = match scheme(server)? {
-            Scheme::Https => {
-                let uri: Uri = server.parse().map_err(|_| Error::Url(server.to_owned()))?;
-                Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)?
-            }
-            Scheme::Loopback => None,
-        };
+        let proxy = proxy_of(server)?;
         Self::proxied(server, speaks, timeout, system, proxy)
     }
 
@@ -764,26 +812,8 @@ impl Connection {
         proxy: Option<Proxy>,
     ) -> Result<Self, Error> {
         let roots = (scheme(server)? == Scheme::Https).then(Roots::load);
-        let mut config = ureq::Agent::config_builder()
-            .proxy(None)
-            .http_status_as_error(false)
-            // A redirect could take a request to another host, in the clear.
-            .max_redirects(0)
-            .timeout_global(Some(timeout));
-        if let Some(roots) = &roots {
-            config = config.tls_config(roots.ureq());
-        }
         let resolver = Pinned { system };
-        let dial = Dial {
-            proxy: proxy.clone(),
-            resolver: resolver.clone(),
-            timeout,
-        };
-        let agent = ureq::Agent::with_parts(
-            config.build(),
-            ().chain(dial).chain(RustlsConnector::default()),
-            Deferred,
-        );
+        let agent = http_agent(roots.as_ref(), proxy.clone(), resolver.clone(), timeout);
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
             tls: roots.map(|roots| roots.rustls()),
