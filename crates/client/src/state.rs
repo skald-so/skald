@@ -564,7 +564,9 @@ const MIGRATIONS: &[&str] = &[
     // Delivery settings ([`crate::delivery`]): when the device kept each message, in Unix
     // milliseconds, none for one an older client kept; the mode, `now`, `batch` with its window in
     // seconds, or `pull`, and the text setting, `signal` or `inline`, the person set for each
-    // channel and sender trust level; and the wakes the device caused in each channel.
+    // channel and sender trust level; the wakes the device caused in each channel; and, until the
+    // session confirms one of them or says none reached the model, the lines of each write to a
+    // Claude Code session's socket and the channels whose wake it counted.
     "ALTER TABLE kept ADD COLUMN came INTEGER CHECK (came >= 0);
     CREATE TABLE delivery_setting (
         channel TEXT NOT NULL,
@@ -577,6 +579,17 @@ const MIGRATIONS: &[&str] = &[
     CREATE TABLE channel_wakes (
         channel TEXT PRIMARY KEY,
         wakes INTEGER NOT NULL CHECK (wakes >= 0)
+    ) STRICT;
+    CREATE TABLE socket_line (
+        line TEXT NOT NULL,
+        session TEXT NOT NULL,
+        write TEXT NOT NULL,
+        PRIMARY KEY (session, line)
+    ) STRICT;
+    CREATE TABLE socket_wake (
+        write TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        PRIMARY KEY (write, channel)
     ) STRICT;",
 ];
 
@@ -2843,6 +2856,40 @@ impl State {
         Ok(())
     }
 
+    /// Counts one wake in each of `channels` for a write of the lines `lines` to the socket of the
+    /// Claude Code session `session`; the session saying that none of them reached the model takes
+    /// it back ([`State::not_taken`]).
+    pub fn socket_wakes(
+        &self,
+        session: &str,
+        lines: &[String],
+        channels: &BTreeSet<String>,
+    ) -> Result<(), Error> {
+        let Some(write) = lines.first() else {
+            return Ok(());
+        };
+        let tx = self.db.unchecked_transaction()?;
+        for line in lines {
+            tx.execute(
+                "INSERT OR REPLACE INTO socket_line (line, session, write) VALUES (?1, ?2, ?3)",
+                params![line, session, write],
+            )?;
+        }
+        for channel in channels {
+            tx.execute(
+                "INSERT OR IGNORE INTO socket_wake (write, channel) VALUES (?1, ?2)",
+                params![write, channel],
+            )?;
+            tx.execute(
+                "INSERT INTO channel_wakes (channel, wakes) VALUES (?1, 1)
+                 ON CONFLICT DO UPDATE SET wakes = wakes + 1",
+                params![channel],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The wakes the device caused in each channel that has any.
     pub fn wakes(&self) -> Result<BTreeMap<String, u64>, Error> {
         let mut query = self
@@ -3044,6 +3091,14 @@ impl State {
             "DELETE FROM claude_session WHERE session = ?1",
             params![session],
         )?;
+        tx.execute(
+            "DELETE FROM socket_line WHERE session = ?1",
+            params![session],
+        )?;
+        tx.execute(
+            "DELETE FROM socket_wake WHERE write NOT IN (SELECT write FROM socket_line)",
+            [],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -3101,9 +3156,36 @@ impl State {
     }
 
     /// Records that the Claude Code session `session` said its line `line` did not reach the
-    /// model: the message waits for the other paths, or its signal for the hooks.
+    /// model: the message waits for the other paths, or its signal for the hooks. Once it said so
+    /// of each line of a write, the write's wakes are taken back ([`State::socket_wakes`]).
     pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
         let tx = self.db.unchecked_transaction()?;
+        let write: Option<String> = tx
+            .query_row(
+                "SELECT write FROM socket_line WHERE session = ?1 AND line = ?2",
+                params![session, line],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(write) = write {
+            tx.execute(
+                "DELETE FROM socket_line WHERE session = ?1 AND line = ?2",
+                params![session, line],
+            )?;
+            let left: i64 = tx.query_row(
+                "SELECT count(*) FROM socket_line WHERE write = ?1",
+                params![write],
+                |row| row.get(0),
+            )?;
+            if left == 0 {
+                tx.execute(
+                    "UPDATE channel_wakes SET wakes = wakes - 1 WHERE wakes > 0
+                     AND channel IN (SELECT channel FROM socket_wake WHERE write = ?1)",
+                    params![write],
+                )?;
+                tx.execute("DELETE FROM socket_wake WHERE write = ?1", params![write])?;
+            }
+        }
         tx.execute(
             "UPDATE handover SET failed = 1 WHERE written = ?1
                  AND seq IN (SELECT seq FROM kept WHERE msg_id = ?2)",
@@ -3118,11 +3200,24 @@ impl State {
     }
 
     /// Records that the session file of the Claude Code session `session` confirms the messages
-    /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]).
-    /// Gives how many it confirms.
+    /// of `msg_ids` its socket took: each is handed over to its agent ([`State::handed_over`]),
+    /// and the wakes of its write stand. Gives how many it confirms.
     pub fn confirmed(&self, session: &str, msg_ids: &[String]) -> Result<usize, Error> {
         let mut confirmed = Vec::new();
         for msg_id in msg_ids {
+            let write: Option<String> = (self.db)
+                .query_row(
+                    "SELECT write FROM socket_line WHERE session = ?1 AND line = ?2",
+                    params![session, msg_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(write) = write {
+                self.db
+                    .execute("DELETE FROM socket_line WHERE write = ?1", params![write])?;
+                self.db
+                    .execute("DELETE FROM socket_wake WHERE write = ?1", params![write])?;
+            }
             let rows: Vec<(u64, String)> = self.lines(
                 "SELECT handover.seq, handover.agent FROM handover
                  JOIN kept ON kept.seq = handover.seq

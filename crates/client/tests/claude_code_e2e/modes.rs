@@ -109,13 +109,13 @@ fn with_no_setting_each_of_three_messages_wakes_an_idle_session_at_once() {
 }
 
 /// The window of `batch` in the end-to-end tests, as the CLI takes it and as a duration.
-const WINDOW: (&str, Duration) = ("20s", Duration::from_secs(20));
+const WINDOW: (&str, Duration) = ("60s", Duration::from_secs(60));
 
 /// What each of api's ten messages starts with; nothing else holds it.
 const TEN: &str = "e2e modes test: api asks web, in batch, for part";
 
 /// A session of web runs in a terminal, idle after the prompt; the person sets `own` in the default
-/// channel to `batch` with a window of 20 seconds. api's MCP session sends web ten messages: until
+/// channel to `batch` with a window of 60 seconds. api's MCP session sends web ten messages: until
 /// the window's end no turn holds any of them. Then the first turn that holds one of them holds all
 /// ten, as their lines from api; the listing gives one wake for the default channel, and Ada's
 /// machine shows `read` of the last once.

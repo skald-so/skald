@@ -1297,7 +1297,8 @@ fn pushed(
 /// after the warning line, within the limit ([`hook::fitted`]); the others whose signal did not
 /// go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the write, and as
 /// before it if the write fails, which ends the registration; a write counts one wake for each
-/// channel whose messages or signal it carries. Hands nothing over: the session file confirms what
+/// channel whose messages or signal it carries, unless the session says none of its lines reached
+/// the model ([`State::socket_wakes`]). Hands nothing over: the session file confirms what
 /// the socket took ([`claude_socket`]). Gives 0.
 fn hand_over_socket(
     follower: &Follower,
@@ -1370,7 +1371,8 @@ fn hand_over_socket(
         state.end_claude(&session.session).map_err(text)?;
         return Ok(0);
     }
-    state.count_wakes(&channels).map_err(text)?;
+    let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
+    (state.socket_wakes(&session.session, &ids, &channels)).map_err(text)?;
     Ok(0)
 }
 

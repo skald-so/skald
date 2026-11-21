@@ -53,7 +53,7 @@ fn with_no_setting_each_message_goes_into_the_socket_at_once_and_counts_one_wake
 }
 
 /// The window of `batch` in the tests of the socket, as the CLI takes it and as a duration.
-const SOCKET_WINDOW: (&str, Duration) = ("12s", Duration::from_secs(12));
+const SOCKET_WINDOW: (&str, Duration) = ("40s", Duration::from_secs(40));
 
 /// What each of api's ten messages starts with; nothing else holds it.
 const TEN: &str = "modes socket test: api asks web, in batch, for step";
@@ -86,7 +86,7 @@ fn one_connection_holds_all(session: &Standin, sent: &[(String, MessageId)]) -> 
     }
 }
 
-/// The person sets `own` in the default channel to `batch` with a window of 12 seconds. api's MCP
+/// The person sets `own` in the default channel to `batch` with a window of 40 seconds. api's MCP
 /// session sends web ten messages there: until the window's end the socket gets no line; then all
 /// ten as their lines from api, on one connection, and no other line in [`QUIET`] more. The model
 /// replies: Ada's machine shows `read` of the first and the last once, and the default channel has
@@ -227,4 +227,28 @@ fn inline_for_peer_writes_a_peer_s_text_into_the_socket_labelled_as_data() {
     assert_own_line(&content, OWN_INLINE, own, &ada.web.api());
     session.model_replies();
     assert_wakes(&ada.web.solo, default, 2);
+}
+
+/// What api says to web; it is nowhere else.
+const REFUSED_SAYS: &str = "modes socket test: api asks web, which refuses it on the socket";
+
+/// web's session refuses what comes on its socket. api sends web a message; the socket gets it
+/// and answers `refused`, so it never reached the model. web's `PostToolUse` then gives it, and the
+/// default channel shows one wake: the hook's, none for the refused write.
+#[test]
+fn a_write_the_session_refuses_counts_no_wake_and_the_hook_counts_one() {
+    let ada = Ada::new(5_207_306_001, "ada-socket-refused-wake");
+    let session = Standin::new(Take::Receipt("refused"));
+    ada.starts(WEB, &session);
+    let default = ada.web.solo.default_channel();
+
+    let msg_id = ada.web.own(REFUSED_SAYS);
+    session.wait_lines(1);
+    session.wait_receipts(1);
+    let context = ada.hook_gives(WEB, &session);
+
+    assert_own_line(&context, REFUSED_SAYS, msg_id, &ada.web.api());
+    assert_wakes(&ada.web.solo, default, 1);
+    thread::sleep(QUIET);
+    assert_wakes(&ada.web.solo, default, 1);
 }

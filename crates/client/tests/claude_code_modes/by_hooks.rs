@@ -118,7 +118,7 @@ fn in_pull_no_hook_gives_the_channel_s_messages_and_inbox_returns_them_all() {
 }
 
 /// The window of `batch` in the tests of the hooks, as the CLI takes it and as a duration.
-const HOOK_WINDOW: (&str, Duration) = ("10s", Duration::from_secs(10));
+const HOOK_WINDOW: (&str, Duration) = ("30s", Duration::from_secs(30));
 
 /// What api says to web; none is anywhere else.
 const BATCHED: [&str; 3] = [
@@ -127,7 +127,7 @@ const BATCHED: [&str; 3] = [
     "modes hook test: api asks web, in batch, to merge",
 ];
 
-/// The person sets `own` in the default channel to `batch` with a window of 10 seconds. api sends
+/// The person sets `own` in the default channel to `batch` with a window of 30 seconds. api sends
 /// web three messages there, and within the window web's `PostToolUse` and `Stop` print nothing.
 /// Once the window has ended, `PostToolUse` gives all three in one handover, the default channel
 /// has one wake, and the next `PostToolUse` prints nothing.

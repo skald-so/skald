@@ -42,7 +42,7 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
-- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender. With `inline`, the text arrives in Claude Code at once, so marked.
+- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender. With `inline`: [Delivery settings](#delivery-settings).
 - **A task** always arrives as a signal, and the agent takes it from the queue itself.
 
 ## Delivery settings
@@ -52,7 +52,7 @@ You set them on the device, per channel and sender trust level, `own`, `peer` or
   - `now`, the default: at once.
   - `batch --window 5m`: the level's messages of the channel wait until the window, opened by the first of them, ends, then arrive together.
   - `pull`: never; they wait for `inbox` or the agent's `skald recv`, and no hook gives them.
-- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. `inline` lets another person's text into the agent's context unasked, and Claude Code takes text from its cross-session socket as a teammate's request.
+- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
 - `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket or a hook, counts one in each channel they came in.
 
 Agents cannot change or list the settings.
