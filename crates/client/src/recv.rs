@@ -1173,9 +1173,7 @@ fn hand_over_hook(
         for position in &given.statuses {
             state.status_taken_by_agent(*position).map_err(text)?;
         }
-        for seq in &given.signalled {
-            state.signal_given(*seq, agent.as_str()).map_err(text)?;
-        }
+        (state.signals_given(&given.signalled, agent.as_str())).map_err(text)?;
         let woken: BTreeSet<String> = (given.handed.iter().chain(&given.signalled))
             .filter_map(|seq| channels.get(seq).cloned().flatten())
             .collect();
