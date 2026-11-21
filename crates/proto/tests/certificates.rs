@@ -85,6 +85,7 @@ fn raw_map(fields: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
 const SIGNING: [u8; 32] = [0x11; 32];
 const HPKE: [u8; 32] = [0x22; 32];
 const SSH: &[u8] = b"SSHSIG placeholder";
+const GITHUB: u64 = 583_231;
 const ISSUED: u64 = 1_762_819_200;
 const SIGNATURE: [u8; 64] = [0x5a; 64];
 const PROOF: [u8; 64] = [0xa5; 64];
@@ -112,17 +113,20 @@ fn full_body() -> CertBody {
         issuer: Some(issuer()),
         issued: ISSUED,
         ssh: Some(SSH.to_vec()),
+        github: Some(GITHUB),
         name: "Phone".to_owned(),
         unknown: Unknown::default(),
     }
 }
 
-/// A body without the optional fields: one the master key issued, with no SSH signature.
+/// A body without the optional fields: one the master key issued, with no SSH signature or GitHub
+/// user.
 fn minimal_body() -> CertBody {
     CertBody {
         kind: DeviceKind::Client,
         issuer: None,
         ssh: None,
+        github: None,
         name: "Laptop".to_owned(),
         ..full_body()
     }
@@ -140,6 +144,7 @@ fn full_fields() -> Vec<(i64, Vec<u8>)> {
         (7, uint(ISSUED)),
         (8, bstr(SSH)),
         (9, tstr("Phone")),
+        (10, uint(GITHUB)),
     ]
 }
 
@@ -227,7 +232,7 @@ fn a_certificate_is_its_body_signature_and_proof() {
 fn a_certificate_round_trips_byte_for_byte_with_unknown_fields() {
     let mut fields = full_fields();
     fields.extend([
-        (10, tstr("a field of a later version")),
+        (11, tstr("a field of a later version")),
         (24, array(vec![uint(1), map(vec![(1, uint(2))])])),
         (1000, bstr(&[0xff; 3])),
         (-1, uint(0)),
@@ -241,9 +246,9 @@ fn a_certificate_round_trips_byte_for_byte_with_unknown_fields() {
     assert_eq!(cert.body_bytes(), body.as_slice());
     let mut keys: Vec<i128> = cert.body().unknown.keys().collect();
     keys.sort_unstable();
-    assert_eq!(keys, [-100, -1, 10, 24, 1000]);
+    assert_eq!(keys, [-100, -1, 11, 24, 1000]);
     assert_eq!(
-        cert.body().unknown.get(10),
+        cert.body().unknown.get(11),
         Some(tstr("a field of a later version").as_slice())
     );
     assert_eq!(
@@ -309,6 +314,7 @@ fn fields_of_another_type_are_rejected() {
         (7, bstr(&ISSUED.to_be_bytes())),
         (8, tstr("ssh")),
         (9, bstr(b"Phone")),
+        (10, tstr("583231")),
     ] {
         let body = map(fields_with(key, Some(value)));
         assert!(
@@ -484,7 +490,7 @@ fn bytes_after_a_certificate_are_rejected() {
 #[test]
 fn corrupted_certificates_never_panic_and_re_encode_as_received() {
     let mut fields = full_fields();
-    fields.push((10, tstr("later")));
+    fields.push((11, tstr("later")));
     let body = map(fields);
     let bytes = cert_bytes(&body);
     for at in 0..bytes.len() {
