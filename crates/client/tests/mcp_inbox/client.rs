@@ -122,7 +122,7 @@ impl Session {
 
     /// Starts `command`, a run of `skald mcp`, and opens the session as a client of [`STATELESS`]
     /// named `client` does, as Claude Code does: `server/discover`, and no `initialize`; fails
-    /// unless the server answers it with a result.
+    /// unless the server answers it with a result, which [`Session::initialized`] then gives.
     #[track_caller]
     pub fn discovered(command: &mut Command, client: &str) -> Self {
         let mut session = Self::spawn(command);
@@ -131,8 +131,9 @@ impl Session {
             "io.modelcontextprotocol/clientInfo": { "name": client, "version": "1.0.0" },
             "io.modelcontextprotocol/clientCapabilities": {},
         }));
-        if let Err(error) = session.request("server/discover", json!({})) {
-            panic!("server/discover failed: {error}: {}", session.errors());
+        match session.request("server/discover", json!({})) {
+            Ok(result) => session.initialized = result,
+            Err(error) => panic!("server/discover failed: {error}: {}", session.errors()),
         }
         session
     }

@@ -4,7 +4,7 @@
 
 use crate::cloud::WAIT;
 use crate::fallbacks::{
-    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, events, long_text, wait_events,
+    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, long_text, wait_events,
 };
 use crate::hooks::{Bob, LIMIT, assert_cut, assert_own_line, assert_signal};
 use crate::receipts::shows_read_once;
@@ -24,6 +24,30 @@ fn skald_mcp_declares_the_channel_capability() {
     assert!(
         capabilities["experimental"][CHANNEL_CAPABILITY].is_object(),
         "no {CHANNEL_CAPABILITY}: {capabilities}"
+    );
+}
+
+/// web's `skald mcp` starts, as Claude Code starts it, and Claude Code's `server/discover` of the
+/// revision without `initialize`, 2026-07-28, reaches it: the result offers only revisions with
+/// `initialize`, as Claude Code takes channel events only on such a session, and declares the
+/// capability `claude/channel`.
+#[test]
+fn skald_mcp_offers_claude_code_only_revisions_with_initialize() {
+    let ada = Bare::new(4_919_501_002, "ada-channel-revisions");
+    let session = ada.discovered(WEB);
+
+    let discovered = session.initialized();
+    let versions = discovered["supportedVersions"]
+        .as_array()
+        .expect("versions");
+    assert!(!versions.is_empty(), "no versions: {discovered}");
+    assert!(
+        !versions.iter().any(|version| version == STATELESS),
+        "{STATELESS} offered: {discovered}"
+    );
+    assert!(
+        discovered["capabilities"]["experimental"][CHANNEL_CAPABILITY].is_object(),
+        "no {CHANNEL_CAPABILITY}: {discovered}"
     );
 }
 

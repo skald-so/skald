@@ -28,7 +28,8 @@
 //!   session it holds is a path of resending ([`crate::resend`]): what the helper gives it goes to
 //!   the client as channel events, [`CHANNEL_EVENT`], each with its text as `content`, once the
 //!   client is initialized. Claude Code takes them only where the person started it with the
-//!   development channel flag, and acknowledges none.
+//!   development channel flag, and acknowledges none; and only on a session opened with
+//!   `initialize`, so to Claude Code `server/discover` offers only revisions that have it.
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -43,7 +44,8 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
     ContentBlock, CustomNotification, DiscoverResult, ExperimentalCapabilities, Implementation,
     InitializeRequestParams, InitializeResult, JsonObject, JsonRpcMessage, ListToolsResult,
-    PaginatedRequestParams, RequestId, ServerCapabilities, ServerConfig, ServerNotification, Tool,
+    PaginatedRequestParams, ProtocolVersion, RequestId, ServerCapabilities, ServerConfig,
+    ServerNotification, Tool,
 };
 use rmcp::service::{
     NotificationContext, Peer, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage,
@@ -375,7 +377,7 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
         agent: Mutex::new(agent),
         pending: Arc::clone(&pending),
         holding: AtomicBool::new(false),
-        initialized: Arc::new(AtomicBool::new(false)),
+        client: Client::default(),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -503,12 +505,19 @@ pub const CHANNEL_EVENT: &str = "notifications/claude/channel";
 /// How long a channel event waits for the client's initialization at most.
 const BEFORE_INITIALIZED: Duration = Duration::from_secs(30);
 
-/// Where the channel events of a session go: its client, on the server's runtime, once it is
-/// initialized.
+/// Where the channel events of a session go: its client, once it is initialized, on the server's
+/// runtime.
 #[derive(Clone)]
 struct Channel {
-    peer: Peer<RoleServer>,
+    client: Client,
     runtime: tokio::runtime::Handle,
+}
+
+/// The session's client: its peer, once `initialize` gives one that reaches it, and whether it is
+/// initialized. A `discover` request's peer does not reach it.
+#[derive(Clone, Default)]
+struct Client {
+    peer: Arc<Mutex<Option<Peer<RoleServer>>>>,
     initialized: Arc<AtomicBool>,
 }
 
@@ -517,21 +526,22 @@ impl Channel {
     /// `content`, once it is initialized.
     fn give(&self, bytes: &[u8]) -> io::Result<()> {
         let waiting = std::time::Instant::now();
-        while !self.initialized.load(AtomicOrdering::SeqCst)
+        while !self.client.initialized.load(AtomicOrdering::SeqCst)
             && waiting.elapsed() < BEFORE_INITIALIZED
         {
             thread::sleep(Duration::from_millis(50));
         }
+        let Some(peer) = lock(&self.client.peer).clone() else {
+            return Err(io::Error::other("cannot send a channel event: no client"));
+        };
         for line in String::from_utf8_lossy(bytes).lines() {
             let Ok(event) = serde_json::from_str::<Value>(line) else {
                 continue;
             };
             let params = json!({ "content": event["content"] });
             let event = CustomNotification::new(CHANNEL_EVENT, Some(params));
-            let sent = (self.runtime).block_on(
-                self.peer
-                    .send_notification(ServerNotification::CustomNotification(event)),
-            );
+            let sent = (self.runtime)
+                .block_on(peer.send_notification(ServerNotification::CustomNotification(event)));
             sent.map_err(|err| io::Error::other(format!("cannot send a channel event: {err}")))?;
         }
         Ok(())
@@ -577,6 +587,11 @@ fn client_of(context: &RequestContext<RoleServer>) -> String {
         .unwrap_or_default()
 }
 
+/// Whether the MCP client named `client` is Claude Code.
+fn claude_code(client: &str) -> bool {
+    uploads::runtime(client).as_deref() == Some(crate::hook::CLAUDE_CODE)
+}
+
 /// The answer to each tool call whose result waits to be written: whether it was.
 type Pending = Arc<Mutex<HashMap<RequestId, mpsc::Sender<bool>>>>;
 
@@ -590,8 +605,8 @@ struct Server {
     pending: Pending,
     /// Whether it holds a session of the helper ([`hold`]).
     holding: AtomicBool,
-    /// Whether the client is initialized, for the channel events ([`Channel`]).
-    initialized: Arc<AtomicBool>,
+    /// The client, for the channel events ([`Channel`]).
+    client: Client,
 }
 
 impl Server {
@@ -607,8 +622,7 @@ impl Server {
 
     /// Registers the session's agent, by the client named `client`, before the server answers;
     /// says why on its standard error if that fails, and the first tool call registers it then.
-    /// Channel events go to the client on `peer` ([`Channel`]).
-    async fn register(&self, client: &str, peer: &Peer<RoleServer>) {
+    async fn register(&self, client: &str) {
         let Some(agent) = self.agent(client) else {
             return;
         };
@@ -624,10 +638,9 @@ impl Server {
         }
         if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
             let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
-            let channel = (runtime.as_deref() == Some(crate::hook::CLAUDE_CODE)).then(|| Channel {
-                peer: peer.clone(),
+            let channel = claude_code(client).then(|| Channel {
+                client: self.client.clone(),
                 runtime: tokio::runtime::Handle::current(),
-                initialized: Arc::clone(&self.initialized),
             });
             let agent = self.agent(client);
             if let Some(agent) = agent {
@@ -700,8 +713,8 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
-        self.register(&request.client_info.name, &context.peer)
-            .await;
+        *lock(&self.client.peer) = Some(context.peer.clone());
+        self.register(&request.client_info.name).await;
         self.negotiate_initialize(&request)
     }
 
@@ -711,13 +724,18 @@ impl ServerHandler for Server {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
-        self.register(&client_of(&context), &context.peer).await;
-        let versions = self.supported_protocol_versions().into_owned();
+        let client = client_of(&context);
+        self.register(&client).await;
+        let mut versions = self.supported_protocol_versions().into_owned();
+        // Claude Code takes no channel event on a session without `initialize`.
+        if claude_code(&client) {
+            versions.retain(ProtocolVersion::has_initialize);
+        }
         Ok(DiscoverResult::from_server_info(versions, self.get_info()))
     }
 
     async fn on_initialized(&self, _context: NotificationContext<RoleServer>) {
-        self.initialized.store(true, AtomicOrdering::SeqCst);
+        self.client.initialized.store(true, AtomicOrdering::SeqCst);
     }
 
     async fn list_tools(
@@ -1177,7 +1195,7 @@ mod tests {
             agent: Mutex::new(None),
             pending: Pending::default(),
             holding: AtomicBool::new(false),
-            initialized: Arc::default(),
+            client: Client::default(),
         };
 
         let info = server.get_info();

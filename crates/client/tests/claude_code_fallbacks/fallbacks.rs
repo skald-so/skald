@@ -30,6 +30,9 @@ pub const REWAKES: i32 = 2;
 pub const CHANNEL_CAPABILITY: &str = "claude/channel";
 pub const CHANNEL_EVENT: &str = "notifications/claude/channel";
 
+/// The MCP revision whose client opens the session with `server/discover`, not `initialize`.
+pub const STATELESS: &str = "2026-07-28";
+
 /// How long a test watches for what must not happen.
 pub const QUIET: Duration = Duration::from_secs(5);
 
@@ -63,6 +66,16 @@ impl Bare {
     /// it, initialized as Claude Code.
     pub fn channel(&self, agent: &str, settings: &[(&str, &str)]) -> Session {
         channel_of(&self.helped, &self.solo.dir(agent), agent, settings)
+    }
+
+    /// `skald --agent <agent> mcp` in the agent's folder, as Claude Code starts it, opened with
+    /// `server/discover` as Claude Code opens it.
+    pub fn discovered(&self, agent: &str) -> Session {
+        let dir = self.solo.dir(agent);
+        Session::discovered(
+            &mut self.helped.command_in(&dir, &[], &[AGENT, agent, MCP]),
+            CLIENT,
+        )
     }
 
     /// The `asyncRewake` hook of `agent`, `--wait <seconds>`, on `input`, with `settings`.

@@ -2826,7 +2826,8 @@ impl State {
         self.lines(
             "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
              WHERE kept.space = ?1 AND handover.agent = ?2
-                 AND NOT (handover.path IN ('socket', 'channel', 'rewake')
+                 AND NOT (handover.path IS NOT NULL AND handover.due IS NOT NULL
+                     AND handover.path IN ('socket', 'channel', 'rewake')
                      AND handover.due > ?3 AND handover.signalled = 0)
              ORDER BY kept.seq",
             params![space.to_string(), agent, unix_ms()],
@@ -2964,7 +2965,8 @@ impl State {
             let rows: Vec<(u64, String)> = self.lines(
                 "SELECT handover.seq, handover.agent FROM handover
                  JOIN kept ON kept.seq = handover.seq
-                 WHERE handover.written = ?1 AND kept.msg_id = ?2 AND handover.path != 'hooks'",
+                 WHERE handover.written = ?1 AND kept.msg_id = ?2
+                     AND COALESCE(handover.path, '') != 'hooks'",
                 params![session, msg_id],
             )?;
             seqs.extend(rows.into_iter().map(|(seq, _)| seq));
