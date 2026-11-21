@@ -23,6 +23,7 @@ on:
       - crates/client/src/hook.rs
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
+      - crates/client/src/permission_prompts.rs
       - crates/client/src/recv.rs
       - crates/client/src/state.rs
       - crates/client/src/wait.rs
@@ -34,6 +35,7 @@ on:
       - crates/client/tests/channel_groups/played.rs
       - crates/client/tests/channel_joins/joins.rs
       - crates/client/tests/channel_messages/talk.rs
+      - crates/client/tests/claude_code_permission/prompt_lines.rs
       - crates/client/tests/common/mod.rs
       - crates/client/tests/compact_output/lines.rs
       - crates/client/tests/device_keys/keys.rs

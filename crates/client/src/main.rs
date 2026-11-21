@@ -64,6 +64,7 @@ mod mcp;
 mod message_status;
 mod output;
 mod page;
+mod permission_prompts;
 mod person;
 mod plain_path;
 mod presence;
@@ -962,9 +963,9 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// SessionStart, SessionEnd, PostToolUse and Stop. It reads the hook input on standard input
-    /// and runs in its folder, as the agent --agent names or, without it, the agent the session's
-    /// skald mcp registers by default. SessionStart registers the session with the helper, which
+    /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification. It reads
+    /// the hook input on standard input and runs in its folder, as the agent --agent names or,
+    /// without it, the agent the session's skald mcp registers by default. SessionStart registers the session with the helper, which
     /// writes the agent's messages into the session's cross-session socket as they come, and
     /// SessionEnd ends that. PostToolUse and Stop give the agent's waiting messages to the session
     /// as additional context, each once, within the CLI's hook output limit, 10,000 characters: a
@@ -972,8 +973,10 @@ enum Command {
     /// others, only a line that tells the agent to call inbox, or their lines under inline. Both
     /// follow the delivery settings, skald delivery-modes. A message longer than the limit is
     /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
-    /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
-    /// failure, which exits with 1.
+    /// CLI's cap of continuations in a row. PermissionRequest and a Notification of a permission
+    /// prompt record that the session waits on its permission prompt, once per prompt, which the
+    /// person's skald recv shows once, without the prompt's content. It prints nothing while
+    /// nothing waits, on PermissionRequest and Notification, and on a failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -1914,9 +1917,19 @@ fn performed(operation: Operation) -> Result<(), String> {
             let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
                 return Ok(());
             };
+            // A later hook of the session tells that the prompt it waited on ended.
+            if matches!(
+                event,
+                hook::Event::SessionEnd | hook::Event::PostToolUse | hook::Event::Stop { .. }
+            ) {
+                permission_prompts::ended(&dir, input.session.id.as_deref())?;
+            }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
                 hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                hook::Event::PermissionRequest | hook::Event::PermissionPrompt => {
+                    permission_prompts::told(&dir, &agent, &input)
+                }
                 _ => recv::hook(
                     &dir,
                     key_storage,

@@ -1,5 +1,6 @@
 //! `skald hook claude`: the hook handler of Claude Code's `PostToolUse` and `Stop`
-//! (`docs/dev/architecture.md`, "Components"; `docs/protocol/delivery.md`, "Device to agent").
+//! (`docs/dev/architecture.md`, "Components"; `docs/protocol/delivery.md`, "Device to agent"), and
+//! of the hooks that tell a permission prompt (`crate::permission_prompts`).
 //!
 //! - It reads Claude Code's hook input on standard input ([`input`]) and runs in its `cwd`, the
 //!   session's folder, as the agent `--agent` names or, without it, the one the session's
@@ -68,7 +69,14 @@ pub enum Event {
     Stop {
         continued: bool,
     },
+    /// `PermissionRequest`, which tells that the session is about to ask for a permission.
+    PermissionRequest,
+    /// `Notification` of type [`PERMISSION_NOTICE`], which tells that its prompt waits.
+    PermissionPrompt,
 }
+
+/// The `notification_type` of the `Notification` that tells a permission prompt waits.
+pub const PERMISSION_NOTICE: &str = "permission_prompt";
 
 impl Event {
     /// Its `hook_event_name`.
@@ -78,6 +86,8 @@ impl Event {
             Event::SessionEnd => "SessionEnd",
             Event::PostToolUse => "PostToolUse",
             Event::Stop { .. } => "Stop",
+            Event::PermissionRequest => "PermissionRequest",
+            Event::PermissionPrompt => "Notification",
         }
     }
 }
@@ -94,6 +104,9 @@ pub struct Input {
     /// The session, as the input and the settings name it.
     #[serde(default)]
     pub session: Session,
+    /// The session's turn, Claude Code's `prompt_id`.
+    #[serde(default)]
+    pub turn: Option<String>,
 }
 
 /// A Claude Code session, as a hook's input and settings name it.
@@ -119,6 +132,10 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         session_id: Option<String>,
         #[serde(default)]
         transcript_path: Option<PathBuf>,
+        #[serde(default)]
+        notification_type: Option<String>,
+        #[serde(default)]
+        prompt_id: Option<String>,
     }
     let mut bytes = Vec::new();
     (from.take(INPUT_MOST).read_to_end(&mut bytes))
@@ -132,6 +149,10 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         "Stop" => Some(Event::Stop {
             continued: given.stop_hook_active,
         }),
+        "PermissionRequest" => Some(Event::PermissionRequest),
+        "Notification" if given.notification_type.as_deref() == Some(PERMISSION_NOTICE) => {
+            Some(Event::PermissionPrompt)
+        }
         _ => None,
     };
     let cap = cap.and_then(|cap| cap.trim().parse().ok()).unwrap_or(CAP);
@@ -145,6 +166,7 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
             socket: None,
             token: None,
         },
+        turn: given.prompt_id.filter(|turn| !turn.is_empty()),
     })
 }
 
@@ -398,6 +420,26 @@ mod tests {
         let taken = input(other.as_bytes(), Some("many")).unwrap();
         assert_eq!((taken.event, taken.cap), (None, CAP));
         assert!(input(&b"{\"cwd\""[..], None).is_err());
+    }
+
+    /// `PermissionRequest` and a `Notification` of type `permission_prompt` tell a prompt, with
+    /// the turn; a `Notification` of another type is no event.
+    #[test]
+    fn input_takes_the_hooks_that_tell_a_prompt() {
+        let request = r#"{"hook_event_name":"PermissionRequest","cwd":"/w","prompt_id":"t1"}"#;
+        let taken = input(request.as_bytes(), None).unwrap();
+        assert_eq!(taken.event, Some(Event::PermissionRequest));
+        assert_eq!(taken.turn.as_deref(), Some("t1"));
+        let notice = r#"{"hook_event_name":"Notification","cwd":"/w",
+            "notification_type":"permission_prompt"}"#;
+        let taken = input(notice.as_bytes(), None).unwrap();
+        assert_eq!(
+            (taken.event, taken.turn),
+            (Some(Event::PermissionPrompt), None)
+        );
+        let idle = r#"{"hook_event_name":"Notification","cwd":"/w",
+            "notification_type":"idle_prompt"}"#;
+        assert_eq!(input(idle.as_bytes(), None).unwrap().event, None);
     }
 
     /// Nothing waiting, or only messages whose signal went, gives nothing.
