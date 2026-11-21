@@ -69,7 +69,7 @@ impl Mode {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Queue {
     id: String,
-    name: String,
+    pub name: String,
     mode: Mode,
     lease: u64,
     max_attempts: u64,
@@ -100,7 +100,7 @@ impl Queue {
     }
 
     /// Its ID; fails for one that is no queue ID.
-    fn id(&self) -> Result<QueueId, String> {
+    pub fn id(&self) -> Result<QueueId, String> {
         self.id
             .parse()
             .map_err(|_| "unexpected answer from the server: a queue ID".to_owned())
@@ -138,7 +138,7 @@ pub struct Run<'a> {
 impl Run<'_> {
     /// The space of the channel the run names, or of the working directory's space's default
     /// channel, synced, with that channel and the run's scope.
-    fn synced(&self) -> Result<(Synced, ChannelId, Scope), String> {
+    pub fn synced(&self) -> Result<(Synced, ChannelId, Scope), String> {
         let (speaks, timeout) = self.settings;
         let scope = Scope::of_run(self.dir, self.agent)?;
         match self.channel.map(send::channel_id).transpose()? {
@@ -235,7 +235,7 @@ fn existing(run: &Run, given: &str) -> Result<(Name, Synced, ChannelId, String),
 }
 
 /// `given` as a queue's name; fails for one that is no `name`.
-fn queue_name(given: &str) -> Result<Name, String> {
+pub fn queue_name(given: &str) -> Result<Name, String> {
     given.parse().map_err(|err| {
         format!(
             "\"{}\" is no queue name: {err}; give a-z, 0-9 and '-' inside, 1 to 63 characters",
@@ -245,12 +245,12 @@ fn queue_name(given: &str) -> Result<Name, String> {
 }
 
 /// The path of the queues of the channel `at`.
-fn queues_path((space, channel): (SpaceId, ChannelId)) -> String {
+pub fn queues_path((space, channel): (SpaceId, ChannelId)) -> String {
     format!("/spaces/{space}/channels/{channel}/queues")
 }
 
 /// The proof of a request of `follower`'s device.
-fn proof(follower: &mut Follower) -> Result<String, String> {
+pub fn proof(follower: &mut Follower) -> Result<String, String> {
     let keys = follower.keys()?;
     (follower.connection)
         .request_proof(&follower.token, follower.this, keys.signing())
@@ -258,7 +258,7 @@ fn proof(follower: &mut Follower) -> Result<String, String> {
 }
 
 /// `<method> <path>` of the JSON `body` as `follower`'s device.
-fn proved_json(
+pub fn proved_json(
     follower: &mut Follower,
     method: Method,
     path: &str,
@@ -272,7 +272,7 @@ fn proved_json(
 }
 
 /// The queues of the channel `at` the server gives `follower`'s device, by name.
-fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Queue>, String> {
+pub fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Queue>, String> {
     let proof = proof(follower)?;
     let answer = (follower.connection)
         .get_proved(&queues_path(at), (&follower.token, &proof))
@@ -284,7 +284,11 @@ fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Queue
 }
 
 /// The queue `name` of the channel `at`; fails, naming it, if the channel has none.
-fn named(follower: &mut Follower, at: (SpaceId, ChannelId), name: &Name) -> Result<Queue, String> {
+pub fn named(
+    follower: &mut Follower,
+    at: (SpaceId, ChannelId),
+    name: &Name,
+) -> Result<Queue, String> {
     (listed(follower, at)?.into_iter())
         .find(|queue| queue.name == name.as_str())
         .ok_or_else(|| format!("the channel {} has no queue {name}", at.1))
@@ -296,7 +300,7 @@ fn problem(kind: &str) -> String {
 }
 
 /// Why `what` happened: `err`, a refusal of the server naming its problem.
-fn refused(what: &str, err: connection::Error) -> String {
+pub fn refused(what: &str, err: connection::Error) -> String {
     match err {
         connection::Error::Refused { kind, detail, .. } => format!(
             "{what}: the server refused it: {} ({})",

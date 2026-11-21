@@ -20,6 +20,7 @@ const NOT_VECTORS: [&str; 9] = [
     "Contents",
     "Account fingerprint",
     "Link code keys",
+    "Link code without a session",
     "Presence value",
     "Queue key pair",
     "Sealed task",

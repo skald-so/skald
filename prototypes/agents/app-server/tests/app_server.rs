@@ -3,6 +3,8 @@
 //! on stdio, and an app-server on a Unix socket. `refused.jsonl` joins lines of `busy.jsonl` and
 //! `idle.jsonl` with the error Codex gives a `turn/steer` after its turn ended.
 
+#![cfg(unix)] // Its stand-ins are shell scripts or Unix sockets.
+
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
 use std::os::unix::net::UnixListener;

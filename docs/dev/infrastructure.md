@@ -69,7 +69,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - After the tests, also when one fails, a `skald-update-*` or `skald-client-*` directory left in the temporary directory fails the job.
 - **Windows:** the edit comparison prototype's path normalization tests and its `spellings` check on `windows-latest`, outside `script/test`: `.github/workflows/edits-windows.yml`. A PR that changes `prototypes/edits/` or the workflow starts it, and so does a manual run (`workflow_dispatch`). Findings: [edit-prototype.md](edit-prototype.md#path-normalization).
 - **E2E:** `.github/workflows/e2e.yml`, outside `script/test`: the client's `claude_code_e2e` tests and the adapters' `claude_code_executor` tests against the latest Claude Code from npm, on Linux, macOS and Windows, with PostgreSQL. The tests run the CLI on the [model stub](agent-delivery.md#model-stub) in a temporary config home, so the job needs no secret.
-  - Daily, by hand (`workflow_dispatch`), and on a PR that changes the adapter (`hook.rs`, `main.rs`, `mcp.rs`, `recv.rs`, `state.rs` in `crates/client/src/`, and `crates/adapters/`), its tests, a test module they take by `#[path]` or `include!`, or the workflow; `script/e2e-workflow-test` checks the list.
+  - Daily, by hand (`workflow_dispatch`), and on a PR that changes the adapter (`hook.rs`, `main.rs`, `mcp.rs`, `recv.rs`, `state.rs` in `crates/client/src/`, and `crates/adapters/`), the Claude Code plugin (`.claude-plugin/`, `plugins/claude-code/`), its tests, a test module they take by `#[path]` or `include!`, or the workflow; `script/e2e-workflow-test` checks the list.
   - The tests are ignored unless run with `--ignored`; without Claude Code on `PATH`, each says it is skipped, and `SKALD_E2E_REQUIRED=1`, which the job sets, makes that a failure.
   - Codex's adapter adds its e2e tests to it.
 - **Renovate** opens PRs to `dev` for Cargo, npm and GitHub Actions dependencies, the Docker base images, the images of `docker-compose.yml`, its PostgreSQL kept on major version 19, and the S3-compatible server's of `script/lib/s3.sh`, with Conventional Commits titles; they are reviewed and merged by hand; config in `renovate.json`.
@@ -80,7 +80,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **Tools:** git-cliff (the next version and the CHANGELOG section, `cliff.toml`), our scripts (the Release PR and the tag) and dist (the archives of `skald` and a checksum of each).
   - `script/install-git-cliff` installs the git-cliff pinned in `script/lib/release.sh` from its official release archive, checked against its SHA-256 there. The Release PR job runs it before it creates any token; the tests run it too.
 - **Release PR:** on every push to `dev`, `.github/workflows/release-pr.yml` runs `script/release-pr` on the latest `dev` and its tags.
-  - `script/release-update` writes the next version into `Cargo.toml` and `Cargo.lock` and its section into `CHANGELOG.md`.
+  - `script/release-update` writes the next version into `Cargo.toml`, `Cargo.lock` and the Claude Code plugin's manifest, and its section into `CHANGELOG.md`.
   - `script/release-pr` commits them with the GraphQL mutation `createCommitOnBranch` on a new branch from `dev`, then opens the Release PR from it, or moves the open Release PR's branch to that commit and updates its title and description.
   - With nothing to release it opens none and closes an open one.
   - Its token is the App's, narrowed to contents and pull requests, so the PR checks run on the Release PR.
@@ -146,7 +146,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
 | `skald-server` image | GHCR. Each release publishes `:X.Y.Z`, a beta `:X.Y.Z-beta.N` ("Release", "Image"); every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
-| Claude Code plugin | Monorepo: `/plugin marketplace add skald-so/skald` |
+| Claude Code plugin | Monorepo marketplace, `.claude-plugin/marketplace.json`: `/plugin marketplace add skald-so/skald`. The plugin, `plugins/claude-code/`, comes from `main`, the latest stable release ("Release", "Main"), never from `dev` |
 | Website and docs | GitHub Pages, built from `docs/`: "Website and docs" below |
 
 ### Website and docs

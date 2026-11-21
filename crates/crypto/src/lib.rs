@@ -36,7 +36,10 @@ pub use invite::{
     InviteLink, InviteLinkError, InviteSecret, check_acceptance, check_invite, sign_acceptance,
     sign_invite,
 };
-pub use link::{LinkCode, LinkCodeError, LinkKey, LinkOpenError, link_session};
+pub use link::{
+    LinkCode, LinkCodeError, LinkEntry, LinkEntryError, LinkKey, LinkOpenError, LinkPairing,
+    link_session,
+};
 pub use mls::{
     ChannelView, CheckedKeyPackage, Decrypted, GroupChange, Joining, KeyPackage, MemberDevice,
     MlsContent, MlsDevice, MlsError, MlsFraming, Processed, check_key_package,

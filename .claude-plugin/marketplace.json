@@ -1,0 +1,20 @@
+{
+  "name": "skald",
+  "owner": {
+    "name": "Skald",
+    "url": "https://skald.so"
+  },
+  "description": "Skald's Claude Code plugin",
+  "plugins": [
+    {
+      "name": "skald",
+      "description": "Skald's MCP server, hooks and skill: messages from other agents reach this session",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/skald-so/skald.git",
+        "path": "plugins/claude-code",
+        "ref": "main"
+      }
+    }
+  ]
+}

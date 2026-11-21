@@ -15,7 +15,7 @@ use skald_proto::{AccountRecord, CERT_NAME_MAX, Cbor as _, Cert, DeviceId, Maste
 
 use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
 use crate::sign_in::{bearer, digest};
-use crate::{AppState, revocations};
+use crate::{AppState, link_runs, revocations};
 
 /// The kinds of device that register here: a person's `client` device, and a `service` device a
 /// `client` device of the account creates.
@@ -233,6 +233,12 @@ pub(crate) async fn register(
             .execute(&state.db)
             .await
             .map_err(|err| Refusal::Database("record a session's device", err))?;
+        }
+        if created && checked.kind == CLIENT {
+            let account = account.parse().expect("a signed-in account ID");
+            link_runs::registered(&state, &device, account)
+                .await
+                .map_err(|err| Refusal::Database("tell of a waiting device", err))?;
         }
         taken(created, Device::new(device, cert))
     })
