@@ -1,5 +1,9 @@
 //! What the tests share: the admin commands, the change each makes to a revision, the revisions the
-//! server holds after one, and what the front saw a machine send in a channel.
+//! server holds after one, a command whose answer is lost, and what the front saw a machine send in
+//! a channel.
+
+use std::thread;
+use std::time::Duration;
 
 use skald_crypto::accept_next;
 use skald_proto::{
@@ -9,11 +13,12 @@ use skald_proto::{
 use crate::cloud::Cloud;
 use crate::fixtures::strs;
 use crate::front::Front;
-use crate::kit::{assert_members, group, received, rosters};
+use crate::kit::{assert_members, channels, group, received, rosters};
 use crate::machine::{Finished, Machine, NO, YES};
 use crate::played::Played;
-use crate::talk::{Talk, sent_in};
-use crate::world::{ADMIN, Person, run, space_certs};
+use crate::relay::Lose;
+use crate::talk::{ADA_HOST, BOB_HOST, Talk, sent_in};
+use crate::world::{ADMIN, Person, World, run, space_certs, store_request};
 
 /// The admin commands.
 pub const REMOVE_MEMBER: &str = "remove-member";
@@ -166,9 +171,44 @@ pub fn edited(machine: &Machine, space: &str, change: Edit) -> Finished {
     ran
 }
 
+/// Ada and Bob, signed up in `world` with the IDs and logins `ids` and `logins`.
+pub fn ada_and_bob(world: &World, (ids, logins): ([u64; 2], [&str; 2])) -> (Person, Person) {
+    (
+        world.sign_up(ids[0], logins[0], ADA_HOST),
+        world.sign_up(ids[1], logins[1], BOB_HOST),
+    )
+}
+
+/// Starts `args` on `person`'s machine while the relay loses the server's answer to the revision it
+/// stores of the space `(space, name)` as `how` says: it closes the connection, or it withholds the
+/// answer and the test kills the CLI. A second later runs `skald channels <name>`. Gives how many
+/// revisions the space had before.
+pub fn run_losing_the_answer(
+    cloud: &Cloud,
+    (space, name): (SpaceId, &str),
+    person: &Person,
+    args: &[&str],
+    how: Lose,
+) -> usize {
+    let held = rosters(cloud, &person.token, space).len();
+    let request = store_request(space);
+    cloud.relay.lose_answer(&request, how);
+    let started = person.machine.start(args);
+    match how {
+        // It may try again itself and finish.
+        Lose::Close => drop(started.finish()),
+        Lose::Withhold => cloud.kill_once_lost(started, &request),
+    }
+    assert_eq!(cloud.relay.lost(), 1, "{request} lost no answer");
+    // Signed again, a revision has another timestamp, and so other bytes.
+    thread::sleep(Duration::from_millis(1100));
+    channels(&person.machine, name);
+    held
+}
+
 /// `body` with its members in account order, each `excluded` in device order, and each channel's
 /// members in account order; the channels stay in their order.
-fn in_order(body: &RosterBody) -> RosterBody {
+pub fn in_order(body: &RosterBody) -> RosterBody {
     let mut body = body.clone();
     let mut members = body.members.clone().into_vec();
     members.sort_by_key(|member| member.account);

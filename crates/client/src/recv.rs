@@ -66,6 +66,7 @@ use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
 use crate::connection::printable;
+use crate::delivery;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::forms::{self, Form, References};
@@ -228,13 +229,15 @@ pub fn hook(
 /// A run of the helper for the Claude Code sessions of `agent` it serves
 /// ([`crate::claude_socket`]): [`run`] as the agent, which writes what waits for it into the
 /// socket of its last registered session that still runs, and only if the run did not fail;
-/// leaves what takes in what comes next. Gives whether the run did not fail.
+/// leaves what takes in what comes next. Gives whether the run did not fail; [`due`] then gives
+/// when a run next pushes what `batch` holds back.
 pub fn to_sessions(
     dir: &Path,
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
 ) -> Result<bool, String> {
+    DUE.with(|due| due.set(None));
     holding_warnings(dir, true, || {
         received(
             dir,
@@ -1116,10 +1119,11 @@ fn hand_over_whole(
 }
 
 /// Hands over to `agent` in `space` what its hook gives on `event` ([`hook::compose`]) of the
-/// kept statuses of its messages and the kept messages that wait for it, in one write, after which
-/// it marks each status it gave taken, each message it gave handed over and each signal it gave
-/// given; a failed write marks none. A message that does not open is warned of and handed over.
-/// Gives how many messages it handed over.
+/// kept statuses of its messages and the kept messages that wait for it that a push path pushes
+/// now ([`pushed`]), in one write, after which it marks each status it gave taken, each message it
+/// gave handed over and each signal it gave given, and counts one wake for each channel whose
+/// messages or signal it gave; a failed write marks none. A message that does not open is warned
+/// of and handed over. Gives how many messages it handed over.
 fn hand_over_hook(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
@@ -1134,27 +1138,34 @@ fn hand_over_hook(
     }
     let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
     let mut unopened = Vec::new();
+    let mut channels = BTreeMap::new();
     if !kept.is_empty() {
-        let key = groups::inbox_key(follower)?;
         let signalled = state.signalled(agent.as_str()).map_err(text)?;
-        for (seq, sealed) in kept {
-            let Some(opened) = key.open(follower.this, &kept_item(seq), &sealed) else {
-                eprintln!(
-                    "skald: warning: a message this device kept does not open, so it is not shown"
-                );
-                unopened.push(seq);
-                continue;
-            };
-            let (line, own) = own_line(&opened, &references);
-            waiting.push(match own {
-                Some(msg_id) => hook::Waiting::Own {
-                    seq,
+        let pushing = pushed(follower, space, kept)?;
+        for _ in &pushing.unopened {
+            eprintln!(
+                "skald: warning: a message this device kept does not open, so it is not shown"
+            );
+        }
+        unopened = pushing.unopened;
+        for message in pushing.messages {
+            let (line, _) = kept_line(&message.opened, Form::Short, &references);
+            channels.insert(message.seq, message.channel.clone());
+            let reference = message.msg_id.map(|msg_id| references.of(msg_id));
+            waiting.push(match (message.goes, reference) {
+                (Goes::Own, Some(reference)) => hook::Waiting::Own {
+                    seq: message.seq,
                     line,
-                    reference: references.of(msg_id),
+                    reference,
+                },
+                (Goes::Inline, Some(reference)) => hook::Waiting::Inline {
+                    seq: message.seq,
+                    line,
+                    reference,
                 },
                 _ => hook::Waiting::Below {
-                    seq,
-                    signalled: signalled.contains(&seq),
+                    seq: message.seq,
+                    signalled: signalled.contains(&message.seq),
                 },
             });
         }
@@ -1169,6 +1180,10 @@ fn hand_over_hook(
         for seq in &given.signalled {
             state.signal_given(*seq, agent.as_str()).map_err(text)?;
         }
+        let woken: BTreeSet<String> = (given.handed.iter().chain(&given.signalled))
+            .filter_map(|seq| channels.get(seq).cloned().flatten())
+            .collect();
+        state.count_wakes(&woken).map_err(text)?;
     }
     let handed = given.map(|given| given.handed).unwrap_or_default();
     for seq in handed.iter().chain(&unopened) {
@@ -1177,23 +1192,114 @@ fn hand_over_hook(
     Ok(handed.len())
 }
 
-/// The short line of the kept message `opened`, and its `msg_id` if it is at `own`, the level whose
-/// text goes into a session.
-fn own_line(opened: &[u8], references: &References) -> (String, Option<MessageId>) {
-    let (line, level) = kept_line(opened, Form::Short, references);
-    let msg_id = (serde_json::from_slice::<forms::Message>(opened).ok())
-        .and_then(|record| record.msg_id.parse::<MessageId>().ok())
-        .filter(|_| level >= TrustLevel::Own);
-    (line, msg_id)
+thread_local! {
+    /// When the first window of `batch` that holds back a message for the last socket run of this
+    /// thread ends, in Unix milliseconds, if one does.
+    static DUE: Cell<Option<u64>> = const { Cell::new(None) };
+}
+
+/// When the first window of `batch` that held back a message for the last run of
+/// [`to_sessions`] on this thread ends, in Unix milliseconds, if one did: a run then pushes it.
+pub fn due() -> Option<u64> {
+    DUE.with(Cell::get)
+}
+
+/// How a kept message goes into a session by a push path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Goes {
+    /// As its line, labelled as a request from the person's own agent: `own`.
+    Own,
+    /// As its line, labelled as data from its sender, after the warning line: `inline`.
+    Inline,
+    /// Only as the signal.
+    Signal,
+}
+
+/// A kept message a push path pushes now, opened.
+struct Pushed {
+    seq: u64,
+    opened: zeroize::Zeroizing<Vec<u8>>,
+    channel: Option<String>,
+    msg_id: Option<MessageId>,
+    goes: Goes,
+}
+
+/// What a push path takes of the kept messages that wait for an agent.
+struct Pushing {
+    /// Those it pushes now, by `seq`.
+    messages: Vec<Pushed>,
+    /// Those that do not open, by `seq`.
+    unopened: Vec<u64>,
+    /// When the first window of `batch` that holds one back ends, in Unix milliseconds.
+    due: Option<u64>,
+}
+
+/// Of `kept`, kept messages in `space` by `seq` with their sealed lines, those a push path pushes
+/// now, as the person's delivery settings say ([`delivery::Settings::plan`]), each with how it
+/// goes; and those that do not open.
+fn pushed(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+) -> Result<Pushing, String> {
+    let state = &follower.state;
+    let key = groups::inbox_key(follower)?;
+    let settings = delivery::Settings::load(state)?;
+    let came = state.kept_came(space).map_err(text)?;
+    let (mut opened, mut unopened) = (Vec::new(), Vec::new());
+    for (seq, sealed) in kept {
+        let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
+            unopened.push(seq);
+            continue;
+        };
+        let record = serde_json::from_slice::<forms::Message>(&open).ok();
+        let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
+        let level = (record.as_ref()).map_or(TrustLevel::Peer, |record| record.level);
+        let waiting = delivery::Waiting {
+            seq,
+            channel: record.map(|record| record.channel),
+            level,
+            came: came.get(&seq).copied().unwrap_or(0),
+        };
+        opened.push((waiting, open, msg_id));
+    }
+    let waiting: Vec<delivery::Waiting> =
+        opened.iter().map(|(waiting, ..)| waiting.clone()).collect();
+    let plan = settings.plan(&waiting, state::unix_millis());
+    let messages = (opened.into_iter())
+        .filter(|(waiting, ..)| plan.goes.contains(&waiting.seq))
+        .map(|(waiting, opened, msg_id)| {
+            let goes = match settings.as_text(waiting.channel.as_deref(), waiting.level) {
+                true if waiting.level >= TrustLevel::Own => Goes::Own,
+                true => Goes::Inline,
+                false => Goes::Signal,
+            };
+            Pushed {
+                seq: waiting.seq,
+                opened,
+                channel: waiting.channel,
+                msg_id,
+                goes,
+            }
+        })
+        .collect();
+    Ok(Pushing {
+        messages,
+        unopened,
+        due: plan.due,
+    })
 }
 
 /// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
 /// still runs ([`claude_socket::runs`]; a newer one that does not is no longer registered),
-/// with [`claude_socket::write`], each kept message that waits for it that no socket took:
-/// one at `own` as its line, within the limit ([`hook::fitted`]); those below `own` whose signal
-/// did not go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the
-/// write, and as before it if the write fails, which ends the registration. Hands nothing over:
-/// the session file confirms what the socket took ([`claude_socket`]). Gives 0.
+/// with [`claude_socket::write`], each kept message that waits for it that no socket took and a
+/// push path pushes now ([`pushed`]): one at `own`, or under `inline`, as its line, the latter
+/// after the warning line, within the limit ([`hook::fitted`]); the others whose signal did not
+/// go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the write, and as
+/// before it if the write fails, which ends the registration; a write counts one wake for each
+/// channel whose messages or signal it carries, unless the session says none of its lines reached
+/// the model ([`State::socket_wakes`]). Hands nothing over: the session file confirms what
+/// the socket took ([`claude_socket`]). Gives 0.
 fn hand_over_socket(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
@@ -1226,24 +1332,29 @@ fn hand_over_socket(
     if kept.is_empty() {
         return Ok(0);
     }
-    let key = groups::inbox_key(follower)?;
     let references = References::new(state.kept_ids().map_err(text)?);
-    let (mut lines, mut own, mut below) = (Vec::new(), Vec::new(), Vec::new());
-    for (seq, sealed) in kept {
-        // One that does not open waits for the hooks, which warn of it.
-        let Some(opened) = key.open(follower.this, &kept_item(seq), &sealed) else {
-            continue;
-        };
-        match own_line(&opened, &references) {
-            (line, Some(msg_id)) => {
+    // One that does not open waits for the hooks, which warn of it.
+    let pushing = pushed(follower, space, kept)?;
+    DUE.with(|due| due.set(pushing.due));
+    let (mut lines, mut taken, mut below) = (Vec::new(), Vec::new(), Vec::new());
+    let mut channels = BTreeSet::new();
+    for message in pushing.messages {
+        let (line, _) = kept_line(&message.opened, Form::Short, &references);
+        match (message.goes, message.msg_id) {
+            (Goes::Own | Goes::Inline, Some(msg_id)) => {
+                let line = match message.goes {
+                    Goes::Inline => format!("{}\n{line}", forms::DATA_WARNING),
+                    _ => line,
+                };
                 lines.push((
                     msg_id.to_string(),
                     hook::fitted(&line, &references.of(msg_id)),
                 ));
-                own.push(seq);
+                taken.push(message.seq);
             }
-            _ => below.push(seq),
+            _ => below.push(message.seq),
         }
+        channels.extend(message.channel);
     }
     let signal = MessageId::generate().to_string();
     if !below.is_empty() {
@@ -1252,13 +1363,16 @@ fn hand_over_socket(
     if lines.is_empty() {
         return Ok(0);
     }
-    let taken = (&session.session[..], agent.as_str());
-    (state.socket_takes(taken, &own, (&below, &signal))).map_err(text)?;
+    let session_agent = (&session.session[..], agent.as_str());
+    (state.socket_takes(session_agent, &taken, (&below, &signal))).map_err(text)?;
     if claude_socket::write(session, &lines).is_err() {
-        let seqs: Vec<u64> = own.into_iter().chain(below).collect();
+        let seqs: Vec<u64> = taken.into_iter().chain(below).collect();
         state.socket_failed(&seqs, agent.as_str()).map_err(text)?;
         state.end_claude(&session.session).map_err(text)?;
+        return Ok(0);
     }
+    let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
+    (state.socket_wakes(&session.session, &ids, &channels)).map_err(text)?;
     Ok(0)
 }
 
