@@ -148,6 +148,7 @@ fn content_from_a_service_device_certified_on_an_account_outside_the_space_is_dr
         issuer: Some(dave.device),
         issued: now(),
         ssh: None,
+        github: None,
         name: BOT_HOST.to_owned(),
         unknown: Unknown::default(),
     };

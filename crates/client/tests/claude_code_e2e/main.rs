@@ -19,6 +19,10 @@
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
 //!
+//! The sessions of `modes.rs` and `inline.rs` run under the person's delivery settings, as the
+//! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
+//! an idle session to wake run on Unix only, where the client writes into the socket.
+//!
 //! The session of `permission_prompts.rs` stops on its own permission prompt, which its
 //! `PermissionRequest` and `Notification` hooks tell the person's device.
 
@@ -26,6 +30,10 @@
 #![allow(dead_code)]
 
 mod claude;
+mod delivery;
+mod inline;
+#[cfg(unix)]
+mod modes;
 mod permission_prompts;
 mod sessions;
 mod socket_claude;
