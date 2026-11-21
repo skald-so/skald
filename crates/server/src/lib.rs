@@ -20,6 +20,7 @@ mod anchors;
 mod attachments;
 mod claims;
 mod connections;
+mod deletion;
 mod delivery;
 mod device_certs;
 mod device_flow;
@@ -231,10 +232,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route(
+            "/account",
+            delete(deletion::delete).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/anchors",
             get(anchors::list)
                 .post(anchors::store)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/deletion",
+            get(deletion::preview).layer(checked(Statement::Header)),
         )
         .route(
             "/account/devices",
