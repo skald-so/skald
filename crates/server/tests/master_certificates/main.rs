@@ -26,71 +26,35 @@ mod common;
 #[path = "../spaces/api.rs"]
 mod api;
 
+// The link code relay's accounts and messages, which the helpers of the tests of linked devices'
+// certificates use.
+#[allow(dead_code)]
+#[path = "../link_relay/kit.rs"]
+mod kit;
+
+// The tests of linked devices' certificates: storing a certificate, registering a device and the
+// certificates the account's devices hold; this binary uses some of them.
+#[allow(dead_code, unused_imports)]
+#[path = "../linked_certificates/accounts.rs"]
+mod accounts;
+#[allow(dead_code)]
+#[path = "../linked_certificates/upload.rs"]
+mod upload;
+
 mod limit;
 mod refusals;
 mod storing;
 
-use serde_json::{Value, json};
 use skald_proto::DeviceKind;
 
 use api::Person;
-use common::Response;
-use common::device_flow::text;
-use common::devices::{Device, Key, b64, devices_of};
+use common::devices::{Device, Key};
 
-/// The problems of a certificate over the devices limit and of an invalid one.
-pub const DEVICES_LIMIT: &str = "https://skald.so/problems/devices-limit";
+/// The problem of an invalid certificate.
 pub const INVALID_CERTIFICATE: &str = "https://skald.so/problems/invalid-certificate";
 
 /// The certificate of `device` on `person`'s account, as it registered itself, issued by `master`,
 /// the account's master key or another.
 pub fn issued_by_master(person: &Person, device: &Device, master: &Key) -> Vec<u8> {
     device.cert_as(person.account, DeviceKind::Client, master)
-}
-
-/// `PUT /devices/<device>/cert` of `cert` from `person`'s session; checked against the spec.
-pub fn put_cert(person: &Person, device: &Device, cert: &[u8]) -> Response {
-    let path = format!("/devices/{}/cert", device.id);
-    person
-        .session
-        .call("put", &path, Some(&json!({ "cert": b64(cert) })))
-}
-
-/// Registers `device` on `person`'s account from its session; fails unless the server takes it.
-pub fn register(person: &Person, device: &Device) {
-    let response = person
-        .session
-        .call("post", "/devices", Some(&device.registration()));
-    assert!(
-        matches!(response.status, 200 | 201),
-        "the registration of {}: {}",
-        device.name,
-        text(&response)
-    );
-}
-
-/// The certificate the server gives `person`'s session for `device`, if any.
-pub fn held(person: &Person, device: &Device) -> Option<Vec<u8>> {
-    devices_of(&person.session.call("get", "/devices", None))
-        .remove(&device.id.to_string())
-        .flatten()
-}
-
-/// Checks that `response` refuses with `status` and the problem `problem`; `what` names the case.
-#[track_caller]
-pub fn assert_problem(response: &Response, status: u16, problem: &str, what: &str) {
-    let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
-    assert_eq!(
-        (response.status, body["type"].as_str()),
-        (status, Some(problem)),
-        "{what}: {}",
-        text(response)
-    );
-    assert!(
-        response
-            .content_type
-            .starts_with("application/problem+json"),
-        "{what}: {}",
-        response.content_type
-    );
 }

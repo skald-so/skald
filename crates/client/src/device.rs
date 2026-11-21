@@ -3,9 +3,6 @@
 //! the account master key, the certificate it issues, the account record it signs and the master
 //! backup that seals it to the recovery key.
 
-use std::io::{self, BufRead, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
@@ -22,6 +19,7 @@ use crate::recovery;
 use crate::recovery_link;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
+use crate::spaces::now;
 use crate::state::{self, Link, State};
 
 /// The secrets that hold the device's private keys: its Ed25519 signing key and its X25519 HPKE
@@ -235,6 +233,23 @@ impl Keys {
     pub fn hpke(&self) -> &HpkeKey {
         &self.hpke
     }
+
+    /// The body of the device's certificate that the account's master key issues: a `client`
+    /// device named `name` on `account`, without `issuer`, issued now.
+    pub fn master_cert_body(&self, account: AccountId, name: String) -> CertBody {
+        CertBody {
+            account,
+            device: self.id(),
+            kind: DeviceKind::Client,
+            signing: self.signing.public_key(),
+            hpke: self.hpke.public_key(),
+            issuer: None,
+            issued: now(),
+            ssh: None,
+            name,
+            unknown: Unknown::default(),
+        }
+    }
 }
 
 /// The keys of the device the state knows, `known`, as `stored` holds them; or, if the state knows
@@ -281,25 +296,6 @@ fn host_name(host: &str) -> String {
 const FIRST_QUESTION: &str = "Is this the account's first device? Answer yes only if no other \
                               device of the account has signed in; yes creates the account's \
                               master key";
-
-/// Whether this is the account's first device, as the user answers on `input` the question
-/// written to `output`; `None` once `input` ends without an answer.
-pub fn ask_first(input: &mut impl BufRead, output: &mut impl Write) -> io::Result<Option<bool>> {
-    loop {
-        write!(output, "{FIRST_QUESTION} [yes/no]: ")?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
-            writeln!(output)?;
-            return Ok(None);
-        }
-        match line.trim().to_lowercase().as_str() {
-            "yes" | "y" => return Ok(Some(true)),
-            "no" | "n" => return Ok(Some(false)),
-            _ => writeln!(output, "Please answer yes or no.")?,
-        }
-    }
-}
 
 /// `DeviceRegistration` in the API spec.
 #[derive(Serialize)]
@@ -491,13 +487,11 @@ impl Setup<'_> {
             First::Yes => true,
             First::No => false,
             First::Ask => {
-                let answer = match self.person {
-                    Some(person @ Person::Page(_)) => {
-                        person.ask(FIRST_QUESTION).map_err(sign_in::Error::Io)?
-                    }
-                    _ => ask_first(&mut io::stdin().lock(), &mut io::stdout())
-                        .map_err(|err| sign_in::Error::Io(format!("cannot ask the user: {err}")))?,
-                };
+                let answer = self
+                    .person
+                    .unwrap_or(Person::Terminal)
+                    .ask(FIRST_QUESTION)
+                    .map_err(sign_in::Error::Io)?;
                 let Some(first) = answer else {
                     println!(
                         "This device is not linked yet: it needs to know whether it is the \
@@ -545,21 +539,9 @@ impl Setup<'_> {
     /// Creates the account's master key, issues the device's certificate with it, issued now, and
     /// checks it, as [`own_certificate`] does. The master private key is gone once it returns.
     fn create_master(&self) -> Result<Created, Error> {
-        let issued = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |since| since.as_secs());
-        let body = CertBody {
-            account: self.account,
-            device: self.keys.id(),
-            kind: DeviceKind::Client,
-            signing: self.keys.signing.public_key(),
-            hpke: self.keys.hpke.public_key(),
-            issuer: None,
-            issued,
-            ssh: None,
-            name: self.device.name.clone(),
-            unknown: Unknown::default(),
-        };
+        let body = self
+            .keys
+            .master_cert_body(self.account, self.device.name.clone());
         own_certificate(&body, self.keys)
     }
 
@@ -669,7 +651,8 @@ mod tests {
 
     fn asked(input: &str) -> (Option<bool>, String) {
         let mut output = Vec::new();
-        let answer = ask_first(&mut input.as_bytes(), &mut output).expect("asked");
+        let answer =
+            crate::person::ask(&mut input.as_bytes(), &mut output, FIRST_QUESTION).expect("asked");
         (answer, String::from_utf8(output).expect("UTF-8"))
     }
 

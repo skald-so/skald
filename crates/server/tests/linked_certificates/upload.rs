@@ -80,10 +80,16 @@ pub fn assert_stored(response: &Response, what: &str) {
 /// Checks that `response` refuses a certificate as over the devices limit: `403` with its problem.
 #[track_caller]
 pub fn assert_over_limit(response: &Response, what: &str) {
-    let problem: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
+    assert_problem(response, 403, DEVICES_LIMIT, what);
+}
+
+/// Checks that `response` refuses with `status` and the problem `problem`; `what` names the case.
+#[track_caller]
+pub fn assert_problem(response: &Response, status: u16, problem: &str, what: &str) {
+    let body: Value = serde_json::from_slice(&response.body).unwrap_or(Value::Null);
     assert_eq!(
-        (response.status, problem["type"].as_str()),
-        (403, Some(DEVICES_LIMIT)),
+        (response.status, body["type"].as_str()),
+        (status, Some(problem)),
         "{what}: {}",
         String::from_utf8_lossy(&response.body)
     );

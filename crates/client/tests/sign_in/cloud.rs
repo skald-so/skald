@@ -477,6 +477,22 @@ impl Cloud {
             .collect()
     }
 
+    /// The certificate the server holds of `device`, for a session with `token`, if any.
+    pub fn cert(&self, token: &str, device: DeviceId) -> Option<Cert> {
+        (self.devices(token).into_iter())
+            .find(|held| held.id == device)
+            .and_then(|held| held.cert)
+    }
+
+    /// The one device of the account that is not among `known`, for a session with `token`.
+    #[track_caller]
+    pub fn new_device(&self, token: &str, known: &[DeviceId]) -> DeviceId {
+        let mut new = ids(&self.devices(token));
+        new.retain(|device| !known.contains(device));
+        assert_eq!(new.len(), 1, "not one new device: {new:?}");
+        new[0]
+    }
+
     /// The revisions of `space` the server holds, for the session `token`, straight from the
     /// server: each one's bytes as stored, and the revision they decode to.
     pub fn revisions(&self, token: &str, space: SpaceId) -> Vec<(Vec<u8>, Roster)> {
