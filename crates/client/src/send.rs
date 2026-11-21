@@ -276,7 +276,7 @@ fn sent(
 /// Under which name the device of `follower` counts the `hops` of what a run as `agent`, if any,
 /// takes in: the agent's, a member service agent's ([`state::SERVICE_AGENT`]), or none for the
 /// person, whose messages keep 0.
-fn counted<'a>(follower: &Follower, agent: Option<&'a Name>) -> Option<&'a str> {
+pub fn counted<'a>(follower: &Follower, agent: Option<&'a Name>) -> Option<&'a str> {
     match agent {
         Some(agent) => Some(agent.as_str()),
         None => follower.service.map(|_| state::SERVICE_AGENT),
@@ -314,7 +314,7 @@ pub fn send_synced(
     reported: Reported,
 ) -> Result<(), String> {
     if counted(&synced.follower, agent).is_some() && draft.hops > MOST_HOPS {
-        return Err(over_the_limit(agent, channel, draft.to.as_ref()));
+        return Err(over_the_limit(agent, channel, draft.to.as_ref(), "sent"));
     }
     let Synced {
         mut follower,
@@ -386,23 +386,28 @@ pub fn send_synced(
     reported
 }
 
-/// Why the message of `agent`, none for a member service agent, to `to`, none for everyone, in
-/// `channel` is not sent: it is past the limit on replies without a human. Warns of it, which an
-/// agent's run holds for its person.
-fn over_the_limit(agent: Option<&Name>, channel: ChannelId, to: Option<&Address>) -> String {
+/// Why what `agent`, none for a member service agent, sends to `to`, none for everyone, in
+/// `channel` as `verb` says, such as `sent` or `enqueued`, goes nowhere: it is past the limit on
+/// replies without a human. Warns of it, which an agent's run holds for its person.
+pub fn over_the_limit(
+    agent: Option<&Name>,
+    channel: ChannelId,
+    to: Option<&Address>,
+    verb: &str,
+) -> String {
     let to = to.map_or_else(|| "every agent".to_owned(), Address::to_string);
     let agent = agent.map_or_else(
         || "this service agent".to_owned(),
         |it| format!("the agent {it}"),
     );
     eprintln!(
-        "skald: warning: {agent} sent nothing to {to} in the channel {channel}: the \
+        "skald: warning: {agent} {verb} nothing to {to} in the channel {channel}: the \
          agents answered each other {MOST_HOPS} times without a person; a person's message to one \
          of them starts the count again"
     );
     format!(
         "the agents answered each other {MOST_HOPS} times without a person; a person's message \
-         starts the count again; nothing is sent"
+         starts the count again; nothing is {verb}"
     )
 }
 
@@ -515,7 +520,7 @@ pub fn admitted<'d>(
 
 /// The address the message is from: the person's, or `agent`'s, of the device's account in
 /// `roster`'s space, on `server`, the server of the machine's session.
-fn sender(
+pub fn sender(
     follower: &Follower,
     roster: &Roster,
     server: ServerName,
@@ -574,7 +579,7 @@ pub enum Addressee {
 /// The agent `given` to `--to` names, lowercased (`docs/protocol/README.md`, "Agent address"):
 /// its full address or `owner/agent`. Fails for an invalid address, and for a person's: only a
 /// reply goes to a person.
-fn addressee(given: &str) -> Result<Addressee, String> {
+pub fn addressee(given: &str) -> Result<Addressee, String> {
     let lowered = given.to_lowercase();
     let invalid = |err: &dyn std::fmt::Display| {
         format!("--to \"{}\": {err}; nothing is sent", printable(given))
@@ -624,7 +629,7 @@ pub fn parsed(
 impl Addressee {
     /// The full address in the space `space` on the server `server`; fails for an address of
     /// another space or server.
-    fn in_space(self, space: &Name, server: &ServerName) -> Result<Address, String> {
+    pub fn in_space(self, space: &Name, server: &ServerName) -> Result<Address, String> {
         let address = match self {
             Addressee::Full(address) => address,
             Addressee::Short(owner, agent) => {
