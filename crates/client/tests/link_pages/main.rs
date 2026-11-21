@@ -2,8 +2,8 @@
 //! that `skald sign-in` and `skald link` take at a terminal, taken instead on a local page that
 //! `skald` opens in the browser, so that the person, not an agent that started the command, answers
 //! them and sees the code, the confirmation and the recovery key. As in the tests of linking with a
-//! link code (`link_codes/main.rs`): Ada's first machine is linked, her new machine signs in as no
-//! first device and shows a code, and her first machine takes it; here both run as an agent, and a
+//! link code (`link_codes/main.rs`): Ada's first machine is linked, her new machine signs in and
+//! shows a code, and her first machine takes it; here both run as an agent, and a
 //! test plays the person in headless Chrome on each page.
 //!
 //! The CLI, as these tests use it, beside what the tests of linking with a link code and of the
@@ -16,9 +16,9 @@
 //!   the command runs, the page answers each request that carries the secret as that query, with
 //!   the URL's own Host and the URL's own Origin or none, and refuses any other; every answer has
 //!   `Cache-Control: no-store`. The file is gone once the command ends.
-//! - On the page of `skald sign-in`: whether this is the account's first device, a text holding
-//!   `first device` with a `Yes` and a `No` button. After `Yes`, the recovery key in its shown form
-//!   and a button that is neither, which deletes the key as Enter does at a terminal; after `No`,
+//! - `skald sign-in` first opens the server's sign-in page through a file the same way; then, on
+//!   its own page, on the account's first device, the recovery key in its shown form and a button
+//!   that is neither yes nor no, which deletes the key as Enter does at a terminal; on any other,
 //!   the link code, a line holding `skald link`, a button naming a fresh, new or another code, and
 //!   what each run of the code gave, as at a terminal. A waiting recovery key shows on the same
 //!   page, with that button.

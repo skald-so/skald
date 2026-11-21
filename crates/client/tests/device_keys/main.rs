@@ -7,8 +7,8 @@
 //! its secrets in a file there, never in the system's key storage.
 //!
 //! The CLI, as these tests use it:
-//! - `skald sign-in --server <url> --first-device yes|no`: the flag answers whether this is the
-//!   account's first device; without it, `skald` asks on its input;
+//! - `skald sign-in --server <url>`: on an account without a master key, the device is its first;
+//!   on one with a master key, it waits for linking;
 //! - `--name <name>`: the device's `name`, instead of the host name;
 //! - `SKALD_HOST_NAME`: the host name the client reads, for tests.
 
@@ -31,12 +31,10 @@ mod relay;
 
 use std::fs;
 use std::path::PathBuf;
-use std::thread;
-use std::time::{Duration, Instant};
 
 use browser::{APPROVE, Browser, Page};
-use cloud::{ASK_MASTER, Cloud, Device, GIVE_MASTER, REGISTER, WAIT, certified, ids, shown_grant};
-use machine::{FIRST_DEVICE, Finished, Machine, NAME, NO, SERVER, SIGN_IN, YES};
+use cloud::{ASK_MASTER, Cloud, Device, GIVE_MASTER, REGISTER, certified, ids, shown_grant};
+use machine::{Finished, Machine, NAME, SERVER, SIGN_IN};
 use relay::Lose;
 use serde_json::Value;
 use skald_github_stand_in::User;
@@ -79,7 +77,7 @@ fn first_device(
     user: &User,
     extra: &[&str],
 ) -> First {
-    let finished = cloud.signed_in(page, machine, user, &[&[FIRST_DEVICE, YES], extra].concat());
+    let finished = cloud.signed_in(page, machine, user, extra);
     assert!(finished.success, "{finished:?}");
     let (_, token) = secrets_of(cloud, machine);
     let master = cloud.master(&token).expect("the account's master key");
@@ -230,7 +228,7 @@ fn first_machine_creates_the_master_key_and_holds_a_certificate_chained_to_it() 
     }
 
     let mark = cloud.relay.mark();
-    let run = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
+    let run = again(&cloud, &machine, &[]);
     assert!(run.success, "{run:?}");
     assert_eq!(
         cloud.count_sent(mark, GIVE_MASTER),
@@ -291,7 +289,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     let machine = Machine::new().with_host_name("ada-flaky-network");
     cloud.relay.lose_answer(request, how);
 
-    let mut run = machine.start(&args(&cloud, &[FIRST_DEVICE, YES]));
+    let mut run = machine.start(&args(&cloud, &[]));
     let grant = shown_grant(&cloud, &mut run, 0);
     cloud.decide(&browser.page(), &ada, &grant, APPROVE);
     match how {
@@ -308,7 +306,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
         assert!(taken.is_some(), "the server took no master key");
     }
 
-    let next = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
+    let next = again(&cloud, &machine, &[]);
 
     assert!(next.success, "{next:?}");
     let since = cloud.relay.sent().first().expect("requests").at;
@@ -354,10 +352,10 @@ fn master_key_answer_lost_with_the_cli_killed_is_recovered_by_the_next_run() {
     );
 }
 
-/// After the account's first device, `other` signs in to the same account answering `answer`:
-/// gives what its run printed, with the first device. Fails if `other` sent a master key or the
-/// account's master key or certified devices changed.
-fn other_machine(answer: &str, user: (u64, &str)) -> (Finished, First, Cloud, Machine) {
+/// After the account's first device, `other` signs in to the same account: gives what its run
+/// printed, with the first device. Fails if `other` sent a master key or the account's master key
+/// or certified devices changed.
+fn other_machine(user: (u64, &str)) -> (Finished, First, Cloud, Machine) {
     let (cloud, browser) = setup();
     let page = browser.page();
     let ada = cloud.user(user.0, user.1);
@@ -371,7 +369,7 @@ fn other_machine(answer: &str, user: (u64, &str)) -> (Finished, First, Cloud, Ma
     let other = Machine::new().with_host_name("ada-other");
 
     let mark = cloud.relay.mark();
-    let finished = cloud.signed_in(&page, &other, &ada, &[FIRST_DEVICE, answer]);
+    let finished = cloud.signed_in(&page, &other, &ada, &[]);
 
     assert!(!says_created(&finished), "{finished:?}");
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
@@ -381,12 +379,12 @@ fn other_machine(answer: &str, user: (u64, &str)) -> (Finished, First, Cloud, Ma
     (finished, first, cloud, other)
 }
 
-/// A second machine of the account, answering that it is not the first device, registers, stays
-/// without a certificate and says it waits for linking, also when run again.
+/// A second machine of the account registers, stays without a certificate and says it waits for
+/// linking, also when run again.
 #[test]
 fn second_machine_of_the_account_waits_for_linking_without_a_certificate() {
     let (finished, first, cloud, second) =
-        other_machine(NO, (4_120_666_007, "ada-second-machine-standin"));
+        other_machine((4_120_666_007, "ada-second-machine-standin"));
 
     assert!(says(&finished, "link"), "{finished:?}");
     let devices = cloud.devices(&first.token);
@@ -394,19 +392,10 @@ fn second_machine_of_the_account_waits_for_linking_without_a_certificate() {
     assert_ne!(device_of(&cloud, &second, &devices), first.id);
 
     let mark = cloud.relay.mark();
-    let run = again(&cloud, &second, &[FIRST_DEVICE, NO]);
+    let run = again(&cloud, &second, &[]);
     assert!(says(&run, "link"), "{run:?}");
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
     assert_eq!(certified(&cloud.devices(&first.token)), vec![first.id]);
-}
-
-/// A machine that says it is the first device of an account with a master key warns that someone
-/// else may have created it, creates no master key and stays without a certificate.
-#[test]
-fn yes_on_an_account_with_a_master_key_warns_and_creates_none() {
-    let (finished, ..) = other_machine(YES, (4_120_666_009, "ada-says-yes-standin"));
-
-    assert!(says(&finished, "someone else"), "{finished:?}");
 }
 
 /// Two first machines of one account send their master keys at once: the relay holds the first
@@ -421,9 +410,9 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
     let two = Machine::new().with_host_name("ada-two");
     cloud.relay.hold(GIVE_MASTER, 2);
 
-    let mut run_one = one.start(&args(&cloud, &[FIRST_DEVICE, YES]));
+    let mut run_one = one.start(&args(&cloud, &[]));
     let grant_one = shown_grant(&cloud, &mut run_one, 0);
-    let mut run_two = two.start(&args(&cloud, &[FIRST_DEVICE, YES]));
+    let mut run_two = two.start(&args(&cloud, &[]));
     let grant_two = shown_grant(&cloud, &mut run_two, 1);
     cloud.decide(&page, &ada, &grant_one, APPROVE);
     cloud.decide(&page, &ada, &grant_two, APPROVE);
@@ -448,10 +437,10 @@ fn two_first_machines_at_once_give_the_account_one_master_key() {
     };
     assert_ne!(device_of(&cloud, loser, &devices), certified[0]);
 
-    let run = again(&cloud, winner, &[FIRST_DEVICE, YES]);
+    let run = again(&cloud, winner, &[]);
     assert!(run.success, "{run:?}");
     let mark = cloud.relay.mark();
-    let run = again(&cloud, loser, &[FIRST_DEVICE, YES]);
+    let run = again(&cloud, loser, &[]);
     assert!(says(&run, "link"), "{run:?}");
     assert_eq!(
         cloud.count_sent(mark, GIVE_MASTER),
@@ -486,7 +475,7 @@ fn machine_whose_master_key_is_refused_keeps_no_recovery_key() {
     let (_first, signed_in) = cloud.first_machine(&page, &ada, "ada-first");
     assert!(says_created(&signed_in), "{signed_in:?}");
     let waiting = Machine::new().with_host_name("ada-waiting");
-    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[FIRST_DEVICE, NO]);
+    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[]);
     assert!(linked_later.success, "{linked_later:?}");
     // From now on the server's answer says the account has no master key.
     cloud.relay.rewrite(ASK_MASTER, |body| {
@@ -499,7 +488,7 @@ fn machine_whose_master_key_is_refused_keeps_no_recovery_key() {
     let refused = Machine::new().with_host_name("ada-refused");
     let mark = cloud.relay.mark();
 
-    let finished = cloud.signed_in(&page, &refused, &ada, &[FIRST_DEVICE, YES]);
+    let finished = cloud.signed_in(&page, &refused, &ada, &[]);
 
     assert!(finished.success, "{finished:?}");
     assert_eq!(
@@ -510,7 +499,7 @@ fn machine_whose_master_key_is_refused_keeps_no_recovery_key() {
     assert!(says(&finished, "first"), "{finished:?}");
     assert_eq!(secret_names(&refused), secret_names(&waiting));
     let mark = cloud.relay.mark();
-    let run = again(&cloud, &refused, &[FIRST_DEVICE, YES]);
+    let run = again(&cloud, &refused, &[]);
     assert!(says(&run, "link"), "{run:?}");
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "sent again");
 }
@@ -526,7 +515,7 @@ fn sign_in_again_says_an_account_made_before_recovery_keys_has_none() {
     let (first, signed_in) = cloud.first_machine(&page, &ada, "ada-certified");
     assert!(says_created(&signed_in), "{signed_in:?}");
     let waiting = Machine::new().with_host_name("ada-waits");
-    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[FIRST_DEVICE, NO]);
+    let linked_later = cloud.signed_in(&page, &waiting, &ada, &[]);
     assert!(linked_later.success, "{linked_later:?}");
     for machine in [&waiting, &first] {
         let run = again(&cloud, machine, &[]);
@@ -547,78 +536,6 @@ fn sign_in_again_says_an_account_made_before_recovery_keys_has_none() {
         assert!(run.success, "{run:?}");
         assert!(says(&run, "no recovery key"), "{run:?}");
     }
-}
-
-/// A machine that says it is not the first device of an account without a master key warns that
-/// the server reports none, creates no master key and stays without a certificate.
-#[test]
-fn no_on_an_account_without_a_master_key_warns_and_creates_none() {
-    let (cloud, browser) = setup();
-    let ada = cloud.user(4_120_666_010, "ada-says-no-standin");
-    let machine = Machine::new().with_host_name("ada-says-no");
-
-    let finished = cloud.signed_in(&browser.page(), &machine, &ada, &[FIRST_DEVICE, NO]);
-
-    assert!(says(&finished, "no master key"), "{finished:?}");
-    assert!(!says_created(&finished), "{finished:?}");
-    let token = cloud.last_token();
-    assert_eq!(cloud.master(&token), None, "a master key created");
-    assert_eq!(certified(&cloud.devices(&token)), Vec::<DeviceId>::new());
-    let since = cloud.relay.sent().first().expect("requests").at;
-    assert_eq!(cloud.count_sent(since, GIVE_MASTER), 0, "a master key sent");
-}
-
-/// Without the flag, the machine asks its user whether this is the account's first device before
-/// it asks the server whether the account has a master key; a "yes" typed on its input creates the
-/// master key.
-#[test]
-fn asks_whether_this_is_the_first_device_before_asking_the_server() {
-    let (cloud, browser) = setup();
-    let page = browser.page();
-    let ada = cloud.user(4_120_666_011, "ada-asked-standin");
-    let machine = Machine::new().with_host_name("ada-asked");
-
-    let mut run = machine.start_asking(&args(&cloud, &[]));
-    let deadline = Instant::now() + WAIT;
-    let mut approved = false;
-    loop {
-        let shown = run.shown();
-        if !approved
-            && let Some(grant) = cloud.grants().last()
-            && shown.contains(&grant.user_code)
-        {
-            cloud.decide(&page, &ada, grant, APPROVE);
-            approved = true;
-            continue;
-        }
-        if shown.to_lowercase().contains("first") {
-            break;
-        }
-        run.assert_running();
-        assert!(Instant::now() < deadline, "no question: {shown}");
-        thread::sleep(Duration::from_millis(50));
-    }
-    let since = cloud.relay.sent().first().expect("requests").at;
-    assert_eq!(
-        cloud.count_sent(since, ASK_MASTER),
-        0,
-        "the server was asked first: {}",
-        run.shown()
-    );
-    run.answer("yes\n");
-    if !approved {
-        let grant = shown_grant(&cloud, &mut run, 0);
-        cloud.decide(&page, &ada, &grant, APPROVE);
-    }
-    let finished = run.finish();
-
-    assert!(finished.success, "{finished:?}");
-    assert!(says_created(&finished), "{finished:?}");
-    let token = cloud.last_token();
-    let master = cloud.master(&token).expect("the account's master key");
-    let devices = cloud.devices(&token);
-    assert_eq!(devices.len(), 1, "{devices:?}");
-    checked(&master, &devices, devices[0].id);
 }
 
 /// An empty host name and one longer than a `name` may be, cut in the middle of a character, each
@@ -711,7 +628,7 @@ fn missing_or_unreadable_keys_of_a_known_device_are_an_error_and_change_nothing(
         let state = state_rows(&machine);
         let mark = cloud.relay.mark();
 
-        let run = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
+        let run = again(&cloud, &machine, &[]);
 
         assert!(!run.success, "{case} keys: {run:?}");
         assert!(says(&run, "key"), "{case} keys: {run:?}");
@@ -728,7 +645,7 @@ fn missing_or_unreadable_keys_of_a_known_device_are_an_error_and_change_nothing(
     }
 
     fs::write(&file, &original).expect("write the secrets file");
-    let run = again(&cloud, &machine, &[FIRST_DEVICE, YES]);
+    let run = again(&cloud, &machine, &[]);
     assert!(run.success, "{run:?}");
     let devices = cloud.devices(&token);
     assert_eq!(ids(&devices), vec![first.id]);

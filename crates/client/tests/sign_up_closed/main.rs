@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use browser::{APPROVE, Browser, CODE_FIELD, Page, SIGN_IN_GITHUB, SUBMIT};
 use common::TestDb;
-use machine::{FIRST_DEVICE, Machine, Run, SERVER, SIGN_IN, YES};
+use machine::{Machine, Run, SERVER, SIGN_IN};
 use skald_github_stand_in::{App, GitHub, User};
 
 /// The fake OAuth App's client ID and secret.
@@ -180,7 +180,7 @@ impl Drop for Closed {
 /// Starts `skald sign-in` on `machine` as the account's first device; gives the run and the
 /// verification page with its code filled in, once the run shows it.
 fn start_sign_in(server: &Closed, machine: &Machine) -> (Run, String) {
-    let mut run = machine.start(&[SIGN_IN, SERVER, &server.url, FIRST_DEVICE, YES]);
+    let mut run = machine.start(&[SIGN_IN, SERVER, &server.url]);
     run.wait_to_show(&["user_code="]);
     let shown = run.shown();
     let complete = shown

@@ -445,9 +445,48 @@ impl Drop for Page {
     }
 }
 
+/// A file [`open_url`] opened in the browser; deleted on drop.
+pub struct Opened(PathBuf);
+
+impl Drop for Opened {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Opens `url`, an `http` or `https` URL, in the browser through a file in `dir` that only its
+/// user reads, so no process argument holds the URL. Gives the file, which stays until dropped so
+/// the browser can read it; none without a browser, or if it did not open.
+pub fn open_url(dir: &Path, url: &str) -> Option<Opened> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    let opener = Opener::find().ok()?;
+    let file = Opened(write_file(dir, url).ok()?);
+    opener.open(&file.0).ok()?;
+    Some(file)
+}
+
+/// `text` with the characters that HTML gives a meaning in an attribute's value escaped.
+fn escaped(text: &str) -> String {
+    let mut escaped = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => escaped.push_str("&amp;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 /// Writes the file that takes the browser to `url` into `dir`, readable only by its user; gives
 /// its path.
 fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
+    let url = escaped(url);
     let mut name = [0; 8];
     getrandom::fill(&mut name).map_err(io::Error::other)?;
     let name: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -1020,6 +1059,35 @@ mod tests {
             .join("browser");
         assert_eq!(program(&missing), None);
         assert_eq!(program(Path::new("skald-no-such-browser-on-path")), None);
+    }
+
+    /// The file takes the browser to its URL with the URL's quotes and markup escaped, and is
+    /// readable only by its user.
+    #[test]
+    fn the_file_holds_its_url_escaped() {
+        let dir = crate::test_dir::TestDir::new("page-file");
+        let file = write_file(&dir, "http://a.test/d?c=X\"><b>&y='z'").expect("written");
+        let html = fs::read_to_string(&file).expect("read");
+        let url = "http://a.test/d?c=X&quot;&gt;&lt;b&gt;&amp;y=&#39;z&#39;";
+        assert!(html.contains(&format!("content=\"0;url={url}\"")), "{html}");
+        assert!(html.contains(&format!("href=\"{url}\"")), "{html}");
+        assert!(!html.contains("<b>"), "{html}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = fs::metadata(&file).expect("the file").permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
+    }
+
+    /// Only an `http` or `https` URL is opened; nothing is written for another.
+    #[test]
+    fn only_a_web_url_is_opened() {
+        let dir = crate::test_dir::TestDir::new("page-scheme");
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "ftp://a.test/"] {
+            assert!(open_url(&dir, url).is_none(), "{url}");
+        }
+        assert_eq!(fs::read_dir(&*dir).expect("the directory").count(), 0);
     }
 
     /// Every answer of the page, a refusal too, carries `Cache-Control: no-store`.

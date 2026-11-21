@@ -1,6 +1,6 @@
 //! The recovery key on the page of `skald sign-in` (`membership.md`, "Account"): the account's
-//! first device, answered so on its page, shows its recovery key there and not in its output; as an
-//! agent, the line of a waiting recovery key names the page, and the page shows the key.
+//! first device shows its recovery key on its page and not in its output; as an agent, the line of
+//! a waiting recovery key names the page, and the page shows the key.
 
 use skald_crypto::{RecoveryKey, open_master_backup};
 use skald_proto::{Cbor as _, MasterBackup};
@@ -8,11 +8,9 @@ use skald_proto::{Cbor as _, MasterBackup};
 use crate::at_terminal::{AGENT, as_agent, keys_in, waiting_lines};
 use crate::browser::APPROVE;
 use crate::cloud::{Cloud, shown_grant, unb64};
-use crate::linking::says;
-use crate::machine::{DEVICES, FIRST_DEVICE, Machine, Run, SERVER, SIGN_IN, YES};
+use crate::machine::{DEVICES, Machine, Run, SERVER, SIGN_IN};
 use crate::pages::{
-    FIRST_DEVICE_QUESTION, Opener, PAGE, Paged, WRITTEN_DOWN_BUTTON, YES_BUTTON, approve_next_as,
-    assert_holds_none, start_with,
+    Opener, PAGE, Paged, WRITTEN_DOWN_BUTTON, approve_next_as, assert_holds_none, start_with,
 };
 use crate::world::{World, run};
 
@@ -60,12 +58,11 @@ fn written_down(cloud: &Cloud, machine: &Machine, mut command: Run, paged: &Page
     assert_eq!(lines, Vec::<&str>::new(), "{later:?}");
 }
 
-/// Ada's first machine signs in as an agent with `--browser`; on its page she answers that it is
-/// the account's first device. The page shows the recovery key, and once she presses the button
-/// under it, the command exits with success without the key in its output. The key opens the
-/// server's master backup, and no later command says a key waits.
+/// Ada's first machine signs in as an agent with `--browser`. Its page shows the recovery key, and
+/// once she presses the button under it, the command exits with success without the key in its
+/// output. The key opens the server's master backup, and no later command says a key waits.
 #[test]
-fn a_first_device_answered_on_the_page_shows_its_recovery_key_there() {
+fn a_first_devices_page_shows_its_recovery_key_there() {
     let world = World::start();
     let cloud = &world.cloud;
     let ada = cloud.user(4_179_301_001, "ada-first-on-a-page");
@@ -75,15 +72,12 @@ fn a_first_device_answered_on_the_page_shows_its_recovery_key_there() {
     let args = as_agent(&[SIGN_IN, SERVER, &cloud.url, PAGE]);
     let mut signing_in = start_with(&machine, opener.program(), &args);
     approve_next_as(&world, &ada, before, &mut signing_in);
-    let paged = Paged::opened(&world.browser, &opener, 0, &mut signing_in);
-    paged.wait_for(&mut signing_in, "whether it is the first device", |text| {
-        says(text, &[FIRST_DEVICE_QUESTION])
-    });
-    paged.press(YES_BUTTON);
+    // The stand-in's first run opened the sign-in page; its next, the command's page.
+    let paged = Paged::opened(&world.browser, &opener, 1, &mut signing_in);
     written_down(cloud, &machine, signing_in, &paged);
 }
 
-/// Ada's first machine signs in as an agent with `--first-device yes`: the recovery key waits, and
+/// Ada's first machine signs in as an agent: the recovery key waits, and
 /// the run, then an agent's `skald devices`, each print one line on it that also names the page,
 /// `--browser`. As an agent, `skald sign-in --server <cloud> --browser` opens the page, which shows
 /// the key; once she presses the button under it, the command exits with success without the key
@@ -95,7 +89,7 @@ fn as_an_agent_the_waiting_keys_line_names_the_page_and_the_page_shows_the_key()
     let ada = cloud.user(4_179_301_011, "ada-waits-for-a-page");
     let machine = Machine::new().with_host_name("ada-workstation");
     let before = cloud.grants().len();
-    let mut first = machine.start(&as_agent(&[SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, YES]));
+    let mut first = machine.start(&as_agent(&[SIGN_IN, SERVER, &cloud.url]));
     let grant = shown_grant(cloud, &mut first, before);
     cloud.decide(&world.browser.page(), &ada, &grant, APPROVE);
     let first = first.finish();

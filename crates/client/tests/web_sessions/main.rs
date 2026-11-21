@@ -34,7 +34,7 @@ use access::{WHEN_REVOKED, open_access, revoke, rows_holding};
 use browser::Browser;
 use cloud::{Cloud, GIVE_MASTER, WAIT};
 use front::Front;
-use machine::{DEVICES, FIRST_DEVICE, YES};
+use machine::DEVICES;
 use spa::{Spa, answers_without_secrets, wait_for_cabinet, wait_until};
 
 /// A host of the server's public address that the machines resolve, as Chrome does.
@@ -107,7 +107,7 @@ fn cli_session_revoked_in_access_is_refused_and_sign_in_resumes_the_device() {
 
     front.hold_end_until_notice(false);
     let mark = cloud.relay.mark();
-    let again = cloud.signed_in(&page, &laptop, &user, &[FIRST_DEVICE, YES]);
+    let again = cloud.signed_in(&page, &laptop, &user, &[]);
     assert!(again.success, "{again:?}");
     let resumed = cloud.last_token();
     assert_ne!(resumed, token);
