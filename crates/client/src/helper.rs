@@ -31,7 +31,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -186,7 +186,7 @@ pub fn route_into(
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
     let timeout = operation.timeout;
     let mut start = starts && dir.join(state::FILE).is_file();
-    let mut started: Option<(Child, Instant)> = None;
+    let mut started: Option<(Started, Instant)> = None;
     for _ in 0..ROUNDS {
         loop {
             if let Some(stream) = connect(&dir) {
@@ -500,31 +500,36 @@ fn answered(stream: &mut impl Read) -> io::Result<()> {
 
 /// Starts the helper of the state in `dir`, detached from this run's terminal and outputs, as this
 /// run's version, waiting for the lock up to `timeout`.
-fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command
-        .arg("--state-dir")
-        .arg(dir)
-        .arg("--timeout")
-        .arg(timeout.as_secs().max(1).to_string());
+fn spawn(dir: &Path, timeout: Duration) -> io::Result<Started> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--state-dir".into(),
+        dir.into(),
+        "--timeout".into(),
+        timeout.as_secs().max(1).to_string().into(),
+    ];
     if let Some(retry) = wait::retry_set() {
-        command
-            .arg("--websocket-retry")
-            .arg(retry.as_secs().to_string());
+        args.extend([
+            "--websocket-retry".into(),
+            retry.as_secs().to_string().into(),
+        ]);
     }
-    command
-        .arg("helper")
-        .env(VERSION_SETTING, version())
-        // A hook's session is the state's to serve, not the helper's.
-        .env_remove(crate::hook::SOCKET_SETTING)
-        .env_remove(crate::hook::TOKEN_SETTING)
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    args.push("helper".into());
+    // A hook's session is the state's to serve, not the helper's.
+    let dropped = [crate::hook::SOCKET_SETTING, crate::hook::TOKEN_SETTING];
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args(args)
+            .env(VERSION_SETTING, version())
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for name in dropped {
+            command.env_remove(name);
+        }
         // SAFETY: setsid is async-signal-safe; it only starts a session without a terminal.
         unsafe {
             command.pre_exec(|| {
@@ -532,17 +537,17 @@ fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
                 Ok(())
             });
         }
+        command.spawn()
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-        windows::keep_own_handles();
-    }
-    command.spawn()
+    windows::spawn(&std::env::current_exe()?, &args, dir, &dropped)
 }
+
+/// A helper this run started.
+#[cfg(unix)]
+type Started = std::process::Child;
+#[cfg(windows)]
+use windows::Started;
 
 /// Runs the helper of the state in `dir`, exiting after `idle` with no command, wait, registered
 /// Claude Code session or live Codex session, which it serves with `settings`
@@ -882,23 +887,155 @@ pub mod versions {
 
 #[cfg(windows)]
 mod windows {
-    use windows_sys::Win32::Foundation::{
-        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
-    };
-    use windows_sys::Win32::System::Console::{
-        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    use std::ffi::{OsStr, OsString};
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
+        PROCESS_INFORMATION, STARTUPINFOW, WaitForSingleObject,
     };
 
-    /// Keeps this run's standard handles from a process it starts, so a helper does not hold the
-    /// outputs of the command that started it open.
-    pub fn keep_own_handles() {
-        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            // SAFETY: the process's own standard handles; a missing one is skipped.
-            unsafe {
-                let handle = GetStdHandle(which);
-                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+    use super::{VERSION_SETTING, version};
+
+    /// A helper this run started: its process.
+    pub struct Started(HANDLE);
+
+    impl Started {
+        /// Whether it exited, as [`std::process::Child::try_wait`] says.
+        pub fn try_wait(&mut self) -> io::Result<Option<()>> {
+            // SAFETY: the process's handle, open until drop.
+            match unsafe { WaitForSingleObject(self.0, 0) } {
+                WAIT_TIMEOUT => Ok(None),
+                WAIT_OBJECT_0 => Ok(Some(())),
+                _ => Err(io::Error::last_os_error()),
+            }
+        }
+    }
+
+    impl Drop for Started {
+        fn drop(&mut self) {
+            // SAFETY: the process's handle, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Starts `exe` with `args` in `dir`, with this run's settings but `dropped`, as this run's
+    /// version, with no console and no handle of this run's: a handle a shell between the agent
+    /// CLI and the hook passed on, such as the CLI's end of the hook's output, would otherwise
+    /// stay open in the helper, and the CLI would wait for the hook's output while the helper runs.
+    pub fn spawn(
+        exe: &Path,
+        args: &[OsString],
+        dir: &Path,
+        dropped: &[&str],
+    ) -> io::Result<Started> {
+        let wide = |text: &OsStr| text.encode_wide().collect::<Vec<u16>>();
+        let mut application = wide(exe.as_os_str());
+        application.push(0);
+        let mut line = Vec::new();
+        for (at, arg) in std::iter::once(exe.as_os_str())
+            .chain(args.iter().map(OsString::as_os_str))
+            .enumerate()
+        {
+            if at > 0 {
+                line.push(u16::from(b' '));
+            }
+            quote(&wide(arg), &mut line);
+        }
+        line.push(0);
+        let mut settings: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(name, _)| {
+                let name = name.to_string_lossy();
+                !(dropped.iter().chain(&[VERSION_SETTING]))
+                    .any(|dropped| dropped.eq_ignore_ascii_case(&name))
+            })
+            .collect();
+        settings.push((VERSION_SETTING.into(), version().into()));
+        settings.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_uppercase());
+        let mut block = Vec::new();
+        for (name, value) in &settings {
+            block.extend(wide(name));
+            block.push(u16::from(b'='));
+            block.extend(wide(value));
+            block.push(0);
+        }
+        block.push(0);
+        let mut current = wide(dir.as_os_str());
+        current.push(0);
+        // SAFETY: plain integers and pointers, all zeros a valid start.
+        let mut startup: STARTUPINFOW = unsafe { std::mem::zeroed() };
+        startup.cb =
+            u32::try_from(std::mem::size_of::<STARTUPINFOW>()).map_err(io::Error::other)?;
+        // SAFETY: plain integers and handles, filled in below.
+        let mut process: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: each string ends with a zero, the settings' block with two; nothing is
+        // inherited; `process` takes the handles, closed below or by `Started`.
+        let created = unsafe {
+            CreateProcessW(
+                application.as_ptr(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+                block.as_ptr().cast(),
+                current.as_ptr(),
+                &startup,
+                &mut process,
+            )
+        };
+        if created == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the thread's handle, which nothing uses, closed once.
+        unsafe { CloseHandle(process.hThread) };
+        Ok(Started(process.hProcess))
+    }
+
+    /// Adds `arg` to the command line `line` as programs built with the C runtime split it.
+    fn quote(arg: &[u16], line: &mut Vec<u16>) {
+        let [space, tab, mark, slash] = [b' ', b'\t', b'"', b'\\'].map(u16::from);
+        if !arg.is_empty() && !arg.iter().any(|unit| [space, tab, mark].contains(unit)) {
+            line.extend_from_slice(arg);
+            return;
+        }
+        line.push(mark);
+        let mut slashes = 0;
+        for &unit in arg {
+            if unit == slash {
+                slashes += 1;
+            } else {
+                if unit == mark {
+                    line.extend(std::iter::repeat_n(slash, slashes + 1));
                 }
+                slashes = 0;
+            }
+            line.push(unit);
+        }
+        line.extend(std::iter::repeat_n(slash, slashes));
+        line.push(mark);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// An argument goes on the command line as the C runtime splits it back.
+        #[test]
+        fn arguments_are_quoted_as_the_c_runtime_splits_them() {
+            for (arg, quoted) in [
+                ("helper", "helper"),
+                ("", r#""""#),
+                (r"C:\Program Files\skald", r#""C:\Program Files\skald""#),
+                (r"C:\a b\", r#""C:\a b\\""#),
+                (r#"say "hi""#, r#""say \"hi\"""#),
+                (r#"a\"b"#, r#""a\\\"b""#),
+            ] {
+                let wide: Vec<u16> = arg.encode_utf16().collect();
+                let mut line = Vec::new();
+                super::quote(&wide, &mut line);
+                assert_eq!(String::from_utf16(&line).unwrap(), quoted, "{arg:?}");
             }
         }
     }
