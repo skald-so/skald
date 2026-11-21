@@ -76,7 +76,11 @@ fn a_body_is_its_map_with_each_state_and_tier_as_its_code() {
             Ok(body(state, tier)),
             "{code}"
         );
+        assert_eq!(state.code(), code);
+        assert_eq!(AgentState::of_code(u64::from(code)), Some(state));
     }
+    assert_eq!(AgentState::of_code(0), None);
+    assert_eq!(AgentState::of_code(5), None);
 }
 
 #[test]

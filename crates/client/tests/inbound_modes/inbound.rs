@@ -1,6 +1,6 @@
 //! What the tests share: the commands that set and list inbound modes and allowlists; what the
-//! sending device shows of `refused`, and the refusing device's person of a refused message; the
-//! `refused` receipt C reads.
+//! sending device shows of a status, `refused` among them, and the refusing device's person of a
+//! refused message; the `refused` receipt C reads.
 
 use std::path::Path;
 use std::thread;
@@ -60,11 +60,11 @@ pub fn claude_allows(roles: &Roles, sender: &str) {
     allow(roles.b(), &roles.senders.agents.folder, CLAUDE, sender);
 }
 
-/// The lines of `shown`, a person's output, that hold `msg_id` and the word [`REFUSED`].
-pub fn refused_lines(shown: &str, msg_id: MessageId) -> Vec<String> {
+/// The lines of `shown`, a person's output, that hold `msg_id` and the word `status`.
+pub fn status_lines(shown: &str, msg_id: MessageId, status: &str) -> Vec<String> {
     let id = msg_id.to_string();
     (shown.lines())
-        .filter(|line| line.contains(&id) && holds_word(line, REFUSED))
+        .filter(|line| line.contains(&id) && holds_word(line, status))
         .map(str::to_owned)
         .collect()
 }
@@ -72,16 +72,16 @@ pub fn refused_lines(shown: &str, msg_id: MessageId) -> Vec<String> {
 /// The lines of `shown`, the refusing device's person's output, that mark `msg_id` refused for
 /// `agent`: they hold its `msg_id`, the word [`REFUSED`] and the agent's name.
 pub fn marked_lines(shown: &str, msg_id: MessageId, agent: &str) -> usize {
-    (refused_lines(shown, msg_id).iter())
+    (status_lines(shown, msg_id, REFUSED).iter())
         .filter(|line| line.contains(agent))
         .count()
 }
 
-/// The lines of `shown`, an agent's output, that say [`REFUSED`] of `msg_id` by its reference and
-/// are no message.
-pub fn agent_refused_lines(shown: &str, msg_id: MessageId) -> Vec<String> {
+/// The lines of `shown`, an agent's output, that say the word `status` of `msg_id` by its
+/// reference and are no message.
+pub fn agent_status_lines(shown: &str, msg_id: MessageId, status: &str) -> Vec<String> {
     (lines_referring_to(shown, msg_id).into_iter())
-        .filter(|line| agent_line(line).is_none() && holds_word(line, REFUSED))
+        .filter(|line| holds_word(line, status) && agent_line(line).is_none())
         .collect()
 }
 
@@ -93,7 +93,7 @@ pub fn agent_refused_lines(shown: &str, msg_id: MessageId) -> Vec<String> {
 pub fn shows_refused_once(machine: &Machine, msg_id: MessageId) -> String {
     let deadline = Instant::now() + WAIT;
     let mut shown = received(machine).shown();
-    while refused_lines(&shown, msg_id).is_empty() {
+    while status_lines(&shown, msg_id, REFUSED).is_empty() {
         assert!(
             Instant::now() < deadline,
             "no {REFUSED} of {msg_id} shown: {shown}"
@@ -103,7 +103,7 @@ pub fn shows_refused_once(machine: &Machine, msg_id: MessageId) -> String {
     }
     let next = received(machine).shown();
     shown += &next;
-    let lines = refused_lines(&shown, msg_id);
+    let lines = status_lines(&shown, msg_id, REFUSED);
     assert_eq!(
         lines.len(),
         1,
@@ -112,12 +112,28 @@ pub fn shows_refused_once(machine: &Machine, msg_id: MessageId) -> String {
     shown
 }
 
-/// Fails if `machine`'s next person's `skald recv` shows `refused` of `msg_id`.
+/// Runs the person's `skald recv` on `machine`; fails if it shows `status` of `msg_id`.
 #[track_caller]
-pub fn shows_no_refused(machine: &Machine, msg_id: MessageId, when: &str) {
+pub fn shows_not(machine: &Machine, msg_id: MessageId, status: &str, when: &str) {
     let shown = received(machine).shown();
-    let lines = refused_lines(&shown, msg_id);
+    let lines = status_lines(&shown, msg_id, status);
     assert!(lines.is_empty(), "{when}: {lines:?} in {shown}");
+}
+
+/// A's agent's next `skald recv` says `status` of `msg_id` on one line, with no UUID, and the one
+/// after does not. Gives that line.
+#[track_caller]
+pub fn a_agent_says_once(roles: &Roles, msg_id: MessageId, status: &str) -> String {
+    let first = roles.a_agent_reads(&[]).shown();
+    let lines = agent_status_lines(&first, msg_id, status);
+    let [line] = lines.as_slice() else {
+        panic!("{status} of {msg_id} not on one line: {first}");
+    };
+    assert_no_uuid(&first);
+    let then = roles.a_agent_reads(&[]).shown();
+    let again = agent_status_lines(&then, msg_id, status);
+    assert!(again.is_empty(), "{status} again: {then}");
+    line.clone()
 }
 
 /// C reads B's receipt of `msg_id`; fails unless it is one `refused` receipt of claude's, sent by
@@ -175,20 +191,12 @@ pub fn a_sees_refused(roles: &mut Roles, msg_id: MessageId) {
     let reason = refused_receipt(roles, msg_id);
 
     let shown = shows_refused_once(roles.a(), msg_id);
-    let lines = refused_lines(&shown, msg_id);
+    let lines = status_lines(&shown, msg_id, REFUSED);
     assert!(
         lines.iter().all(|line| line.contains(&reason)),
         "no reason {reason:?}: {lines:?}"
     );
 
-    let agent = roles.a_agent_reads(&[]).shown();
-    let lines = agent_refused_lines(&agent, msg_id);
-    let [said] = lines.as_slice() else {
-        panic!("{REFUSED} of {msg_id} not on one line: {agent}");
-    };
+    let said = a_agent_says_once(roles, msg_id, REFUSED);
     assert!(said.contains(&reason), "no reason {reason:?}: {said}");
-    assert_no_uuid(&agent);
-    let next = roles.a_agent_reads(&[]).shown();
-    let again = agent_refused_lines(&next, msg_id);
-    assert!(again.is_empty(), "{REFUSED} again: {next}");
 }

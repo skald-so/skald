@@ -3,25 +3,12 @@
 
 use serde_json::json;
 
-use crate::client::{MESSAGE_FIELD, REPLY_TOOL, SEND_TOOL, Session, TEXT_FIELD, TO_FIELD};
+use crate::client::{SEND_TOOL, TEXT_FIELD, TO_FIELD};
 use crate::loops::{
-    LIMIT, Said, Way, assert_person_warned_once, assert_sent, assert_stopped, reference_of, texts,
+    LIMIT, Said, Way, assert_person_warned_once, assert_sent, assert_stopped, replies_with_tool,
+    texts,
 };
 use crate::solo::{API, Solo, WEB};
-
-/// `session` replies with the reply tool, with `text`, to the message whose line in `shown`, its
-/// `inbox`, has the text `asked`.
-fn replies(session: &mut Session, shown: &str, asked: &str, text: &str) -> Said {
-    let message = format!("#{}", reference_of(shown, asked));
-    let called = session.call(
-        REPLY_TOOL,
-        json!({ MESSAGE_FIELD: message, TEXT_FIELD: text }),
-    );
-    Said {
-        ok: !called.error,
-        shown: called.text,
-    }
-}
 
 /// Ada's machine, alone in `clienta`'s groups, runs MCP sessions `--agent api` and `--agent web`.
 /// web sends api a message with the send tool; api and web, in turn, take the other's last message
@@ -39,13 +26,13 @@ fn agents_of_one_device_replying_to_each_other_stop_at_ten_hops() {
     for (at, pair) in texts[..=LIMIT as usize].windows(2).enumerate() {
         let session = &mut *sessions[at % 2];
         let shown = session.inbox();
-        let said = replies(session, &shown, &pair[0], &pair[1]);
+        let said = replies_with_tool(session, (&shown, &pair[0]), &pair[1]);
         assert_sent(&said, &pair[1]);
     }
     let last = api.inbox();
     let over = &texts[LIMIT as usize + 1];
 
-    let refused = replies(&mut api, &last, &texts[LIMIT as usize], over);
+    let refused = replies_with_tool(&mut api, (&last, &texts[LIMIT as usize]), over);
 
     assert_stopped(&refused, "the reply at hop 11");
     let got = web.inbox();
@@ -80,15 +67,13 @@ fn agents_of_one_device_sending_to_each_other_stop_at_ten_hops() {
     let (end, over) = (&texts[LIMIT as usize], &texts[LIMIT as usize + 1]);
     assert!(last.contains(end.as_str()), "{end:?} not taken: {last}");
 
-    let called = api.call(
-        SEND_TOOL,
-        json!({ TO_FIELD: solo.short(WEB), TEXT_FIELD: over }),
-    );
+    let refused: Said = api
+        .call(
+            SEND_TOOL,
+            json!({ TO_FIELD: solo.short(WEB), TEXT_FIELD: over }),
+        )
+        .into();
 
-    let refused = Said {
-        ok: !called.error,
-        shown: called.text,
-    };
     assert_stopped(&refused, "the send at hop 11");
     assert_person_warned_once(solo.machine(), solo.default_channel(), &solo.short(WEB));
     let inbox = web.inbox();

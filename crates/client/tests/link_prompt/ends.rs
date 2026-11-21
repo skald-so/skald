@@ -6,11 +6,11 @@ use skald_server::Settings;
 use crate::devices::second_machine;
 use crate::fixtures::{fronted, fronted_with};
 use crate::kit::RECV;
-use crate::linking::{EXPIRED, LIFETIME_SETTING, NewDevice, YES, link_with, says, typed};
-use crate::machine::{DEVICES, Machine};
-use crate::prompt::{
-    LAPTOP, assert_not_prompted, assert_prompted, until_not_waiting, waiting_device,
+use crate::linking::{
+    EXPIRED, LIFETIME_SETTING, NewDevice, YES, link_with, says, typed, until_not_waiting,
 };
+use crate::machine::{DEVICES, Machine};
+use crate::prompt::{LAPTOP, assert_not_prompted, assert_prompted, waiting_device};
 use crate::world::{Person, World, run};
 
 /// The host name of Ada's machine linked by hand.
@@ -53,7 +53,7 @@ fn linked(world: &World, ada: &Person, links: bool) -> NewDevice {
     for (who, shown) in [("skald link", issuing), ("the laptop", laptop)] {
         assert_eq!(shown.success, links, "{who}: {}", shown.text);
     }
-    until_not_waiting(&world.cloud, ada, &new);
+    until_not_waiting(&world.cloud, ada, new.device);
     new
 }
 
@@ -85,7 +85,7 @@ fn no_command_names_a_device_once_its_code_ends() {
 
     new.run()
         .wait_for("that the code expired", |shown| says(shown, &[EXPIRED]));
-    until_not_waiting(&world.cloud, &ada, &new);
+    until_not_waiting(&world.cloud, &ada, new.device);
 
     assert_ada_not_prompted(&ada);
 }

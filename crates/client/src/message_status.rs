@@ -141,10 +141,7 @@ pub fn run(
         let kept = state.kept_ids().map_err(text)?;
         let msg_id = reply::pick(&named, ids, |msg_id| *msg_id, &kept).map_err(|shared| {
             if shared {
-                format!(
-                    "{shown} is the reference of more than one message this device keeps: give \
-                     more of it, or the msg_id"
-                )
+                reply::shared(&shown)
             } else {
                 unknown()
             }
@@ -218,10 +215,7 @@ fn gathered(
     let opened = match &target {
         Some(target) => {
             let this = this.as_ref().ok_or("this machine has no device")?;
-            let secrets = Secrets::new(dir, storage);
-            let key = state.mls_step(|sealed| {
-                key_packages::state_key(&secrets, sealed).map(|key| (None, key))
-            })?;
+            let key = key_packages::local_state_key(state, &Secrets::new(dir, storage))?;
             let opened = reply::open(&key, this.id, target)
                 .ok_or("what this device kept of the message does not open")?;
             let agents = state.handed_to(target.seq).map_err(text)?;

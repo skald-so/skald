@@ -3,7 +3,7 @@
 //! listed agent admits no other agent of its member.
 
 use crate::agents::assert_not_handed;
-use crate::inbound::{REFUSE, a_sees_refused, claude_allows, claude_set_to, shows_no_refused};
+use crate::inbound::{REFUSE, REFUSED, a_sees_refused, claude_allows, claude_set_to, shows_not};
 use crate::receipts::{Roles, assert_shows_once, shows_read_once};
 use crate::senders::LAPTOP_AGENT;
 
@@ -46,7 +46,7 @@ fn allowed_sender_is_handed_over(roles: &Roles, named: Named, text: &str) {
 
     assert_shows_once(&got, text);
     shows_read_once(roles.a(), msg_id);
-    shows_no_refused(roles.a(), msg_id, "a sender on the allowlist");
+    shows_not(roles.a(), msg_id, REFUSED, "a sender on the allowlist");
 }
 
 #[test]

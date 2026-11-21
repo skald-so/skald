@@ -78,6 +78,7 @@ use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::output::{self, Stream};
+use crate::queues;
 use crate::receipts;
 use crate::reply;
 use crate::secrets;
@@ -264,10 +265,7 @@ pub fn reread(
                 "{shown} is no message handed over to this agent in its folder's space, or this \
                  device no longer keeps it"
             ),
-            reply::Unnamed::Shared => format!(
-                "{shown} is the reference of more than one message this device keeps: give more \
-                 of it, or the msg_id"
-            ),
+            reply::Unnamed::Shared => reply::shared(&shown),
             reply::Unnamed::Failed(err) => err,
         })?;
         let sealed = (target.line).ok_or_else(|| format!("this device kept no line of {shown}"))?;
@@ -275,10 +273,7 @@ pub fn reread(
         let this = (state.device().map_err(text)?)
             .ok_or("this machine has no device yet: sign in with skald sign-in")?
             .id;
-        let key = state.mls_step(|sealed| {
-            let key = crate::key_packages::state_key(&secrets, sealed)?;
-            Ok((None, key))
-        })?;
+        let key = crate::key_packages::local_state_key(&state, &secrets)?;
         let opened = (key.open(this, &kept_item(target.seq), &sealed))
             .ok_or("what this device kept of the message does not open")?;
         let references = References::new(state.kept_ids().map_err(text)?);
@@ -375,6 +370,7 @@ fn received(
     // The entries go out on the outbox's connection, which then gets the mailbox.
     let flushed = std::mem::replace(&mut link.mailbox, delivered.mailbox.take());
     history::upload(&mut follower, &mut link, scope);
+    queues::upload_received(&mut follower, scope);
     let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);

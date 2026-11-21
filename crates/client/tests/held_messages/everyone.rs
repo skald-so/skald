@@ -5,8 +5,8 @@ use skald_proto::{MessageId, ReceiptStatus};
 
 use crate::agents::{CLAUDE, CODEX};
 use crate::fixtures::ALL;
-use crate::held::{Decision, HELD, c_reads, decide, holding, says_waiting, status_lines};
-use crate::inbound::REFUSED;
+use crate::held::{Decision, HELD, c_reads, decide, holding, says_waiting};
+use crate::inbound::{REFUSED, status_lines};
 use crate::receipts::{READ, Roles, assert_shows_once, shows_read};
 use crate::senders::LAPTOP_AGENT;
 

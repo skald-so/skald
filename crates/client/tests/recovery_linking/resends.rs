@@ -11,8 +11,8 @@ use crate::revocations::STORE_REVOCATION;
 use crate::terminal::Shown;
 use crate::world::World;
 use crate::{
-    ADA_HOST, Ada, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, cert_of, new_device,
-    played, recovered, revocations_of, revoked_once_by, sign_up,
+    ADA_HOST, Ada, LOST, NEW_HOST, STOLEN, assert_certified_by_the_master_key, new_device, played,
+    recovered, revocations_of, revoked_once_by, sign_up,
 };
 
 /// The relay withholds the server's answer to the next request whose line starts with `request`,
@@ -104,7 +104,7 @@ fn a_run_killed_after_its_certificate_is_stored_is_finished_with_that_certificat
 
     let killed = killed_at(&world, &ada, &machine, (&named, GIVE_ANCHORS));
     let new = new_device(cloud, &ada.person, &[first]);
-    let stored = cert_of(cloud, &ada.person, new).expect("the certificate stored");
+    let stored = (cloud.cert(&ada.person.token, new)).expect("the certificate stored");
     assert!(
         revocations_of(cloud, &ada.person, first).is_empty(),
         "the first device revoked: {killed:?}"
@@ -112,7 +112,7 @@ fn a_run_killed_after_its_certificate_is_stored_is_finished_with_that_certificat
 
     recovered(&world, &ada, &machine, &named);
 
-    assert_eq!(cert_of(cloud, &ada.person, new), Some(stored));
+    assert_eq!(cloud.cert(&ada.person.token, new), Some(stored));
     assert_certified_by_the_master_key(cloud, &ada.person, new);
     revoked_once_by(cloud, &ada.person, first, Some(new));
 }

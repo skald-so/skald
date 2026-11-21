@@ -11,9 +11,9 @@ use crate::cloud::WAIT;
 use crate::fixtures::killed_once;
 use crate::held::{
     Decision, answer, c_reads, decide, deciding, holding, nothing_to_decide, receipts_with,
-    says_none_waiting, says_waiting, shows_not, shows_once,
+    says_none_waiting, says_waiting, shows_once,
 };
-use crate::inbound::REFUSED;
+use crate::inbound::{REFUSED, shows_not};
 use crate::receipts::{READ, assert_shows_once, shows_read_once};
 use crate::senders::LAPTOP_AGENT;
 use crate::talk::messages_sent;

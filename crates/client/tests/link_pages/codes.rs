@@ -6,12 +6,11 @@
 //! links.
 
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::cloud::WAIT;
 use crate::linking::{
     EXPIRED, HELLO, LIFETIME_SETTING, NEW_CODE, OWN_DEVICE, THREE_TIMES, codes_in, failures,
-    other_code, says, typed, waiting,
+    other_code, says, typed, until_not_waiting, waiting,
 };
 use crate::pages::{
     NewOnPage, Opener, YES_BUTTON, confirm_on_page, link_failing_on_page, link_on_page,
@@ -84,11 +83,7 @@ fn a_code_on_the_page_expires_and_a_fresh_one_links() {
     let code = new.code();
 
     new.wait_for("that the code expired", |text| says(text, &[EXPIRED]));
-    let deadline = Instant::now() + WAIT;
-    while waiting(cloud, &ada, new.device) {
-        assert!(Instant::now() < deadline, "the expired code's run is open");
-        thread::sleep(Duration::from_millis(100));
-    }
+    until_not_waiting(cloud, &ada, new.device);
     link_failing_on_page(&world, &ada, &opener, &typed(&code));
 
     let fresh = new.fresh_code();

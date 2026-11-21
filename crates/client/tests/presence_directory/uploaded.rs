@@ -11,12 +11,10 @@ use crate::agents::CLAUDE;
 use crate::client::{CLIENT, MCP, Session};
 use crate::cloud::WAIT;
 use crate::helped::Helped;
+use crate::presence::{AVAILABLE, assert_between};
 use crate::senders::Senders;
-use crate::values::{AVAILABLE, OFFLINE, listed_json, objects_of};
+use crate::values::{OFFLINE, listed_json, objects_of};
 use crate::world::{AGENT, now};
-
-/// How far a time a value states may be from the tests' clock, in seconds.
-const SLACK: u64 = 3;
 
 /// Waits for up to [`WAIT`] until the person's `skald agents --json` on Ada's second machine lists
 /// `agent`, a full address, of `device` in `state`; gives that object.
@@ -65,9 +63,10 @@ fn running_mcp_session_is_listed_available_at_another_device_and_offline_once_it
 
     assert_eq!(shown["runtime"].as_str(), Some("claude-code"), "{shown}");
     let since = shown["since"].as_u64().expect("a since");
-    assert!(
-        started.saturating_sub(SLACK) <= since && since <= now() + SLACK,
-        "available since {since}, not after {started}: {shown}"
+    assert_between(
+        since,
+        (started, now()),
+        &format!("available since: {shown}"),
     );
     let ended = now();
     drop(session);
@@ -75,8 +74,5 @@ fn running_mcp_session_is_listed_available_at_another_device_and_offline_once_it
     let shown = await_listed(&senders, (&at.0, at.1), OFFLINE);
 
     let since = shown["since"].as_u64().expect("a since");
-    assert!(
-        ended.saturating_sub(SLACK) <= since && since <= now() + SLACK,
-        "offline since {since}, not after {ended}: {shown}"
-    );
+    assert_between(since, (ended, now()), &format!("offline since: {shown}"));
 }

@@ -258,17 +258,32 @@ fn directory(synced: Synced, scope: Scope, reading: Reading) -> Result<Vec<Liste
             )),
         }
     }
-    let presence_keys = opening_keys(&mut follower, space.id, &given, &warn)?;
+    let space = (space.id, (&roster, &devices));
+    let listed = read_given(&mut follower, space, server.as_ref(), &given, &warn)?;
+    Ok(sorted(listed))
+}
+
+/// What `given`, the values of channels of `space`, each as its bytes, list, by each device's
+/// latest value that passes the reader checks: read against the space's last accepted revision
+/// and its accounts' devices, on `server`, giving each value it drops to `warn`.
+fn read_given(
+    follower: &mut Follower,
+    (space, (roster, devices)): (SpaceId, (&Roster, &SpaceDevices)),
+    server: Option<&ServerName>,
+    given: &[(ChannelId, Vec<Vec<u8>>)],
+    warn: &dyn Fn(String),
+) -> Result<Vec<Listed>, String> {
+    let keys = opening_keys(follower, space, given, warn)?;
     let reader = Reader {
-        follower: &follower,
-        roster: &roster,
-        devices: &devices,
-        server: server.as_ref(),
-        keys: &presence_keys,
+        follower,
+        roster,
+        devices,
+        server,
+        keys: &keys,
         now: state::unix_now(),
     };
     let mut listed: Vec<Listed> = Vec::new();
-    for (channel, values) in &given {
+    for (channel, values) in given {
         for bytes in values {
             match reader.read(*channel, bytes) {
                 Ok(agents) => listed.extend(agents),
@@ -276,7 +291,33 @@ fn directory(synced: Synced, scope: Scope, reading: Reading) -> Result<Vec<Liste
             }
         }
     }
-    Ok(sorted(latest(listed)))
+    Ok(latest(listed))
+}
+
+/// The devices whose presence values in the channel `at` list `agent`, by the device's latest
+/// value that passes the reader checks and is before its `expires`: each one's ID and certificate
+/// `name`. Read as a listing reads them, against `roster`, the space's last accepted revision,
+/// and `devices`, its accounts' devices, on `server`, warning of each value it drops.
+pub fn listing(
+    follower: &mut Follower,
+    (roster, devices): (&Roster, &SpaceDevices),
+    at: (SpaceId, ChannelId),
+    server: &ServerName,
+    agent: &Address,
+) -> Result<Vec<(DeviceId, String)>, String> {
+    let warn = |warning: String| eprintln!("skald: warning: {warning}");
+    let given = [(at.1, values(follower, at, &warn)?)];
+    let space = (at.0, (roster, devices));
+    let listed = read_given(follower, space, Some(server), &given, &warn)?;
+    Ok((listed.into_iter())
+        .filter(|one| one.agent == *agent && one.last_seen.is_none())
+        .map(|one| (one.device, one.device_name))
+        .collect())
+}
+
+/// The path of the presence values of `channel` in `space`.
+pub fn path(space: SpaceId, channel: ChannelId) -> String {
+    format!("/spaces/{space}/channels/{channel}/presence")
 }
 
 /// The values the server gives of the channel `at`, each as its bytes, to the device of
@@ -286,13 +327,9 @@ fn values(
     (space, channel): (SpaceId, ChannelId),
     warn: &dyn Fn(String),
 ) -> Result<Vec<Vec<u8>>, String> {
-    let keys = follower.keys()?;
-    let proof = (follower.connection)
-        .request_proof(&follower.token, keys.id(), keys.signing())
-        .map_err(text)?;
-    let path = format!("/spaces/{space}/channels/{channel}/presence");
+    let proof = follower.proof(&follower.keys()?)?;
     let body = (follower.connection)
-        .get_proved(&path, (&follower.token, &proof))
+        .get_proved(&path(space, channel), (&follower.token, &proof))
         .map_err(text)?;
     let Values { values } = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a channel's presence values".to_owned())?;

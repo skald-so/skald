@@ -4,10 +4,8 @@
 use skald_proto::MessageId;
 
 use crate::agents::assert_not_handed;
-use crate::held::{
-    Decision, HELD, HOLD, agent_status_lines, decide, says_none_waiting, says_waiting,
-};
-use crate::inbound::{REFUSED, set_mode};
+use crate::held::{Decision, HELD, HOLD, decide, says_none_waiting, says_waiting};
+use crate::inbound::{REFUSED, agent_status_lines, set_mode};
 use crate::kit::RECV;
 use crate::receipts::assert_shows_once;
 use crate::solo::{API, Solo, WEB};

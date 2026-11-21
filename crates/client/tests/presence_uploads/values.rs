@@ -5,13 +5,11 @@ use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
 use skald_crypto::PresenceError;
 use skald_proto::{
     AgentState, AgentStatus, Cbor as _, ChannelId, PROOF_HEADER, PROTOCOL_VERSION, Presence,
-    PresenceBody, REQUEST_LABEL, RequestProof, SpaceId, VERSION_HEADER,
+    PresenceBody, SpaceId, VERSION_HEADER,
 };
 
 use crate::agents::{Agents, CLAUDE};
@@ -20,14 +18,13 @@ use crate::cloud::{WAIT, agent, get, unb64};
 use crate::fixtures::cert_of;
 use crate::helped::Helped;
 use crate::machine::{Finished, Machine, Run};
+use crate::presence::{presence_path, proof};
 use crate::talk::Talk;
-use crate::world::{AGENT, now, post_as};
+use crate::world::{AGENT, now};
 
 /// The command that sets an agent's state and note, its flag of the note, and the states it takes.
 pub const SET_STATUS: &str = "set-status";
 pub const NOTE_FLAG: &str = "--note";
-pub const BUSY: &str = "busy";
-pub const AVAILABLE: &str = "available";
 
 /// The MCP tool that sets its session's state and note, and its arguments.
 pub const STATUS_TOOL: &str = "set_status";
@@ -42,18 +39,9 @@ pub const NOTE_LIMIT: &str = "128";
 pub const EXPIRES_SETTING: &str = "SKALD_PRESENCE_EXPIRES";
 pub const EXPIRES_IN: u64 = 900;
 
-/// How far a time a value states may be from the tests' clock, in seconds: the machine's clock is
-/// the tests', and a value states whole seconds.
-pub const SLACK: u64 = 3;
-
 /// More agents of Ada's device, beside those of the tests of handing messages over.
 pub const GEMINI: &str = "gemini-p4r8vd";
 pub const AIDER: &str = "aider-k2n6ws";
-
-/// The path of `channel`'s presence in `space`.
-pub fn presence_path((space, channel): (SpaceId, ChannelId)) -> String {
-    format!("/spaces/{space}/channels/{channel}/presence")
-}
 
 /// The line that starts the request uploading a value in `at`'s channel, for the relay's count.
 pub fn upload_request(at: (SpaceId, ChannelId)) -> String {
@@ -71,19 +59,7 @@ pub fn uploads(talk: &Talk, at: (SpaceId, ChannelId), since: Instant) -> usize {
 pub fn values_in(talk: &Talk, at: (SpaceId, ChannelId)) -> Vec<Presence> {
     let cloud = talk.cloud();
     let bob = &talk.played[0].person;
-    let (status, issued) = post_as(cloud, &bob.token, "/session/challenge", None);
-    assert_eq!(status, 200, "Bob's device got no challenge: {issued}");
-    let Some(encoded) = issued["challenge"].as_str() else {
-        panic!("no challenge in {issued}");
-    };
-    let challenge = unb64(encoded);
-    let origin = cloud.public.as_bytes();
-    let proof = RequestProof {
-        signature: bob.key.sign(REQUEST_LABEL, &[challenge.as_slice(), origin]),
-        challenge,
-        device: bob.device,
-    };
-    let header = URL_SAFE_NO_PAD.encode(proof.to_cbor());
+    let header = proof(cloud, bob);
     let path = presence_path(at);
     let mut answer = get(|| {
         agent()
@@ -238,15 +214,6 @@ pub fn addresses(body: &PresenceBody) -> Vec<String> {
     (body.agents.iter())
         .map(|status| status.agent.to_string())
         .collect()
-}
-
-/// Fails unless `time`, a time a value states, is within `[from - SLACK, to + SLACK]`.
-#[track_caller]
-pub fn assert_between(time: u64, (from, to): (u64, u64), what: &str) {
-    assert!(
-        from.saturating_sub(SLACK) <= time && time <= to + SLACK,
-        "{what} at {time}, not between {from} and {to}"
-    );
 }
 
 /// Ada's agents in `~/work/acme` and the channels of `acme`: the default one and the talk's.
