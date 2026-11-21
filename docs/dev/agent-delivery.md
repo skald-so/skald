@@ -870,33 +870,38 @@ Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" US
 | Check | macOS, the stub | Linux, the stub | Windows, the stub |
 |---|---|---|---|
 | `live-check signal codex`, also `--all` | pass | pass | not on Windows |
-| `live-check executor-read-only codex` | fail | fail | fail, without `windows.sandbox` |
+| `live-check executor-read-only codex` | fail | fail | fail |
 | `live-check executor-full codex` | pass | pass | pass |
 | `live-check executor-clean codex` | pass | pass | pass |
 
 `live-check signal codex --real`, Codex 0.162.1, macOS, the idle session: fail without `--model`, as the API key's project may not use Codex's default model, `gpt-6.1-terra` (403), so nothing reached the model; pass with `--model gpt-5.6-terra`, 1 `claim` call, the token reached the model only in `inbox`'s result; tokens: input 15,736 (cached 55,559), output 201.
 
-What each attempt did, the same on macOS and Linux:
+What each attempt did:
 
-| Attempt | `read-only` | Full access |
-|---|---|---|
-| Read a file in the folder | yes | yes |
-| Write a file in the folder or outside it | no; macOS: "operation not permitted" | yes |
-| Run a command | yes | yes |
-| Reach the local server or the public host | no; macOS: `curl` exits 7 and 6 | yes |
-| Read a file outside the folder | yes | yes |
+| Attempt | `read-only`, macOS and Linux | `read-only`, Windows | Full access |
+|---|---|---|---|
+| Read a file in the folder | yes | yes | yes |
+| Write a file in the folder or outside it | no; macOS: "operation not permitted" | no | yes |
+| Run a command | yes | yes | yes |
+| Reach the local server | no; macOS: `curl` exits 7 | yes | yes |
+| Reach the public host | no; macOS: `curl` exits 6 | no | yes |
+| Read a file outside the folder | yes | yes | yes |
 
 Findings:
 - `read-only` blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
-- On Windows without `windows.sandbox`, `read-only` has no sandbox behind it, so `codex exec` rejects every command, reads too: "rejected: blocked by policy". Full access did all seven attempts there. The run with `windows.sandbox="unelevated"` is pending.
+- On Windows, `read-only` needs `windows.sandbox`. Without it, no sandbox stands behind `read-only`, and `codex exec` rejects every command, reads too: "rejected: blocked by policy". With `windows.sandbox="unelevated"`, it blocks writes only: commands, reads outside the folder and the local server all work, while the public host was not reached. The unelevated sandbox asked for no administrator and left `~/.codex` as it was.
 - In Docker's default container, `read-only` runs no command at all, not even the read in the folder: "bwrap: Can't mount proc on /proc: Operation not permitted". The other checks pass there too.
 - Codex runs a command with the session's environment: the control's variable reached `echo`.
 - With the clean flags, only the config home's `AGENTS.md` still reaches the session, on Windows too; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
 
 A Codex executor's flags and environment, from these findings:
 - `codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false -c approval_policy="never" --sandbox <read-only|danger-full-access> -C <folder>`;
+- on Windows, also `-c windows.sandbox="unelevated"`;
 - `CODEX_HOME` a folder of its own that holds only a copy of the user's `auth.json`;
 - no variable of the parent's environment that the sign-in does not need.
+
+Open questions:
+- Codex executors on Windows: the unelevated `read-only` leaves the local network open. Does Skald need `elevated`, which takes an administrator's setup, or another guard for read-only tasks there?
 
 Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 
