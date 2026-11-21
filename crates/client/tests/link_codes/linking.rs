@@ -42,11 +42,12 @@ pub const NO_CONFIRM: &str = "no";
 const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 /// Each string in `text` in the shown form of a code, two groups of three characters of the
-/// alphabet joined by `-`, in order.
+/// alphabet joined by `-`, in order; only a whole token, not one inside a word or an ID such as
+/// `84bc7bab-7813-89aa-b475-365c9d616798`.
 pub fn codes_in(text: &str) -> Vec<String> {
     let chars: Vec<char> = text.chars().collect();
     let digit = |c: &char| ALPHABET.contains(*c);
-    let edge = |c: Option<&char>| c.is_none_or(|c| !(digit(c) || *c == '-'));
+    let edge = |c: Option<&char>| c.is_none_or(|c| !(c.is_alphanumeric() || *c == '-'));
     (0..chars.len().saturating_sub(6))
         .filter(|&at| {
             let window = &chars[at..at + 7];

@@ -1,5 +1,7 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
-//! connection, or by opening none in time, is tried again, a few times; any other error is not;
+//! connection, or by opening none in time, or that Windows fails with WSAENOBUFS, is tried again, a
+//! few times, each retry a line with its error, for WSAENOBUFS with the sampled ports in use; any
+//! other error is not;
 //! a server that fails to start drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
@@ -11,44 +13,53 @@ use std::io;
 use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
-use common::{SETUP_ATTEMPTS, Server, close, connect, retried_on_reset, server, test_databases};
+use common::{
+    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Server, close, connect, retried_into, server, test_databases,
+};
 
 /// An I/O error of `kind`, as sqlx gives it.
 fn io_error(kind: io::ErrorKind) -> sqlx::Error {
     sqlx::Error::Io(io::Error::from(kind))
 }
 
-/// What [`retried_on_reset`] gives for `step`, whose result is ready at once.
+/// What `retried_on_reset` gives for `step`, whose result is ready at once; its retries' lines are
+/// dropped.
 fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, sqlx::Error> {
     tokio::runtime::Runtime::new()
         .expect("start a tokio runtime")
-        .block_on(retried_on_reset("a step", step))
+        .block_on(retried_into("a step", None, &mut io::sink(), step))
 }
 
 #[test]
-fn only_a_reset_or_a_timeout_is_retried_and_only_a_few_times() {
-    for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::TimedOut] {
+fn only_a_reset_a_timeout_or_no_buffer_space_is_retried_and_only_a_few_times() {
+    let errors: [fn() -> io::Error; 3] = [
+        || io::Error::from(io::ErrorKind::ConnectionReset),
+        || io::Error::from(io::ErrorKind::TimedOut),
+        || io::Error::from_raw_os_error(NO_BUFFER_SPACE),
+    ];
+    for error in errors {
+        let want = error().to_string();
         // Failures, then success.
         let calls = Cell::new(0);
         let result = retried(|| {
             calls.set(calls.get() + 1);
             ready(if calls.get() < 3 {
-                Err(io_error(kind))
+                Err(sqlx::Error::Io(error()))
             } else {
                 Ok(calls.get())
             })
         });
-        assert_eq!(result.ok(), Some(3), "{kind:?}");
+        assert_eq!(result.ok(), Some(3), "{want}");
 
         // Failures only: the last one is the error.
         let calls = Cell::new(0);
         let result: Result<(), _> = retried(|| {
             calls.set(calls.get() + 1);
-            ready(Err(io_error(kind)))
+            ready(Err(sqlx::Error::Io(error())))
         });
-        assert_eq!(calls.get(), SETUP_ATTEMPTS, "{kind:?}");
+        assert_eq!(calls.get(), SETUP_ATTEMPTS, "{want}");
         assert!(
-            matches!(&result, Err(sqlx::Error::Io(err)) if err.kind() == kind),
+            matches!(&result, Err(sqlx::Error::Io(err)) if err.to_string() == want),
             "{result:?}"
         );
     }
@@ -80,7 +91,7 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     let attempts = RefCell::new(Vec::new());
     let result: Result<(), _> = runtime.block_on(async {
         let started = tokio::time::Instant::now();
-        retried_on_reset("a step", || {
+        retried_into("a step", None, &mut io::sink(), || {
             attempts.borrow_mut().push(started.elapsed());
             ready(Err(io_error(io::ErrorKind::ConnectionReset)))
         })
@@ -89,6 +100,70 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     assert!(result.is_err());
     let at = [0, 100, 300, 700, 1500].map(Duration::from_millis);
     assert_eq!(attempts.into_inner(), at);
+}
+
+/// The lines of the retries of a step that fails twice with `error`, the ports sampled in `samples`.
+fn retry_lines(error: fn() -> io::Error, samples: Option<std::path::PathBuf>) -> Vec<String> {
+    let mut sink = Vec::new();
+    let calls = Cell::new(0);
+    let result = tokio::runtime::Runtime::new()
+        .expect("start a tokio runtime")
+        .block_on(retried_into("a step", samples, &mut sink, || {
+            calls.set(calls.get() + 1);
+            ready(if calls.get() < 3 {
+                Err(sqlx::Error::Io(error()))
+            } else {
+                Ok(())
+            })
+        }));
+    assert!(result.is_ok(), "{result:?}");
+    String::from_utf8(sink)
+        .expect("lines in UTF-8")
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_the_ports() {
+    let dir = std::env::temp_dir().join(format!("skald-client-samples-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("make a directory");
+    let samples = dir.join("ports.txt");
+    std::fs::write(
+        &samples,
+        "10:00:00: 900 ports in use\n10:00:10: 950 ports in use\n\n",
+    )
+    .expect("write the samples");
+    let no_buffer_space = || io::Error::from_raw_os_error(NO_BUFFER_SPACE);
+    let sampled = retry_lines(no_buffer_space, Some(samples.clone()));
+    let gone = retry_lines(no_buffer_space, Some(dir.join("none.txt")));
+    let reset = retry_lines(
+        || io::Error::from(io::ErrorKind::ConnectionReset),
+        Some(samples),
+    );
+    std::fs::remove_dir_all(&dir).expect("remove the directory");
+
+    let error = no_buffer_space().to_string();
+    assert_eq!(
+        sampled,
+        [100, 200].map(|ms| format!(
+            "a step: no connection to PostgreSQL: {error}; again in {ms}ms; \
+             ports: 10:00:10: 950 ports in use"
+        ))
+    );
+    assert_eq!(gone.len(), 2, "{gone:?}");
+    assert!(
+        gone.iter()
+            .all(|line| line.ends_with("; ports: not sampled")),
+        "{gone:?}"
+    );
+    let reset_error = io::Error::from(io::ErrorKind::ConnectionReset).to_string();
+    assert_eq!(
+        reset,
+        [100, 200].map(|ms| format!(
+            "a step: no connection to PostgreSQL: {reset_error}; again in {ms}ms"
+        ))
+    );
 }
 
 /// The only test of this binary that makes databases: no other test's are listed.
