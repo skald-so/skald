@@ -35,7 +35,7 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 
 ## Claude Code hooks
-- Claude Code runs `skald hook claude` as its `SessionStart`, `SessionEnd`, `PostToolUse`, `Stop`, `PermissionRequest` and `Notification` hooks, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
+- Claude Code runs `skald hook claude` as its `SessionStart`, `SessionEnd`, `PostToolUse`, `Stop`, `PermissionRequest` and `Notification` hooks, the last for every type or `permission_prompt`, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
 - `SessionStart` registers the session's cross-session socket with Skald, and `SessionEnd` ends it; both print nothing.
 - While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
 - They print nothing while nothing waits.
