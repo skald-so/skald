@@ -219,10 +219,10 @@ fn read_of(task: TaskId, item: &Value) -> Read {
         });
     Read {
         task,
-        state: text("state").unwrap_or_default(),
+        state: text("state").unwrap_or_else(|| panic!("no state in {item}")),
         progress: text("progress"),
         reason: text("reason"),
-        attempts: item["attempts"].as_u64().unwrap_or_default(),
+        attempts: (item["attempts"].as_u64()).unwrap_or_else(|| panic!("no attempts in {item}")),
         claim,
     }
 }

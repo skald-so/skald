@@ -31,6 +31,7 @@ mod admin;
 mod agents;
 mod anchors;
 mod channels;
+mod claims;
 #[cfg(unix)]
 mod claude_relay;
 mod claude_socket;
@@ -110,7 +111,7 @@ use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use person::Person;
 use serde::{Deserialize, Serialize};
-use skald_proto::{DeviceId, VersionRange};
+use skald_proto::{DeviceId, Name, VersionRange};
 use spaces::Scope;
 
 /// Message broker and task queue for AI agents.
@@ -728,6 +729,67 @@ enum Command {
         #[arg(value_name = "TASK")]
         task: String,
     },
+    /// Claims one task from a queue of a channel, by default the default queue of the default
+    /// channel of the working directory's space; as an agent, only in the space of the agent's
+    /// folder. It first accepts the space's latest roster revisions and goes through the mailbox
+    /// as skald send does, then claims a task of the trust level own without a template. Runs a
+    /// task only once its checks pass: one for another device or agent, or whose sender's trust
+    /// level or template the claim did not state, it hands back; one that fails another check it
+    /// fails without retry, with a warning. Extends the claim at once with started, then shows the
+    /// task in one line with its #<ref>, as skald recv shows a message; with no task, says so in
+    /// one line.
+    Claim {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The queue's name.
+        #[arg(long, value_name = "NAME", default_value = queues::DEFAULT)]
+        queue: String,
+        /// Shows the task as a JSON object, with every field: task, ref, space, channel, queue,
+        /// queue_name, from, to, device, device_name, level, text, hops, claim_id, generation,
+        /// attempt and lease.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extends the claim of a task this device holds, as an agent only its own in the space of its
+    /// folder, for one more lease, stating its progress. Fails, saying the claim is lost, once
+    /// another device may hold the task: the server answered claim-lost, or the lease passed on
+    /// this device's clock without an answered extend.
+    Extend {
+        /// The task's progress.
+        #[arg(long, value_enum, default_value = "started")]
+        progress: claims::Progress,
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+    },
+    /// Completes a task this device holds a claim of, as an agent only its own in the space of its
+    /// folder, then sends its result, with the text, to the task's sender. Fails, saying the claim
+    /// is lost, as skald extend does; no result is sent then. The local state keeps the complete
+    /// before its request: a run that ends before the server answers it or before the result is
+    /// sent leaves them to the next skald recv, which sends the result once.
+    Complete {
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+        /// The text of the result.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+    },
+    /// Fails a task this device holds a claim of, as skald complete completes it; with --retry,
+    /// the queue hands the task out again while its attempts last.
+    Fail {
+        /// The queue may hand the task out again.
+        #[arg(long)]
+        retry: bool,
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+        /// The text of the result: why it failed.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+    },
     /// Replies to a message, in its channel, to its sender, a person included: as skald send
     /// sends, with the message's ID as its reply_to; as with --to, the reply is handed only to its
     /// sender, but it is not private: every member of the channel gets it. The person replies to a
@@ -1111,6 +1173,10 @@ impl Command {
                 | Command::Tasks { .. }
                 | Command::RestartTask { .. }
                 | Command::CancelTask { .. }
+                | Command::Claim { .. }
+                | Command::Extend { .. }
+                | Command::Complete { .. }
+                | Command::Fail { .. }
                 | Command::Reply { .. }
                 | Command::MessageStatus { .. }
                 | Command::Recv { .. }
@@ -1377,19 +1443,25 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
     }
 }
 
-/// Runs `operation` as a service agent's run ([`service`]): only `skald send` and `skald recv`, as
-/// no agent, in this process, without a helper, holding the lock of the state directory, which it
-/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
-/// does not wait.
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
+/// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
+/// holding the lock of the state directory, which it creates if it is missing. Without a state
+/// directory the run is stateless: it takes no lock and does not wait.
 fn as_service(operation: Operation) -> ExitCode {
     if !matches!(
         operation.command,
-        Command::Send { .. } | Command::Recv { .. }
+        Command::Send { .. }
+            | Command::Recv { .. }
+            | Command::Claim { .. }
+            | Command::Extend { .. }
+            | Command::Complete { .. }
+            | Command::Fail { .. }
     ) || operation.agent.is_some()
     {
         return exit(Err(format!(
             "with {} and {} set, skald runs as the service agent of the key secret, which only \
-             sends and receives: skald send and skald recv, without --agent",
+             sends and receives, and as a member runs tasks: skald send, skald recv, skald claim, \
+             skald extend, skald complete and skald fail, without --agent",
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
@@ -1665,6 +1737,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                     | Command::Queues { json: true, .. }
                     | Command::Enqueue { json: true, .. }
                     | Command::Tasks { json: true, .. }
+                    | Command::Claim { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1992,6 +2065,36 @@ fn performed(operation: Operation) -> Result<(), String> {
             (key_storage, (speaks, timeout)),
             (channel, task),
         ),
+        Command::Claim {
+            channel,
+            queue,
+            json,
+        } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel.as_deref(), agent.is_some()),
+            |run| claims::claim(run, &queue, agent.as_ref(), json),
+        ),
+        Command::Extend { progress, task } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (None, agent.is_some()),
+            |run| claims::extend(run, &task, progress, agent.as_ref()),
+        ),
+        Command::Complete { task, text } => end_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (&task, &text),
+            claims::Ending::Complete,
+            agent.as_ref(),
+        ),
+        Command::Fail { retry, task, text } => end_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (&task, &text),
+            claims::Ending::Fail(retry),
+            agent.as_ref(),
+        ),
         Command::Reply {
             message,
             text,
@@ -2196,6 +2299,23 @@ impl tasks::Change {
             |run| tasks::change(run, &task, self),
         )
     }
+}
+
+/// Ends the claim of `task` with `text` as `ending` says ([`claims::end`]), on the state in
+/// `state_dir`, its secrets in `storage`, with `settings`, as `agent` if given.
+fn end_command(
+    state_dir: Option<PathBuf>,
+    (storage, settings): (secrets::Storage, (VersionRange, Duration)),
+    (task, text): (&str, &str),
+    ending: claims::Ending,
+    agent: Option<&Name>,
+) -> Result<(), String> {
+    queue_command(
+        state_dir,
+        (storage, settings),
+        (None, agent.is_some()),
+        |run| claims::end(run, (task, text), ending, agent),
+    )
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an
