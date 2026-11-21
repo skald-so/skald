@@ -10,7 +10,7 @@ use skald_proto::DeviceId;
 use crate::browser::APPROVE;
 use crate::cloud::{Cloud, WAIT, ids};
 use crate::keys;
-use crate::machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN};
+use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::terminal::{Shown, Terminal};
 use crate::world::{Person, World};
 
@@ -126,7 +126,7 @@ pub fn holds(bytes: &[u8], form: &str) -> bool {
         .any(|window| window == form.as_bytes())
 }
 
-/// A new device of a person's account, signed in as no first device at a terminal.
+/// A new device of a person's account, signed in at a terminal.
 pub struct NewDevice {
     /// Dropped first, so its run ends before the machine's directories go: Windows removes no file
     /// a running process holds.
@@ -143,8 +143,8 @@ pub struct NewDevice {
 }
 
 impl NewDevice {
-    /// A new machine with the host name `host` signs in to `first`'s account at a terminal, as no
-    /// first device; its person approves its code. Gives it once it shows a link code.
+    /// A new machine with the host name `host` signs in to `first`'s account at a terminal; its
+    /// person approves its code. Gives it once it shows a link code.
     pub fn start(world: &World, first: &Person, host: &'static str) -> Self {
         Self::start_on(world, first, Machine::new().with_host_name(host), host)
     }
@@ -155,7 +155,7 @@ impl NewDevice {
         let known = ids(&cloud.devices(&first.token));
         let grants = cloud.grants().len();
         let started = cloud.relay.mark();
-        let args = [SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, NO];
+        let args = [SIGN_IN, SERVER, &cloud.url];
         let mut run = Terminal::start(&machine, &args);
         approve(world, first, &mut run, grants);
         run.wait_for("a link code", |shown| !codes_in(shown).is_empty());

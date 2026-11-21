@@ -3,7 +3,8 @@
 //!
 //! - A session's run of `skald recv --wait` leaves its follower, what it checks messages with and
 //!   its link ([`leave`]); the helper takes in with them what comes next.
-//! - Taking in catches up, syncs each space a `space-notice` names and brings its groups in line,
+//! - Taking in catches up, follows a noticed space the device does not follow when it can
+//!   ([`crate::joined`]), syncs each space a `space-notice` names and brings its groups in line,
 //!   decrypts the application messages, then checks each message once, keeping it for the person
 //!   and the agents it is for, and takes out each status, as `skald recv` does ([`crate::recv`]).
 //!   Nothing else on the way: the KeyPackages, the GroupInfo of the groups the device holds, the
@@ -24,6 +25,7 @@ use skald_proto::{Name, SpaceId};
 
 use crate::forms::Form;
 use crate::groups::{self, Link};
+use crate::joined;
 use crate::mailbox::{Transport, Watched};
 use crate::output::{self, Stream};
 use crate::receipts;
@@ -162,6 +164,9 @@ impl Intake {
         marks.push(("caught up", SystemTime::now()));
         let roster_changed = !due.is_empty();
         while !due.is_empty() {
+            if joined::names_unfollowed(follower, &due) {
+                joined::follow(follower);
+            }
             recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced)?;
             due.extend(mailbox.waiting_notices(follower, &link.keys));
         }

@@ -6,7 +6,7 @@ use skald_github_stand_in::User;
 
 use crate::browser::{APPROVE, Page};
 use crate::cloud::Cloud;
-use crate::machine::{FIRST_DEVICE, Machine, SERVER, SIGN_IN, YES};
+use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::terminal::Terminal;
 
 /// The agent the tests run commands as.
@@ -31,7 +31,7 @@ pub fn approve(cloud: &Cloud, page: &Page, user: &User, run: &mut Terminal, befo
     cloud.decide(page, user, &grant, APPROVE);
 }
 
-/// Starts `skald sign-in --server <cloud> --first-device yes`, with `before` the arguments before
+/// Starts `skald sign-in --server <cloud>`, with `before` the arguments before
 /// it, on `machine` at a terminal, and approves its code as `user`.
 pub fn first_at_terminal(
     cloud: &Cloud,
@@ -41,7 +41,7 @@ pub fn first_at_terminal(
     before: &[&str],
 ) -> Terminal {
     let grants = cloud.grants().len();
-    let args = [before, &sign_in(cloud, &[FIRST_DEVICE, YES])[..]].concat();
+    let args = [before, &sign_in(cloud, &[])[..]].concat();
     let mut run = Terminal::start(machine, &args);
     approve(cloud, page, user, &mut run, grants);
     run

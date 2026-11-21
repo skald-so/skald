@@ -1240,14 +1240,14 @@ exec env -i PATH=/usr/local/bin:/usr/bin:/bin HOME=$dir/home SKALD_STATE_DIR=$di
 EOF
 }
 
-# start_sign_in <scenario> <machine>: starts `skald sign-in --first-device yes` on a new machine of
+# start_sign_in <scenario> <machine>: starts `skald sign-in` on a new machine of
 # the scenario, in the background; its output goes to sign-in.out in the machine's directory, its exit
 # code then to sign-in.status.
 start_sign_in() {
   local dir=/self-host/run/$1/$2
   new_machine "$1" "$2"
   docker exec --detach "$machine" sh -c "timeout 300 $dir/skald sign-in --server https://$domain \
-    --first-device yes </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
+    </dev/null >$dir/sign-in.out 2>&1; echo \$? >$dir/sign-in.status"
 }
 
 # sign_in_shown <scenario> <machine> <pattern>: the output of the machine's sign-in of start_sign_in,
@@ -1272,7 +1272,7 @@ sign_in_status() {
 }
 
 # sign_in <scenario> <machine> <GitHub|Google>: signs a new machine in to the stack by device flow,
-# `skald sign-in --first-device yes`, its person signing in with the provider on the verification
+# `skald sign-in`, its person signing in with the provider on the verification
 # page; fails unless the run succeeds and says it created the account's master key and holds its
 # certificate.
 sign_in() {
@@ -1285,7 +1285,7 @@ sign_in() {
   start_sign_in "$scenario" "$name"
   out=$(sign_in_shown "$scenario" "$name" '[A-Z]{4}-[A-Z]{4}')
   code=$(grep -oE '[A-Z]{4}-[A-Z]{4}' <<<"$out" | head -n 1 || true)
-  page=$(grep -oE "https://$domain/[^ ?]*( |\$)" <<<"$out" | head -n 1 | tr -d ' ' || true)
+  page=$(grep -oE "https://$domain/[^ ?]*" <<<"$out" | head -n 1 || true)
   if [[ -z $code || -z $page ]]; then
     fail "$scenario: skald sign-in on $name shows no verification page and code:"$'\n'"$out"
     return 1
@@ -1359,8 +1359,8 @@ no_secret_in_logs() {
   done
 }
 
-# refused_sign_in <scenario> <machine> <GitHub user ID>: a new machine's `skald sign-in --first-device
-# yes`, whose person signs in with GitHub as that user on the verification page with the code filled
+# refused_sign_in <scenario> <machine> <GitHub user ID>: a new machine's `skald sign-in`, whose
+# person signs in with GitHub as that user on the verification page with the code filled
 # in; fails unless the callback refuses the sign-up, a 403 page naming its problem type, and the run
 # then ends within 30 s, failing and saying sign-up is closed.
 refused_sign_in() {

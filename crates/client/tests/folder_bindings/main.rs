@@ -59,7 +59,7 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
 
-use machine::{FIRST_DEVICE, Finished, Machine, NO};
+use machine::{Finished, Machine};
 use skald_proto::SpaceId;
 use world::{
     ADD_RULE, APPROVE, CLIENT_A, CLIENT_B, Desk, FOLDER, REMOVE_RULE, RULES, SPACES, World, create,
@@ -506,7 +506,7 @@ fn folder_without_a_binding_is_in_the_pinned_personal_space() {
 
     let laptop = Machine::new().with_host_name("ada-second-laptop");
     let page = desk.world.browser.page();
-    let waiting = cloud.signed_in(&page, &laptop, &desk.ada.user, &[FIRST_DEVICE, NO]);
+    let waiting = cloud.signed_in(&page, &laptop, &desk.ada.user, &[]);
     assert!(waiting.success, "the second machine: {waiting:?}");
     let shown = folder(&laptop, &dir_of(&laptop, "notes"));
     assert_in_none(&shown, None, &desk.spaces());

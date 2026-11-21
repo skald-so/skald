@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Tests script/check-migrations on a scratch repository, for the server's and the client's
+# migrations: a new one that sorts after dev's passes, one that sorts before one of dev's fails,
+# also when dev got that one after the branch forked; changing, removing or renaming one of dev's
+# fails; uncommitted and untracked changes count; a change to a migration the branch added passes,
+# and so does one dev got later that the branch lacks or has too. Dev is SKALD_TEST_SINCE, else
+# HEAD^1 in GitHub Actions, as CI checks out a PR merged into dev, else origin/dev; with none, it
+# exits 2.
+set -euo pipefail
+
+check=$(cd "$(dirname "$0")" && pwd)/check-migrations
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+failures=0
+
+fail() {
+  echo "check-migrations-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# expect <want> <what> [<variable>=<value>...]: check-migrations, with only those of its variables
+# set, passes (`pass`), fails (`fail`) or exits 2 (`exit 2`).
+expect() {
+  local want=$1 what=$2 got=pass status=0
+  shift 2
+  env -u SKALD_TEST_SINCE -u GITHUB_ACTIONS "$@" "$check" >/dev/null 2>&1 || status=$?
+  case $status in 0) ;; 1) got=fail ;; *) got="exit $status" ;; esac
+  [[ $got == "$want" ]] || fail "$what: got '$got', want '$want'"
+}
+
+# commit <path>...: creates or edits each <path> and commits them.
+commit() {
+  local path
+  for path in "$@"; do
+    mkdir -p "$(dirname "$path")"
+    echo "-- $path" >>"$path"
+  done
+  git add --all
+  git commit --quiet --message change
+}
+
+# branch: a branch off dev's first commit, checked out.
+branch() {
+  git checkout --quiet --detach "$dev"
+}
+
+server=crates/server/migrations
+client=crates/client/migrations
+
+# A scratch repository, isolated from the user's git config.
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com
+export GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+cd "$tmp"
+git init --quiet
+commit "$server/20270101000000_a.sql" "$server/20270131075300_y.sql" \
+  "$client/00000000000001_a.sql" "$client/00000000000002_b.sql" README.md
+dev=$(git rev-parse HEAD)
+
+for dir in "$server" "$client"; do
+  branch
+  commit "$dir/20271122000000_new.sql"
+  expect pass "a new migration in $dir that sorts last" SKALD_TEST_SINCE="$dev"
+
+  branch
+  commit "$dir/00000000000000_new.sql"
+  expect fail "a new migration in $dir that sorts first" SKALD_TEST_SINCE="$dev"
+
+  for path in $(git ls-tree --name-only "$dev" "$dir/"); do
+    branch
+    commit "$path"
+    expect fail "a change to $path" SKALD_TEST_SINCE="$dev"
+
+    branch
+    git rm --quiet "$path"
+    git commit --quiet --message remove
+    expect fail "removing $path" SKALD_TEST_SINCE="$dev"
+
+    branch
+    git mv "$path" "$dir/29991231235959_moved.sql"
+    git commit --quiet --message move
+    expect fail "renaming $path so it sorts last" SKALD_TEST_SINCE="$dev"
+  done
+
+  # Uncommitted and untracked changes count.
+  branch
+  echo change >>"$dir/$(ls "$dir" | head -n 1)"
+  expect fail "an uncommitted change to a migration in $dir" SKALD_TEST_SINCE="$dev"
+  git checkout --quiet -- "$dir"
+  echo new >"$dir/00000000000000_new.sql"
+  expect fail "an untracked new migration in $dir that sorts first" SKALD_TEST_SINCE="$dev"
+  rm "$dir/00000000000000_new.sql"
+
+  # A branch changes the migration it added.
+  branch
+  commit "$dir/20271122000000_new.sql"
+  commit "$dir/20271122000000_new.sql"
+  expect pass "a change in $dir to the branch's own new migration" SKALD_TEST_SINCE="$dev"
+done
+
+# A PR that adds a server migration sorting before one dev got after the PR forked: locally, and in
+# CI on the PR merged into dev.
+branch
+commit "$server/20270131074000_x.sql"
+pr=$(git rev-parse HEAD)
+git checkout --quiet --detach "$dev"
+commit "$server/20270131080000_z.sql"
+moved=$(git rev-parse HEAD)
+git checkout --quiet --detach "$pr"
+expect fail "a migration that sorts before one dev got later" SKALD_TEST_SINCE="$moved"
+git checkout --quiet --detach "$moved"
+git merge --quiet --no-edit "$pr"
+expect fail "the PR merged into dev, in GitHub Actions" GITHUB_ACTIONS=true
+# A migration dev got later that the branch lacks is not one it removes.
+branch
+commit "$server/20270131090000_w.sql"
+later=$(git rev-parse HEAD)
+expect pass "a branch without a migration dev got later" SKALD_TEST_SINCE="$moved"
+git checkout --quiet --detach "$moved"
+git merge --quiet --no-edit "$later"
+expect pass "the branch merged into dev, in GitHub Actions" GITHUB_ACTIONS=true
+
+# A migration dev got later that the branch took too is dev's.
+git checkout --quiet --detach "$moved"
+commit "$server/20270131085000_u.sql"
+further=$(git rev-parse HEAD)
+branch
+commit "$server/20270131080000_z.sql"
+expect pass "a branch with a migration dev got later" SKALD_TEST_SINCE="$further"
+
+# Without SKALD_TEST_SINCE and outside GitHub Actions, dev is origin/dev.
+branch
+commit "$client/00000000000003_c.sql"
+expect 'exit 2' 'no origin/dev'
+git update-ref refs/remotes/origin/dev "$dev"
+expect pass 'a new migration that sorts after those of origin/dev'
+git update-ref refs/remotes/origin/dev "$moved"
+commit "$server/20270131075959_v.sql"
+expect fail 'a new migration that sorts before one of origin/dev'
+expect 'exit 2' 'SKALD_TEST_SINCE without a commit' SKALD_TEST_SINCE=no-such-commit
+
+# Changes outside the migrations pass.
+branch
+commit README.md crates/server/src/lib.rs
+expect pass 'changes outside the migrations' SKALD_TEST_SINCE="$dev"
+
+if ((failures > 0)); then
+  echo "check-migrations-test: $failures failed" >&2
+  exit 1
+fi
