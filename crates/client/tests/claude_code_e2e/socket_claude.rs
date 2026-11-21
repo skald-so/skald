@@ -31,8 +31,13 @@ use crate::world::AGENT;
 /// soon.
 const HELPER_IDLE: &str = "20";
 
-/// What Claude Code's prompt box starts with in a terminal.
+/// What Claude Code's prompt box starts with in a terminal. A dialog before the main screen, such
+/// as the development channels warning, marks its chosen option with it too.
 const PROMPT_BOX: &str = "\u{276f}";
+
+/// What starts the banner of Claude Code's main screen in a terminal, white space aside: its
+/// prompt box follows it, below any notice.
+const BANNER: &str = "ClaudeCodev";
 
 /// How long a turn may take.
 const TURN_LIMIT: Duration = Duration::from_secs(120);
@@ -351,10 +356,10 @@ impl Session {
     pub fn prompt(&mut self, text: &str) {
         match &mut self.running {
             Running::Terminal { .. } => {
-                // Claude Code reads typing once its prompt box shows; Enter that comes with the
-                // text is taken as part of a paste.
+                // Claude Code reads typing once the prompt box of its main screen shows; Enter
+                // that comes with the text is taken as part of a paste.
                 let deadline = Instant::now() + TURN_LIMIT;
-                while !self.output().contains(PROMPT_BOX) {
+                while !self.composer_shown() {
                     assert!(
                         Instant::now() < deadline,
                         "no prompt box: {}",
@@ -441,6 +446,17 @@ impl Session {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .filter(|value| value["type"] == "result")
             .count()
+    }
+
+    /// Whether the terminal shows the prompt box of Claude Code's main screen: after its banner.
+    fn composer_shown(&self) -> bool {
+        let screen = screen_text(
+            &self
+                .output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        (screen.rfind(BANNER)).is_some_and(|at| screen[at..].contains(PROMPT_BOX))
     }
 
     /// What the session printed so far.
