@@ -16,13 +16,15 @@ struct Published {
 
 /// The sections of the document that hold no CBOR vector of its own form; `skald-crypto`'s tests
 /// check them.
-const NOT_VECTORS: [&str; 6] = [
+const NOT_VECTORS: [&str; 8] = [
     "Contents",
     "Link code keys",
     "Presence value",
     "Queue key pair",
     "Sealed task",
     "Queue key object",
+    "Invite key",
+    "Invite link",
 ];
 
 /// The vectors of the document: each `##` section but [`NOT_VECTORS`], with its `cbor-diag` and

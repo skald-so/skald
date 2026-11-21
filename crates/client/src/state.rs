@@ -603,6 +603,23 @@ const MIGRATIONS: &[&str] = &[
         channel TEXT NOT NULL,
         PRIMARY KEY (write, channel)
     ) STRICT;",
+    // Key changes the server makes ([`crate::kept_certs`], [`crate::follow::master_warnings`]): the
+    // certificate of each device the device trusted, in CBOR, the first it trusted first, then each
+    // of another body that passes the proof check; of each such device given with another
+    // certificate, the one it last warned of; and each set of master keys of one account it warned
+    // of, as text.
+    "CREATE TABLE kept_cert (
+        device TEXT NOT NULL,
+        cert BLOB NOT NULL,
+        PRIMARY KEY (device, cert)
+    ) STRICT;
+    CREATE TABLE swapped_cert (
+        device TEXT PRIMARY KEY,
+        cert BLOB NOT NULL
+    ) STRICT;
+    CREATE TABLE master_warning (
+        masters TEXT PRIMARY KEY
+    ) STRICT;",
     // The epochs of the channels whose queue key object the device does not read again: those it
     // found on the server, and those whose upload the server refused ([`crate::queue_keys`]).
     "CREATE TABLE settled_queue_key (
@@ -2482,6 +2499,76 @@ impl State {
             changed.extend(added);
         }
         Ok(changed)
+    }
+
+    /// The certificates the device keeps of `device`, in CBOR, in the order it kept them
+    /// ([`crate::kept_certs`]).
+    pub fn kept_certs(&self, device: DeviceId) -> Result<Vec<Vec<u8>>, Error> {
+        let mut statement = self
+            .db
+            .prepare("SELECT cert FROM kept_cert WHERE device = ?1 ORDER BY rowid")?;
+        let certs = statement
+            .query_map(params![device.to_string()], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        Ok(certs)
+    }
+
+    /// Keeps `cert`, in CBOR, as a certificate of `device`: only if it keeps none of it yet when
+    /// `first`.
+    pub fn keep_cert(&self, device: DeviceId, cert: &[u8], first: bool) -> Result<(), Error> {
+        let id = device.to_string();
+        if first {
+            self.db.execute(
+                "INSERT INTO kept_cert (device, cert) SELECT ?1, ?2
+                 WHERE NOT EXISTS (SELECT 1 FROM kept_cert WHERE device = ?1)",
+                params![id, cert],
+            )?;
+        } else {
+            self.db.execute(
+                "INSERT OR IGNORE INTO kept_cert (device, cert) VALUES (?1, ?2)",
+                params![id, cert],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Records `swapped`, the certificates in CBOR the server gives of `device` other than the one
+    /// the device kept; gives whether it warned of none of them last, so it warns now. With none,
+    /// forgets the one it warned of.
+    pub fn swapped_certs(&self, device: DeviceId, swapped: &[Vec<u8>]) -> Result<bool, Error> {
+        let id = device.to_string();
+        let Some(first) = swapped.first() else {
+            self.db
+                .execute("DELETE FROM swapped_cert WHERE device = ?1", params![id])?;
+            return Ok(false);
+        };
+        let tx = self.db.unchecked_transaction()?;
+        let held: Option<Vec<u8>> = tx
+            .query_row(
+                "SELECT cert FROM swapped_cert WHERE device = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if held.is_some_and(|held| swapped.contains(&held)) {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT INTO swapped_cert (device, cert) VALUES (?1, ?2)
+             ON CONFLICT (device) DO UPDATE SET cert = excluded.cert",
+            params![id, first],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Records `masters`, a set of master keys of one account as text; gives whether it is new.
+    pub fn master_warning(&self, masters: &str) -> Result<bool, Error> {
+        let added = self.db.execute(
+            "INSERT OR IGNORE INTO master_warning (masters) VALUES (?1)",
+            params![masters],
+        )?;
+        Ok(added == 1)
     }
 
     /// The `seq` the device's next own message takes ([`OwnMessage`]).
@@ -7173,6 +7260,33 @@ pub(crate) mod tests {
             state.device_statuses(&[(ada, false)]).unwrap(),
             vec![(ada, StatusChange::Valid)]
         );
+    }
+
+    /// The first certificate of a device is kept only while none is, later ones always, once
+    /// each; a swap is warned of once, until no swapped certificate is given.
+    #[test]
+    fn kept_certificates_and_swaps_are_recorded() {
+        let dir = TestDir::new("state-kept-certs");
+        let state = State::open(&dir).unwrap();
+        let ada = DeviceId::from_signing_key(&[1; 32]);
+
+        state.keep_cert(ada, &[1], true).unwrap();
+        state.keep_cert(ada, &[2], true).unwrap();
+        state.keep_cert(ada, &[3], false).unwrap();
+        state.keep_cert(ada, &[3], false).unwrap();
+        assert_eq!(state.kept_certs(ada).unwrap(), vec![vec![1], vec![3]]);
+        let other = DeviceId::from_signing_key(&[2; 32]);
+        assert!(state.kept_certs(other).unwrap().is_empty());
+
+        assert!(state.swapped_certs(ada, &[vec![4]]).unwrap());
+        assert!(!state.swapped_certs(ada, &[vec![5], vec![4]]).unwrap());
+        assert!(state.swapped_certs(ada, &[vec![5]]).unwrap());
+        assert!(!state.swapped_certs(ada, &[]).unwrap());
+        assert!(state.swapped_certs(ada, &[vec![5]]).unwrap());
+
+        assert!(state.master_warning("a").unwrap());
+        assert!(!state.master_warning("a").unwrap());
+        assert!(state.master_warning("b").unwrap());
     }
 
     /// A valid device new to a list the device checked before is given as added; one new to a

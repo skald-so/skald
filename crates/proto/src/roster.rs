@@ -70,6 +70,17 @@ pub enum Role {
     Member = 2,
 }
 
+impl Role {
+    /// The role `item` holds as `field`.
+    pub(crate) fn decode(item: &Item<'_>, field: &'static str) -> Result<Self, DecodeError> {
+        match item.uint(field)? {
+            1 => Ok(Self::Admin),
+            2 => Ok(Self::Member),
+            other => Err(cbor::field_error(field, FieldProblem::Value(other))),
+        }
+    }
+}
+
 /// A `service` device of the space, sending as `space/owner/agent`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceAgent {
@@ -307,13 +318,7 @@ impl Codec for Member {
         Ok(Self {
             account: fields.required(1, "member.account")?.id("member.account")?,
             handle: fields.required(2, "member.handle")?.name("member.handle")?,
-            role: match fields.required(3, "member.role")?.uint("member.role")? {
-                1 => Role::Admin,
-                2 => Role::Member,
-                other => {
-                    return Err(cbor::field_error("member.role", FieldProblem::Value(other)));
-                }
-            },
+            role: Role::decode(fields.required(3, "member.role")?, "member.role")?,
             master: fields
                 .required(4, "member.master")?
                 .fixed("member.master")?,
