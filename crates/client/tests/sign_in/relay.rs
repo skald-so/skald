@@ -311,15 +311,21 @@ impl Relay {
     /// From now on, answers each request whose line starts with `request` itself with `status` and
     /// a body `body` of the media type `media`, closing the connection.
     fn answer_itself(&self, request: &str, status: &str, (media, body): (&str, &str)) {
-        let answer = format!(
+        self.answer_with(request, status, (media, body.as_bytes()));
+    }
+
+    /// As [`Relay::refuse`], with any body: `body` of the media type `media`, such as a CBOR item
+    /// a compromised server could give in place of the server's answer.
+    pub fn answer_with(&self, request: &str, status: &str, (media, body): (&str, &[u8])) {
+        let mut answer = format!(
             "HTTP/1.1 {status}\r\ncontent-type: {media}\r\nconnection: close\r\n\
-             content-length: {}\r\n\r\n{body}",
+             content-length: {}\r\n\r\n",
             body.len()
-        );
+        )
+        .into_bytes();
+        answer.extend_from_slice(body);
         let mut rules = self.shared.rules.lock().expect("the relay's rules");
-        rules
-            .refusals
-            .push((request.to_owned(), answer.into_bytes()));
+        rules.refusals.push((request.to_owned(), answer));
     }
 
     /// From now on, lets every request reach the server again.
