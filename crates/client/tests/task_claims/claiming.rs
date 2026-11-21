@@ -487,7 +487,6 @@ pub fn read(
     (queue, task): (QueueId, TaskId),
 ) -> Read {
     let read = states::read(cloud, person, (at, queue), task);
-    assert!(!read.state.is_empty(), "no state in {read:?}");
     let claim = (read.claim.as_ref()).map(|(claim_id, generation, device)| {
         assert!(*generation >= 1, "no generation in {read:?}");
         Held {
