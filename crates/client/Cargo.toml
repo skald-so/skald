@@ -13,11 +13,16 @@ dist = true
 name = "skald"
 path = "src/main.rs"
 
-# Its binary also stands in for the `codex` command, whose arguments libtest would refuse, so it
-# runs a harness of its own (tests/codex_wakes/main.rs).
+# Their binaries also stand in for the `codex` command, whose arguments libtest would refuse, so they
+# run a harness of their own (tests/codex_wakes/harness.rs).
 [[test]]
 name = "codex_wakes"
 path = "tests/codex_wakes/main.rs"
+harness = false
+
+[[test]]
+name = "codex_modes"
+path = "tests/codex_modes/main.rs"
 harness = false
 
 [dependencies]
