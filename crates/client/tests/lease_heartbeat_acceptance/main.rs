@@ -50,17 +50,18 @@ mod unheld;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices and the helpers of the tests of reading the
-// history they need; the history entries of the tests of history entries; the browsers of the
-// tests of history wraps.
+// history they need.
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
 #[path = "../history_devices/devices.rs"]
 mod devices;
-#[path = "../history_entries/entries.rs"]
-mod entries;
 #[path = "../history_reading/reading.rs"]
 mod reading;
+
+// The history entries of the tests of history entries; the browsers of the tests of history wraps.
+#[path = "../history_entries/entries.rs"]
+mod entries;
 #[path = "../history_wraps/wraps.rs"]
 mod wraps;
 
