@@ -178,8 +178,7 @@ fn personal_taken(first: &Roster) -> String {
     let body = first.body();
     let handle = creator_handle(first);
     format!(
-        "This device signed revision 1 of the account's personal space {} ({}) as its admin, with \
-         the handle {handle}.",
+        "Signed the personal space {} ({}) as its admin {handle}.",
         body.name.as_str(),
         body.space
     )

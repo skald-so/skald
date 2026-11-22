@@ -34,7 +34,7 @@ fn with_new_device(ids: &[u64], logins: &[&str]) -> (Talk, NewDevice) {
 /// Fails unless both of the space's channels of `talk` have Ada's first device, Bob's and `more`,
 /// and no other.
 #[track_caller]
-fn assert_channels_have(talk: &Talk, more: &[DeviceId]) {
+pub fn assert_channels_have(talk: &Talk, more: &[DeviceId]) {
     let at = talk.at();
     let devices = [&[talk.ada.device, talk.played[BOB].device()], more].concat();
     for channel in [talk.space.default, at.1] {

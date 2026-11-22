@@ -3,7 +3,8 @@
 //! opens ([`crate::page`]), never in the command's output.
 
 use std::io::{self, BufRead, Write};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
 
 use crate::page::{Answer, Page};
@@ -36,7 +37,7 @@ impl Person<'_> {
     /// `None` once the terminal's input ends.
     pub fn ask(self, question: &str) -> Result<Option<bool>, String> {
         match self {
-            Person::Terminal => ask(&mut io::stdin().lock(), &mut io::stdout(), question)
+            Person::Terminal => ask(&mut input(), &mut io::stdout(), question)
                 .map_err(|err| format!("cannot ask the user: {err}")),
             Person::Page(page) => {
                 let answers = page.ask(question, &["Yes", "No"], None, true)?;
@@ -52,12 +53,8 @@ impl Person<'_> {
     /// end; `None` once the terminal's input ends.
     pub fn enter(self, label: &str, button: &str) -> Result<Option<String>, String> {
         match self {
-            Person::Terminal => read(
-                &mut io::stdin().lock(),
-                &mut io::stdout(),
-                &format!("{label}: "),
-            )
-            .map_err(|err| format!("cannot read the answer: {err}")),
+            Person::Terminal => read(&mut input(), &mut io::stdout(), &format!("{label}: "))
+                .map_err(|err| format!("cannot read the answer: {err}")),
             Person::Page(page) => {
                 let answers = page.ask("", &[button], Some(label), true)?;
                 Ok(answers.recv().ok().map(|answer| match answer {
@@ -70,9 +67,12 @@ impl Person<'_> {
 
     /// Each time its person asks for what `button` names, from now on: at the terminal, each line
     /// entered, until its input ends; on the page, each press of a button so named.
-    pub fn presses(self, button: &str) -> Result<Receiver<()>, String> {
+    pub fn presses(self, button: &str) -> Result<Presses, String> {
         match self {
-            Person::Terminal => Ok(enters()),
+            Person::Terminal => {
+                lines();
+                Ok(Presses::Terminal)
+            }
             Person::Page(page) => {
                 let answers = page.ask("", &[button], None, false)?;
                 let (pressed, presses) = mpsc::channel();
@@ -83,7 +83,7 @@ impl Person<'_> {
                         }
                     }
                 });
-                Ok(presses)
+                Ok(Presses::Page(presses))
             }
         }
     }
@@ -97,17 +97,124 @@ impl Person<'_> {
     }
 }
 
-/// Each line its person enters, from now on, until its input ends.
-fn enters() -> Receiver<()> {
-    let (entered, enters) = mpsc::channel();
-    thread::spawn(move || {
-        for line in io::stdin().lock().lines() {
-            if line.is_err() || entered.send(()).is_err() {
-                return;
+/// What its person asks for, from [`Person::presses`]; `Never` for a person who asks for nothing.
+pub enum Presses {
+    Terminal,
+    Page(Receiver<()>),
+    Never,
+}
+
+/// What its person did since the last look.
+#[derive(Debug, PartialEq)]
+pub enum Pressed {
+    Once,
+    Not,
+    /// Its input ended: it asks for nothing more.
+    Ended,
+}
+
+impl Presses {
+    /// Whether its person asked once more since the last look.
+    pub fn look(&self) -> Pressed {
+        let taken = match self {
+            Presses::Terminal => lines()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .try_recv()
+                .map(drop),
+            Presses::Page(presses) => presses.try_recv(),
+            Presses::Never => Err(TryRecvError::Empty),
+        };
+        match taken {
+            Ok(()) => Pressed::Once,
+            Err(TryRecvError::Empty) => Pressed::Not,
+            Err(TryRecvError::Disconnected) => Pressed::Ended,
+        }
+    }
+
+    /// Forgets what its person asked for so far.
+    pub fn drain(&self) {
+        while self.look() == Pressed::Once {}
+    }
+}
+
+/// The lines its person enters at the terminal, read by one thread once something waits for them
+/// while it goes on, so that each later read takes its line from there.
+static LINES: OnceLock<Mutex<Receiver<String>>> = OnceLock::new();
+
+/// The lines its person enters from now on, until its input ends.
+fn lines() -> &'static Mutex<Receiver<String>> {
+    LINES.get_or_init(|| {
+        let (entered, lines) = mpsc::channel();
+        thread::spawn(move || {
+            for line in io::stdin().lock().lines() {
+                let Ok(line) = line else { return };
+                if entered.send(line).is_err() {
+                    return;
+                }
+            }
+        });
+        Mutex::new(lines)
+    })
+}
+
+/// Forgets the lines its person entered so far, if a thread reads them.
+pub fn forget_entered() {
+    if LINES.get().is_some() {
+        Presses::Terminal.drain();
+    }
+}
+
+/// What its person enters at the terminal: from the thread that reads its lines, once one does;
+/// otherwise the standard input.
+pub fn input() -> Input {
+    match LINES.get() {
+        Some(lines) => Input::Lines(lines, Vec::new()),
+        None => Input::Stdin(io::stdin().lock()),
+    }
+}
+
+/// The terminal's input, as [`input`] gives it.
+pub enum Input {
+    Stdin(io::StdinLock<'static>),
+    /// The lines the thread read, and the rest of the line taken.
+    Lines(&'static Mutex<Receiver<String>>, Vec<u8>),
+}
+
+impl io::Read for Input {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let available = self.fill_buf()?;
+        let taken = available.len().min(buf.len());
+        buf[..taken].copy_from_slice(&available[..taken]);
+        self.consume(taken);
+        Ok(taken)
+    }
+}
+
+impl BufRead for Input {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        match self {
+            Input::Stdin(stdin) => stdin.fill_buf(),
+            Input::Lines(lines, rest) => {
+                if rest.is_empty() {
+                    let line = lines.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                    if let Ok(line) = line {
+                        *rest = format!("{line}\n").into_bytes();
+                    }
+                }
+                Ok(rest)
             }
         }
-    });
-    enters
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Input::Stdin(stdin) => stdin.consume(amount),
+            Input::Lines(_, rest) => {
+                rest.drain(..amount.min(rest.len()));
+            }
+        }
+    }
 }
 
 /// The line its person enters on `input` after `prompt` on `output`, without its end; `None` once
