@@ -116,6 +116,8 @@ pub struct Policy {
     pub ceilings: Ceilings,
     /// The history key's longest age in seconds, at least [`HISTORY_MIN`].
     pub history: u64,
+    /// The organization's domain, whose DNS lists its accounts' fingerprints.
+    pub domain: Option<String>,
     pub unknown: Unknown,
 }
 
@@ -165,7 +167,7 @@ impl Mode {
 }
 
 impl Policy {
-    /// A new space's policy: `read-only` for both ceilings and a history of 30 days.
+    /// A new space's policy: `read-only` for both ceilings, a history of 30 days and no domain.
     pub fn new_space() -> Self {
         Self {
             ceilings: Ceilings {
@@ -173,6 +175,7 @@ impl Policy {
                 service: Mode::ReadOnly,
             },
             history: NEW_SPACE_HISTORY,
+            domain: None,
             unknown: Unknown::default(),
         }
     }
@@ -414,6 +417,7 @@ impl Codec for Policy {
                 cbor::array(ceilings.map(|mode| cbor::uint(mode.value()))),
             )
             .put(2, cbor::uint(self.history))
+            .put_some(4, self.domain.as_deref().map(cbor::text))
             .finish()
     }
 
@@ -435,12 +439,17 @@ impl Codec for Policy {
                 },
             ));
         }
+        let domain = fields
+            .take(4)
+            .map(|item| item.text("policy.domain").map(str::to_owned))
+            .transpose()?;
         Ok(Self {
             ceilings: Ceilings {
                 member: mode(member)?,
                 service: mode(service)?,
             },
             history,
+            domain,
             unknown: fields.unknown(),
         })
     }

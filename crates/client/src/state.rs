@@ -1244,6 +1244,86 @@ impl State {
         Ok(())
     }
 
+    /// The TXT records of `domain`'s `_skald` name that the resolver at `resolver` gave
+    /// ([`crate::domains`]), and when they expire, in seconds since the Unix epoch.
+    pub fn domain_records(
+        &self,
+        resolver: &str,
+        domain: &str,
+    ) -> Result<Option<(Vec<String>, u64)>, Error> {
+        let kept: Option<(String, i64)> = self
+            .db
+            .query_row(
+                "SELECT records, expires FROM domain_records WHERE resolver = ?1 AND domain = ?2",
+                params![resolver, domain],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(kept.map(|(records, expires)| {
+            let records = records.lines().map(str::to_owned).collect();
+            (records, u64::try_from(expires).unwrap_or_default())
+        }))
+    }
+
+    /// Keeps `records`, none with a line break, as those records until `expires`.
+    pub fn set_domain_records(
+        &self,
+        (resolver, domain): (&str, &str),
+        records: &[String],
+        expires: u64,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO domain_records (resolver, domain, records, expires) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (resolver, domain)
+             DO UPDATE SET records = excluded.records, expires = excluded.expires",
+            params![
+                resolver,
+                domain,
+                records.join("\n"),
+                i64::try_from(expires).unwrap_or(i64::MAX)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the device warned of the key change of `account`, with the master key
+    /// `master`, that `domain`'s records from `resolver` showed by listing it with the fingerprint
+    /// `listed`, or by not listing it if empty; whether it had not warned of it before.
+    pub fn warn_of_domain(
+        &self,
+        (resolver, domain): (&str, &str),
+        account: AccountId,
+        master: &[u8; 32],
+        listed: &str,
+    ) -> Result<bool, Error> {
+        let added = self.db.execute(
+            "INSERT INTO domain_warning (resolver, domain, account, master, listed)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+            params![
+                resolver,
+                domain,
+                account.to_string(),
+                master.as_slice(),
+                listed
+            ],
+        )?;
+        Ok(added == 1)
+    }
+
+    /// Forgets the key changes of `account` that `domain`'s records from `resolver` showed, as
+    /// those records list it with its fingerprint.
+    pub fn clear_domain_warnings(
+        &self,
+        (resolver, domain): (&str, &str),
+        account: AccountId,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM domain_warning WHERE resolver = ?1 AND domain = ?2 AND account = ?3",
+            params![resolver, domain, account.to_string()],
+        )?;
+        Ok(())
+    }
+
     /// The links of `channel`, by epoch and `prev`, the device does not upload again.
     pub fn settled_links(&self, channel: ChannelId) -> Result<BTreeSet<(u64, u64)>, Error> {
         let sql = "SELECT epoch, prev FROM settled_link WHERE channel = ?1";
