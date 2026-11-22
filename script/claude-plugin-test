@@ -11,10 +11,11 @@
 #     version; so does the marketplace's entry if it gives a version.
 #   - The plugin has a skill: a SKILL.md, under skills/ or a directory the manifest adds, with a name
 #     and a description, whose rules name inbox, reply, send, peer, service and data.
-#   - The plugin runs `skald hook claude` on each event the hook handler takes, the names
-#     Event::name gives in crates/client/src/hook.rs, for every session and tool, from
-#     hooks/hooks.json or the hooks the manifest gives, in shell form or exec form; on Notification,
-#     at least for the type PERMISSION_NOTICE there names.
+#   - The plugin runs `skald hook claude` on each event the hook handler takes from Claude Code, the
+#     names Event::name gives in crates/client/src/hook.rs but those Cli::handles leaves out for
+#     Cli::Claude, for every session and tool, from hooks/hooks.json or the hooks the manifest
+#     gives, in shell form or exec form; on Notification, at least for the type PERMISSION_NOTICE
+#     there names.
 #   - script/release-update writes the next release's version, 0.40.6, into the plugin's manifest,
 #     and into the marketplace's entry if it gives one, and leaves the source at main.
 set -euo pipefail
@@ -112,6 +113,18 @@ maps=$(
 hook_rs=$root/crates/client/src/hook.rs
 events=$(sed -n '/pub fn name(self)/,/^    }$/p' "$hook_rs" | grep -o '=> "[A-Za-z]*"' | tr -d '=>" ' | sort -u)
 notice=$(sed -n 's/^pub const PERMISSION_NOTICE: &str = "\(.*\)";$/\1/p' "$hook_rs")
+# Cli::handles' arm for Cli::Claude: `true`, or the events it leaves out, as `event != Event::X` or
+# `!matches!(event, Event::X | ...)`; each such event's name is no event of Claude Code's.
+claude=$(sed -n '/pub fn handles(self/,/^    }$/p' "$hook_rs" | awk '/Cli::Claude =>/ { p = 1; print; next } p && /Cli::/ { exit } p')
+if ! grep -Eq 'Cli::Claude => (true|event != Event::|!matches!\()' <<<"$claude"; then
+  fail "Cli::handles in hook.rs has no arm for Cli::Claude the test reads: $claude"
+fi
+for variant in $(grep -o 'Event::[A-Za-z]*' <<<"$claude" | sed 's/^Event:://' | sort -u); do
+  name=$(sed -n '/pub fn name(self)/,/^    }$/p' "$hook_rs" |
+    sed -n "s/.*Event::$variant\( {[^}]*}\)\{0,1\} => \"\([A-Za-z]*\)\".*/\2/p")
+  [[ -n $name ]] || fail "Event::name in hook.rs gives no name of Event::$variant: the test reads it wrong"
+  events=$(grep -vx -- "$name" <<<"$events" || true)
+done
 for known in SessionStart SessionEnd PostToolUse Stop PermissionRequest Notification; do
   grep -qx "$known" <<<"$events" || fail "Event::name in hook.rs does not give $known: the test reads it wrong"
 done
