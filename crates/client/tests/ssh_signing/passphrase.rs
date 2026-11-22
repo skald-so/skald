@@ -8,8 +8,7 @@ use std::time::Duration;
 use crate::at_terminal::{first_at_terminal, shown_key};
 use crate::{
     ADA_GITHUB, ADA_HOST, ADA_LOGIN, ASKS_PASSPHRASE, Kind, PASSPHRASE, SAYS_NO_SSH, Setup, Signed,
-    assert_asks_nothing, assert_says_signed, assert_signed_by, keys_dir, new_key, own_cert,
-    ssh_dir,
+    assert_asks_nothing, assert_says_signed, assert_signed_by, new_key, own_cert, ssh_dir,
 };
 
 /// How long the person waits, once asked for the passphrase, before typing it: `ssh-keygen` turns
@@ -45,17 +44,14 @@ fn at_the_persons_terminal_with_a_display_ssh_keygen_asks_there() {
 #[test]
 fn at_the_persons_terminal_each_passphrase_typed_goes_to_ssh_keygen() {
     let setup = Setup::new(PASSPHRASE);
-    let other = new_key(
-        &keys_dir(&setup.machine).join("other"),
-        Kind::Ed25519,
-        PASSPHRASE,
-    );
     let dir = ssh_dir(&setup.machine);
     for at in 1..QUESTIONS {
-        let name = format!("another_{at:02}");
-        fs::copy(&other.path, dir.join(&name)).expect("copy a private key file");
-        (fs::copy(setup.key.public(), dir.join(format!("{name}.pub"))))
-            .expect("copy a public key file");
+        let name = dir.join(format!("another_{at:02}"));
+        // Made by ssh-keygen, which gives a private key file the access rights OpenSSH asks of it,
+        // on Windows only its owner's, which a copy would not keep.
+        let another = new_key(&name, Kind::Ed25519, PASSPHRASE);
+        (fs::write(another.public(), format!("{}\n", setup.key.line)))
+            .expect("write a public key file");
     }
     typed(setup, QUESTIONS);
 }

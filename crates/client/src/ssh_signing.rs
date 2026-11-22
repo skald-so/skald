@@ -125,12 +125,16 @@ impl Options {
         let held = (!agent_keys.is_empty() && agent_reachable())
             .then(|| Held::write(&agent_keys).ok())
             .flatten();
-        let held = held.iter().flat_map(Held::files);
-        let candidates: Vec<PathBuf> = match (&self.key, self.may_ask) {
-            (Some(file), true) => vec![file.clone()],
-            (None, true) => held
-                .chain(ssh_dir().map_or_else(Vec::new, |dir| key_files(&dir, &listed)))
-                .collect(),
+        // Each file, and whether it is a key file, signed at the person's terminal; ssh-agent's
+        // keys sign without it, so nothing it says shows there.
+        let held = held.iter().flat_map(Held::files).map(|file| (file, false));
+        let candidates: Vec<(PathBuf, bool)> = match (&self.key, self.may_ask) {
+            (Some(file), true) => vec![(file.clone(), true)],
+            (None, true) => {
+                let files = ssh_dir().map_or_else(Vec::new, |dir| key_files(&dir, &listed));
+                held.chain(files.into_iter().map(|file| (file, true)))
+                    .collect()
+            }
             (_, false) => held.collect(),
         };
         let signer = Signer::new(
@@ -147,8 +151,8 @@ impl Options {
         )
         .map_err(|err| format!("cannot write a temporary file: {err}"))?;
         body.github = Some(user.id);
-        let fingerprint = candidates.iter().find_map(|file| {
-            body.ssh = Some(signer.sign(file)?);
+        let fingerprint = candidates.iter().find_map(|(file, at_terminal)| {
+            body.ssh = Some(signer.sign(file, *at_terminal)?);
             match check_ssh_signature(body, &listed) {
                 SshCheck::Passed { key } => Some(fingerprint(listed[key])),
                 _ => None,
@@ -177,10 +181,10 @@ impl Options {
     }
 }
 
-/// `ssh-keygen -Y sign` over `data`, by the program at `program`: at the person's terminal, over a
-/// file in a directory of its own, `ssh-keygen` taking the terminal as its standard input and error
-/// to ask for a passphrase or a security key's touch, as git runs it; otherwise over its standard
-/// input, asking nothing.
+/// `ssh-keygen -Y sign` over `data`, by the program at `program`: with a key file at the person's
+/// terminal, over a file in a directory of its own, `ssh-keygen` taking the terminal as its
+/// standard input and error to ask for a passphrase or a security key's touch, as git runs it;
+/// otherwise, as with ssh-agent's keys, over its standard input, asking and showing nothing.
 struct Signer {
     program: PathBuf,
     data: Vec<u8>,
@@ -204,12 +208,13 @@ impl Signer {
 
     /// The signature, in its binary form, by the key of the private key file `key`, or of the
     /// public key file `key` whose private key ssh-agent holds; `None` if `ssh-keygen` gives none.
-    fn sign(&self, key: &Path) -> Option<Vec<u8>> {
+    /// At the person's terminal only if `at_terminal`.
+    fn sign(&self, key: &Path, at_terminal: bool) -> Option<Vec<u8>> {
         let mut command = Command::new(&self.program);
         command
             .args(["-Y", "sign", "-n", SSH_NAMESPACE, "-f"])
             .arg(key);
-        let Some(scratch) = &self.at_terminal else {
+        let Some(scratch) = self.at_terminal.as_ref().filter(|_| at_terminal) else {
             return self.sign_input(command);
         };
         let signature = scratch.join(SIGNATURE);
