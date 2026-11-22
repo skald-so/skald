@@ -87,10 +87,9 @@ pub fn show(
         Some(Person::Page(page)) => page,
         Some(Person::Terminal) => return at_terminal(state, secrets, &mut stored, &key),
     };
-    page.show(Some(key.shown().as_str()))
-        .map_err(sign_in::Error::Io)?;
     let question = format!("The recovery key above shows only once. {KEEP_IT}");
-    let answered = page.ask(&question, &["Written down"], None, true);
+    // In one change: the key never shows under the question before, such as the link code's.
+    let answered = page.show_asking(key.shown().as_str(), &question, &["Written down"]);
     let answered = answered.map_err(sign_in::Error::Io)?.recv().is_ok();
     page.show(None).map_err(sign_in::Error::Io)?;
     if answered {
@@ -115,9 +114,10 @@ fn at_terminal(
     text.push_str("\n\n");
     text.push_str(KEEP_IT);
     text.push_str("\nPress Enter once it is written down: ");
+    // Before the prompt: a line entered once it shows is the answer.
+    person::forget_entered();
     output::write(Stream::Out, text.as_bytes())
         .map_err(|err| sign_in::Error::Io(format!("cannot show the recovery key: {err}")))?;
-    person::forget_entered();
     let mut line = String::new();
     let read = person::input()
         .read_line(&mut line)

@@ -385,9 +385,36 @@ impl Page {
         field: Option<&str>,
         once: bool,
     ) -> Result<Receiver<Answer>, String> {
+        self.asking(None, text, buttons, field, once)
+    }
+
+    /// Shows `shown` and asks `text` with `buttons`, each in place of what the page showed and
+    /// asked before, in one change, opening the page; gives its one answer. The browser never
+    /// takes `shown` under the question before.
+    pub fn show_asking(
+        &self,
+        shown: &str,
+        text: &str,
+        buttons: &[&str],
+    ) -> Result<Receiver<Answer>, String> {
+        self.asking(Some(shown), text, buttons, None, true)
+    }
+
+    /// [`Page::ask`], showing `shown`, if any, in the same change.
+    fn asking(
+        &self,
+        shown: Option<&str>,
+        text: &str,
+        buttons: &[&str],
+        field: Option<&str>,
+        once: bool,
+    ) -> Result<Receiver<Answer>, String> {
         self.open()?;
         let (answers, answered) = mpsc::channel();
         let mut view = self.shared.view();
+        if let Some(shown) = shown {
+            view.shown = Some(shown.to_owned());
+        }
         view.asked += 1;
         view.question = Some(Asked {
             id: view.asked,
@@ -1059,6 +1086,43 @@ mod tests {
         assert!(take(&shared, &given(3, 0, None)));
         assert!(take(&shared, &given(3, 0, None)), "one per press");
         assert_eq!(answered.try_iter().count(), 2);
+    }
+
+    /// What the page shows and its question replace the ones before in one change: no view the
+    /// browser takes shows the new text under the question before, and the new question takes
+    /// the answer.
+    #[test]
+    fn shown_text_and_its_question_change_in_one_view() {
+        let dir = crate::test_dir::TestDir::new("page-show-asking");
+        let opener = Opener {
+            program: PathBuf::new(),
+            before: Vec::new(),
+            exits_failing: true,
+        };
+        let page = Page::new(&dir, opener);
+        // Open already: nothing listens or runs.
+        *page.server.lock().unwrap() = Some(Server {
+            stop: Arc::default(),
+            thread: None,
+            file: dir.join("page.html"),
+        });
+        let _presses = page.ask("", &["Fresh code"], None, false).unwrap();
+        page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
+        let before = page.shared.view().version;
+
+        let answered = page.show_asking("KEY", "Write it down.", &["Written down"]);
+        let view: serde_json::Value =
+            serde_json::from_str(&view_after(&page.shared, before)).unwrap();
+        assert_eq!(view["version"], before + 1, "one change: {view}");
+        assert_eq!(view["shown"], "KEY", "{view}");
+        assert_eq!(view["question"]["buttons"], json!(["Written down"]));
+        let pressed = Given {
+            question: view["question"]["id"].as_u64().unwrap(),
+            button: 0,
+            text: None,
+        };
+        assert!(take(&page.shared, &pressed));
+        assert_eq!(answered.unwrap().try_recv(), Ok(Answer::Button(0)));
     }
 
     /// The view takes the command's output in lines, its last until it ends.
