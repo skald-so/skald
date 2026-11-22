@@ -40,6 +40,8 @@
 //!   to wait, and `ended`, when the prompt was answered or dropped, in Unix seconds; `ended` is
 //!   `null` or missing while the session waits;
 //! - an agent's `skald recv`, with `--json` too, and `inbox` show nothing of it.
+//!
+//! The person's one-shot `skald recv --wait`, with no helper, ends on a prompt too (`one_shot.rs`).
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -47,6 +49,7 @@
 #[cfg(unix)]
 mod app_server;
 mod hook_path;
+mod one_shot;
 mod prompts;
 #[cfg(unix)]
 mod standin;

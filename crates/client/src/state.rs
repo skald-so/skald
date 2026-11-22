@@ -2755,11 +2755,7 @@ impl State {
             tx.commit()?;
             return Ok(false);
         }
-        let at = sql_seq(prompt.at)?;
-        tx.execute(
-            "UPDATE permission_prompt SET open = 0, ended = ?2 WHERE session = ?1 AND open = 1",
-            params![prompt.session, at],
-        )?;
+        end_prompts(&tx, &prompt.session, prompt.at)?;
         let folder = prompt.folder.as_deref().map(path_text).transpose()?;
         tx.execute(
             "INSERT INTO permission_prompt (space, agent, session, turn, at, folder)
@@ -2769,7 +2765,7 @@ impl State {
                 prompt.agent,
                 prompt.session,
                 turn,
-                at,
+                sql_seq(prompt.at)?,
                 folder,
             ],
         )?;
@@ -2780,11 +2776,7 @@ impl State {
     /// Records that the open permission prompt of the session `session`, if any, ended at `at`, in
     /// Unix seconds.
     pub fn prompts_ended(&self, session: &str, at: u64) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE permission_prompt SET open = 0, ended = ?2 WHERE session = ?1 AND open = 1",
-            params![session, sql_seq(at)?],
-        )?;
-        Ok(())
+        end_prompts(&self.db, session, at)
     }
 
     /// The position of the last recorded permission prompt the person's run has yet to show, 0 with
@@ -2904,10 +2896,7 @@ impl State {
             "UPDATE handover SET thread = NULL WHERE thread = ?1",
             params![thread],
         )?;
-        tx.execute(
-            "UPDATE permission_prompt SET open = 0, ended = ?2 WHERE session = ?1 AND open = 1",
-            params![thread, sql_seq(unix_now())?],
-        )?;
+        end_prompts(&tx, thread, unix_now())?;
         tx.execute(
             "DELETE FROM codex_session WHERE thread = ?1",
             params![thread],
@@ -4465,6 +4454,16 @@ fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<
         "INSERT INTO revocation (revocation, pending) VALUES (?1, ?2)
          ON CONFLICT (revocation) DO UPDATE SET pending = pending AND excluded.pending",
         params![revocation, pending],
+    )?;
+    Ok(())
+}
+
+/// Records in `db` that the open permission prompt of the session `session`, if any, ended at
+/// `at`, in Unix seconds.
+fn end_prompts(db: &Connection, session: &str, at: u64) -> Result<(), Error> {
+    db.execute(
+        "UPDATE permission_prompt SET open = 0, ended = ?2 WHERE session = ?1 AND open = 1",
+        params![session, sql_seq(at)?],
     )?;
     Ok(())
 }

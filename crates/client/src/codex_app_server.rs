@@ -11,7 +11,7 @@
 //!   them, so it loads no thread itself ([`Client`]).
 //! - A request `*/requestApproval`, or `thread/status/changed` with the flag `waitingOnApproval`,
 //!   tells that the thread waits on a prompt; `serverRequest/resolved` of the thread, whichever
-//!   answer the person gave in the terminal, ends it. So does a connection that ends meanwhile.
+//!   answer the person gave in the terminal, ends it.
 //! - It answers no request of the app-server: the person answers the prompt in the terminal.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -204,9 +204,6 @@ fn watch(dir: &Path, stream: UnixStream, shared: &Shared) {
         }
     }
     let _ = socket.close(None);
-    for thread in client.open {
-        let _ = permission_prompts::ended(dir, Some(&thread));
-    }
 }
 
 /// What a client does with a message of the app-server.
@@ -230,8 +227,6 @@ struct Client {
     lists: BTreeSet<u64>,
     resumes: BTreeMap<u64, String>,
     subscribed: BTreeSet<String>,
-    /// The threads whose prompt it told and that have not ended.
-    open: BTreeSet<String>,
 }
 
 impl Client {
@@ -285,16 +280,12 @@ impl Client {
                 .into_iter()
                 .flatten())
             .any(|flag| flag == WAITING),
-            "serverRequest/resolved" => {
-                self.open.remove(thread);
-                return vec![Effect::Ended(thread.to_owned())];
-            }
+            "serverRequest/resolved" => return vec![Effect::Ended(thread.to_owned())],
             _ => message.get("id").is_some() && method.ends_with("/requestApproval"),
         };
         if !tells {
             return Vec::new();
         }
-        self.open.insert(thread.to_owned());
         vec![Effect::Told(thread.to_owned())]
     }
 
@@ -424,7 +415,6 @@ mod tests {
             "params": { "threadId": WEB },
         });
         assert!(client.take(&notice.to_string(), &wanted()).is_empty());
-        assert_eq!(client.open, [WEB.to_owned()].into());
         let resolved = json!({
             "method": "serverRequest/resolved",
             "params": { "threadId": WEB, "requestId": 0 },
@@ -433,7 +423,6 @@ mod tests {
             client.take(&resolved.to_string(), &wanted()),
             [Effect::Ended(WEB.to_owned())]
         );
-        assert!(client.open.is_empty());
     }
 
     /// The socket is the one the config home's link names, relative or whole; with no link, the
