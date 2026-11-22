@@ -43,14 +43,7 @@ fn lookups_go_through_https_proxy() {
     let shown = scene.members();
 
     scene.assert_listed(&shown, &scene.ada, true);
-    let connect = format!("CONNECT {HOST}:{} ", front.port());
-    let tunnels = proxy.requests();
-    assert!(
-        tunnels
-            .iter()
-            .any(|request| request.line().starts_with(&connect)),
-        "no {connect}through the proxy: {tunnels:?}"
-    );
+    proxy.assert_tunneled(HOST, front.port());
     assert!(
         scene.doh.txt_queries(RECORDS) > 0,
         "no lookup reached the resolver: {:?}",
