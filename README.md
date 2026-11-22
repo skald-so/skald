@@ -114,6 +114,7 @@ skald delivery-modes                        # each channel's delivery settings a
 skald mcp                                   # the MCP server of an agent session, which its agent CLI starts
 skald hook claude                           # the handler of Claude Code's hooks
 skald hook codex                            # the handler of Codex's hooks
+skald setup codex [--remove]                # set Skald up in Codex's config, or take only its entries out
 ```
 
 - `<channel>` is the channel's ID, as `skald channels` shows it. `skald --help` lists every command.
