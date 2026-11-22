@@ -84,7 +84,7 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
             .await?;
     let devices: Vec<String> = devices.into_iter().map(|(device,)| device).collect();
     // Each statement takes the account as $1 and its devices as $2. The invites its devices signed
-    // and its acceptances expired by now, 30 days at most after the server stored them.
+    // expired by now, 30 days at most after the server stored them.
     for statement in [
         // Its devices' messages still waiting, and the statuses of messages to them.
         "DELETE FROM entries
