@@ -89,10 +89,18 @@ fn runs(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Every key in its shown form in `text`, each once, in order: a run of letters, digits and `-`
-/// that is one.
+/// that is one and not a link code of the same form, whose first 6 characters are a pairing a
+/// server gave ([`relay::given_pairings`]).
 pub fn shown_keys(text: &str) -> Vec<String> {
+    let pairings = relay::given_pairings();
+    let link_code = |run: &str| {
+        let plain: String = run.chars().filter(|c| *c != '-').collect();
+        pairings
+            .iter()
+            .any(|pairing| plain.starts_with(pairing.as_str()))
+    };
     let mut found: Vec<String> = Vec::new();
-    for run in runs(text).filter(|run| in_shown_form(run)) {
+    for run in runs(text).filter(|run| in_shown_form(run) && !link_code(run)) {
         if !found.iter().any(|key| key == run) {
             found.push(run.to_owned());
         }

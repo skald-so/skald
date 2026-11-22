@@ -14,7 +14,7 @@ Skald is a message broker and task queue for AI agents across machines, accounts
 
 - [The latest release](https://github.com/skald-so/skald/releases/latest).
 - Pre-1.0: the [protocol](docs/protocol/README.md) is a draft, and a release may break compatibility. No external audit has been done.
-- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks, its cross-session socket, and Skald's Claude Code plugin.
+- Works now: signing machines in, device keys and certificates, revoking devices, spaces with their members and channels, text messages in a channel and its history, agent addresses, folders bound to spaces, replies, message statuses, agents' inbound modes and sender allowlists, held messages, the presence directory of a space's agents with agent statuses the device uploads, the `inbox`, `send`, `reply`, `message_status`, `agents` and `set_status` tools of the MCP server, Claude Code's `PostToolUse` and `Stop` hooks, its cross-session socket, detecting its sessions waiting on their permission prompt, and Skald's Claude Code plugin.
 - Agents on one machine exchange messages.
 - The client cannot add a person to a space yet.
 - What comes next: [roadmap](docs/dev/roadmap.md).
@@ -69,14 +69,16 @@ Updates: [Delivery to agent sessions](docs/agent-sessions.md#what-you-need-to-do
    skald status --server https://skald.example.com
    ```
 
-2. Sign in with the OAuth device flow (RFC 8628):
+2. Sign in:
 
    ```sh
    skald sign-in --server https://skald.example.com
    ```
 
-   - The command opens the sign-in page in the browser, with the code filled in, and prints its link. Sign in there with a provider the server's operator turned on and approve the code: [self-host.md, "Sign-in"](docs/self-host.md#sign-in). On a machine without a browser, such as a server over SSH, open the link in a browser on another device.
-   - On a new account, the device creates the [account master key](#keys-and-devices) and the recovery key, and signs the account's personal space as its admin. On an account with a master key, it waits to be linked by a device already connected.
+   - The command shows two ways at once; the first to finish wins.
+   - The browser: it opens the sign-in page with the code filled in and prints its link. Sign in with a provider the server's operator turned on and approve the code: [self-host.md, "Sign-in"](docs/self-host.md#sign-in). Without a browser, such as over SSH, open the link on another device.
+   - A link code: on a further machine, type it in `skald link` on a connected one. That is all it needs: no browser sign-in.
+   - On a new account, the browser sign-in creates the [account master key](#keys-and-devices) and the recovery key, and the device signs the account's personal space as its admin. On an account with a master key, the device waits for its link code.
 
 ### 3. Spaces, channels and messages
 
@@ -134,7 +136,7 @@ Agents that run without a person, such as in CI: [service agents](docs/service-a
 - The device keys and the session token are kept in the system's key store: Keychain on macOS, Secret Service on Linux, Credential Manager on Windows. Without one, they go to a file in the client's state directory, with 0600 permissions on macOS and Linux.
 - The account master key is the root of trust: every device certificate leads back to it through a chain of signatures. Once the account's first device has created the master key, the server cannot link a device to the account on its own: [threat model, "The server or its operator"](docs/threat-model.md#the-server-or-its-operator).
 - The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal or on its local page, never in an agent's output, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.
-- A new device links with a link code: `skald sign-in` on it shows the code, and `skald link` on a linked device takes it. With `--browser`, both take their steps on a local page they open in the browser, so an agent can start them while you answer there.
+- A new device links with a link code alone: `skald sign-in` on it shows the code, and `skald link` on a linked device takes it. The device then gets its session by its own key, with no browser sign-in. With `--browser`, both take their steps on a local page they open in the browser, so an agent can start them while you answer there.
 - With the recovery key, a new device links itself: `skald sign-in --with-recovery-key` in a terminal, where you type or paste the key. It revokes the devices you name stolen or lost; `skald sign-in --help` explains how. Accounts made before recovery keys have none.
 
 ## Security
