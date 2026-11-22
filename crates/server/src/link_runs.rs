@@ -8,10 +8,11 @@
 //!
 //! - With a session, the hello names a device registered on its account, and the run is the
 //!   account's.
-//! - Without one, the device, not revoked, opens its run first and gets its pairing, then sends its
-//!   hello by the run's token, by which it reaches its run; the run is no account's until a session
-//!   enters its pairing; the first account to enter it pairs it, unless the device registered on
-//!   another account. The run is given as waiting only once its device registers on an account.
+//! - Without one, the device, on no deleted account, opens its run first and gets its pairing, then
+//!   sends its hello by the run's token, by which it reaches its run; the run is no account's until
+//!   a session enters its pairing; the first account to enter it pairs it, unless the device
+//!   registered on another account. The run is given as waiting only once its device registers on
+//!   an account.
 
 use std::time::Duration;
 
@@ -26,6 +27,7 @@ use skald_proto::{AccountId, Cbor as _, DeviceId, LinkMessage};
 use sqlx::{PgExecutor, PgPool, Postgres, Transaction};
 
 use crate::AppState;
+use crate::deletion::{Lock, deleted};
 use crate::devices::{base64, bytes};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
@@ -155,26 +157,25 @@ fn hello_request(body: &[u8], later: &str) -> Result<(DeviceId, Vec<u8>, [u8; 16
     Ok((device, hello, session))
 }
 
-/// The transaction that opens a run of `device`. It makes the device's runs wait for each other,
-/// whether it is registered or not, and deletes its open run, which the new one replaces once it
-/// commits.
+/// Starts opening a run of `device` in `tx`, the transaction that opens it. It makes the device's
+/// runs wait for each other, whether it is registered or not, and deletes its open run, which the
+/// new one replaces once it commits.
 async fn start_run(
-    state: &AppState,
+    tx: &mut Transaction<'static, Postgres>,
     device: DeviceId,
-) -> Result<Transaction<'static, Postgres>, Refusal> {
+) -> Result<(), Refusal> {
     let failed = |err| Refusal::Database("open a link run", err);
-    let mut tx = state.db.begin().await.map_err(failed)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
         .bind(format!("link run {device}"))
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(failed)?;
     sqlx::query("DELETE FROM link_runs WHERE device_id = $1::uuid")
         .bind(device.to_string())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(failed)?;
-    Ok(tx)
+    Ok(())
 }
 
 /// `POST /account/links`: a hello naming a device of the session's account without a certificate
@@ -185,8 +186,9 @@ pub(crate) async fn open(
     body: Bytes,
 ) -> Answer {
     let (device, hello, session) = hello_request(&body, "/account/links/messages")?;
-    let mut tx = start_run(&state, device).await?;
     let failed = |err| Refusal::Database("open a link run", err);
+    let mut tx = state.db.begin().await.map_err(failed)?;
+    start_run(&mut tx, device).await?;
     let (certified,): (bool,) = sqlx::query_as(
         "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid AND account_id = $2::uuid
          FOR NO KEY UPDATE",
@@ -227,28 +229,42 @@ pub(crate) async fn open(
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `POST /links`: without a session, a device without a certificate, not revoked, opens its run,
-/// which replaces its open one: the server picks the run's pairing, unique among the runs that hold
-/// one, and gives it with the run's token. The run's hello comes as its first message,
+/// `POST /links`: without a session, a device without a certificate, on no deleted account, opens
+/// its run, which replaces its open one: the server picks the run's pairing, unique among the runs
+/// that hold one, and gives it with the run's token. The run's hello comes as its first message,
 /// [`run_relay`].
 pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes) -> Answer {
     let request: SessionlessRunRequest = parse(&body)?;
     let device: DeviceId =
         (request.device.parse()).map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
-    let mut tx = start_run(&state, device).await?;
     let failed = |err| Refusal::Database("open a link run", err);
-    // A deletion of the device's account revokes it under the row's lock, then ends its runs.
-    let held: Option<(bool, bool)> = sqlx::query_as(
-        "SELECT cert IS NOT NULL, revoked FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
+    let mut tx = state.db.begin().await.map_err(failed)?;
+    // A deletion of the device's account holds the account's lock until it commits, then locks
+    // its devices' rows and deletes their runs: taken in that order, this run waits for the
+    // deletion and is refused, or the deletion waits for the run and deletes it.
+    let owner: Option<(String,)> =
+        sqlx::query_as("SELECT account_id::text FROM devices WHERE id = $1::uuid")
+            .bind(device.to_string())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(failed)?;
+    if let Some((owner,)) = owner
+        && deleted(&mut tx, &owner, Lock::KeyShare)
+            .await
+            .map_err(failed)?
+    {
+        return Err(Refusal::DeviceRevoked);
+    }
+    start_run(&mut tx, device).await?;
+    let certified: Option<(bool,)> = sqlx::query_as(
+        "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
     )
     .bind(device.to_string())
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
-    match held {
-        Some((true, _)) => return Err(Refusal::DeviceCertified),
-        Some((_, true)) => return Err(Refusal::DeviceRevoked),
-        _ => {}
+    if certified.is_some_and(|(certified,)| certified) {
+        return Err(Refusal::DeviceCertified);
     }
     let token = random_token();
     // A pairing an open or ended run holds is drawn again.

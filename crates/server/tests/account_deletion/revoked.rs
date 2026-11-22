@@ -37,16 +37,26 @@ fn runs_of(db: &TestDb, device: &Device) -> i64 {
     count(db, sql, &[&device.id.to_string()])
 }
 
+/// Marks `device` unrevoked in `db`.
+fn unrevoke(db: &TestDb, device: &Device) {
+    db.execute(&format!(
+        "UPDATE devices SET revoked = false WHERE id = '{}'",
+        device.id
+    ));
+}
+
 /// alice's account is deleted. Her laptop, revoked with it, certifies a new tablet, and her
-/// desktop, registered there without a certificate. Each asks for a session by its key with that
-/// certificate: refused with `device-revoked`. The server holds no tablet, no certificate of the
-/// desktop and no session of her account.
+/// desktop, registered there without a certificate and marked unrevoked as a racing request could
+/// leave it. Each asks for a session by its key with that certificate: refused with
+/// `device-revoked`. The server holds no tablet, no certificate of the desktop and no session of
+/// her account.
 #[test]
 fn device_a_deleted_accounts_device_certifies_gets_no_session() {
     let fresh = Fresh::start(3_303_090_001);
     let flow = &fresh.flow;
     let alice = &fresh.alice;
     deletes(&Api::of(flow), alice);
+    unrevoke(&flow.stand.db, &alice.uncertified);
 
     let tablet = Device::new("Tablet");
     let desktop = &alice.uncertified;
@@ -76,13 +86,15 @@ fn device_a_deleted_accounts_device_certifies_gets_no_session() {
     assert_eq!(count(db, sessions, &ids), 0, "a session of her account");
 }
 
-/// Once alice's account is deleted, her desktop, registered there without a certificate, opens no
-/// run without a session: refused with `device-revoked`, and the server holds no run of it.
+/// Once alice's account is deleted, her desktop, registered there without a certificate and marked
+/// unrevoked as a racing request could leave it, opens no run without a session: refused with
+/// `device-revoked`, and the server holds no run of it.
 #[test]
 fn deleted_accounts_device_opens_no_run_without_a_session() {
     let fresh = Fresh::start(3_303_090_011);
     let alice = &fresh.alice;
     deletes(&Api::of(&fresh.flow), alice);
+    unrevoke(&fresh.flow.stand.db, &alice.uncertified);
 
     assert_revoked(&fresh.send_open(&alice.uncertified), "her desktop's run");
     assert_eq!(runs_of(&fresh.flow.stand.db, &alice.uncertified), 0);

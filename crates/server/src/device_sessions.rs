@@ -18,7 +18,8 @@ use sqlx::{Postgres, Transaction};
 
 use crate::AppState;
 use crate::connections::CHALLENGE_LIFETIME;
-use crate::device_certs::{check_on_account, lock_account, within_limit};
+use crate::deletion::{Lock, deleted};
+use crate::device_certs::{check_on_account, within_limit};
 use crate::devices::{base64, bytes};
 use crate::refusal::{Answer, Refusal, parse};
 use crate::sessions::{close_ended, tell_ended};
@@ -162,8 +163,14 @@ pub(crate) async fn start(
     let failed = |err| Refusal::Database("start a device session", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     // The account's row lock orders the certificates of its devices, as `PUT
-    // /devices/{device}/cert` takes it, and its revocations, which wait for the session.
-    lock_account(&mut tx, &account).await.map_err(failed)?;
+    // /devices/{device}/cert` takes it, and its revocations, which wait for the session. Each
+    // device of a deleted account is served as a revoked one.
+    if deleted(&mut tx, &account, Lock::Update)
+        .await
+        .map_err(failed)?
+    {
+        return Err(Refusal::DeviceRevoked);
+    }
     unrevoked(&mut tx, &account, held_cert.is_none().then_some(&cert), id).await?;
     if held_cert.is_none() {
         store(&state, &mut tx, &cert_bytes, &cert).await?;
@@ -270,9 +277,9 @@ async fn check_new(
     check_on_account(state, &account, cert, id).await
 }
 
-/// Refuses device `id` if `account` is deleted, each of whose devices is served as a revoked one,
-/// or if checks 3 and 4 of "Device checks" revoke it, against the master key of `account`, the
-/// certificates its devices hold with `sent` if given, and its stored revocations, read in `tx`.
+/// Refuses device `id` if checks 3 and 4 of "Device checks" revoke it, against the master key of
+/// `account`, the certificates its devices hold with `sent` if given, and its stored revocations,
+/// read in `tx`.
 async fn unrevoked(
     tx: &mut Transaction<'_, Postgres>,
     account: &str,
@@ -280,15 +287,12 @@ async fn unrevoked(
     id: DeviceId,
 ) -> Result<(), Refusal> {
     let failed = |err| Refusal::Database("read the revocations", err);
-    let (master, deleted): (Option<Vec<u8>>, bool) =
-        sqlx::query_as("SELECT master, deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid")
+    let (master,): (Option<Vec<u8>>,) =
+        sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
             .bind(account)
             .fetch_one(&mut **tx)
             .await
             .map_err(failed)?;
-    if deleted {
-        return Err(Refusal::DeviceRevoked);
-    }
     let master: [u8; 32] = master
         .and_then(|master| master.try_into().ok())
         .ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;

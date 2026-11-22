@@ -20,6 +20,41 @@ use crate::refusal::{Answer, Refusal, SignedIn};
 use crate::sign_in::{bearer, signed_in};
 use crate::{AppState, revocations, sessions};
 
+/// A row lock on an account that a request takes before it acts for the account.
+#[derive(Clone, Copy)]
+pub(crate) enum Lock {
+    Update,
+    NoKeyUpdate,
+    KeyShare,
+}
+
+/// Takes `lock` on the row of `account` on `conn`, in its transaction, and gives whether the
+/// account is deleted then. A deletion holds the row's lock until it commits, so a request that
+/// takes it first is one the deletion waits for. An account the server does not hold is no deleted
+/// one.
+pub(crate) async fn deleted(
+    conn: &mut PgConnection,
+    account: &str,
+    lock: Lock,
+) -> Result<bool, sqlx::Error> {
+    let sql = match lock {
+        Lock::Update => {
+            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR UPDATE"
+        }
+        Lock::NoKeyUpdate => {
+            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE"
+        }
+        Lock::KeyShare => {
+            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR KEY SHARE"
+        }
+    };
+    let found: Option<(bool,)> = sqlx::query_as(sql)
+        .bind(account)
+        .fetch_optional(conn)
+        .await?;
+    Ok(found.is_some_and(|(deleted,)| deleted))
+}
+
 /// A space a deletion deletes or that blocks it: `DeletionSpace` in the spec.
 #[derive(Serialize)]
 pub(crate) struct Listed {

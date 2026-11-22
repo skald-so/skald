@@ -34,7 +34,11 @@
 //! - A deleted account's devices open nothing later, as revoked ones: `POST
 //!   /devices/{device}/session`, for a device a certificate names on the account too, and `POST
 //!   /links` are refused with `403` and the problem `https://skald.so/problems/device-revoked`; the
-//!   runs its devices opened without a session end.
+//!   runs its devices opened without a session end. So too with its `devices.revoked` false in the
+//!   database, as a request racing the deletion could leave it.
+//! - A request whose session the server read before a deletion ended it, still running then, acts
+//!   for no deleted account. The tests hold a deletion while it runs by a lock on the account's
+//!   `sign_in_methods` rows in the database, which it takes once it holds the account's row.
 //! - `sessions.created_at` in the database is a session's sign-in.
 
 // Each test target uses a part of the shared modules.
@@ -99,6 +103,8 @@ mod after;
 mod blocking;
 mod deleting;
 mod delivery;
+mod held;
+mod racing;
 mod revoked;
 mod sign_ins;
 mod spaces;

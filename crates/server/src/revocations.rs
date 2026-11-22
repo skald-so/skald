@@ -14,6 +14,7 @@ use sha2::{Digest as _, Sha256};
 use skald_proto::{AccountId, Cbor as _, DeviceId, Revocation, ServerStatus, SpaceId};
 use sqlx::{PgConnection, PgPool};
 
+use crate::deletion::{Lock, deleted};
 use crate::delivery::{Statuses, remove_on, removing};
 use crate::devices::{base64, bytes, taken};
 use crate::instances::Event;
@@ -75,7 +76,13 @@ pub(crate) async fn store(
     let failed = |err| Refusal::Database("store a revocation", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     // The account's lock makes its revocations wait for each other, so that each counts against
-    // those stored before it.
+    // those stored before it, and for a deletion of the account, which ends its sessions.
+    if deleted(&mut tx, &account, Lock::NoKeyUpdate)
+        .await
+        .map_err(failed)?
+    {
+        return Err(Refusal::NotSignedIn);
+    }
     let (master,): (Option<Vec<u8>>,) =
         sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE")
             .bind(&account)
