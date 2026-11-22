@@ -1,0 +1,15 @@
+# Cargo settings of the client's tests on Windows, which .github/workflows/ci.yml copies to
+# .cargo/config.toml: the crates the tests spend most CPU in, optimized. Only optimization levels:
+# debug assertions and overflow checks stay as Cargo.toml sets them.
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.dev.package.skald-server]
+opt-level = 1
+
+[profile.dev.package.skald-crypto]
+opt-level = 1
+
+[profile.dev.package.skald-proto]
+opt-level = 1

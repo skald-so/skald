@@ -80,8 +80,8 @@ fn a_first_devices_page_shows_its_recovery_key_there() {
     let args = as_agent(&[SIGN_IN, SERVER, &cloud.url, PAGE]);
     let mut signing_in = start_with(&machine, opener.program(), &args);
     approve_next_as(&world, &ada, before, &mut signing_in);
-    // The stand-in's first run opened the sign-in page; its next, the command's page.
-    let paged = Paged::opened(&world.browser, &opener, 1, &mut signing_in);
+    // The stand-in's first run opens the command's page, which links to the sign-in page.
+    let paged = Paged::opened(&world.browser, &opener, 0, &mut signing_in);
     written_down(cloud, &machine, signing_in, &paged);
 }
 

@@ -8,7 +8,7 @@ use skald_proto::{Cbor as _, Frame, Push};
 use tungstenite::Message;
 
 use crate::api::{Person, Session};
-use crate::common::device_flow::{DeviceFlow, text};
+use crate::common::device_flow::{DeviceFlow, json as json_of, text};
 use crate::common::devices::{DEVICES, Device, assert_taken, b64};
 use crate::common::hex;
 use crate::kit::{Link, WAIT, fresh_session, hello};
@@ -87,12 +87,14 @@ fn a_connection_learns_of_a_device_without_a_session_once_it_registers_on_the_ac
     let mut alice = caught_up(&l.flow, &l.alice);
     let mut bob = caught_up(&l.flow, &l.bob);
     let tablet = Device::new("Tablet");
-    let body = json!({
-        "device": tablet.id.to_string(),
-        "hello": b64(&hello(&fresh_session())),
-    });
+    let body = json!({ "device": tablet.id.to_string() });
     let opened = Session::none(&l.flow).call("post", "/links", Some(&body));
     assert_eq!(opened.status, 201, "{}", text(&opened));
+    let token = json_of(&opened)["token"].as_str().map(str::to_owned);
+    let side = Session::of_token(&l.flow, &token.expect("a run's token"));
+    let hello = json!({ "message": b64(&hello(&fresh_session())) });
+    let sent = side.call("post", "/links/messages", Some(&hello));
+    assert_eq!(sent.status, 201, "{}", text(&sent));
     assert_eq!(quiet(&mut alice), None, "before the device registers");
 
     assert_taken(

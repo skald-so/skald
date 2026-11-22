@@ -36,6 +36,7 @@ Also whoever takes over the server or its database.
 - Withhold certificates, revocations and roster revisions: a hidden revocation keeps a device trusted for those who do not see it, a hidden revision keeps clients on an older roster, and withholding a revocation from every member device delays the revoked device's Remove ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold anchors objects, so a device linked with the recovery key starts from older revisions or joins no space, and a device stays out of a space another device of its account created or joined ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold the master backup, so no device links with the recovery key ([membership.md](protocol/membership.md#security-considerations)).
+- Withhold an acceptance, so no admin's device admits its newcomer ([membership.md](protocol/membership.md#invite)).
 - Guess an account's recovery key offline with its account record or master backup: each guess costs an Argon2id derivation of about a second on a laptop, and a key holds 60 bits ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
@@ -132,7 +133,7 @@ Anyone who reaches the server: with no session, or with a session of an account 
 **Defenses:**
 - A run's token takes only that run's messages; it is no session ([Link code](protocol/membership.md#link-code)).
 - The new device counts its runs whoever answers them, and the issuing device counts its own ([Link code](protocol/membership.md#link-code)).
-- A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes; a run's token sends at most 8 later messages of at most 4096 bytes each ([Link code](protocol/membership.md#link-code)).
+- A pairing holds 30 bits, which the server picks unique among the open runs and gives only to the run's device, and an account enters at most 10 pairings the server does not hold per 15 minutes; a run's token sends at most 8 later messages of at most 4096 bytes each ([Link code](protocol/membership.md#link-code)).
 - A session by a device's key takes the key's signature over a fresh challenge and a certificate from a linked `client` device of the account, which the server checks against the account's master key ([Device key session](protocol/membership.md#device-key-session)).
 
 ### A stolen device
@@ -313,6 +314,7 @@ An OS account on the device's machine other than the one that runs the client.
 - link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
+- acceptances: the newcomer's account and handle;
 - IP addresses and times of connections and requests;
 - queue names and settings, task templates;
 - when presence changes, and its size in steps of 4 KB, not its value;
@@ -339,6 +341,7 @@ Message texts, agent and session names other than service agents, threads, files
 - a leaked recovery key exposes the history;
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
+- GitHub learns the address of each device that checks SSH signatures and which GitHub users it checks ([architecture.md, "Network"](dev/architecture.md#network));
 - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds");
 - there has been no external crypto audit; the spec and threat model are public;
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).

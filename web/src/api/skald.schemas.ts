@@ -180,7 +180,7 @@ export interface ListedDevices {
 export type LinkMessage = string;
 
 export interface LinkHelloRequest {
-  /** The new device: registered without a certificate on the session's account; at `POST /links`, with no certificate, registered on any account or none. */
+  /** The new device: registered without a certificate on the session's account. */
   device: DeviceId;
   /** Its `link-hello`. */
   hello: LinkMessage;
@@ -536,6 +536,54 @@ export interface HealthUnavailable {
   status: HealthUnavailableStatus;
 }
 
+/**
+ * An invite's CBOR bytes (docs/protocol/membership.md, "Invite") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type Invite = string;
+
+/**
+ * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type RosterRevision = string;
+
+/**
+ * An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type AccountId = string;
+
+export interface InviteWithSpace {
+  /** The invite as the server got it. */
+  invite: Invite;
+  /** The space's revisions as stored, from revision 1 on, in order. */
+  revisions: RosterRevision[];
+  /** As in `SpaceDevices`. */
+  devices: Device[];
+  /** As in `SpaceDevices`. */
+  revocations: Revocation[];
+  /** As in `SpaceDevices`. */
+  records: AccountRecord[];
+  /** As in `SpaceDevices`. */
+  deleted?: AccountId[];
+}
+
+/**
+ * An acceptance's CBOR bytes (docs/protocol/membership.md, "Invite") in base64url without padding (RFC 4648, §5).
+ * @pattern ^[A-Za-z0-9_-]+$
+ */
+export type Acceptance = string;
+
+export interface AcceptanceRequest {
+  acceptance: Acceptance;
+}
+
+export interface StoredAcceptance {
+  /** The acceptance as stored. */
+  acceptance: Acceptance;
+}
+
 export interface KeyPackageRequest {
   devices: DeviceId[];
 }
@@ -565,12 +613,6 @@ export interface Server {
   name: ServerName | null;
 }
 
-/**
- * An account's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
- * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
- */
-export type AccountId = string;
-
 export interface Session {
   account: AccountId;
   username: Username;
@@ -596,6 +638,19 @@ export interface Spaces {
 
 export interface SpaceRequest {
   name: SpaceName;
+}
+
+export interface WaitingAcceptance {
+  /** The acceptance as the server got it. */
+  acceptance: Acceptance;
+  /** The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none. */
+  devices: Device[];
+  /** The stored revocations of the acceptance's account, each as the server got it, once. */
+  revocations: Revocation[];
+}
+
+export interface WaitingAcceptances {
+  acceptances: WaitingAcceptance[];
 }
 
 /**
@@ -651,6 +706,25 @@ export interface SpaceDevices {
 }
 
 /**
+ * An invite's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, "Identifiers").
+ * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
+ */
+export type InviteId = string;
+
+export interface NewInvite {
+  invite: InviteId;
+}
+
+export interface InviteRequest {
+  invite: Invite;
+}
+
+export interface StoredInvite {
+  /** The invite as stored. */
+  invite: Invite;
+}
+
+/**
  * The member's role in the revision.
  */
 export type ListedMemberRole =
@@ -685,12 +759,6 @@ export interface ListedMember {
 export interface ListedMembers {
   members: ListedMember[];
 }
-
-/**
- * A roster revision's CBOR bytes (docs/protocol/membership.md, "Roster") in base64url without padding (RFC 4648, §5).
- * @pattern ^[A-Za-z0-9_-]+$
- */
-export type RosterRevision = string;
 
 export interface RosterRevisions {
   revisions: RosterRevision[];

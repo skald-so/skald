@@ -84,6 +84,7 @@ use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::output::{self, Stream};
+use crate::permission_prompts;
 use crate::queue_keys;
 use crate::queues;
 use crate::receipts;
@@ -1035,9 +1036,9 @@ pub fn kept_item(seq: u64) -> Vec<u8> {
     [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
-/// Shows each warning an agent's run kept for the person, each status and then each kept message
-/// the person's run has yet to show, in `form`, in order, and marks each shown; gives how many
-/// lines it showed.
+/// Shows each warning an agent's run kept for the person, each status, each kept message and then
+/// each recorded permission prompt ([`permission_prompts`]) the person's run has yet to show, in
+/// `form`, in order, and marks each shown; gives how many lines it showed.
 pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> {
     let state = &follower.state;
     let warnings = state.warnings().map_err(text)?;
@@ -1057,15 +1058,15 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
         }),
     )?;
     let kept = state.for_person().map_err(text)?;
-    Ok(shown
-        + shown_kept(
-            follower,
-            kept,
-            (form, &references),
-            (&mut written("a message"), &mut |seq| {
-                state.shown_to_person(seq, follower.service.is_some())
-            }),
-        )?)
+    shown += shown_kept(
+        follower,
+        kept,
+        (form, &references),
+        (&mut written("a message"), &mut |seq| {
+            state.shown_to_person(seq, follower.service.is_some())
+        }),
+    )?;
+    Ok(shown + permission_prompts::show_to_person(state, form)?)
 }
 
 /// Hands each kept status of a message `agent` sent in `space`, then each kept message that waits
@@ -1189,9 +1190,7 @@ fn hand_over_hook(
         for position in &given.statuses {
             state.status_taken_by_agent(*position).map_err(text)?;
         }
-        for seq in &given.signalled {
-            state.signal_given(*seq, agent.as_str()).map_err(text)?;
-        }
+        (state.signals_given(&given.signalled, agent.as_str())).map_err(text)?;
         let woken: BTreeSet<String> = (given.handed.iter().chain(&given.signalled))
             .filter_map(|seq| channels.get(seq).cloned().flatten())
             .collect();

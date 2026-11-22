@@ -42,6 +42,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// A device session's challenge for a WebSocket, `POST`: `docs/protocol/delivery.md`,
 /// "Connecting".
 const CHALLENGE_PATH: &str = "/session/challenge";
+/// The label of a device's signature for a session by its key.
+const DEVICE_SESSION_LABEL: &str = "skald device session";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -611,6 +613,60 @@ impl Resolver for Deferred {
     }
 }
 
+/// The proxy the client reaches `base`, a URL it connects to, through: the one
+/// [`Proxy::for_host`] gives for an `https://` URL, none for plain HTTP to this machine.
+fn proxy_of(base: &str) -> Result<Option<Proxy>, Error> {
+    match scheme(base)? {
+        Scheme::Https => {
+            let uri: Uri = base.parse().map_err(|_| Error::Url(base.to_owned()))?;
+            Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)
+        }
+        Scheme::Loopback => Ok(None),
+    }
+}
+
+/// The agent of HTTP requests that dials as [`dial`] says, through `proxy` if given, with
+/// `resolver`, over TLS trusting `roots` if given; it follows no redirect, and each request fails
+/// after `timeout`.
+fn http_agent(
+    roots: Option<&Roots>,
+    proxy: Option<Proxy>,
+    resolver: Pinned,
+    timeout: Duration,
+) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        // A redirect could take a request to another host, in the clear.
+        .max_redirects(0)
+        .timeout_global(Some(timeout));
+    if let Some(roots) = roots {
+        config = config.tls_config(roots.ureq());
+    }
+    let dial = Dial {
+        proxy,
+        resolver,
+        timeout,
+    };
+    ureq::Agent::with_parts(
+        config.build(),
+        ().chain(dial).chain(RustlsConnector::default()),
+        Deferred,
+    )
+}
+
+/// An agent of plain HTTP requests, with none of a connection's headers, to the service at `base`,
+/// such as `https://api.github.com`, that reaches it as a connection reaches its server: over
+/// HTTPS through the proxy `HTTPS_PROXY` names, or in plain HTTP to this machine only.
+pub fn agent_to(base: &str, timeout: Duration) -> Result<ureq::Agent, Error> {
+    let proxy = proxy_of(base)?;
+    let roots = (scheme(base)? == Scheme::Https).then(Roots::load);
+    let resolver = Pinned {
+        system: Arc::new(DefaultResolver::default()),
+    };
+    Ok(http_agent(roots.as_ref(), proxy, resolver, timeout))
+}
+
 /// A connection to the server at one base URL.
 pub struct Connection {
     base: String,
@@ -712,6 +768,12 @@ struct Challenge {
     challenge: String,
 }
 
+/// `DeviceKeySession` in the API spec.
+#[derive(Deserialize)]
+struct Session {
+    token: String,
+}
+
 /// The fields of a problem details object the client reads.
 #[derive(Deserialize)]
 struct Problem {
@@ -745,13 +807,7 @@ impl Connection {
         timeout: Duration,
         system: Arc<dyn Resolver>,
     ) -> Result<Self, Error> {
-        let proxy = match scheme(server)? {
-            Scheme::Https => {
-                let uri: Uri = server.parse().map_err(|_| Error::Url(server.to_owned()))?;
-                Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)?
-            }
-            Scheme::Loopback => None,
-        };
+        let proxy = proxy_of(server)?;
         Self::proxied(server, speaks, timeout, system, proxy)
     }
 
@@ -764,26 +820,8 @@ impl Connection {
         proxy: Option<Proxy>,
     ) -> Result<Self, Error> {
         let roots = (scheme(server)? == Scheme::Https).then(Roots::load);
-        let mut config = ureq::Agent::config_builder()
-            .proxy(None)
-            .http_status_as_error(false)
-            // A redirect could take a request to another host, in the clear.
-            .max_redirects(0)
-            .timeout_global(Some(timeout));
-        if let Some(roots) = &roots {
-            config = config.tls_config(roots.ureq());
-        }
         let resolver = Pinned { system };
-        let dial = Dial {
-            proxy: proxy.clone(),
-            resolver: resolver.clone(),
-            timeout,
-        };
-        let agent = ureq::Agent::with_parts(
-            config.build(),
-            ().chain(dial).chain(RustlsConnector::default()),
-            Deferred,
-        );
+        let agent = http_agent(roots.as_ref(), proxy.clone(), resolver.clone(), timeout);
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
             tls: roots.map(|roots| roots.rustls()),
@@ -836,6 +874,11 @@ impl Connection {
     /// it.
     pub fn post_as(&mut self, path: &str, token: &str) -> Result<Vec<u8>, Error> {
         self.http(path, Some(token), Body::Post)
+    }
+
+    /// `POST <path>` of the JSON `json` without a session; the body of the answer that serves it.
+    pub fn post_json(&mut self, path: &str, json: &[u8]) -> Result<Vec<u8>, Error> {
+        self.http(path, None, Body::Json(Method::Post, json))
     }
 
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
@@ -1056,12 +1099,47 @@ impl Connection {
         label: &str,
     ) -> Result<(Vec<u8>, [u8; 64]), Error> {
         let answer = self.post_as(CHALLENGE_PATH, token)?;
-        let challenge = serde_json::from_slice::<Challenge>(&answer)
+        self.signed(&answer, key, label)
+    }
+
+    /// The challenge in `answer`, and the signature of `key` with `label` over it and the server's
+    /// origin.
+    fn signed(
+        &self,
+        answer: &[u8],
+        key: &SigningKey,
+        label: &str,
+    ) -> Result<(Vec<u8>, [u8; 64]), Error> {
+        let challenge = serde_json::from_slice::<Challenge>(answer)
             .ok()
             .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
             .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
         let signature = key.sign(label, &[&challenge, origin(&self.base).as_bytes()]);
         Ok((challenge, signature))
+    }
+
+    /// A device session of the account of the device `device`, whose signing key is `key`, by that
+    /// key and its complete certificate `cert` in CBOR, with no session
+    /// (`docs/protocol/membership.md`, "Device key session"): gives its token.
+    pub fn device_key_session(
+        &mut self,
+        device: DeviceId,
+        key: &SigningKey,
+        cert: &[u8],
+    ) -> Result<String, Error> {
+        let answer = self.http(&format!("/devices/{device}/challenge"), None, Body::Post)?;
+        let (challenge, signature) = self.signed(&answer, key, DEVICE_SESSION_LABEL)?;
+        let request = serde_json::json!({
+            "challenge": URL_SAFE_NO_PAD.encode(&challenge),
+            "signature": URL_SAFE_NO_PAD.encode(signature),
+            "cert": URL_SAFE_NO_PAD.encode(cert),
+        })
+        .to_string();
+        let path = format!("/devices/{device}/session");
+        let answer = self.post_json(&path, request.as_bytes())?;
+        serde_json::from_slice::<Session>(&answer)
+            .map(|session| session.token)
+            .map_err(|_| Error::Unexpected("a device session without its token".to_owned()))
     }
 
     /// The proof of an HTTPS request of the device `device`, whose signing key is `key`, on a new
