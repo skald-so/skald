@@ -54,14 +54,14 @@ mod reading;
 // queues and the task reads of the tests of task states.
 #[path = "../agent_handover/agents.rs"]
 mod agents;
-// These tests use none of the states `claiming` passes on but some.
-#[allow(unused_imports)]
-#[path = "../task_claims/claiming.rs"]
-mod claiming;
 #[path = "../gap_detection/gaps.rs"]
 mod gaps;
 #[path = "../compact_output/lines.rs"]
 mod lines;
+// These tests use none of the states `claiming` passes on but some.
+#[allow(unused_imports)]
+#[path = "../task_claims/claiming.rs"]
+mod claiming;
 #[path = "../queues/queuing.rs"]
 mod queuing;
 #[path = "../trust_levels/senders.rs"]
