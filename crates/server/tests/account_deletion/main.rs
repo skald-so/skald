@@ -31,6 +31,9 @@
 //!   ...]`, the listed devices' accounts that are deleted, each once; left out, it is empty.
 //! - A revision that leaves a space with other members whose every admin is deleted is refused with
 //!   a `4xx` and a problem details object.
+//! - `POST /devices/{device}/session`, a device's session by its key and certificate: for a device
+//!   of a deleted account whose signature verifies, `403` with the problem
+//!   `https://skald.so/problems/account-deleted`.
 //! - `sessions.created_at` in the database is a session's sign-in.
 
 // Each test target uses a part of the shared modules.
@@ -66,7 +69,9 @@ mod wire;
 #[path = "../web_sessions/sessions.rs"]
 mod sessions;
 
-// The link runs of the tests of the link code relay.
+// The link runs of the tests of the link code relay, and a session by a device's key.
+#[path = "../device_key_sessions/kit.rs"]
+mod by_key;
 #[path = "../link_relay/kit.rs"]
 mod relay;
 

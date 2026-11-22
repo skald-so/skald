@@ -10,6 +10,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -47,6 +48,23 @@ const DEVICE_SESSION_LABEL: &str = "skald device session";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// The problem of a request without a session, or with one the server does not hold.
+const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
+
+/// Whether a request of the process got [`NOT_SIGNED_IN`] since [`forget_refused`].
+static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a request of the process got the server's refusal of its session since
+/// [`forget_refused`].
+pub fn session_refused() -> bool {
+    SESSION_REFUSED.load(Ordering::SeqCst)
+}
+
+/// Forgets the refusals [`session_refused`] gives.
+pub fn forget_refused() {
+    SESSION_REFUSED.store(false, Ordering::SeqCst);
+}
 
 /// Why a request to the server failed.
 #[derive(Debug)]
@@ -1279,6 +1297,9 @@ impl Connection {
                 return Err(Error::TooOld { supported, speaks });
             }
             if kind != VersionProblem::TooNew.type_uri() {
+                if status == 401 && kind == NOT_SIGNED_IN {
+                    SESSION_REFUSED.store(true, Ordering::SeqCst);
+                }
                 return Err(Error::Refused {
                     status,
                     kind,
@@ -1910,6 +1931,41 @@ pub(crate) mod tests {
         ] {
             assert!(head.iter().any(|line| line == header), "{header}: {head:?}");
         }
+    }
+
+    /// Only the server's `not-signed-in` notes a refused session, until it is forgotten: not
+    /// another refusal with 401, nor another problem.
+    #[test]
+    fn only_not_signed_in_notes_a_refused_session() {
+        let problem = |status: &str, kind: &str| {
+            let body = format!(r#"{{"type":"{kind}","title":"t","status":0}}"#);
+            format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\n\
+                 content-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let answers = [
+            problem("401 Unauthorized", "https://skald.so/problems/other"),
+            problem("403 Forbidden", NOT_SIGNED_IN),
+            problem("401 Unauthorized", NOT_SIGNED_IN),
+        ];
+        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
+        let mut connection =
+            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        forget_refused();
+
+        for noted in [false, false, true] {
+            let refused = connection.get_as("/session", "token").err();
+            assert!(
+                matches!(refused, Some(Error::Refused { .. })),
+                "{refused:?}"
+            );
+            assert_eq!(session_refused(), noted, "{refused:?}");
+        }
+        forget_refused();
+        assert!(!session_refused());
+        served.join().unwrap();
     }
 
     /// A connection over this machine: the client's end and its peer's.

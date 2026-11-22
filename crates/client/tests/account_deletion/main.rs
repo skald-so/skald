@@ -46,7 +46,11 @@
 //! - On another device of a deleted account, `skald recv`, `skald send` and a running `skald
 //!   helper` each say once, on one line holding `account` and `deleted`, that the server reports
 //!   the account deleted, and name the machine's state directory; they send no envelope, history or
-//!   revision.
+//!   revision. So does `skald link`, on a device that ran no helper when the account was deleted,
+//!   once its session is refused; its `skald delete-account` then deletes its local state.
+//! - A refused session alone deletes nothing: `skald delete-account` keeps the machine's state while
+//!   the account lives. A run whose request to delete the account gets no answer, or one that is not
+//!   the server's, says the deletion may have gone through.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -56,8 +60,10 @@ mod confirming;
 mod crashes;
 mod deleting;
 mod deletion;
+mod offline;
 mod other_devices;
 mod refusals;
+mod refused_sessions;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the admin rights'
 // commands of the tests of admin rights, the terminal of the tests of the recovery key and its

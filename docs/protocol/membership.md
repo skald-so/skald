@@ -226,6 +226,8 @@ The server issues the session only if:
 - the device is a `client` device that checks 3 and 4 of [Device checks](#device-checks) do not revoke, against the account's revocations;
 - the signature verifies with the certificate's `signing` over `origin` set to the origin of the server's public address.
 
+A device whose certificate names a deleted account gets no session: once the signature verifies, the server answers the problem `account-deleted`, so a device that was offline when its account was deleted learns of it.
+
 It stores the certificate sent only if the certificate is of the device as a `client` device, issued by a `client` device of its account, passes the proof check and checks 1 and 2 of [Device checks](#device-checks) against that account's master key and the certificates its devices hold, and matches the device's registration if there is one: on that account, with its keys and `name`. A device without a registration is registered by it. With the devices limit, a certificate the account has no place for is refused and gives no session.
 
 - The session is of the certificate's account, has no sign-in method and is listed with its device. The server takes it as any device session. It ends when its device is revoked, when it signs out, when a web session ends it, and when the device gets another session this way: a device has one such session at a time.

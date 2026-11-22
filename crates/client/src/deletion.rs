@@ -5,13 +5,16 @@
 //! goes at once and what 30 days later, and takes the account's username, typed at the terminal.
 //! With a sign-in older than the server allows, it signs in again by device flow first and deletes
 //! with that session. Once the server has deleted the account, it deletes the secrets, the device's
-//! keys among them, from key storage and the state directory, and the local state. A run that sent
-//! the deletion and got no answer leaves a mark ([`SENT`]): the next one that finds the session
-//! refused takes the account as deleted and finishes.
+//! keys among them, from key storage and the state directory, and the local state, marked deleted
+//! ([`REPORTED`]) until it is gone. A run that sent the deletion leaves a mark ([`SENT`]) until the
+//! server itself refused it: the next run, if the server refuses the session and says the account
+//! is deleted, finishes.
 //!
-//! On the account's other devices, the helper notes a connection the server closes because the
-//! account is deleted ([`mailbox::note_closing`]) and marks the state ([`REPORTED`]); then each
-//! command that would reach the server says so and sends nothing ([`reported`]).
+//! A device learns that its account is deleted as the server says so: the helper, from a connection
+//! the server closes ([`mailbox::note_closing`]); any run whose session the server refused, from a
+//! session it asks by the device's key ([`learned`]). Either marks the state ([`REPORTED`]); then
+//! each command that would reach the server says so and sends nothing ([`reported`]), and `skald
+//! delete-account` deletes the local state.
 
 use std::fs;
 use std::io;
@@ -29,8 +32,8 @@ use crate::person::Person;
 use crate::secrets::{self, Secrets};
 use crate::sign_in::{self, SESSION_TOKEN};
 use crate::spaces::Follower;
-use crate::state::{self, State};
-use crate::{helper, lock, output};
+use crate::state::{self, Link, State};
+use crate::{device, helper, lock, output};
 
 /// What `skald delete-account` says through a pipe.
 pub const NOT_AT_TERMINAL: &str = "skald delete-account takes the account's username only from \
@@ -47,9 +50,13 @@ const SENT: &str = "deletion-sent";
 /// The mark of the server's report that the machine's account is deleted, in the state directory.
 const REPORTED: &str = "account-deleted";
 
-/// The problems of a sign-in older than the server allows and of a space that blocks the deletion.
+/// Where the types of the server's own problems start.
+const PROBLEMS: &str = "https://skald.so/problems/";
+/// The problems of a sign-in older than the server allows, of a space that blocks the deletion and
+/// of a device of a deleted account.
 const SIGN_IN_TOO_OLD: &str = "https://skald.so/problems/sign-in-too-old";
 const DELETION_BLOCKED: &str = "https://skald.so/problems/deletion-blocked";
+const ACCOUNT_DELETED: &str = "https://skald.so/problems/account-deleted";
 
 /// `AccountDeletion` in the OpenAPI spec.
 #[derive(Deserialize)]
@@ -79,26 +86,39 @@ pub fn run(
     speaks: VersionRange,
     timeout: Duration,
 ) -> Result<(), String> {
-    if !dir.join(state::FILE).is_file() {
+    let sent = dir.join(SENT);
+    if !reported(dir) && !dir.join(state::FILE).is_file() {
         return Err(devices::NOT_SIGNED_IN.to_owned());
     }
     helper::stop(dir, timeout)?;
     let lock = lock::take(dir, false, timeout)?;
+    // Reported by the server, or by a run that stopped while it deleted the local state.
+    if reported(dir) {
+        return erase(dir, storage, None, lock);
+    }
     let (state, server, token, mut stored, secrets) =
         devices::signed_in_with_secrets(dir, storage)?;
+    let username = state.session().ok().flatten().and_then(|it| it.username);
     let mut connection = devices::to_session(&server, speaks, timeout)?;
-    let sent = dir.join(SENT);
     let account = match account_of(&mut connection, &token) {
         Ok(account) => account,
-        // The deletion this machine sent took its session with it.
-        Err(connection::Error::Refused { status: 401, .. }) if sent.is_file() => {
-            return erase(dir, (state, secrets), lock);
-        }
         Err(connection::Error::Refused { status: 401, .. }) => {
-            return Err(NO_SESSION.to_owned());
+            let deleted = by_key(&mut connection, &state, &stored)?;
+            drop(state);
+            return match deleted {
+                Some(true) => erase(dir, storage, username, lock),
+                // A device without its certificate asks nothing: a deletion it sent took its
+                // session.
+                None if sent.is_file() => erase(dir, storage, username, lock),
+                _ => {
+                    let _ = fs::remove_file(&sent);
+                    Err(NO_SESSION.to_owned())
+                }
+            };
         }
         Err(err) => return Err(err.to_string()),
     };
+    // The account lives: a deletion an earlier run sent did not reach the server.
     let _ = fs::remove_file(&sent);
     let preview = preview(&mut connection, &token)?;
     if !preview.blocks.is_empty() {
@@ -108,15 +128,16 @@ pub fn run(
         .filter(|space| space.personal)
         .map(|space| space.id.to_string())
         .collect();
-    let username = printable(&account.username);
-    println!("Deleting the account {username} deletes at once:");
+    drop(state);
+    let handle = printable(&account.username);
+    println!("Deleting the account {handle} deletes at once:");
     println!("- its sessions and sign-in methods, and its devices, this one's keys and state too;");
     if !preview.deletes.is_empty() {
         println!("- the spaces only it is in:");
         for listed in &preview.deletes {
             let name = printable(&listed.name);
             if personal.contains(&listed.space) {
-                println!("  {name}, the personal space of {username}");
+                println!("  {name}, the personal space of {handle}");
             } else {
                 println!("  {name}");
             }
@@ -128,11 +149,11 @@ pub fn run(
          sent. Nothing undoes a deletion."
     );
     let typed = Person::Terminal.enter(
-        &format!("Type the account's username, {username}, to delete it"),
+        &format!("Type the account's username, {handle}, to delete it"),
         "",
     )?;
     if typed.as_deref().map(str::trim) != Some(account.username.as_str()) {
-        return Err(format!("that is not {username}: nothing is deleted"));
+        return Err(format!("that is not {handle}: nothing is deleted"));
     }
 
     fs::write(&sent, b"").map_err(|err| format!("cannot mark the deletion as sent: {err}"))?;
@@ -149,9 +170,10 @@ pub fn run(
         deleted => deleted,
     };
     match deleted {
-        Ok(()) => erase(dir, (state, secrets), lock),
-        Err(err) if !err.reached() => Err(format!(
-            "{err}; the account may be deleted already: run skald delete-account again to finish"
+        Ok(()) => erase(dir, storage, Some(account.username), lock),
+        // An answer that is not the server's, or none, may follow a deletion.
+        Err(err) if !server_refused(&err) => Err(format!(
+            "{err}; the deletion may have gone through: run skald delete-account again to finish"
         )),
         Err(err) => {
             let _ = fs::remove_file(&sent);
@@ -163,6 +185,57 @@ pub fn run(
             }
         }
     }
+}
+
+/// Whether `err` is the server's own refusal: a problem of its own type.
+fn server_refused(err: &connection::Error) -> bool {
+    matches!(err, connection::Error::Refused { kind, .. } if kind.starts_with(PROBLEMS))
+}
+
+/// Whether the server says the account of the device of `state`, its secrets `stored`, is deleted,
+/// asked on `connection` by a session by the device's key, which ends at once if given; `None`
+/// without a certified device and its keys, which asks nothing.
+fn by_key(
+    connection: &mut Connection,
+    state: &State,
+    stored: &secrets::Map,
+) -> Result<Option<bool>, String> {
+    let Some(device) = state.device().map_err(text)? else {
+        return Ok(None);
+    };
+    let Link::Certified { cert, .. } = &device.link else {
+        return Ok(None);
+    };
+    let Some(keys) = device::known_keys(stored, Some(&device)).map_err(text)? else {
+        return Ok(None);
+    };
+    match connection.device_key_session(keys.id(), keys.signing(), cert) {
+        Ok(token) => {
+            let _ = connection.delete_as("/session", &token);
+            Ok(Some(false))
+        }
+        Err(connection::Error::Refused { kind, .. }) if kind == ACCOUNT_DELETED => Ok(Some(true)),
+        Err(err) if server_refused(&err) => Ok(Some(false)),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// After a run on the machine whose state is in `dir` whose session the server refused, with
+/// `settings`: what it says if the server says, asked by the device's key, that the account is
+/// deleted, which marks the state.
+pub fn learned(dir: &Path, (storage, speaks, timeout): Settings) -> Option<String> {
+    let (state, server, _, stored, _) = devices::signed_in_with_secrets(dir, storage).ok()?;
+    let mut connection = devices::to_session(&server, speaks, timeout).ok()?;
+    if by_key(&mut connection, &state, &stored) != Ok(Some(true)) {
+        return None;
+    }
+    mark(dir);
+    Some(said(dir))
+}
+
+/// Marks the state in `dir` as of an account the server reports deleted.
+fn mark(dir: &Path) {
+    let _ = fs::write(dir.join(REPORTED), b"");
 }
 
 /// The account of the session `token`, as the server of `connection` gives it.
@@ -241,26 +314,28 @@ fn signed_in_again(
     Ok(token)
 }
 
-/// Deletes what the machine whose state is in `dir` keeps of its deleted account: the `secrets`,
-/// from key storage and the state directory, and every other file there, the local `state`
-/// closed first and the `lock` file last; then says the account is deleted.
+/// Deletes what the machine whose state is in `dir`, its secrets in `storage`, keeps of its deleted
+/// account, the local state closed: marks the state as of a deleted account first, so that the next
+/// run finishes what a run that stops on the way leaves; then deletes the secrets, from key storage
+/// and the state directory, every other file there, the marks, and the `lock` file last. Says the
+/// account, `username` if known, is deleted.
 fn erase(
     dir: &Path,
-    (state, secrets): (State, Secrets),
+    storage: secrets::Storage,
+    username: Option<String>,
     lock: Option<lock::Lock>,
 ) -> Result<(), String> {
-    let username = state
-        .session()
-        .ok()
-        .flatten()
-        .and_then(|session| session.username);
-    drop(state);
-    secrets.erase().map_err(text)?;
     let failed =
         |err: io::Error| format!("cannot empty the state directory {}: {err}", dir.display());
+    fs::write(dir.join(REPORTED), b"").map_err(failed)?;
+    Secrets::new(dir, storage).erase().map_err(text)?;
+    let kept = [lock::FILE, SENT, REPORTED];
     for entry in fs::read_dir(dir).map_err(failed)? {
         let path = entry.map_err(failed)?.path();
-        if path.file_name().is_some_and(|name| name == lock::FILE) {
+        if path
+            .file_name()
+            .is_some_and(|name| kept.iter().any(|kept| name == *kept))
+        {
             continue;
         }
         if path.is_dir() {
@@ -269,6 +344,12 @@ fn erase(
             fs::remove_file(&path)
         }
         .map_err(failed)?;
+    }
+    for mark in [SENT, REPORTED] {
+        match fs::remove_file(dir.join(mark)) {
+            Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(failed(err)),
+            _ => {}
+        }
     }
     drop(lock);
     let _ = fs::remove_file(dir.join(lock::FILE));
@@ -308,37 +389,118 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// Whether the server closed a connection of the helper of the state in `dir` because the
-    /// account is deleted: then it marks the state and says so, once. Otherwise, if `idle` and no
-    /// connection is kept, it opens the device's connection with `settings`, at most once in
-    /// [`WATCH_AGAIN`].
+    /// Whether the server reported the account of the helper of the state in `dir` deleted: then it
+    /// marks the state and says so, once. It learns so from a connection the server closed because
+    /// the account is deleted; or, if `idle` and no connection is kept, from opening the device's
+    /// connection with `settings`, at most once in [`WATCH_AGAIN`], which a refused session makes
+    /// it ask ([`learned`]).
     pub fn reported(&mut self, dir: &Path, settings: Settings, idle: bool) -> bool {
-        if mailbox::account_deleted() {
-            let _ = fs::write(dir.join(REPORTED), b"");
+        let mut deleted = mailbox::account_deleted();
+        let due = self.next.is_none_or(|next| Instant::now() >= next);
+        if !deleted && idle && due && mailbox::kept_transport().is_none() && !reported(dir) {
+            self.next = Some(Instant::now() + WATCH_AGAIN);
+            deleted = watch(dir, settings);
+        }
+        if deleted {
+            mark(dir);
             let line = format!("skald: {}\n", said(dir));
             let _ = output::direct(output::Stream::Err, line.as_bytes());
-            return true;
         }
-        let due = self.next.is_none_or(|next| Instant::now() >= next);
-        if idle && due && mailbox::kept_transport().is_none() && !reported(dir) {
-            self.next = Some(Instant::now() + WATCH_AGAIN);
-            watch(dir, settings);
-        }
-        false
+        deleted
     }
 }
 
 /// Opens the connection of the certified `client` device of the state in `dir`, with `settings`,
-/// and keeps it ([`Mailbox`]); does nothing without one, or when it does not open.
-fn watch(dir: &Path, (storage, speaks, timeout): Settings) {
+/// and keeps it ([`Mailbox`]); does nothing without one. Gives whether the server reports the
+/// account deleted, asked once it refused the session.
+fn watch(dir: &Path, settings: Settings) -> bool {
+    let (storage, speaks, timeout) = settings;
     let Ok(Some(mut follower)) = Follower::unchecked(dir, storage, speaks, timeout) else {
-        return;
+        return false;
     };
     if follower.cert.body().kind != DeviceKind::Client {
-        return;
+        return false;
     }
-    if let Ok(keys) = follower.keys() {
-        // Dropped, it is kept for the helper's next operation.
-        let _ = Mailbox::open(&mut follower, &keys);
+    let Ok(keys) = follower.keys() else {
+        return false;
+    };
+    connection::forget_refused();
+    // Dropped, it is kept for the helper's next operation.
+    let opened = Mailbox::open(&mut follower, &keys).is_ok();
+    drop(follower);
+    !opened && connection::session_refused() && learned(dir, settings).is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_dir::TestDir;
+
+    /// The state directory of a machine without its secrets, as a run that stopped while it deleted
+    /// the local state leaves it: a database, a subdirectory, its lock file and `marks`.
+    fn stopped_in_erase(name: &str, marks: &[&str]) -> TestDir {
+        let dir = TestDir::new(name);
+        fs::write(dir.join(state::FILE), b"the account's local state").unwrap();
+        fs::create_dir(dir.join("helper")).unwrap();
+        fs::write(dir.join("helper").join("file"), b"").unwrap();
+        fs::write(dir.join(lock::FILE), b"").unwrap();
+        for mark in marks {
+            fs::write(dir.join(mark), b"").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_marked_run_without_secrets_finishes_the_erase() {
+        for marks in [&[REPORTED][..], &[SENT, REPORTED]] {
+            let dir = stopped_in_erase("deletion-finishes", marks);
+
+            run(
+                &dir,
+                secrets::Storage::File,
+                VersionRange::default(),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+
+            let left: Vec<_> = fs::read_dir(&*dir).unwrap().collect();
+            assert!(left.is_empty(), "{marks:?}: {left:?}");
+        }
+    }
+
+    #[test]
+    fn without_the_servers_report_a_run_without_a_session_deletes_nothing() {
+        for marks in [&[][..], &[SENT]] {
+            let dir = stopped_in_erase("deletion-unreported", marks);
+
+            let refused = run(
+                &dir,
+                secrets::Storage::File,
+                VersionRange::default(),
+                Duration::from_secs(1),
+            );
+
+            assert!(refused.is_err(), "{marks:?}: {refused:?}");
+            assert!(dir.join(state::FILE).is_file(), "{marks:?}");
+            assert!(dir.join("helper").join("file").is_file(), "{marks:?}");
+        }
+    }
+
+    #[test]
+    fn only_the_servers_own_problems_are_its_refusals() {
+        let refused = |kind: &str| connection::Error::Refused {
+            status: 403,
+            kind: kind.to_owned(),
+            detail: String::new(),
+            task: None,
+        };
+        assert!(server_refused(&refused(DELETION_BLOCKED)));
+        assert!(!server_refused(&refused("about:blank")));
+        assert!(!server_refused(&connection::Error::Unexpected(
+            "HTTP 502".to_owned()
+        )));
+        assert!(!server_refused(&connection::Error::Timeout(
+            Duration::from_secs(1)
+        )));
     }
 }

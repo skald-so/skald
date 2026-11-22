@@ -1367,6 +1367,19 @@ impl Command {
             )
     }
 
+    /// Whether it reaches the server of the machine's session: one that says which devices wait for
+    /// linking, signs in, links or deletes the account.
+    fn reaches_server(&self) -> bool {
+        self.prompts()
+            || matches!(
+                self,
+                Command::SignIn { .. }
+                    | Command::Link { .. }
+                    | Command::LinkStep { .. }
+                    | Command::DeleteAccount
+            )
+    }
+
     /// Whether it says what it says as JSON: `--json`.
     fn json(&self) -> bool {
         self.prompts_as_json()
@@ -2093,7 +2106,27 @@ fn performed(operation: Operation) -> Result<(), String> {
     if tool_call && let Some(says) = &says {
         say(says);
     }
-    let ran = command_performed(operation, agent);
+    // A run whose session the server refused asks whether the account is deleted.
+    let asks = (!service::stateless()
+        && operation.command.reaches_server()
+        && !matches!(
+            operation.command,
+            Command::DeleteAccount | Command::Hook { .. }
+        ))
+    .then(|| state::dir(operation.state_dir.clone()).ok())
+    .flatten()
+    .map(|dir| {
+        let settings = (operation.key_storage, operation.speaks, operation.timeout);
+        (dir, settings)
+    });
+    connection::forget_refused();
+    let ran = match command_performed(operation, agent) {
+        Err(err) if connection::session_refused() => {
+            let learned = asks.and_then(|(dir, settings)| deletion::learned(&dir, settings));
+            Err(learned.unwrap_or(err))
+        }
+        ran => ran,
+    };
     if !tool_call && let Some(says) = &says {
         say(says);
     }
@@ -2120,8 +2153,11 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
         && !hooked
         && let Ok(dir) = state::dir(state_dir.clone())
     {
-        // A device of a deleted account sends nothing.
-        if (command.connects() || command.prompts()) && deletion::reported(&dir) {
+        // A device of a deleted account sends nothing; skald delete-account deletes its state.
+        if command.reaches_server()
+            && !matches!(command, Command::DeleteAccount)
+            && deletion::reported(&dir)
+        {
             return Err(deletion::said(&dir));
         }
         // A grant the device took waits for the server to store its certificate.

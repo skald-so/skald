@@ -3,7 +3,8 @@
 //! its account with no sign-in. A device the server holds no certificate of sends one, which the
 //! server stores with the checks and the devices limit of `PUT /devices/{device}/cert`, registering
 //! a device it does not have. A device has one such session at a time; it ends as any device
-//! session does, and when its device is revoked.
+//! session does, and when its device is revoked. A device of a deleted account gets none: it learns
+//! that the account is deleted.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -155,6 +156,7 @@ pub(crate) async fn start(
     )
     .map_err(|_| Refusal::SignatureRefused)?;
     let account = body.account.to_string();
+    deleted(&state, &account).await?;
     if held_cert.is_none() {
         check_new(&state, id, &cert, held.as_ref()).await?;
     }
@@ -209,6 +211,20 @@ pub(crate) async fn start(
         StatusCode::CREATED
     };
     Ok((status, Json(KeySession { token })).into_response())
+}
+
+/// Refuses a device of `account` if the account is deleted, telling it so.
+async fn deleted(state: &AppState, account: &str) -> Result<(), Refusal> {
+    let deleted: Option<(bool,)> =
+        sqlx::query_as("SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid")
+            .bind(account)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|err| Refusal::Database("read an account", err))?;
+    match deleted {
+        Some((true,)) => Err(Refusal::AccountDeleted),
+        _ => Ok(()),
+    }
 }
 
 /// Uses up `challenge`, which must be one the server issued for `device` and has not expired, for
