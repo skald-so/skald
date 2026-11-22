@@ -365,7 +365,7 @@ pub struct ClaudeSession {
     pub file: PathBuf,
 }
 
-/// A permission prompt a Claude Code session waits on, as the device recorded it
+/// A permission prompt a Claude Code or Codex session waits on, as the device recorded it
 /// ([`crate::permission_prompts`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PermissionPrompt {
@@ -373,10 +373,14 @@ pub struct PermissionPrompt {
     pub position: u64,
     pub space: SpaceId,
     pub agent: String,
-    /// Claude Code's session ID.
+    /// Claude Code's session ID, or Codex's thread.
     pub session: String,
+    /// The session's folder, if known.
+    pub folder: Option<PathBuf>,
     /// When the device recorded it, in Unix seconds.
     pub at: u64,
+    /// When it was answered or dropped, in Unix seconds, once it was.
+    pub ended: Option<u64>,
 }
 
 /// A Codex session a hook registered ([`crate::codex`]).
@@ -2984,8 +2988,9 @@ impl State {
 
     /// Records `prompt`, which a hook of its session told in `turn`, unless it is told again: by a
     /// `Notification`, not `by_request`, while a prompt of the session and turn is open. A
-    /// `PermissionRequest` always tells a new one. Each other open prompt of the session ends, and
-    /// each prompt recorded before `kept_since` goes. Gives whether it recorded `prompt`.
+    /// `PermissionRequest` always tells a new one. Each other open prompt of the session ends at
+    /// `prompt.at`, and each prompt recorded before `kept_since` goes. Gives whether it recorded
+    /// `prompt`.
     pub fn prompt_told(
         &self,
         prompt: &PermissionPrompt,
@@ -3009,33 +3014,34 @@ impl State {
             tx.commit()?;
             return Ok(false);
         }
+        end_prompts(&tx, &prompt.session, prompt.at)?;
+        let folder = prompt.folder.as_deref().map(path_text).transpose()?;
         tx.execute(
-            "UPDATE permission_prompt SET open = 0 WHERE session = ?1",
-            params![prompt.session],
-        )?;
-        tx.execute(
-            "INSERT INTO permission_prompt (space, agent, session, turn, at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO permission_prompt (space, agent, session, turn, at, folder)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 prompt.space.to_string(),
                 prompt.agent,
                 prompt.session,
                 turn,
                 sql_seq(prompt.at)?,
+                folder,
             ],
         )?;
         tx.commit()?;
         Ok(true)
     }
 
-    /// Records that a hook of the Claude Code session `session` told that its open permission
-    /// prompt, if any, ended.
-    pub fn prompts_ended(&self, session: &str) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE permission_prompt SET open = 0 WHERE session = ?1 AND open = 1",
-            params![session],
-        )?;
-        Ok(())
+    /// Records that the open permission prompt of the session `session`, if any, ended at `at`, in
+    /// Unix seconds.
+    pub fn prompts_ended(&self, session: &str, at: u64) -> Result<(), Error> {
+        end_prompts(&self.db, session, at)
+    }
+
+    /// The position of the last recorded permission prompt the person's run has yet to show, 0 with
+    /// none.
+    pub fn last_prompt(&self) -> Result<u64, Error> {
+        last_prompt_in(&self.db)
     }
 
     /// Registers the Codex session `session`, or updates its registration, as the one whose hook
@@ -3074,22 +3080,28 @@ impl State {
     /// The recorded permission prompts the person's run has yet to show, in order.
     pub fn prompts_for_person(&self) -> Result<Vec<PermissionPrompt>, Error> {
         let mut query = self.db.prepare(
-            "SELECT position, space, agent, session, at FROM permission_prompt
+            "SELECT position, space, agent, session, at, folder, ended FROM permission_prompt
              WHERE shown = 0 ORDER BY position",
         )?;
         let rows = query.query_map([], |row| {
             let (int, text) = (|at| row.get::<_, i64>(at), |at| row.get::<_, String>(at));
-            Ok(([int(0)?, int(4)?], [text(1)?, text(2)?, text(3)?]))
+            let ends = (
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<i64>>(6)?,
+            );
+            Ok(([int(0)?, int(4)?], [text(1)?, text(2)?, text(3)?], ends))
         })?;
         rows.map(|row| {
-            let ([position, at], [space, agent, session]) = row?;
+            let ([position, at], [space, agent, session], (folder, ended)) = row?;
             let malformed = || Error::Malformed(format!("the permission prompt {position}"));
             Ok(PermissionPrompt {
                 position: u64::try_from(position).map_err(|_| malformed())?,
                 space: space.parse().map_err(|_| malformed())?,
                 agent,
                 session,
+                folder: folder.map(PathBuf::from),
                 at: u64::try_from(at).map_err(|_| malformed())?,
+                ended: (ended.map(u64::try_from).transpose()).map_err(|_| malformed())?,
             })
         })
         .collect()
@@ -3155,6 +3167,7 @@ impl State {
             "UPDATE handover SET thread = NULL WHERE thread = ?1",
             params![thread],
         )?;
+        end_prompts(&tx, thread, unix_now())?;
         tx.execute(
             "DELETE FROM codex_session WHERE thread = ?1",
             params![thread],
@@ -4743,6 +4756,35 @@ fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<
         params![revocation, pending],
     )?;
     Ok(())
+}
+
+/// Records in `db` that the open permission prompt of the session `session`, if any, ended at
+/// `at`, in Unix seconds.
+fn end_prompts(db: &Connection, session: &str, at: u64) -> Result<(), Error> {
+    db.execute(
+        "UPDATE permission_prompt SET open = 0, ended = ?2 WHERE session = ?1 AND open = 1",
+        params![session, sql_seq(at)?],
+    )?;
+    Ok(())
+}
+
+/// The position of the last permission prompt recorded in the state in `dir` that the person's
+/// run has yet to show, read without migrating it; `None` if it cannot be read.
+pub fn last_prompt(dir: &Path) -> Option<u64> {
+    let db = Connection::open(dir.join(FILE)).ok()?;
+    db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
+    last_prompt_in(&db).ok()
+}
+
+/// The position of the last permission prompt `db` holds that the person's run has yet to show, 0
+/// with none.
+fn last_prompt_in(db: &Connection) -> Result<u64, Error> {
+    let last: i64 = db.query_row(
+        "SELECT COALESCE(MAX(position), 0) FROM permission_prompt WHERE shown = 0",
+        [],
+        |row| row.get(0),
+    )?;
+    u64::try_from(last).map_err(|_| Error::Malformed("the last permission prompt".to_owned()))
 }
 
 /// Whether the state in `dir` has the schema of this client's last migration, read without

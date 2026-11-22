@@ -288,7 +288,7 @@ fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_
 const NOT_SET_UP: &str = "the account's personal space is not set up yet";
 
 /// The first machine's sign-in says it signed the account's personal space as its admin, with the
-/// space's name and ID and the machine's handle.
+/// space's name and ID.
 #[test]
 fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let world = World::start();
@@ -301,8 +301,7 @@ fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str(), false);
 
     let said = format!(
-        "Signed the personal space {} ({space}) as its admin {}.",
-        ada.handle.as_str(),
+        "Signed the personal space {} ({space}) as its admin.",
         ada.handle.as_str()
     );
     assert!(signed_in.stdout.contains(&said), "{signed_in:?}");
