@@ -52,6 +52,7 @@ fi
 case \${1:-} in
   --version) echo "$3" ;;
   exit-with) exit "\$2" ;;
+  launcher) echo "launcher: \$PPID \${SKALD_LAUNCHER:-}" ;;
   *)
     printf 'args:'
     for arg in "\$@"; do printf ' [%s]' "\$arg"; done

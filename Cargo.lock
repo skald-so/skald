@@ -3322,6 +3322,7 @@ dependencies = [
  "skald-server",
  "socket2",
  "sqlx",
+ "ssh-key",
  "tar",
  "tokio",
  "toml",
