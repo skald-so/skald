@@ -155,6 +155,14 @@ impl Held {
     }
 }
 
+/// The hash of the revision of `space` that the anchors object the server holds of `person`'s
+/// device names, if the server holds one that names `space`.
+pub fn anchored(cloud: &Cloud, person: &Person, space: SpaceId) -> Option<[u8; 32]> {
+    (held(cloud, &person.token).into_iter())
+        .find(|object| object.device == person.device)
+        .and_then(|object| object.anchors.get(&space).copied())
+}
+
 /// The anchors objects the server gives the session `token`, straight from the server, decoded.
 pub fn held(cloud: &Cloud, token: &str) -> Vec<Held> {
     let (status, body) = cloud.get_as(ANCHORS, token);

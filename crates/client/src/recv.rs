@@ -2,9 +2,10 @@
 //! sends what is left in the outbox and the history entries of the messages the server stored
 //! ([`crate::history`]), then states its cursor, writes each entry it gets after the cursor to the
 //! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. As
-//! the person, it then follows the spaces other devices of the account joined ([`crate::joined`]).
-//! It then accepts the revisions of each space it follows, and those of the space of each
-//! `space-notice` that came meanwhile ("Frames"), following first a noticed space it does not. It
+//! the person, it then follows the spaces other devices of the account joined ([`crate::joined`])
+//! and settles the invites it accepted ([`crate::acceptances`]). It then accepts the revisions of
+//! each space it follows, and those of the space of each `space-notice` that came meanwhile
+//! ("Frames"), following first a noticed space it does not. It
 //! then goes through the Welcomes, Commits and `mls` application messages it wrote, decrypting
 //! each message in its channel's group, and brings the group of each channel of those spaces in
 //! line ([`crate::groups`]), uploading the links of their key chains the server lacks
@@ -68,6 +69,7 @@ use skald_proto::{
     ServerStatus, ServiceAgent, SpaceId, TaskId, TaskResult, TrustLevel, VersionRange,
 };
 
+use crate::acceptances;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
@@ -487,6 +489,7 @@ fn receive(
     let keys = follower.keys()?;
     if scope == Scope::All {
         joined::follow(follower);
+        acceptances::settle(follower);
     }
     // By the end of catch-up the server sends the connection its notices: a revision stored before
     // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a

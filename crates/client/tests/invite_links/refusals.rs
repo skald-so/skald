@@ -7,8 +7,8 @@ use skald_proto::Role;
 use crate::machine::Machine;
 use crate::terminal::Terminal;
 use crate::world::{
-    ACME, ADD_RULE, ADMIN, AGENT, GLOBEX, MEMBER, World, assert_role, create, dir_of, members,
-    next_by, path, run, set_role, store,
+    ACME, ADD_RULE, ADMIN, AGENT, GLOBEX, MEMBER, World, assert_nothing_sent, assert_role, create,
+    dir_of, members, next_by, path, run, set_role, store,
 };
 use crate::{
     Admin, CHANNEL, DAYS, invite_args, invite_at_terminal, invite_requests, issued_since,
@@ -25,15 +25,6 @@ fn assert_nothing_stored(admin: &Admin, since: std::time::Instant) {
     let cloud = admin.cloud();
     assert_eq!(invite_requests(cloud, since), Vec::<String>::new());
     assert_eq!(issued_since(cloud, since), Vec::new(), "invite IDs issued");
-}
-
-/// Fails unless `admin`'s machine sent no request at all from `since` on.
-#[track_caller]
-fn assert_nothing_sent(admin: &Admin, since: std::time::Instant) {
-    let heads: Vec<String> = (admin.cloud().relay.sent_since(since).into_iter())
-        .map(|sent| sent.head)
-        .collect();
-    assert_eq!(heads, Vec::<String>::new(), "requests sent");
 }
 
 /// `skald invite acme --days 31` at a terminal fails, saying `30`, shows no link and sends no
@@ -91,7 +82,7 @@ fn output_to_a_pipe_is_refused_and_nothing_is_sent() {
         "it does not say why: {refused:?}"
     );
     assert!(!shows_a_link(&refused.shown()), "{refused:?}");
-    assert_nothing_sent(&admin, since);
+    assert_nothing_sent(admin.cloud(), since);
 }
 
 /// Ada's machine binds `~/work/acme` to `acme`. There, at a terminal, `skald --agent builder invite
@@ -119,7 +110,7 @@ fn as_an_agent_at_a_terminal_it_refuses_and_sends_nothing() {
         );
     }
     assert!(!shows_a_link(&refused.text), "{}", refused.text);
-    assert_nothing_sent(&admin, since);
+    assert_nothing_sent(admin.cloud(), since);
 }
 
 /// Ada's machine created `acme`; its revision 3, signed by her device, makes Bob an admin, and

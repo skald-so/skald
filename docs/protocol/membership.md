@@ -498,14 +498,16 @@ acceptance-body = {
 ```
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
-- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
+- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`, which the server names in its answers to `GET /session` and `GET /devices`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
 - The server stores the invite and the acceptance. An invite admits one account: the server keeps its first acceptance and refuses others. `expires` is at most 30 days after the server stores the invite.
 - An invite ends when it expires, is revoked or a stored revision lists a member with it; the server then deletes it with its acceptance.
 
-The newcomer's device MUST, from the link:
+The newcomer's device takes a link only from its person. It MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
 2. check the invite's signature with `signer`, an [admin's device](#roster) per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
+
+It then follows the space from the anchor. When the invite ends before a revision lists its account, it stops following the space.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
 1. checks the invite: its signature with the certificate of `signer`, an [admin's device](#roster) in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;

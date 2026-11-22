@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
 use skald_proto::{
-    AccountId, ChannelId, DeviceId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId, TaskId,
-    WrapRecipient,
+    AccountId, ChannelId, DeviceId, InviteId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId,
+    TaskId, WrapRecipient,
 };
 
 use crate::gaps::{Counters, Source};
@@ -74,6 +74,19 @@ pub struct Session {
     pub account: Option<String>,
     /// The account's username, as the latest sign-in or `skald set-username` recorded it.
     pub username: Option<String>,
+}
+
+/// The acceptance of an invite the device accepted that no revision has admitted its account by
+/// yet ([`crate::acceptances`]).
+#[derive(Debug, PartialEq)]
+pub struct Acceptance {
+    pub invite: InviteId,
+    /// The space the device follows meanwhile.
+    pub space: SpaceId,
+    /// In CBOR.
+    pub acceptance: Vec<u8>,
+    /// Whether the server took it.
+    pub taken: bool,
 }
 
 /// The machine's own device, as the state holds it.
@@ -1594,14 +1607,118 @@ impl State {
     /// Forgets the space `id`.
     pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
         let tx = self.write()?;
-        let id = id.to_string();
-        tx.execute(
-            "DELETE FROM accepted_revision WHERE space = ?1",
-            params![id],
-        )?;
-        tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+        delete_space(&tx, id)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Follows the space `id` named `name` from `anchor`, in CBOR, unless it follows it already, and
+    /// records `acceptance`, in CBOR, of the invite `invite` to it, unless it holds one of the
+    /// invite: gives the acceptance it then holds of the invite.
+    pub fn add_acceptance(
+        &self,
+        (id, name, anchor): (SpaceId, &str, &[u8]),
+        invite: InviteId,
+        acceptance: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let tx = self.write()?;
+        tx.execute(
+            "INSERT INTO space (space, name, anchor, accepted, personal) VALUES (?1, ?2, ?3, ?3, 0)
+             ON CONFLICT (space) DO NOTHING",
+            params![id.to_string(), name, anchor],
+        )?;
+        tx.execute(
+            "INSERT INTO invite_acceptance (invite, space, acceptance) VALUES (?1, ?2, ?3)
+             ON CONFLICT (invite) DO NOTHING",
+            params![invite.to_string(), id.to_string(), acceptance],
+        )?;
+        let held = tx.query_row(
+            "SELECT acceptance FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(held)
+    }
+
+    /// The acceptances of the invites the device accepted that no revision has admitted its
+    /// account by yet.
+    pub fn acceptances(&self) -> Result<Vec<Acceptance>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT invite, space, acceptance, taken FROM invite_acceptance")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (invite, space, acceptance, taken) = row?;
+            let malformed = |what: &str| Error::Malformed(format!("the {what} of an acceptance"));
+            Ok(Acceptance {
+                invite: invite.parse().map_err(|_| malformed("invite"))?,
+                space: space.parse().map_err(|_| malformed("space"))?,
+                acceptance,
+                taken,
+            })
+        })
+        .collect()
+    }
+
+    /// Records that the server took the acceptance of the invite `invite`.
+    pub fn acceptance_taken(&self, invite: InviteId) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE invite_acceptance SET taken = 1 WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the acceptance of the invite `invite`: a revision admitted the device's account.
+    pub fn drop_acceptance(&self, invite: InviteId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the acceptance of the invite `invite` and the space `id` it followed meanwhile: the
+    /// invite ended before a revision admitted the device's account.
+    pub fn end_acceptance(&self, invite: InviteId, id: SpaceId) -> Result<(), Error> {
+        let tx = self.write()?;
+        tx.execute(
+            "DELETE FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        delete_space(&tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records `web`, an origin, as the web address of the server at `server`.
+    pub fn set_web(&self, server: &str, web: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO server_web (server, web) VALUES (?1, ?2)",
+            params![server, web],
+        )?;
+        Ok(())
+    }
+
+    /// The web address of the server at `server`, if the state recorded it.
+    pub fn web(&self, server: &str) -> Result<Option<String>, Error> {
+        let web = self
+            .db
+            .query_row(
+                "SELECT web FROM server_web WHERE server = ?1",
+                params![server],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(web)
     }
 
     /// What the state holds of the space `id`, if it holds it: its last accepted revision and the
@@ -4812,6 +4929,17 @@ pub fn current(dir: &Path) -> bool {
     version.is_ok_and(|version| usize::try_from(version) == Ok(latest))
 }
 
+/// Forgets the space `id` in `tx`: its last accepted revision and the hashes of the earlier ones.
+fn delete_space(tx: &Transaction<'_>, id: SpaceId) -> Result<(), rusqlite::Error> {
+    let id = id.to_string();
+    tx.execute(
+        "DELETE FROM accepted_revision WHERE space = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+    Ok(())
+}
+
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
 fn migrate(db: &mut Connection) -> Result<(), Error> {
     let latest = u32::try_from(MIGRATIONS.len()).expect("migrations fit in u32");
@@ -5068,6 +5196,86 @@ pub(crate) mod tests {
         assert_eq!(
             state.device().unwrap().unwrap().account.as_deref(),
             Some("0190")
+        );
+    }
+
+    #[test]
+    fn an_acceptance_is_kept_with_its_space_until_admitted_or_ended() {
+        let dir = TestDir::new("state-acceptances");
+        let state = State::open(&dir).unwrap();
+        let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        let (first, second) = (InviteId::generate(), InviteId::generate());
+        let held = state
+            .add_acceptance((acme, "acme", &[1]), first, &[7])
+            .unwrap();
+        assert_eq!(held, vec![7]);
+        // A second acceptance of the invite keeps the first.
+        let held = state
+            .add_acceptance((acme, "other", &[2]), first, &[8])
+            .unwrap();
+        assert_eq!(held, vec![7]);
+        state
+            .add_acceptance((globex, "globex", &[3]), second, &[9])
+            .unwrap();
+        let spaces = State::open(&dir).unwrap().spaces().unwrap();
+        let names: Vec<_> = spaces
+            .iter()
+            .map(|space| (space.name.as_str(), &space.anchor[..]))
+            .collect();
+        assert_eq!(names, vec![("acme", &[1][..]), ("globex", &[3][..])]);
+        state.acceptance_taken(first).unwrap();
+        let mut held = state.acceptances().unwrap();
+        held.sort_by_key(|acceptance| acceptance.acceptance.clone());
+        assert_eq!(
+            held,
+            vec![
+                Acceptance {
+                    invite: first,
+                    space: acme,
+                    acceptance: vec![7],
+                    taken: true
+                },
+                Acceptance {
+                    invite: second,
+                    space: globex,
+                    acceptance: vec![9],
+                    taken: false
+                },
+            ]
+        );
+        // Admitted: the space stays; ended: it goes.
+        state.drop_acceptance(first).unwrap();
+        state.end_acceptance(second, globex).unwrap();
+        assert_eq!(state.acceptances().unwrap(), vec![]);
+        let spaces = state.spaces().unwrap();
+        assert_eq!(
+            spaces.iter().map(|space| space.id).collect::<Vec<_>>(),
+            vec![acme]
+        );
+    }
+
+    #[test]
+    fn the_web_address_is_kept_per_server() {
+        let dir = TestDir::new("state-web");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.web("https://api.one.test").unwrap(), None);
+        state
+            .set_web("https://api.one.test", "https://app.one.test")
+            .unwrap();
+        state
+            .set_web("https://api.one.test", "https://web.one.test")
+            .unwrap();
+        state
+            .set_web("https://two.test", "https://two.test")
+            .unwrap();
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.web("https://api.one.test").unwrap().as_deref(),
+            Some("https://web.one.test")
+        );
+        assert_eq!(
+            state.web("https://two.test").unwrap().as_deref(),
+            Some("https://two.test")
         );
     }
 

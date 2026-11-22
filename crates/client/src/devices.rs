@@ -36,6 +36,9 @@ struct Devices {
     revocations: Vec<String>,
     #[serde(default)]
     records: Vec<String>,
+    /// The server's web address, in `Devices` alone.
+    #[serde(default)]
+    web: Option<String>,
 }
 
 /// `Device` in the API spec: anything else the server gives with it, such as a name, is ignored.
@@ -187,7 +190,8 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
 /// it gives with those `state` holds; a certificate or revocation that does not decode counts as
 /// none. Prints the warning of each device given with a certificate other than the one `state`
-/// keeps ([`kept_certs`]).
+/// keeps ([`kept_certs`]). Records the server's web address the list names
+/// ([`crate::acceptances::record_web`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
@@ -195,14 +199,36 @@ pub fn fetch(
     state: &State,
 ) -> Result<SpaceDevices, String> {
     let body = connection.get_as(path, token).map_err(text)?;
-    let devices: Devices = serde_json::from_slice(&body)
+    let (given, web) = decoded(&body)?;
+    crate::acceptances::record_web(state, connection.server(), web.as_deref());
+    let (certs, swapped) = kept_certs::settle(state, given.certs)?;
+    for warning in swapped {
+        eprintln!("skald: warning: {warning}");
+    }
+    let revocations = revocations::with_held(state, given.revocations)?;
+    Ok(SpaceDevices {
+        certs,
+        revocations,
+        ..given
+    })
+}
+
+/// The device list `body`, a `Devices` answer or one with its fields, as it gives it: the IDs of
+/// its devices, the certificates, revocations and account records that decode.
+pub fn decode(body: &[u8]) -> Result<SpaceDevices, String> {
+    decoded(body).map(|(devices, _)| devices)
+}
+
+/// As [`decode`], with the server's web address `body` names, if any.
+fn decoded(body: &[u8]) -> Result<(SpaceDevices, Option<String>), String> {
+    let devices: Devices = serde_json::from_slice(body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
     let ids = devices
         .devices
         .iter()
         .filter_map(|entry| entry.device.parse().ok())
         .collect();
-    let given = devices
+    let certs = devices
         .devices
         .iter()
         .filter_map(|entry| {
@@ -210,27 +236,24 @@ pub fn fetch(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
-    let (certs, swapped) = kept_certs::settle(state, given)?;
-    for warning in swapped {
-        eprintln!("skald: warning: {warning}");
-    }
-    let given = devices.revocations.iter().filter_map(|text| {
-        let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-        Revocation::from_cbor(&bytes).ok()
-    });
-    let revocations = revocations::with_held(state, given)?;
-    let records = (devices.records.iter())
-        .filter_map(|text| {
-            let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-            AccountRecord::from_cbor(&bytes).ok()
-        })
+    let decoded = |list: &[String]| -> Vec<Vec<u8>> {
+        (list.iter())
+            .filter_map(|text| URL_SAFE_NO_PAD.decode(text).ok())
+            .collect()
+    };
+    let revocations = (decoded(&devices.revocations).iter())
+        .filter_map(|bytes| Revocation::from_cbor(bytes).ok())
         .collect();
-    Ok(SpaceDevices {
+    let records = (decoded(&devices.records).iter())
+        .filter_map(|bytes| AccountRecord::from_cbor(bytes).ok())
+        .collect();
+    let given = SpaceDevices {
         ids,
         certs,
         revocations,
         records,
-    })
+    };
+    Ok((given, devices.web))
 }
 
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the

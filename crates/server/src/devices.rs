@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use skald_proto::{AccountRecord, CERT_NAME_MAX, Cbor as _, Cert, DeviceId, MasterBackup};
 
 use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
-use crate::sign_in::{bearer, digest};
+use crate::sign_in::{self, bearer, digest};
 use crate::{AppState, link_runs, revocations};
 
 /// The kinds of device that register here: a person's `client` device, and a `service` device a
@@ -259,9 +259,22 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         .await
         .map_err(|err| Refusal::Database("read the devices", err))?;
         let revocations = revocations::of_account(&state.db, &account).await?;
-        Ok(Json(Devices::of(found, &revocations)).into_response())
+        let own = Own {
+            devices: Devices::of(found, &revocations),
+            web: sign_in::web_origin(state.sign_in.as_deref()),
+        };
+        Ok(Json(own).into_response())
     })
     .await
+}
+
+/// `Devices` in the spec: the account's devices with the server's web address.
+#[derive(Serialize)]
+struct Own {
+    #[serde(flatten)]
+    devices: Devices,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
 }
 
 /// `ListedDevice` in the spec.
