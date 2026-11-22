@@ -20,6 +20,12 @@ name = "codex_wakes"
 path = "tests/codex_wakes/main.rs"
 harness = false
 
+# As codex_wakes, its binary stands in for the `codex` command (tests/codex_confirmations/main.rs).
+[[test]]
+name = "codex_confirmations"
+path = "tests/codex_confirmations/main.rs"
+harness = false
+
 [dependencies]
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
