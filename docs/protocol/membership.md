@@ -113,6 +113,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - `github`: GitHub's user ID of that user.
   - A certificate carries both or neither; one with only one of them is malformed.
   - Only a `client` device's certificate carries them; a client ignores them on other kinds.
+  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither.
   - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
     - it passes when its key is on the list and it verifies with that key;
     - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;

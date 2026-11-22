@@ -31,6 +31,7 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
 - Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
 - Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
+- A task the session claims with `skald --agent <the session's agent> claim` stays claimed while the session runs: the device extends the claim. Once the session stops, the lease ends; a claim found lost is said in the next tool result.
 - Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 
@@ -39,7 +40,12 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 - `SessionStart` registers the session's cross-session socket with Skald, and `SessionEnd` ends it; both print nothing.
 - While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
 - They print nothing while nothing waits.
-- `PermissionRequest` and `Notification` tell your `skald recv` that the session waits on its permission prompt: one line per prompt, without its content. They print nothing.
+- `PermissionRequest` and `Notification` tell Skald that the session waits on its [permission prompt](#permission-prompts). They print nothing.
+
+## Permission prompts
+- When a Claude Code or Codex session waits on its own permission prompt, your `skald recv` and `skald recv --wait` show one line: the agent, its space and folder, without the prompt's content. With `--json`: its session, when it began to wait and, once the prompt is answered or dropped, `ended`.
+- Agents never see it, and it does not leave the device.
+- Codex tells it by its `PermissionRequest` hook and by its background app-server, which a terminal session joins unless started with `--no-daemon`. Skald never answers the prompt.
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.

@@ -63,13 +63,20 @@ pub fn run_in(
     command: &str,
     args: &[&str],
 ) -> Finished {
+    machine
+        .start_in(dir, &as_agent(agent, command, args))
+        .finish()
+}
+
+/// The arguments `[--agent <agent>] <command> <args>`.
+pub fn as_agent<'a>(agent: Option<&'a str>, command: &'a str, args: &[&'a str]) -> Vec<&'a str> {
     let mut all = Vec::new();
     if let Some(agent) = agent {
         all.extend([AGENT, agent]);
     }
     all.push(command);
     all.extend_from_slice(args);
-    machine.start_in(dir, &all).finish()
+    all
 }
 
 /// Runs `[--agent <agent>] enqueue <args>` on `machine` in `dir`.

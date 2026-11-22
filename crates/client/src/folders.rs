@@ -399,7 +399,7 @@ fn key(folder: &Path) -> Result<&str, String> {
 }
 
 /// `path` as the CLI shows it.
-fn shown(path: &Path) -> String {
+pub fn shown(path: &Path) -> String {
     printable(&plain(path).display().to_string())
 }
 

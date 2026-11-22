@@ -79,6 +79,8 @@ struct Hold {
     request: String,
     count: usize,
     held: usize,
+    /// Whether it holds only the first such request, and lets the later ones go on.
+    one: bool,
 }
 
 /// The rules, and the signal of a request that came to a hold.
@@ -144,7 +146,7 @@ impl Shared {
             rules.rewriting.insert(connection, (rewrite, Vec::new()));
         }
         let held = match &mut rules.hold {
-            Some(hold) if starts(&hold.request) => {
+            Some(hold) if starts(&hold.request) && !(hold.one && hold.held > 0) => {
                 hold.held += 1;
                 true
             }
@@ -281,7 +283,29 @@ impl Relay {
             request: request.to_owned(),
             count,
             held: 0,
+            one: false,
         });
+    }
+
+    /// Holds the next request whose line starts with `request` until [`Relay::let_go`], however
+    /// long that takes; later ones go on.
+    pub fn hold_next(&self, request: &str) {
+        let mut rules = self.shared.rules.lock().expect("the relay's rules");
+        rules.hold = Some(Hold {
+            request: request.to_owned(),
+            count: usize::MAX,
+            held: 0,
+            one: true,
+        });
+    }
+
+    /// Lets the requests the hold holds go on, and every later one.
+    pub fn let_go(&self) {
+        let mut rules = self.shared.rules.lock().expect("the relay's rules");
+        if let Some(hold) = rules.hold.as_mut() {
+            hold.count = 0;
+        }
+        self.shared.came.notify_all();
     }
 
     /// From now on, gives the machine the body `rewrite` makes of the body of each answer with
