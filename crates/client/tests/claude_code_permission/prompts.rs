@@ -7,10 +7,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::{Value, json};
 
 use crate::hooks::Event;
-use crate::kit::{RECV, received_as_agent};
+use crate::kit::RECV;
 use crate::lines::JSON_FLAG;
 use crate::machine::Machine;
-use crate::prompt_lines::{PERMISSION_WORD, permission_lines};
+use crate::prompt_lines::{PERMISSION_WORD, agent_recv_shown, permission_lines};
 use crate::registered::Ada;
 use crate::senders::holds_word;
 use crate::standin::Standin;
@@ -219,13 +219,7 @@ pub fn assert_line_of(line: &str, agent: &str, call: &Call) {
 #[track_caller]
 pub fn agent_sees_nothing(ada: &mut Ada, agent: &str, session: &Standin, call: &Call) {
     let dir = ada.web.solo.dir(agent);
-    let plain = received_as_agent(ada.machine(), &dir, agent).shown();
-    let json = (ada
-        .machine()
-        .start_in(&dir, &[crate::world::AGENT, agent, RECV, JSON_FLAG]))
-    .finish();
-    assert!(json.success, "{json:?}");
-    let mut shown = vec![("skald recv", plain), ("skald recv --json", json.shown())];
+    let mut shown = agent_recv_shown(ada.machine(), &dir, agent);
     if agent == crate::solo::WEB {
         shown.push(("inbox", ada.web.session.inbox()));
     }

@@ -23,7 +23,8 @@ use crate::https::{CBOR, Https, PROOF};
 use crate::presence::{assert_refused_with, held, random_bytes};
 use crate::rosters::service_agent;
 use crate::scene::{Peer, empty};
-use crate::tokens::Stage;
+use crate::tokens::{DAY, Stage, grant};
+use crate::wire::now;
 
 /// The queue every channel has.
 pub const DEFAULT: &str = "default";
@@ -154,6 +155,15 @@ impl World {
     pub fn bot(&self, permissions: &[&str]) -> Client {
         let created = token(&self.stage, permissions);
         self.bot_on(&created.token, &format!("the bot with {permissions:?}"))
+    }
+
+    /// The bot's requests, named `who`, with a new token of `permissions` for `channel` alone, which
+    /// alice's laptop grants.
+    pub fn bot_in(&self, channel: ChannelId, permissions: &[&str], who: &str) -> Client {
+        let (owner, bot) = (&self.stage.f.team.alice, self.stage.bot.id);
+        let granted = grant(bot, &[channel], &owner.laptop, now() + DAY);
+        let created = self.stage.create_as(owner, bot, &granted, permissions);
+        self.bot_on(&created.token, who)
     }
 
     /// The bot's requests with the token `token`.
