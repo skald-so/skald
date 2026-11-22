@@ -53,6 +53,7 @@ mod follow;
 mod forms;
 mod gaps;
 mod groups;
+mod heartbeat;
 mod held;
 mod helper;
 mod history;
@@ -98,6 +99,7 @@ mod sign_in;
 mod sign_out;
 mod spaces;
 mod ssh_checks;
+mod ssh_signing;
 mod state;
 mod stateless;
 mod tasks;
@@ -263,6 +265,12 @@ enum Command {
     /// A device that holds its certificate keeps its KeyPackages, with which others add it to
     /// channels, on the server, here and on each skald send and skald recv.
     ///
+    /// A device that issues its own certificate, as the account's first or with the recovery key,
+    /// first signs its key with an SSH key GitHub lists for the GitHub user, through OpenSSH's
+    /// ssh-keygen 8.1 or later, so that other devices check it there and show the GitHub login.
+    /// Unless run by its person at a terminal, only a key ssh-agent holds signs, so nothing asks for
+    /// a passphrase. Without a key, ssh-keygen or GitHub, it says why and goes on without one.
+    ///
     /// With --browser, as its person or as an agent, it shows its person a local page it opens in
     /// the browser instead: the sign-in link, the link codes or the recovery key. Its output holds
     /// neither code nor key.
@@ -311,6 +319,17 @@ enum Command {
             requires = "with_recovery_key"
         )]
         keep_revoked: Vec<String>,
+        /// The private key file of the SSH key that signs the device's key, one GitHub lists for
+        /// the GitHub user [default: a listed key ssh-agent holds or that is in ~/.ssh].
+        #[arg(long, value_name = "FILE", conflicts_with = "no_ssh")]
+        ssh_key: Option<PathBuf>,
+        /// Signs the device's key with no SSH key.
+        #[arg(long)]
+        no_ssh: bool,
+        /// The GitHub user whose SSH keys may sign the device's key [default: the login of the
+        /// account's GitHub sign-in method].
+        #[arg(long, value_name = "LOGIN", conflicts_with = "no_ssh")]
+        github: Option<String>,
     },
     /// Lists the devices of the account this machine signed in to, from the server of its session.
     ///
@@ -1316,7 +1335,11 @@ impl Command {
                     | Command::RevokeServiceToken { .. }
                     | Command::SignOut
             )
-            || matches!(self, Command::Mcp { call: Some(call), .. } if *call != mcp::Call::Register)
+            || matches!(
+                self,
+                Command::Mcp { call: Some(call), .. }
+                    if !matches!(call, mcp::Call::Register | mcp::Call::Beat)
+            )
     }
 
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
@@ -1900,18 +1923,20 @@ impl Operation {
 
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
 /// helper does. Out of the helper, a run as an agent then checks the device's presence
-/// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
+/// ([`uploads::keep`]), but an MCP server's own and its heartbeat: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
     // A Codex hook never waits on the network.
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
         && !matches!(
             operation.command,
-            Command::Mcp { call: None, .. }
-                | Command::Hook {
-                    cli: hook::Cli::Codex,
-                    ..
-                }
+            Command::Mcp {
+                call: None | Some(mcp::Call::Beat),
+                ..
+            } | Command::Hook {
+                cli: hook::Cli::Codex,
+                ..
+            }
         );
     let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
@@ -1987,6 +2012,9 @@ fn performed(operation: Operation) -> Result<(), String> {
             keep,
             keep_revoked,
             browser,
+            ssh_key,
+            no_ssh,
+            github,
         } => {
             // Without a browser, nothing is sent and nothing listens.
             let opener = browser.then(page::Opener::find).transpose()?;
@@ -2017,6 +2045,12 @@ fn performed(operation: Operation) -> Result<(), String> {
                     host_name,
                     person,
                     recovery,
+                    ssh: ssh_signing::Options {
+                        key: ssh_key,
+                        off: no_ssh,
+                        github,
+                        may_ask: agent.is_none() && link_code::at_terminal(),
+                    },
                 };
                 let signed_in = || {
                     let mut connection =

@@ -3,9 +3,11 @@
 //! opens ([`crate::page`]), never in the command's output.
 
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::thread;
+use std::time::Duration;
 
 use crate::page::{Answer, Page};
 
@@ -142,20 +144,110 @@ impl Presses {
 /// while it goes on, so that each later read takes its line from there.
 static LINES: OnceLock<Mutex<Receiver<String>>> = OnceLock::new();
 
-/// The lines its person enters from now on, until its input ends.
+/// Whether the thread that reads its person's lines holds off: then another program, such as
+/// `ssh-keygen` asking for a passphrase, reads the terminal.
+static HELD_OFF: AtomicBool = AtomicBool::new(false);
+
+/// How long the thread waits for input before it looks whether it holds off.
+const LOOK: Duration = Duration::from_millis(50);
+
+/// Holds off the thread that reads its person's lines until it is dropped; a line it read before
+/// stays its own.
+pub struct HoldOff(());
+
+/// [`HoldOff`].
+pub fn hold_off() -> HoldOff {
+    HELD_OFF.store(true, Ordering::SeqCst);
+    HoldOff(())
+}
+
+impl Drop for HoldOff {
+    fn drop(&mut self) {
+        HELD_OFF.store(false, Ordering::SeqCst);
+    }
+}
+
+/// The lines its person enters from now on, until its input ends. The thread reads only input
+/// that waits, and none while it holds off ([`hold_off`]).
 fn lines() -> &'static Mutex<Receiver<String>> {
     LINES.get_or_init(|| {
         let (entered, lines) = mpsc::channel();
         thread::spawn(move || {
-            for line in io::stdin().lock().lines() {
-                let Ok(line) = line else { return };
-                if entered.send(line).is_err() {
+            let mut stdin = io::stdin().lock();
+            loop {
+                if HELD_OFF.load(Ordering::SeqCst) || !input_waits(LOOK) {
+                    thread::sleep(LOOK);
+                    continue;
+                }
+                let mut line = String::new();
+                match stdin.read_line(&mut line) {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
+                let line = line.strip_suffix('\n').unwrap_or(&line);
+                let line = line.strip_suffix('\r').unwrap_or(line);
+                if entered.send(line.to_owned()).is_err() {
                     return;
                 }
             }
         });
         Mutex::new(lines)
     })
+}
+
+/// Whether the standard input has input waiting, or its end or an error, within `timeout`.
+#[cfg(unix)]
+fn input_waits(timeout: Duration) -> bool {
+    let mut stdin = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let timeout = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: one valid pollfd, for the time of the call.
+    let polled = unsafe { libc::poll(&raw mut stdin, 1, timeout) };
+    polled != 0
+}
+
+/// Whether the standard input has a line waiting, or its end or an error, within `timeout`. On a
+/// console, a line waits once its input records hold a press of Enter: any record, such as a key's
+/// release or a change of focus, signals the console, and reading a line then would block and take
+/// the next line typed, even one another program asks for.
+#[cfg(windows)]
+fn input_waits(timeout: Duration) -> bool {
+    use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetNumberOfConsoleInputEvents, GetStdHandle, INPUT_RECORD, KEY_EVENT,
+        PeekConsoleInputW, STD_INPUT_HANDLE,
+    };
+    use windows_sys::Win32::System::Threading::WaitForSingleObject;
+    let timeout = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
+    // SAFETY: the process's standard input handle, which it does not close; the records peeked
+    // fit the buffer, and a key event's record is read as one.
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        if WaitForSingleObject(input, timeout) == WAIT_TIMEOUT {
+            return false;
+        }
+        let mut mode = 0;
+        let mut count = 0;
+        if GetConsoleMode(input, &raw mut mode) == 0
+            || GetNumberOfConsoleInputEvents(input, &raw mut count) == 0
+        {
+            return true;
+        }
+        let mut records = vec![INPUT_RECORD::default(); count as usize];
+        let mut peeked = 0;
+        if PeekConsoleInputW(input, records.as_mut_ptr(), count, &raw mut peeked) == 0 {
+            return true;
+        }
+        records.iter().take(peeked as usize).any(|record| {
+            u32::from(record.EventType) == KEY_EVENT && {
+                let key = record.Event.KeyEvent;
+                key.bKeyDown != 0 && key.uChar.UnicodeChar == u16::from(b'\r')
+            }
+        })
+    }
 }
 
 /// Forgets the lines its person entered so far, if a thread reads them.

@@ -444,6 +444,16 @@ fn api_gives_a_user_by_id_and_the_user_s_ssh_keys_unauthenticated() {
         (json!(1001), json!("ada"))
     );
     assert_eq!(api(&github, "/user/1002").status, 404);
+    let by_login = api(&github, "/users/ADA");
+    assert_eq!(by_login.status, 200);
+    assert_eq!(
+        (
+            by_login.json()["id"].clone(),
+            by_login.json()["login"].clone()
+        ),
+        (json!(1001), json!("ada"))
+    );
+    assert_eq!(api(&github, "/users/eve").status, 404);
     let keys = |path: &str| -> Vec<Value> {
         let answer = api(&github, path);
         assert_eq!(answer.status, 200, "{path}");
@@ -477,6 +487,8 @@ fn api_gives_a_user_by_id_and_the_user_s_ssh_keys_unauthenticated() {
         [
             Endpoint::UserById,
             Endpoint::UserById,
+            Endpoint::UserByLogin,
+            Endpoint::UserByLogin,
             Endpoint::Keys,
             Endpoint::SigningKeys,
             Endpoint::Keys,
@@ -494,6 +506,7 @@ fn api_faults_answer_with_a_status_or_the_rate_limit() {
     let github = start();
     let paths = [
         "/user/1001",
+        "/users/ada",
         "/users/ada/keys",
         "/users/ada/ssh_signing_keys",
     ];

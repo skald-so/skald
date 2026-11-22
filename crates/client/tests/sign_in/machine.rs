@@ -54,13 +54,18 @@ pub const NO_BROWSER_PROGRAM: &str = "skald-test-no-browser";
 
 /// `skald` with an empty environment but for `BROWSER` naming no program, and what Windows needs
 /// to run any program with sockets: without `SystemRoot`, Winsock loads no provider, os error
-/// 10106.
+/// 10106. On Windows, `SSH_AUTH_SOCK` names a pipe nothing serves: without it, OpenSSH reaches the
+/// ssh-agent service of the person running the tests.
 pub fn bare_skald() -> Command {
     let mut command = Command::new(CLIENT);
     command.env_clear().env(BROWSER, NO_BROWSER_PROGRAM);
     #[cfg(windows)]
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        command.env("SystemRoot", root);
+    {
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            command.env("SystemRoot", root);
+        }
+        let pipe = format!(r"\\.\pipe\skald-test-no-ssh-agent-{}", std::process::id());
+        command.env("SSH_AUTH_SOCK", pipe);
     }
     command
 }
