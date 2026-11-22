@@ -5,8 +5,10 @@
 
 use skald_proto::{ChannelId, DeviceKind, InviteId, Role};
 
-use crate::api::{Person, assert_refused};
+use crate::api::{ACME, Person, assert_refused};
+use crate::common::device_flow::{DeviceFlow, json, text};
 use crate::common::devices::assert_taken;
+use crate::common::sign_in::{SignIn, WebAddress};
 use crate::rosters::first;
 use crate::scene::{
     DAY, MALFORMED, Scene, assert_stored, broken, gets_no_invite, made, signed_invite,
@@ -214,4 +216,41 @@ fn malformed_invites_and_other_bytes_under_a_stored_id_are_refused() {
     let response = alice.session.store_invite(scene.space(), invite.id, &other);
     assert_refused(&response, "other bytes under a stored ID");
     scene.gets_invite(&scene.f.eve, &invite);
+}
+
+/// The answer that issues an invite ID names the server's web address, which an invite link starts
+/// with: its public address by default, and the address `--web-url` sets.
+#[test]
+fn the_answer_that_issues_an_id_names_the_servers_web_address() {
+    let scene = Scene::new(3_817_100_701);
+    let response = scene.team().alice.session.issue_response(scene.space());
+    let public = &scene.team().flow.stand.public;
+    assert_eq!(
+        json(&response)["web"],
+        public.as_str(),
+        "{}",
+        text(&response)
+    );
+
+    let (stand, _) = SignIn::with_web_address(WebAddress::Argument, |port| {
+        (
+            format!("http://api.skald.test:{port}"),
+            format!("http://app.skald.test:{port}"),
+        )
+    });
+    let flow = DeviceFlow::of(stand);
+    let alice = Person::new(&flow, 3_817_100_801, "alice");
+    let space = alice.create_space(ACME);
+    assert_taken(
+        &alice
+            .session
+            .store(space, &alice.sign(&first(space, ACME, &alice))),
+    );
+    let response = alice.session.issue_response(space);
+    assert_eq!(
+        json(&response)["web"],
+        flow.stand.public.as_str(),
+        "{}",
+        text(&response)
+    );
 }
