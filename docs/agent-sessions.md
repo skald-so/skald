@@ -22,6 +22,17 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 - Gemini, Cursor, Copilot, OpenCode: hooks and plugins; the fallback is `inbox`.
 - Any agent with a shell: the `skald recv --wait` command.
 
+## Agent hosts
+Apps that run Claude Code or Codex sessions for you. Results of the [live checks](../crates/client/tests/codex_hosts/main.rs) on a model stub, the session set up by `skald setup codex` in a config home the host wrote its hooks into:
+
+| Host | Agent | MCP server, CLI, hooks | Idle session wakes | The host's hooks |
+|---|---|---|---|---|
+| Paseo 0.17.1, SDK host | Codex 0.162.1 | Work | Yes, by `codex queue`, in under 10 s | Work: a terminal's session shows in Paseo |
+| Herdr 0.9.5, PTY host | Codex 0.162.1 | Work | Yes, by `codex queue`, in under 10 s | Work: Herdr gets the session |
+
+- The wake carries no message text.
+- Codex runs the host's hooks from `hooks.json` and Skald's from `config.toml`, and warns that the config home holds hooks in both.
+
 ## The MCP server
 - An agent CLI starts `skald mcp` as an MCP server on stdio in the session's folder, such as with `claude mcp add skald -- skald mcp` for Claude Code.
 - The session is an agent of the folder's space, named after the agent CLI and the device.
