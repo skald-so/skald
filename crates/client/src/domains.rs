@@ -49,26 +49,23 @@ const IN: u16 = 1;
 const NO_TTL: u32 = 300;
 const MOST_TTL: u32 = 86_400;
 
-/// `given` as a domain name a policy names: ASCII letters, digits and `-` in two labels or more,
-/// each of 1 to 63 characters, none starting or ending with `-`, at most [`LONGEST`] characters;
-/// in lowercase, without a trailing dot.
+/// `given` if it is a domain name a policy names (`docs/protocol/membership.md`, "Domain"): two
+/// labels or more joined by `.`, each of 1 to 63 lowercase ASCII letters, digits and `-`, none
+/// starting or ending with `-`, at most [`LONGEST`] characters in all, without a trailing dot.
 pub fn name(given: &str) -> Result<String, String> {
-    let domain = given
-        .strip_suffix('.')
-        .unwrap_or(given)
-        .to_ascii_lowercase();
     let label = |label: &str| {
         (1..=63).contains(&label.len())
             && !label.starts_with('-')
             && !label.ends_with('-')
-            && (label.bytes()).all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            && (label.bytes())
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
     };
-    if domain.len() <= LONGEST && domain.contains('.') && domain.split('.').all(label) {
-        Ok(domain)
+    if given.len() <= LONGEST && given.contains('.') && given.split('.').all(label) {
+        Ok(given.to_owned())
     } else {
         Err(format!(
-            "\"{}\" is no domain name, such as example.com: ASCII letters, digits and '-' in two \
-             labels or more",
+            "\"{}\" is no domain name, such as example.com: two labels or more of lowercase \
+             ASCII letters, digits and '-', without a trailing dot",
             printable(given)
         ))
     }
@@ -177,7 +174,10 @@ fn records(
         Some((texts, expires)) if now < expires => texts,
         _ => match look_up(resolver, timeout, &format!("{LABEL}.{domain}")) {
             Ok((texts, ttl)) => {
-                let texts: Vec<String> = texts.iter().filter_map(|text| record(text)).collect();
+                let texts: Vec<String> = texts
+                    .into_iter()
+                    .filter(|text| record(text).is_some())
+                    .collect();
                 let expires = now.saturating_add(u64::from(ttl.min(MOST_TTL)));
                 (state.set_domain_records((resolver, domain), &texts, expires)).map_err(text)?;
                 texts
@@ -185,24 +185,20 @@ fn records(
             Err(why) => return Ok(Err(why)),
         },
     };
-    Ok(Ok((texts.iter())
-        .filter_map(|text| {
-            let (account, fingerprint) = text.split_once(' ')?;
-            Some((account.parse().ok()?, fingerprint.to_owned()))
-        })
-        .collect()))
+    Ok(Ok(texts.iter().filter_map(|text| record(text)).collect()))
 }
 
-/// The record `text` as it is kept: the account's ID and its fingerprint, eight groups of five
-/// digits, each after one space; `None` unless it is a record of that form, apart from its
-/// whitespace and the case of its ID.
-fn record(text: &str) -> Option<String> {
-    let mut words = text.split_ascii_whitespace();
-    let account: AccountId = words.next()?.to_ascii_lowercase().parse().ok()?;
-    let groups: Vec<&str> = words.collect();
+/// The account and fingerprint the record `text` lists: the account ID as text, one space and the
+/// fingerprint, eight groups of five digits joined by one space; `None` for a text of another
+/// form.
+fn record(text: &str) -> Option<(AccountId, String)> {
+    let (account, fingerprint) = text.split_once(' ')?;
+    let groups: Vec<&str> = fingerprint.split(' ').collect();
     let digits = |group: &&str| group.len() == 5 && group.bytes().all(|byte| byte.is_ascii_digit());
     (groups.len() == 8 && groups.iter().all(digits))
-        .then(|| format!("{account} {}", groups.join(" ")))
+        .then_some(())
+        .and(account.parse().ok())
+        .map(|account| (account, fingerprint.to_owned()))
 }
 
 /// The texts of the TXT records of `name` that the resolver at `resolver` gives over DNS over
@@ -372,28 +368,34 @@ mod tests {
     }
 
     #[test]
-    fn a_domain_name_is_ascii_labels_in_lowercase() {
-        for (given, domain) in [
-            ("corp.example", "corp.example"),
-            ("Corp-1.Example.", "corp-1.example"),
-            ("a.b.c.example", "a.b.c.example"),
+    fn a_domain_name_is_lowercase_ascii_labels() {
+        let longest = format!("{}.example", vec!["a".repeat(63); 4].join("."));
+        let label = format!("{}.example", "a".repeat(63));
+        for given in [
+            "corp.example",
+            "corp-1.example",
+            "a.b.c.example",
+            "1.example",
+            &label,
+            &longest[longest.len() - LONGEST..],
         ] {
-            assert_eq!(name(given).as_deref(), Ok(domain), "{given}");
+            assert_eq!(name(given).as_deref(), Ok(given), "{given}");
         }
-        let long = format!("{}.example", vec!["a".repeat(63); 4].join("."));
-        assert!(long.len() > LONGEST);
+        let too_long = format!("a{}", &longest[longest.len() - LONGEST..]);
         for given in [
             "example",
             "",
             ".example",
             "corp..example",
+            "corp.example.",
+            "Corp.Example",
             "-corp.example",
             "corp-.example",
             "corp_x.example",
             "corp example",
             "пример.example",
             &format!("{}.example", "a".repeat(64)),
-            &long,
+            &too_long,
         ] {
             assert!(name(given).is_err(), "{given}");
         }
@@ -469,23 +471,22 @@ mod tests {
     }
 
     #[test]
-    fn a_record_is_an_account_id_and_a_fingerprint() {
+    fn a_record_is_an_account_id_and_a_fingerprint_each_after_one_space() {
         let account = AccountId::generate();
         let fingerprint = "01234 56789 01234 56789 01234 56789 01234 56789";
-        let kept = format!("{account} {fingerprint}");
-        for given in [
-            kept.clone(),
-            format!(
-                "  {} \t{}  ",
-                account.to_string().to_uppercase(),
-                fingerprint
-            ),
-            format!("{account}  {}", fingerprint.replace(' ', "   ")),
-        ] {
-            assert_eq!(record(&given).as_deref(), Some(kept.as_str()), "{given}");
-        }
+        assert_eq!(
+            record(&format!("{account} {fingerprint}")),
+            Some((account, fingerprint.to_owned()))
+        );
+        let upper = account.to_string().to_uppercase();
         for given in [
             format!("{account}"),
+            format!(" {account} {fingerprint}"),
+            format!("{account} {fingerprint} "),
+            format!("{account}  {fingerprint}"),
+            format!("{account}\t{fingerprint}"),
+            format!("{account} {}", fingerprint.replace(' ', "  ")),
+            format!("{upper} {fingerprint}"),
             format!("{account} {}", &fingerprint[..41]),
             format!("{account} {fingerprint} 01234"),
             format!("{account} {}", fingerprint.replace('0', "a")),
@@ -500,7 +501,8 @@ mod tests {
     /// Records kept from a resolver: a member they list with its fingerprint is listed; one they
     /// list with another, and an admin they do not list, warn once, and again once the records
     /// have listed it with its fingerprint between; a member that is no admin they do not list
-    /// shows nothing. A policy's domain of another form is not checked.
+    /// shows nothing. A key change another resolver showed first still warns once with this one.
+    /// A policy's domain of another form is not checked.
     #[test]
     fn kept_records_list_members_and_warn_of_each_key_change_once() {
         let state = State::in_memory().unwrap();
@@ -508,15 +510,16 @@ mod tests {
         let (ada, bob, bob_master) = (AccountId::generate(), AccountId::generate(), [5; 32]);
         let mut body = first(ada).body().clone();
         body.members.push(member(bob, "bob", bob_master));
-        body.policy.domain = Some("Corp.Example".to_owned());
+        body.policy.domain = Some("corp.example".to_owned());
         let roster =
             |body: &skald_proto::RosterBody| sign_roster(body, &SigningKey::generate()).unwrap();
         let own = Own {
             account: bob,
             master: bob_master,
         };
-        // A port nothing answers on: every check below takes the records kept.
+        // Ports nothing answers on: every check below takes the records kept.
         let resolver = ("http://127.0.0.1:9/dns-query", Duration::from_secs(1));
+        let other = ("http://127.0.0.1:7/dns-query", Duration::from_secs(1));
         let fingerprint = |account, master: &[u8; 32]| account_fingerprint(account, master);
         let line = |account, fingerprint: String| format!("{account} {fingerprint}");
         let [ada_listed, ada_elsewhere, bob_listed] = [
@@ -524,7 +527,7 @@ mod tests {
             line(ada, fingerprint(ada, &[4; 32])),
             line(bob, fingerprint(bob, &bob_master)),
         ];
-        let check_with = |records: &[&String]| {
+        let check_at = |resolver: (&str, Duration), records: &[&String]| {
             let records: Vec<String> = records.iter().map(|text| (*text).clone()).collect();
             let expires = crate::spaces::now() + 3_600;
             (state.set_domain_records((resolver.0, "corp.example"), &records, expires)).unwrap();
@@ -545,8 +548,14 @@ mod tests {
             assert_eq!(naming("bob"), 0, "{:?}", checked.warnings);
             (listed, naming("ada"), checked.warnings.len())
         };
+        let check_with = |records: &[&String]| check_at(resolver, records);
         let both = BTreeSet::from([ada, bob]);
         let only_bob = BTreeSet::from([bob]);
+
+        assert_eq!(
+            check_at(other, &[&bob_listed, &ada_elsewhere]),
+            (only_bob.clone(), 1, 1)
+        );
 
         assert_eq!(
             check_with(&[&bob_listed, &ada_elsewhere]),
@@ -568,14 +577,16 @@ mod tests {
         assert_eq!(check_with(&[&bob_listed]), (only_bob, 0, 0));
         assert_eq!(check_with(&[&ada_listed]), (BTreeSet::from([ada]), 0, 0));
 
-        body.policy.domain = Some("not a domain".to_owned());
-        let checked = check(&state, resolver, &roster(&body), &own)
-            .unwrap()
-            .unwrap();
-        assert!(
-            checked.listed.is_err() && checked.warnings.is_empty(),
-            "{checked:?}"
-        );
+        for given in ["not a domain", "Corp.Example", "corp.example."] {
+            body.policy.domain = Some(given.to_owned());
+            let checked = check(&state, resolver, &roster(&body), &own)
+                .unwrap()
+                .unwrap();
+            assert!(
+                checked.listed.is_err() && checked.warnings.is_empty(),
+                "{checked:?}"
+            );
+        }
         body.policy.domain = None;
         assert_eq!(check(&state, resolver, &roster(&body), &own), Ok(None));
     }

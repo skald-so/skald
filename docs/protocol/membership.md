@@ -347,8 +347,8 @@ Two people check that their devices see the same master key for each other's acc
 ### Domain
 An organization lists its accounts' fingerprints in its domain's DNS, and member devices of a space whose policy names the domain check its members against them.
 
-- **Records:** TXT records at `_skald.<domain>`, one per account: the account ID as text, one space and the account's fingerprint as above, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10 01234 56789 …`. A TXT record of another form lists nothing.
-- **Domain name:** ASCII letters, digits and `-` in two labels or more, in lowercase, without a trailing dot. A device checks nothing against a `domain` of another form.
+- **Records:** TXT records at `_skald.<domain>`, one per account, its strings joined: the account ID as text, one space and the account's fingerprint as above, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10 01234 56789 …`, with no other whitespace. A TXT record of another form lists nothing.
+- **Domain name:** two labels or more joined by `.`, each of 1 to 63 lowercase ASCII letters, digits and `-`, none starting or ending with `-`; at most 246 characters, so `_skald.<domain>` fits in 253; no trailing dot. A device checks nothing against a `domain` of another form.
 - **Lookup:** with DNS over HTTPS [[RFC 8484](https://www.rfc-editor.org/rfc/rfc8484)] at the resolver the device's setting names. The device keeps the records for their TTL, or for an answer without records the negative TTL [[RFC 2308](https://www.rfc-editor.org/rfc/rfc2308)], and looks them up again after it. A resolver that fails leaves the members not checked.
 - A member the records list with the fingerprint the device shows for it is listed by the domain. One they list only with other fingerprints, and an admin they do not list, are key changes, and the device warns ([Device checks](#device-checks)). Other members they do not list show nothing.
 - The check comes on top of the roster, never instead of it: it changes no master key, role or device check.

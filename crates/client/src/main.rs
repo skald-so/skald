@@ -536,7 +536,7 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
-        /// The domain, such as example.com.
+        /// The domain in lowercase, such as example.com.
         #[arg(value_name = "DOMAIN", value_parser = domains::name)]
         domain: String,
     },
