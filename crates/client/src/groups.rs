@@ -74,6 +74,7 @@ use crate::key_changes;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
 use crate::message_status;
+use crate::queue_keys;
 use crate::recv;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
@@ -413,6 +414,7 @@ fn committed(
     if let Some((_, epoch, true)) = judgment {
         key_chain::upload_new(follower, link, (space, channel), epoch);
         wraps::upload_new(follower, link, (space, channel), epoch);
+        queue_keys::upload_new(follower, link, (space, channel), epoch);
     }
     match welcome {
         Some(welcome) => send_out(follower, link, welcome),

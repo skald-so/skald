@@ -295,6 +295,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - `skald held` decides a `hold` only at a terminal, as the person, so an agent cannot pipe a decision in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device to agent](protocol/delivery.md#device-to-agent)).
 - `skald fingerprint` marks an account verified only on the person's yes at a terminal, never as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Account fingerprint](protocol/membership.md#account-fingerprint)).
 - An agent marks no key change seen: every command and MCP tool call, the agent's too, says how many wait until `skald key-changes` shows them to the person at a terminal, never as an agent. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device checks](protocol/membership.md#device-checks)).
+- `skald invite` shows an invite link only at a terminal, run as the person, never through a pipe or as an agent, so no agent's output holds it. An agent that opens a terminal of its own, or hands the helper the command over its socket, which writes the link back, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
 
 ### Another account on the machine
@@ -306,6 +307,7 @@ An OS account on the device's machine other than the one that runs the client.
 **Defenses:**
 - The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
+- `codex queue` keeps what it queues in the Codex session's config home, where other local accounts can read it until its turn runs, so the client queues only the signal, never a message's text ([architecture.md, "Components"](dev/architecture.md#components)).
 - The local page of `--browser` listens on loopback, which other accounts reach, but answers only its secret, handed to the browser only through a file in the state directory ([architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 
 ## The server sees
