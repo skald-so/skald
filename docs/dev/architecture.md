@@ -185,6 +185,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
 - The person's device triggers the events that come from content or its agents' sessions: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a session waiting on its agent CLI's own permission prompt, an invalid task result ([protocol spec](../protocol/queues.md#results)), a key changed. The server only relays them, so they need a running device of the person.
 - A Claude Code session waiting on its own permission prompt is detected by its `PermissionRequest` and `Notification` hooks ([agent-delivery.md, "Permission prompts"](agent-delivery.md#permission-prompts)).
+- A Codex session waiting on its own permission prompt is detected by its `PermissionRequest` hook and by the `item/commandExecution/requestApproval` of the background app-server in its config home, to which the helper keeps a client that answers nothing ([agent-delivery.md, "Codex permission prompts"](agent-delivery.md#codex-permission-prompts)).
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security

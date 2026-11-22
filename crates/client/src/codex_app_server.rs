@@ -27,7 +27,7 @@ use serde_json::{Value, json};
 use tungstenite::Message;
 
 use crate::permission_prompts;
-use crate::state::CodexSession;
+use crate::state::{CodexSession, State};
 
 /// Where a config home links the socket of its background app-server.
 pub const CONTROL: [&str; 2] = ["app-server-control", "app-server-control.sock"];
@@ -68,7 +68,11 @@ impl Watchers {
         for (home, threads) in homes {
             let watcher = (self.by_home.entry(home.clone()))
                 .or_insert_with(|| Watcher::start(dir.to_owned(), home));
-            *watcher.shared.threads.lock().unwrap_or_else(PoisonError::into_inner) = threads;
+            *watcher
+                .shared
+                .threads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = threads;
         }
     }
 }
@@ -187,8 +191,10 @@ fn watch(dir: &Path, stream: UnixStream, shared: &Shared) {
             match effect {
                 Effect::Send(text) => sends.push(text),
                 Effect::Told(thread) => {
-                    if let Some(session) = shared.session(&thread) {
-                        let _ = permission_prompts::codex_told(dir, &session);
+                    if let Some(session) = shared.session(&thread)
+                        && let Ok(state) = State::open(dir)
+                    {
+                        let _ = permission_prompts::codex_told(&state, &session);
                     }
                 }
                 Effect::Ended(thread) => {
@@ -264,7 +270,9 @@ impl Client {
             return Vec::new();
         };
         let params = &message["params"];
-        let thread = params["threadId"].as_str().filter(|thread| wanted.contains(*thread));
+        let thread = params["threadId"]
+            .as_str()
+            .filter(|thread| wanted.contains(*thread));
         let Some(method) = message["method"].as_str() else {
             return self.answered(&message, wanted);
         };
@@ -272,10 +280,11 @@ impl Client {
             return Vec::new();
         };
         let tells = match method {
-            "thread/status/changed" => {
-                (params["status"]["activeFlags"].as_array().into_iter().flatten())
-                    .any(|flag| flag == WAITING)
-            }
+            "thread/status/changed" => (params["status"]["activeFlags"]
+                .as_array()
+                .into_iter()
+                .flatten())
+            .any(|flag| flag == WAITING),
             "serverRequest/resolved" => {
                 self.open.remove(thread);
                 return vec![Effect::Ended(thread.to_owned())];

@@ -53,12 +53,15 @@ mod standin;
 
 // Codex's sessions and their hooks, as the tests of Codex's hooks have them; the runs of a copy of
 // `skald` through a helper, as the tests of the helper have them; Ada's agents and the runs of a
-// hook handler, as the tests of Claude Code's hooks have them.
+// hook handler, as the tests of Claude Code's hooks have them; what an agent's runs show, as the
+// tests of Claude Code's permission prompts have it.
 #[path = "../codex_hooks/codex.rs"]
 mod codex;
 #[path = "../helper/helped.rs"]
 mod helped;
 #[path = "../claude_code_hooks/hooks.rs"]
 mod hooks;
+#[path = "../claude_code_permission/prompt_lines.rs"]
+mod prompt_lines;
 
 include!("../claude_code_hooks/modules.rs");

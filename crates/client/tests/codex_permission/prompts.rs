@@ -11,12 +11,13 @@ use serde_json::{Value, json};
 
 use crate::codex::{Codex, CodexProcess, Event, Thread, hook_command};
 use crate::hooks::{Hooked, run_hook};
-use crate::kit::{RECV, received, received_as_agent};
+use crate::kit::{RECV, received};
 use crate::lines::JSON_FLAG;
 use crate::machine::{Machine, Run};
+use crate::prompt_lines::agent_recv_shown;
 use crate::senders::holds_word;
 use crate::solo::{API, WEB};
-use crate::world::{AGENT, dir_of, run};
+use crate::world::{dir_of, run};
 
 /// The `PermissionRequest` input recorded from Codex 0.162.1 for a command that waits on the
 /// person's approval, with the paths of its temporary directory.
@@ -371,11 +372,7 @@ pub fn assert_ended(record: &Value, by: u64) {
 #[track_caller]
 pub fn agent_sees_nothing(codex: &mut Codex, of: &Thread, prompted: &Thread) {
     let agent = of.agent.clone().expect("an agent");
-    let machine = codex.machine();
-    let plain = received_as_agent(machine, &of.dir, &agent).shown();
-    let json = (machine.start_in(&of.dir, &[AGENT, &agent, RECV, JSON_FLAG])).finish();
-    assert!(json.success, "{json:?}");
-    let mut shown = vec![("skald recv", plain), ("skald recv --json", json.shown())];
+    let mut shown = agent_recv_shown(codex.machine(), &of.dir, &agent);
     if agent == WEB {
         shown.push(("inbox", codex.web.session.inbox()));
     }
