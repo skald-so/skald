@@ -1,5 +1,6 @@
 //! `skald hook claude`: the hook handler of Claude Code's `PostToolUse` and `Stop`
 //! (`docs/dev/architecture.md`, "Components"; `docs/protocol/delivery.md`, "Device to agent").
+//! Codex's hooks: [`crate::codex`].
 //!
 //! - It reads Claude Code's hook input on standard input ([`input`]) and runs in its `cwd`, the
 //!   session's folder, as the agent `--agent` names or, without it, the one the session's
@@ -17,10 +18,15 @@
 //!   failure, which exits with 1, never with 2, which would keep a turn going.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use skald_proto::{Name, SpaceId};
+
+use crate::devices::text;
+use crate::folders;
+use crate::state::State;
 
 use crate::forms::DATA_WARNING;
 
@@ -29,10 +35,28 @@ use crate::forms::DATA_WARNING;
 pub enum Cli {
     /// Claude Code.
     Claude,
+    /// Codex.
+    Codex,
+}
+
+impl Cli {
+    /// Whether its hooks run the handler on `event`.
+    pub fn handles(self, event: Event) -> bool {
+        match self {
+            Cli::Claude => event != Event::UserPromptSubmit,
+            Cli::Codex => event != Event::SessionEnd,
+        }
+    }
 }
 
 /// The client name Claude Code gives an MCP server at initialization.
 pub const CLAUDE_CODE: &str = "claude-code";
+
+/// The client name Codex gives an MCP server at initialization.
+pub const CODEX: &str = "codex-mcp-client";
+
+/// The setting that names a Codex session's config home, which its hooks inherit.
+pub const CODEX_HOME: &str = "CODEX_HOME";
 
 /// Claude Code's hook output limit, in characters.
 pub const LIMIT: usize = 10_000;
@@ -46,10 +70,10 @@ pub const CAP_SETTING: &str = "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP";
 /// The most bytes of hook input a run reads.
 const INPUT_MOST: u64 = 1 << 20;
 
-/// What the run gives for messages below `own` that wait: a fixed line, without their senders or
-/// texts, that tells the agent to call `inbox`.
-pub const SIGNAL: &str = "skald: a message from another account or a service waits for you: \
-                          call the inbox tool, or skald recv, to read it";
+/// The signal (`docs/protocol/delivery.md`, "Device to agent"): a fixed line, without the senders,
+/// texts, count or references of the messages that wait, that tells the agent to call `inbox`.
+pub const SIGNAL: &str =
+    "skald: messages wait for you: call the inbox tool, or skald recv, to read them";
 
 /// The settings Claude Code gives its hooks but `SessionEnd`'s: the session's cross-session
 /// socket, and the token that makes a line on it the session's own child's.
@@ -64,6 +88,8 @@ pub enum Event {
     /// `SessionEnd`, which ends its registration.
     SessionEnd,
     PostToolUse,
+    /// `UserPromptSubmit`, Codex's only.
+    UserPromptSubmit,
     /// `Stop`; `continued` in a turn a `Stop` hook kept going.
     Stop {
         continued: bool,
@@ -77,6 +103,7 @@ impl Event {
             Event::SessionStart => "SessionStart",
             Event::SessionEnd => "SessionEnd",
             Event::PostToolUse => "PostToolUse",
+            Event::UserPromptSubmit => "UserPromptSubmit",
             Event::Stop { .. } => "Stop",
         }
     }
@@ -96,18 +123,26 @@ pub struct Input {
     pub session: Session,
 }
 
-/// A Claude Code session, as a hook's input and settings name it.
+/// A session, as a hook's input and settings name it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Session {
-    /// Its ID and its session file.
+    /// Its ID, Codex's thread, and its session file.
     pub id: Option<String>,
     pub file: Option<PathBuf>,
-    /// Its cross-session socket and token, from [`SOCKET_SETTING`] and [`TOKEN_SETTING`].
+    /// Claude Code's cross-session socket and token, from [`SOCKET_SETTING`] and
+    /// [`TOKEN_SETTING`].
     pub socket: Option<PathBuf>,
     pub token: Option<String>,
+    /// Codex's config home, from [`CODEX_HOME`].
+    #[serde(default)]
+    pub home: Option<PathBuf>,
+    /// The ID of the process that ran the hook: Codex's own, which runs the session.
+    #[serde(default)]
+    pub process: Option<u32>,
 }
 
-/// The hook input on `from`, with the cap `cap` sets, if any; fails on input that is not one.
+/// The hook input on `from`, its first JSON object, with the cap `cap` sets, if any; fails on input
+/// that is not one.
 pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
     #[derive(Deserialize)]
     struct Given {
@@ -120,15 +155,18 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
         #[serde(default)]
         transcript_path: Option<PathBuf>,
     }
-    let mut bytes = Vec::new();
-    (from.take(INPUT_MOST).read_to_end(&mut bytes))
-        .map_err(|err| format!("cannot read the hook input: {err}"))?;
-    let given: Given = serde_json::from_slice(&bytes)
+    // Read up to the end of the object only: a shell between the CLI and the hook may never end
+    // the input.
+    let given: Given = serde_json::Deserializer::from_reader(from.take(INPUT_MOST))
+        .into_iter()
+        .next()
+        .ok_or("the hook input is empty")?
         .map_err(|err| format!("the hook input is malformed: {err}"))?;
     let event = match given.hook_event_name.as_str() {
         "SessionStart" => Some(Event::SessionStart),
         "SessionEnd" => Some(Event::SessionEnd),
         "PostToolUse" => Some(Event::PostToolUse),
+        "UserPromptSubmit" => Some(Event::UserPromptSubmit),
         "Stop" => Some(Event::Stop {
             continued: given.stop_hook_active,
         }),
@@ -144,8 +182,24 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
             file: given.transcript_path,
             socket: None,
             token: None,
+            home: None,
+            process: None,
         },
     })
+}
+
+/// What registers a session of `agent` whose folder is the working directory, by the state in
+/// `dir`: the state, with the agent added to the folder's space, the space and the folder; `None`
+/// in a folder in no space.
+pub fn registering(dir: &Path, agent: &Name) -> Result<Option<(State, SpaceId, PathBuf)>, String> {
+    let Ok(space) = folders::working_space(dir) else {
+        return Ok(None);
+    };
+    let folder = std::env::current_dir()
+        .map_err(|err| format!("cannot read the working directory: {err}"))?;
+    let state = State::open(dir).map_err(text)?;
+    state.add_agent(space.id, agent.as_str()).map_err(text)?;
+    Ok(Some((state, space.id, folder)))
 }
 
 /// `line`, the line of the message `#<reference>`, as Skald puts it into a session at once: whole
@@ -398,6 +452,25 @@ mod tests {
         let taken = input(other.as_bytes(), Some("many")).unwrap();
         assert_eq!((taken.event, taken.cap), (None, CAP));
         assert!(input(&b"{\"cwd\""[..], None).is_err());
+    }
+
+    /// The input is its first object: the run reads no further, as on an input a shell between
+    /// the CLI and the hook never ends.
+    #[test]
+    fn input_ends_with_its_object() {
+        struct Endless(&'static [u8]);
+        impl Read for Endless {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                assert!(!self.0.is_empty(), "read past the object");
+                let taken = self.0.len().min(buf.len());
+                buf[..taken].copy_from_slice(&self.0[..taken]);
+                self.0 = &self.0[taken..];
+                Ok(taken)
+            }
+        }
+        let given = Endless(br#" {"hook_event_name":"PostToolUse","cwd":"/w"}"#);
+        let taken = input(given, None).unwrap();
+        assert_eq!(taken.event, Some(Event::PostToolUse));
     }
 
     /// Nothing waiting, or only messages whose signal went, gives nothing.

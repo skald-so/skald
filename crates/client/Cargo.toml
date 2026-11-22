@@ -76,7 +76,15 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }
 # The helper's socket: AF_UNIX, which std offers on Unix only.
 uds_windows = "1.2"
 windows-native-keyring-store = "1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+# The console's mode; the process that runs a hook, and whether it runs; the helper's start.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
 
 [target.'cfg(unix)'.dependencies]
 # setsid, which detaches the helper from the terminal of the command that starts it.

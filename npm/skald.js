@@ -101,7 +101,10 @@ async function install() {
 
 async function main() {
   if (!fs.existsSync(path.join(installed, marker))) await install();
-  const child = spawn(skald, process.argv.slice(2), { stdio: 'inherit' });
+  // SKALD_LAUNCHER: this process and its parent, so a hook of skald takes the parent for the
+  // process that runs it.
+  const env = { ...process.env, SKALD_LAUNCHER: `${process.pid} ${process.ppid}` };
+  const child = spawn(skald, process.argv.slice(2), { stdio: 'inherit', env });
   // Ctrl-C and Ctrl-\ reach skald from the terminal: this process waits for it to exit.
   for (const signal of windows ? ['SIGINT'] : ['SIGINT', 'SIGQUIT']) process.on(signal, () => {});
   if (!windows) for (const signal of ['SIGTERM', 'SIGHUP']) process.on(signal, () => child.kill(signal));
