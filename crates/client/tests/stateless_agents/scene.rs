@@ -189,7 +189,16 @@ impl Scene {
     /// The talk of Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones; Ada's
     /// machine creates `ci/deploy-bot`, which must succeed, and takes in its mailbox.
     pub fn new(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let (talk, secrets) = talk_with_bot(ids, logins, &[]);
+        Self::of(talk_with_bot(ids, logins, &[]))
+    }
+
+    /// As [`Scene::new`], the agent created with the options `extra`.
+    pub fn with(ids: [u64; 2], logins: [&str; 2], extra: &[&str]) -> Self {
+        Self::of(talk_with_bot(ids, logins, extra))
+    }
+
+    /// The scene of `talk` and the agent's `secrets`, once Ada's machine takes in its mailbox.
+    fn of((talk, secrets): (Talk, Secrets)) -> Self {
         received(&talk.ada.machine);
         let (device, cert) = service_of(talk.cloud(), &talk.ada);
         let (address, agent) = (bot_address(), Agent::of(&secrets));
@@ -474,6 +483,26 @@ pub fn add_anchors(cloud: &Cloud, objects: Vec<Vec<u8>>) {
 /// server's database; it is in no group.
 pub fn other_device(cloud: &Cloud, person: &Person, name: &str) -> Keyed {
     add_device(cloud, person.account, name, &Issuer::Device(person))
+}
+
+/// From now on, the relay gives the answers to requests whose lines start with `request` with
+/// `change` applied to the bytes of their JSON field `field`, base64url without padding.
+pub fn change_field(
+    cloud: &Cloud,
+    request: &str,
+    field: &'static str,
+    change: impl Fn(&mut Vec<u8>) + Send + Sync + 'static,
+) {
+    cloud.relay.rewrite(request, move |body| {
+        let mut held: Value = serde_json::from_str(body).expect("an answer in JSON");
+        let given = (held[field].as_str()).unwrap_or_else(|| panic!("no {field} in {held}"));
+        let mut bytes = URL_SAFE_NO_PAD
+            .decode(given)
+            .unwrap_or_else(|_| panic!("{field} not in base64url"));
+        change(&mut bytes);
+        held[field] = json!(URL_SAFE_NO_PAD.encode(&bytes));
+        held.to_string()
+    });
 }
 
 /// Waits for up to [`WAIT`] until `done` holds or `run` exits, then kills it; gives what it showed.

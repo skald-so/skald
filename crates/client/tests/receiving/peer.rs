@@ -123,6 +123,36 @@ impl Peer {
             channel,
             item,
         });
+        self.answer_to(upload)
+    }
+
+    /// Uploads `object`, a queue key object's bytes, as the `history` item `[4, queue-key]`
+    /// (`docs/protocol/queues.md`, "Queue key object"), in a frame built from bytes; gives the
+    /// server's answer, `history-stored` or `history-refused`.
+    pub fn upload_queue_key(
+        &mut self,
+        upload: u64,
+        (space, channel): (SpaceId, ChannelId),
+        object: &[u8],
+    ) -> Frame {
+        let mut frame = vec![0x85, 0x0b];
+        frame.extend(cbor_head(0, upload));
+        for id in [space.as_bytes(), channel.as_bytes()] {
+            frame.push(0x50);
+            frame.extend_from_slice(id);
+        }
+        frame.extend([0x82, 0x04]);
+        let length = u64::try_from(object.len()).expect("a length within 64 bits");
+        frame.extend(cbor_head(2, length));
+        frame.extend_from_slice(object);
+        self.socket
+            .send(Message::Binary(frame.into()))
+            .unwrap_or_else(|err| panic!("send a queue key object: {err}"));
+        self.answer_to(upload)
+    }
+
+    /// The server's answer to the upload `upload`, `history-stored` or `history-refused`.
+    fn answer_to(&mut self, upload: u64) -> Frame {
         loop {
             let answer = self.read();
             if let Frame::HistoryStored { upload: of } | Frame::HistoryRefused { upload: of, .. } =
@@ -190,4 +220,28 @@ pub fn last_seq(entries: &[Push]) -> Option<u64> {
             _ => None,
         })
         .max()
+}
+
+/// The head of a CBOR item of major type `major` with the argument `argument`.
+fn cbor_head(major: u8, argument: u64) -> Vec<u8> {
+    let major = major << 5;
+    match argument {
+        short @ 0..=23 => vec![major | u8::try_from(short).expect("below 24")],
+        byte @ 24..=0xff => vec![major | 24, u8::try_from(byte).expect("8 bits")],
+        half @ 0x100..=0xffff => {
+            let mut head = vec![major | 25];
+            head.extend(u16::try_from(half).expect("16 bits").to_be_bytes());
+            head
+        }
+        word @ 0x1_0000..=0xffff_ffff => {
+            let mut head = vec![major | 26];
+            head.extend(u32::try_from(word).expect("32 bits").to_be_bytes());
+            head
+        }
+        long => {
+            let mut head = vec![major | 27];
+            head.extend(long.to_be_bytes());
+            head
+        }
+    }
 }

@@ -25,19 +25,16 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use common::browser::{Browser, SIGN_IN_LINK};
-use common::device_flow::{DeviceFlow, INTERVAL, json, text};
+use common::device_flow::{DeviceFlow, json, text};
 use common::devices::{
     CHALLENGE, Device, Key, assert_taken, auth_frame, auth_signature, machine, unb64,
 };
 use common::google::{self, Google, Setup};
 use common::sign_in::{
-    self, CLIENT_SECRET, SECRET_ENV, SignIn, cookie_set, github_args, github_stand_in, param,
-    provider_back, set_cookie, start_url, to_callback,
+    self, CLIENT_SECRET, SECRET_ENV, SignIn, WebAddress, cookie_set, github_args, github_stand_in,
+    param, provider_back, set_cookie, start_url, to_callback,
 };
-use common::{
-    Closed, Response, SERVER, Server, TestDb, WebSocket, get_url, on_free_port, post_form, send,
-    wait,
-};
+use common::{Closed, Response, SERVER, TestDb, WebSocket, get_url, post_form, send, wait};
 use skald_oidc_stand_in::Client;
 use skald_proto::{PROTOCOL_VERSION, VERSION_HEADER};
 use tungstenite::Message;
@@ -58,13 +55,6 @@ const SERVER_NAME: &str = "/server";
 /// How a refused proof closes the connection.
 const SIGNATURE_REFUSED: &str = "signature-refused";
 
-/// How the server is given its web address.
-#[derive(Clone, Copy, Debug)]
-enum Given {
-    Argument,
-    Environment,
-}
-
 /// A server with GitHub sign-in through the stand-in, whose app's callback is on the web address,
 /// and the device flow, its codes polled every second.
 struct Stage {
@@ -80,7 +70,7 @@ impl Stage {
     /// Its public address `http://api.skald.test:<port>` and its web address
     /// `http://app.skald.test:<port>`, `<port>` the one it listens on, so a browser reaches both.
     fn start() -> Self {
-        Self::launch(Given::Argument, |port| {
+        Self::launch(WebAddress::Argument, |port| {
             (
                 format!("http://api.skald.test:{port}"),
                 format!("http://app.skald.test:{port}"),
@@ -90,28 +80,9 @@ impl Stage {
 
     /// Its public and web addresses as `addresses` gives them for the port it listens on, the web
     /// address given as `given` says.
-    fn launch(given: Given, addresses: impl Fn(u16) -> (String, String)) -> Self {
-        let db = TestDb::create();
-        let (github, server, (public, web)) = on_free_port(Duration::from_secs(30), |port| {
-            let (public, web) = addresses(port);
-            let github = github_stand_in(&web);
-            let mut args = vec![PUBLIC, public.as_str(), INTERVAL, "1"];
-            args.extend(github_args(&github));
-            let mut envs = vec![(SECRET_ENV, CLIENT_SECRET)];
-            match given {
-                Given::Argument => args.extend([WEB, web.as_str()]),
-                Given::Environment => envs.push((WEB_ENV, web.as_str())),
-            }
-            let listen = format!("127.0.0.1:{port}");
-            let server = Server::try_launch(&db, &listen, &args, &envs)?;
-            Ok((github, server, (public, web)))
-        });
-        let stand = SignIn {
-            db,
-            github,
-            server,
-            public: web.clone(),
-        };
+    fn launch(given: WebAddress, addresses: impl Fn(u16) -> (String, String)) -> Self {
+        let (stand, public) = SignIn::with_web_address(given, addresses);
+        let web = stand.public.clone();
         Stage {
             flow: DeviceFlow::of(stand),
             public,
@@ -218,7 +189,7 @@ fn refreshes_to(response: &Response) -> String {
 /// environment.
 #[test]
 fn verification_uris_are_on_the_web_address() {
-    for given in [Given::Argument, Given::Environment] {
+    for given in [WebAddress::Argument, WebAddress::Environment] {
         let stage = Stage::launch(given, |port| {
             (
                 format!("http://api.skald.test:{port}"),
@@ -331,7 +302,7 @@ fn google_sign_in_returns_to_the_web_address() {
 #[test]
 fn sign_in_cookies_are_secure_under_an_https_web_address() {
     for (public, web, secure) in [("http", "https", true), ("https", "http", false)] {
-        let stage = Stage::launch(Given::Argument, |port| {
+        let stage = Stage::launch(WebAddress::Argument, |port| {
             (
                 format!("{public}://api.skald.test:{port}"),
                 format!("{web}://app.skald.test:{port}"),
@@ -465,7 +436,7 @@ fn server_name_defaults_to_the_public_address_host() {
 #[test]
 fn web_address_is_an_http_or_https_url() {
     for web in ["https://app.skald.test", "http://app.skald.test:8080"] {
-        let stage = Stage::launch(Given::Argument, |_| {
+        let stage = Stage::launch(WebAddress::Argument, |_| {
             ("https://api.skald.test".to_owned(), web.to_owned())
         });
         assert_eq!(
