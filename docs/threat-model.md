@@ -313,6 +313,7 @@ An OS account on the device's machine other than the one that runs the client.
 - accounts: sign-in methods and usernames;
 - the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
+- a deleted account's devices' certificates and revocations in the spaces it shared, also once it has erased the account's other data;
 - link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;
