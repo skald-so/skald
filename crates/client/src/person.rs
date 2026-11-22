@@ -251,8 +251,9 @@ fn input_waits(timeout: Duration) -> bool {
 }
 
 /// Shows its person a prompt with `show`, then gives the line entered after it, without its end;
-/// `None` once the input ends. Lines entered before are forgotten first, so that the one entered as
-/// the prompt shows is the answer.
+/// `None` once the input ends. If a thread reads the lines, those it read before are forgotten
+/// first, so that the one entered as the prompt shows is the answer; otherwise it reads the
+/// standard input as it is.
 pub fn answer(show: impl FnOnce() -> Result<(), String>) -> Result<Option<String>, String> {
     answer_from(LINES.get(), show)
 }
