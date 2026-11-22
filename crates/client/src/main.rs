@@ -37,6 +37,8 @@ mod claude_relay;
 mod claude_socket;
 mod clock;
 mod codex;
+#[cfg(unix)]
+mod codex_app_server;
 mod connection;
 mod copies;
 mod delivery;
@@ -1155,7 +1157,7 @@ enum Command {
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
     /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification; Codex's
-    /// SessionStart, PostToolUse, UserPromptSubmit and Stop. It reads the hook input on standard
+    /// SessionStart, PostToolUse, UserPromptSubmit, Stop and PermissionRequest. It reads the hook input on standard
     /// input and runs in its folder, as the agent --agent names or, without it, the agent the session's skald mcp
     /// registers by default. SessionStart registers the session with the helper, starting one if
     /// none runs. On Claude Code, the helper writes the agent's messages into the session's
@@ -1169,9 +1171,11 @@ enum Command {
     /// Codex, every message goes in only as that line, once for the new ones, to the session whose
     /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
     /// and a Notification of a permission prompt record that the session waits on its permission
-    /// prompt, once per prompt, which the person's skald recv shows once, without the prompt's
-    /// content. It prints nothing while nothing waits, on PermissionRequest and Notification, and
-    /// on a failure, which exits with 1.
+    /// prompt, once per prompt; on Codex, PermissionRequest does, as does the session's background
+    /// app-server, which the helper watches, until its next hook or the app-server says the prompt
+    /// ended. The person's skald recv shows each prompt once, without its content. It prints nothing
+    /// while nothing waits, on PermissionRequest and Notification, and on a failure, which exits
+    /// with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
