@@ -88,6 +88,7 @@ mod recovery_link;
 mod recovery_wraps;
 mod recv;
 mod reply;
+mod results;
 mod revocations;
 mod secrets;
 mod send;
