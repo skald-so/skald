@@ -646,7 +646,7 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
 - A device never uploads again a link the server has had, having taken it from the device or listed it to it, nor one the server refused: a link that retention deleted stays deleted.
-- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
+- A device uploads each link, wrap, entry and [queue key object](queues.md#queue-key-object) in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
 - The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
 - It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
 
