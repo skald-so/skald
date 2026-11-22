@@ -44,22 +44,26 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
-#[path = "../../../server/tests/common/browser.rs"]
-mod browser;
-#[path = "../sign_in/cloud.rs"]
-mod cloud;
-#[path = "../common/mod.rs"]
-mod common;
-#[path = "../device_keys/keys.rs"]
-mod keys;
-#[path = "../sign_in/machine.rs"]
-mod machine;
-#[path = "../sign_in/relay.rs"]
-mod relay;
+// The world of the tests of roster revisions, at the terminal of the tests of the recovery key.
 #[path = "../recovery_key/terminal.rs"]
 mod terminal;
 #[path = "../roster_revisions/world.rs"]
 mod world;
+
+#[path = "../../../server/tests/common/browser.rs"]
+mod browser;
+#[path = "../common/mod.rs"]
+mod common;
+#[path = "../device_keys/keys.rs"]
+mod keys;
+
+// The cloud, machines and relay of the tests of signing in.
+#[path = "../sign_in/cloud.rs"]
+mod cloud;
+#[path = "../sign_in/machine.rs"]
+mod machine;
+#[path = "../sign_in/relay.rs"]
+mod relay;
 
 mod creating;
 mod lost;

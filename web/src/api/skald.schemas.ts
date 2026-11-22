@@ -713,6 +713,8 @@ export type InviteId = string;
 
 export interface NewInvite {
   invite: InviteId;
+  /** The server's web URL, which the invite's link starts with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
+  web?: string;
 }
 
 export interface InviteRequest {
