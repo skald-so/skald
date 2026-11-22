@@ -42,6 +42,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// A device session's challenge for a WebSocket, `POST`: `docs/protocol/delivery.md`,
 /// "Connecting".
 const CHALLENGE_PATH: &str = "/session/challenge";
+/// The label of a device's signature for a session by its key.
+const DEVICE_SESSION_LABEL: &str = "skald device session";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -753,6 +755,12 @@ struct Challenge {
     challenge: String,
 }
 
+/// `DeviceKeySession` in the API spec.
+#[derive(Deserialize)]
+struct Session {
+    token: String,
+}
+
 /// The fields of a problem details object the client reads.
 #[derive(Deserialize)]
 struct Problem {
@@ -853,6 +861,11 @@ impl Connection {
     /// it.
     pub fn post_as(&mut self, path: &str, token: &str) -> Result<Vec<u8>, Error> {
         self.http(path, Some(token), Body::Post)
+    }
+
+    /// `POST <path>` of the JSON `json` without a session; the body of the answer that serves it.
+    pub fn post_json(&mut self, path: &str, json: &[u8]) -> Result<Vec<u8>, Error> {
+        self.http(path, None, Body::Json(Method::Post, json))
     }
 
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
@@ -1073,12 +1086,47 @@ impl Connection {
         label: &str,
     ) -> Result<(Vec<u8>, [u8; 64]), Error> {
         let answer = self.post_as(CHALLENGE_PATH, token)?;
-        let challenge = serde_json::from_slice::<Challenge>(&answer)
+        self.signed(&answer, key, label)
+    }
+
+    /// The challenge in `answer`, and the signature of `key` with `label` over it and the server's
+    /// origin.
+    fn signed(
+        &self,
+        answer: &[u8],
+        key: &SigningKey,
+        label: &str,
+    ) -> Result<(Vec<u8>, [u8; 64]), Error> {
+        let challenge = serde_json::from_slice::<Challenge>(answer)
             .ok()
             .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
             .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
         let signature = key.sign(label, &[&challenge, origin(&self.base).as_bytes()]);
         Ok((challenge, signature))
+    }
+
+    /// A device session of the account of the device `device`, whose signing key is `key`, by that
+    /// key and its complete certificate `cert` in CBOR, with no session
+    /// (`docs/protocol/membership.md`, "Device key session"): gives its token.
+    pub fn device_key_session(
+        &mut self,
+        device: DeviceId,
+        key: &SigningKey,
+        cert: &[u8],
+    ) -> Result<String, Error> {
+        let answer = self.http(&format!("/devices/{device}/challenge"), None, Body::Post)?;
+        let (challenge, signature) = self.signed(&answer, key, DEVICE_SESSION_LABEL)?;
+        let request = serde_json::json!({
+            "challenge": URL_SAFE_NO_PAD.encode(&challenge),
+            "signature": URL_SAFE_NO_PAD.encode(signature),
+            "cert": URL_SAFE_NO_PAD.encode(cert),
+        })
+        .to_string();
+        let path = format!("/devices/{device}/session");
+        let answer = self.post_json(&path, request.as_bytes())?;
+        serde_json::from_slice::<Session>(&answer)
+            .map(|session| session.token)
+            .map_err(|_| Error::Unexpected("a device session without its token".to_owned()))
     }
 
     /// The proof of an HTTPS request of the device `device`, whose signing key is `key`, on a new

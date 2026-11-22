@@ -32,6 +32,8 @@ pub const OWN_DEVICE: &str = "own device";
 pub const NEW_CODE: &str = "new code";
 pub const FAIL: &str = "fail";
 pub const EXPIRED: &str = "expired";
+/// What a new device says once it is signed in and waits for linking, with its link code.
+pub const WAITS: &str = "not linked yet";
 /// What the new device says after its code failed 3 times.
 pub const THREE_TIMES: [&str; 2] = ["3 times", "someone else"];
 /// The confirmations `skald link` takes.
@@ -41,24 +43,47 @@ pub const NO_CONFIRM: &str = "no";
 /// The base32 alphabet of RFC 4648, §6.
 const ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
-/// Each string in `text` in the shown form of a code, two groups of three characters of the
-/// alphabet joined by `-`, in order; only a whole token, not one inside a word or an ID such as
-/// `84bc7bab-7813-89aa-b475-365c9d616798`.
+/// Each string in `text` in the shown form of a code, in order; only a whole token, not one inside
+/// a word or an ID such as `84bc7bab-7813-89aa-b475-365c9d616798`: two groups of three characters
+/// of the alphabet joined by `-`, a run's code with a session; or three groups of four, a run's
+/// pairing then its code without one, whose pairing a server gave
+/// ([`crate::relay::given_pairings`]), so no recovery key of that form counts.
 pub fn codes_in(text: &str) -> Vec<String> {
+    let pairings = crate::relay::given_pairings();
     let chars: Vec<char> = text.chars().collect();
     let digit = |c: &char| ALPHABET.contains(*c);
     let edge = |c: Option<&char>| c.is_none_or(|c| !(c.is_alphanumeric() || *c == '-'));
-    (0..chars.len().saturating_sub(6))
-        .filter(|&at| {
-            let window = &chars[at..at + 7];
-            window[3] == '-'
-                && window[..3].iter().all(digit)
-                && window[4..].iter().all(digit)
-                && edge(at.checked_sub(1).and_then(|before| chars.get(before)))
-                && edge(chars.get(at + 7))
-        })
-        .map(|at| chars[at..at + 7].iter().collect())
-        .collect()
+    let shaped = |at: usize, groups: usize, size: usize| {
+        let length = groups * (size + 1) - 1;
+        chars.get(at..at + length).is_some_and(|window| {
+            window.iter().enumerate().all(|(i, c)| {
+                if i % (size + 1) == size {
+                    *c == '-'
+                } else {
+                    digit(c)
+                }
+            })
+        }) && edge(at.checked_sub(1).and_then(|before| chars.get(before)))
+            && edge(chars.get(at + length))
+    };
+    let paired = |code: &str| {
+        let plain: String = code.chars().filter(|c| *c != '-').collect();
+        pairings
+            .iter()
+            .any(|pairing| plain.starts_with(pairing.as_str()))
+    };
+    let mut found = Vec::new();
+    for at in 0..chars.len() {
+        if shaped(at, 2, 3) {
+            found.push(chars[at..at + 7].iter().collect());
+        } else if shaped(at, 3, 4) {
+            let code: String = chars[at..at + 14].iter().collect();
+            if paired(&code) {
+                found.push(code);
+            }
+        }
+    }
+    found
 }
 
 /// The lines of `text` that hold `part`, case aside.
@@ -143,8 +168,9 @@ pub struct NewDevice {
 }
 
 impl NewDevice {
-    /// A new machine with the host name `host` signs in to `first`'s account at a terminal; its
-    /// person approves its code. Gives it once it shows a link code.
+    /// A new machine with the host name `host` signs in to `first`'s account through a pipe, its
+    /// person approving its code, so it waits for linking with a session; then its `skald sign-in`
+    /// at a terminal. Gives it once that shows a link code of its session.
     pub fn start(world: &World, first: &Person, host: &'static str) -> Self {
         Self::start_on(world, first, Machine::new().with_host_name(host), host)
     }
@@ -156,8 +182,12 @@ impl NewDevice {
         let grants = cloud.grants().len();
         let started = cloud.relay.mark();
         let args = [SIGN_IN, SERVER, &cloud.url];
+        let piped = machine.start(&args);
+        let grant = cloud.next_grant(grants, || piped.shown());
+        cloud.decide(&world.browser.page(), &first.user, &grant, APPROVE);
+        let signed_in = piped.finish();
+        assert!(signed_in.success, "{signed_in:?}");
         let mut run = Terminal::start(&machine, &args);
-        approve(world, first, &mut run, grants);
         run.wait_for("a link code", |shown| !codes_in(shown).is_empty());
         let token = cloud.last_token();
         let device = cloud.new_device(&token, &known);
@@ -284,6 +314,16 @@ pub fn until_run_open(
     let deadline = Instant::now() + WAIT;
     while cloud.count_sent(started, HELLO) < run || !waiting(cloud, first, device) {
         assert!(Instant::now() < deadline, "no run {run}: {}", shown());
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Waits for up to [`WAIT`] until `done` holds.
+#[track_caller]
+pub fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + WAIT;
+    while !done() {
+        assert!(Instant::now() < deadline, "{what} after {WAIT:?}");
         thread::sleep(Duration::from_millis(50));
     }
 }

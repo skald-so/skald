@@ -12,7 +12,7 @@ use crate::at_terminal::{keys_in, shown_key, sign_in};
 use crate::browser::APPROVE;
 use crate::cloud::{GIVE_MASTER, WAIT, certified, ids};
 use crate::grants::shown_grant;
-use crate::linking::codes_in;
+use crate::linking::{WAITS, codes_in, says};
 use crate::terminal::Terminal;
 use crate::with_opener;
 use crate::world::World;
@@ -40,9 +40,7 @@ fn a_new_accounts_first_device_creates_the_master_key_and_shows_its_recovery_key
         "a question: {}",
         shown.text
     );
-    let token = cloud.last_token();
-    assert!(cloud.master(&token).is_some(), "no master key");
-    let devices = cloud.devices(&token);
+    let devices = cloud.devices_under_a_master_key();
     assert_eq!(devices.len(), 1, "{devices:?}");
     assert_eq!(certified(&devices), ids(&devices), "{devices:?}");
 }
@@ -62,7 +60,9 @@ fn a_device_of_an_account_with_a_master_key_waits_for_linking_unasked() {
     let mut run = Terminal::start(&machine, &sign_in(cloud, &[]));
     let grant = shown_grant(cloud, &mut run, before);
     cloud.decide(&world.browser.page(), &ada.user, &grant, APPROVE);
-    let shown = run.wait_for("a link code", |shown| !codes_in(shown).is_empty());
+    let shown = run.wait_for("a link code, waiting", |shown| {
+        !codes_in(shown).is_empty() && says(shown, &[WAITS])
+    });
 
     assert!(!asks_whether_first(&shown), "a question: {shown}");
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
@@ -78,7 +78,7 @@ fn a_device_of_an_account_with_a_master_key_waits_for_linking_unasked() {
 }
 
 /// What a run at a terminal shows once it is past signing in: the recovery key of the account's
-/// first device, or a link code.
+/// first device, or a link code and that it waits.
 #[derive(Debug, PartialEq)]
 enum Outcome {
     Key,
@@ -90,7 +90,7 @@ fn outcome(run: &Terminal) -> Option<Outcome> {
     let shown = run.shown();
     if !keys_in(&shown).is_empty() {
         Some(Outcome::Key)
-    } else if !codes_in(&shown).is_empty() {
+    } else if !codes_in(&shown).is_empty() && says(&shown, &[WAITS]) {
         Some(Outcome::Code)
     } else {
         None
