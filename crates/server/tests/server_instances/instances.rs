@@ -14,7 +14,7 @@ use crate::common::devices::random;
 use crate::common::times::{RETENTION, WEEK};
 use crate::common::{Server, TestDb, hex};
 use crate::fixture::Fixture;
-use crate::link::seqs;
+use crate::link::{Entry, seqs};
 use crate::watch::Watch;
 use crate::wire::{Socket, query};
 
@@ -167,4 +167,22 @@ impl Drop for Role<'_> {
         ));
         self.db.execute(&format!("DROP ROLE IF EXISTS {name}"));
     }
+}
+
+/// `role`'s instance stops listening, alice's `sender` stores an envelope to bob's laptop, and the
+/// instance listens again: `bob` gets it, the `seq`th, and then nothing, no notice again.
+#[track_caller]
+pub fn relisten_quietly(
+    role: &Role,
+    fixture: &Fixture,
+    sender: &mut Socket,
+    bob: &mut Watch,
+    seq: u64,
+) {
+    role.set_login(false);
+    role.end_listening();
+    let (_, missed) = store(sender, fixture, fixture.team.bob.laptop.id);
+    role.set_login(true);
+    assert_eq!(bob.entry_within(RELISTEN), Entry::Message(seq, missed));
+    bob.assert_quiet();
 }

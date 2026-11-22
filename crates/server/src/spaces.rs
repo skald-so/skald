@@ -20,7 +20,7 @@ use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
-use crate::{AppState, history, mailboxes, queues, revocations, sessions};
+use crate::{AppState, history, invites, mailboxes, queues, revocations, sessions};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -145,8 +145,8 @@ impl FromRequestParts<AppState> for Gotten {
     }
 }
 
-/// The space of the request's path, which the session's account gets or the request's service
-/// token is of, as a handler's argument.
+/// The space of the request's path, which the session's account gets or has the acceptance of an
+/// invite to until it ends, or the request's service token is of, as a handler's argument.
 pub(crate) struct Readable(pub(crate) SpaceId);
 
 impl FromRequestParts<AppState> for Readable {
@@ -155,7 +155,13 @@ impl FromRequestParts<AppState> for Readable {
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
         let caller = Caller::from_request_parts(parts, state).await?;
         let space = path_space(parts, state).await?;
-        Ok(Readable(readable(&state.db, &caller, &space).await?))
+        match (readable(&state.db, &caller, &space).await, &caller) {
+            (Err(Refusal::NoSpace), Caller::Session(account)) => {
+                let accepted = invites::accepted(&state.db, &space, account).await?;
+                Ok(Readable(accepted.ok_or(Refusal::NoSpace)?))
+            }
+            (readable, _) => Ok(Readable(readable?)),
+        }
     }
 }
 
@@ -324,30 +330,41 @@ pub(crate) async fn list(State(state): State<AppState>, SignedIn(account): Signe
 
 /// `GET /spaces/<space>/revisions`: the space's revisions as stored, in order.
 pub(crate) async fn revisions(State(state): State<AppState>, Readable(space): Readable) -> Answer {
+    let revisions = stored_revisions(&state.db, space).await?;
+    Ok(Json(Revisions { revisions }).into_response())
+}
+
+/// The revisions of `space` as stored, in order, in base64url.
+pub(crate) async fn stored_revisions(db: &PgPool, space: SpaceId) -> Result<Vec<String>, Refusal> {
     let stored: Vec<(Vec<u8>,)> = sqlx::query_as(
         "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid ORDER BY revision",
     )
     .bind(space.to_string())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|err| Refusal::Database("read the revisions", err))?;
-    let revisions = stored.iter().map(|(roster,)| base64(roster)).collect();
-    Ok(Json(Revisions { revisions }).into_response())
+    Ok(stored.iter().map(|(roster,)| base64(roster)).collect())
 }
 
 /// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
 /// accounts' revocations and account records, and which of them are deleted.
 pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Readable) -> Answer {
+    Ok(Json(space_devices(&state.db, space).await?).into_response())
+}
+
+/// The devices of the accounts the revisions of `space` list, with those accounts' revocations and
+/// account records, and which of them are deleted.
+pub(crate) async fn space_devices(db: &PgPool, space: SpaceId) -> Result<Devices, Refusal> {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
          WHERE account_id IN (SELECT account_id FROM roster_members WHERE space_id = $1::uuid)
          ORDER BY registered_at, id",
     )
     .bind(space.to_string())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
-    let revocations = revocations::of_space(&state.db, space).await?;
+    let revocations = revocations::of_space(db, space).await?;
     let accounts: Vec<(String, Option<Vec<u8>>, bool)> = sqlx::query_as(
         "SELECT id::text, record, deleted_at IS NOT NULL FROM accounts
          WHERE (record IS NOT NULL OR deleted_at IS NOT NULL)
@@ -355,7 +372,7 @@ pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Read
          ORDER BY id",
     )
     .bind(space.to_string())
-    .fetch_all(&state.db)
+    .fetch_all(db)
     .await
     .map_err(|err| Refusal::Database("read the space's account records", err))?;
     let (mut records, mut deleted) = (Vec::new(), Vec::new());
@@ -366,7 +383,7 @@ pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Read
         }
     }
     let devices = Devices::of(listed, &revocations).with_records(&records);
-    Ok(Json(devices.with_deleted(deleted)).into_response())
+    Ok(devices.with_deleted(deleted))
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
@@ -826,6 +843,13 @@ async fn insert(
     history::added(&mut tx, roster, previous)
         .await
         .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
+    // An invite ends once a stored revision lists a member with it.
+    let invites: Vec<String> = (body.members.iter())
+        .filter_map(|member| member.invite.map(|invite| invite.to_string()))
+        .collect();
+    invites::admitted(&mut tx, space, &invites)
+        .await
+        .map_err(|err| Refusal::Database("end the invites of admitted members", err))?;
     // A token ends once the latest revision lists its device in no service agent entry.
     let agents: Vec<String> = body
         .service_agents
