@@ -1,10 +1,12 @@
 //! Erasing a deleted account's data: 30 days after an account's deletion ([`crate::deletion`]), the
 //! server looks by itself for the account and erases everything of it, whether or not every channel
 //! has removed its devices, but for what the spaces it shared need: for each space whose revisions
-//! list it, those revisions, the history entries its devices wrote, its devices' certificates and
-//! revocations, and that it was deleted. Those go with the last such space. A space it created
-//! keeps no creator, so it counts against no account's owned spaces.
+//! list it, those revisions, the history entries and the wraps its devices wrote, its devices'
+//! certificates and revocations, and that it was deleted. Those go with the last such space. Its
+//! devices' handshake messages stay in members' mailboxes until fetched. A space it created keeps
+//! no creator, so it counts against no account's owned spaces.
 
+use skald_proto::{Cbor as _, QueueKey};
 use sqlx::{PgConnection, PgPool};
 
 use crate::sweeps::{self, PAGE, PAUSE};
@@ -68,6 +70,10 @@ async fn sweep(db: &PgPool) -> Result<(), sqlx::Error> {
 /// Erases `account`, a deleted one, on `conn`, in its transaction, unless it is erased already: it
 /// keeps the account's row with its ID and deletion, and its certified devices' rows with what
 /// their certificates hold.
+///
+/// A wrap its devices signed to another account's recovery key or browser stays: readers check it
+/// with the signer's certificate, revoked or not, and only a member device of its epoch could make
+/// another (`docs/protocol/membership.md`, "Wraps", "Uploads").
 async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error> {
     let due: Option<(i32,)> =
         sqlx::query_as("SELECT 1 FROM accounts WHERE id = $1::uuid AND NOT erased FOR UPDATE")
@@ -83,29 +89,27 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
             .fetch_all(&mut *conn)
             .await?;
     let devices: Vec<String> = devices.into_iter().map(|(device,)| device).collect();
-    // Each statement takes the account as $1 and its devices as $2. The invites its devices signed
-    // expired by now, 30 days at most after the server stored them.
+    erase_queue_keys(conn, account, &devices).await?;
+    // Each statement takes the account as $1 and its devices as $2. Its sessions, service tokens,
+    // KeyPackages, presence values and revision long polls went at its deletion; the invites its
+    // devices signed expired by now, 30 days at most after the server stored them.
     for statement in [
-        // Its devices' messages still waiting, and the statuses of messages to them.
+        // Its devices' messages still waiting, but for handshake messages, which members need to
+        // follow the group, and the statuses of messages to them.
         "DELETE FROM entries
-         WHERE recipient_id = ANY($2::text[]::uuid[]) OR envelope_id IN (
-             SELECT id FROM envelopes WHERE sender_id = ANY($2::text[]::uuid[]))",
-        "DELETE FROM envelopes WHERE sender_id = ANY($2::text[]::uuid[])",
+         WHERE recipient_id = ANY($2::text[]::uuid[]) OR (NOT lasting AND envelope_id IN (
+             SELECT id FROM envelopes WHERE sender_id = ANY($2::text[]::uuid[])))",
+        "DELETE FROM envelopes v
+         WHERE sender_id = ANY($2::text[]::uuid[])
+             AND NOT EXISTS (SELECT 1 FROM entries e WHERE e.envelope_id = v.id)",
         "DELETE FROM mailboxes WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM sends
          WHERE sender_id = ANY($2::text[]::uuid[]) OR recipient_id = ANY($2::text[]::uuid[])",
         "DELETE FROM counted_messages WHERE sender_id = ANY($2::text[]::uuid[])",
-        "DELETE FROM key_packages WHERE device_id = ANY($2::text[]::uuid[])",
-        "DELETE FROM presence_values WHERE device_id = ANY($2::text[]::uuid[])",
-        "DELETE FROM long_poll_revisions WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM long_poll_link_runs WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM device_challenges WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM link_runs
          WHERE account_id = $1::uuid OR device_id = ANY($2::text[]::uuid[])",
-        "DELETE FROM sessions
-         WHERE account_id = $1::uuid OR device_id = ANY($2::text[]::uuid[])
-             OR key_device = ANY($2::text[]::uuid[])",
-        "DELETE FROM service_tokens WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM device_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_user_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_pairings WHERE account_id = $1::uuid",
@@ -129,7 +133,8 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
         "UPDATE spaces SET creator_id = NULL WHERE creator_id = $1::uuid",
         "DELETE FROM devices WHERE account_id = $1::uuid AND cert IS NULL",
         "UPDATE devices SET anchors = NULL WHERE account_id = $1::uuid AND anchors IS NOT NULL",
-        "UPDATE accounts SET master = NULL, record = NULL, backup = NULL, erased = true
+        "UPDATE accounts
+         SET created_at = NULL, master = NULL, record = NULL, backup = NULL, erased = true
          WHERE id = $1::uuid",
     ] {
         sqlx::query(statement)
@@ -138,5 +143,42 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
             .execute(&mut *conn)
             .await?;
     }
+    Ok(())
+}
+
+/// Deletes the queue key objects that `devices`, those of `account`, signed in the channels of the
+/// spaces whose revisions list it, on `conn`: no device seals to the key of a revoked signer
+/// (`docs/protocol/queues.md`, "Queue key"), and a member device uploads one in place of a deleted
+/// one.
+async fn erase_queue_keys(
+    conn: &mut PgConnection,
+    account: &str,
+    devices: &[String],
+) -> Result<(), sqlx::Error> {
+    let objects: Vec<(String, i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT k.channel_id::text, k.epoch, k.object FROM queue_keys k
+         JOIN channels c ON c.id = k.channel_id
+         WHERE c.space_id IN (SELECT space_id FROM roster_members WHERE account_id = $1::uuid)",
+    )
+    .bind(account)
+    .fetch_all(&mut *conn)
+    .await?;
+    let (mut channels, mut epochs) = (Vec::new(), Vec::new());
+    for (channel, epoch, object) in objects {
+        // The server decoded each object when it took it.
+        let signed = QueueKey::from_cbor(&object).ok();
+        if signed.is_some_and(|signed| devices.contains(&signed.body().signer.to_string())) {
+            channels.push(channel);
+            epochs.push(epoch);
+        }
+    }
+    sqlx::query(
+        "DELETE FROM queue_keys k USING unnest($1::text[], $2::bigint[]) AS o (channel, epoch)
+         WHERE k.channel_id = o.channel::uuid AND k.epoch = o.epoch",
+    )
+    .bind(&channels)
+    .bind(&epochs)
+    .execute(conn)
+    .await?;
     Ok(())
 }

@@ -1,6 +1,7 @@
 -- Erasing a deleted account's data (docs/dev/architecture.md, "Data model"): whether the server has
--- erased the account, 30 days after its deletion.
+-- erased the account, 30 days after its deletion; an erased account keeps no sign-up time.
 ALTER TABLE accounts
+    ALTER COLUMN created_at DROP NOT NULL,
     ADD COLUMN erased boolean NOT NULL DEFAULT false,
     ADD CONSTRAINT accounts_erased_once_deleted CHECK (NOT erased OR deleted_at IS NOT NULL);
 CREATE INDEX accounts_to_erase ON accounts (deleted_at) WHERE deleted_at IS NOT NULL AND NOT erased;
