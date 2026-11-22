@@ -32,6 +32,8 @@ use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
 use crate::state::{CodexSession, State};
+#[cfg(unix)]
+use crate::codex_app_server;
 use crate::{claude_socket, hook, recv};
 
 /// How long a hook waits for its run before it prints nothing.
@@ -316,6 +318,9 @@ pub struct Served {
     live: BTreeMap<String, Live>,
     /// When the last intake failed, if it did.
     failed: Option<Instant>,
+    /// The clients on the sessions' app-servers.
+    #[cfg(unix)]
+    watchers: codex_app_server::Watchers,
 }
 
 /// A registered session the helper serves: when its process was last seen running, and whether
@@ -346,6 +351,8 @@ impl Served {
             loaded: None,
             live: BTreeMap::new(),
             failed: None,
+            #[cfg(unix)]
+            watchers: codex_app_server::Watchers::default(),
         }
     }
 
@@ -383,8 +390,11 @@ impl Served {
                 let _ = state.end_codex(thread);
             }
         }
-        for thread in gone {
-            self.live.remove(&thread);
+        if !gone.is_empty() {
+            for thread in gone {
+                self.live.remove(&thread);
+            }
+            self.watch(dir);
         }
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut runs: BTreeMap<SpaceId, (String, PathBuf)> = BTreeMap::new();
@@ -425,6 +435,16 @@ impl Served {
             };
             self.live.insert(thread, served);
         }
+        self.watch(dir);
+    }
+
+    /// Keeps a client on the app-server of each live session's config home, by the state in
+    /// `dir` ([`codex_app_server`]).
+    fn watch(&mut self, dir: &Path) {
+        #[cfg(unix)]
+        (self.watchers).keep(dir, self.live.values().map(|live| &live.session));
+        #[cfg(windows)]
+        let _ = dir;
     }
 
     /// Takes in as `agent` in its `folder`, handing nothing over ([`claude_socket::run_as`]).
