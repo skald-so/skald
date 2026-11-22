@@ -102,8 +102,7 @@ fn waiting(
 /// The line that says `device` waits.
 fn line(device: &WaitingDevice) -> String {
     format!(
-        "skald: the server reports, unverified, that the {} device \"{}\" waits to be linked to \
-         this account: to link it, run skald link",
+        "skald: the server reports, unverified, a {} device \"{}\" waiting: run skald link",
         printable(&device.kind),
         printable(&device.name)
     )

@@ -156,7 +156,7 @@ link-body = {
 A one-time code the new device shows keys a run of CPace [[draft-irtf-cfrg-cpace-21](https://datatracker.ietf.org/doc/draft-irtf-cfrg-cpace/21/)], a balanced PAKE, between the new device and the issuing device. The server relays the run and never sees the code. The issuing device takes the new device's keys only from the run, and the new device takes its certificate and the master key only from it.
 
 - **Code:** 6 characters of the base32 alphabet [[RFC 4648](https://www.rfc-editor.org/rfc/rfc4648), §6], from a cryptographically secure generator: 30 bits. Shown in two groups of three joined by `-`, e.g. `K7Q-M2X`. Entry ignores case, spaces and `-`, and reads `0`, `1` and `8` as `O`, `I` and `B`.
-- **Pairing:** a run of a new device without a session also has a pairing, 6 characters of the same alphabet that the server picks at random, unique among its open runs. The new device shows the run's pairing and its code as one code of 12 characters, the pairing first, in three groups of four joined by `-`, e.g. `PQRS-TUK7-QM2X`. Each run has its own pairing, so the first 6 characters change with each run. Entry reads them as the code's.
+- **Pairing:** a run of a new device without a session also has a pairing, 6 characters of the same alphabet that the server picks at random, unique among its open runs, and gives only to the new device, before its hello, since CI binds it. The new device shows the run's pairing and its code as one code of 12 characters, the pairing first, in three groups of four joined by `-`, e.g. `PQRS-TUK7-QM2X`. Each run has its own pairing, so the first 6 characters change with each run. Entry reads them as the code's.
 - **Attempts at the new device:** a run is one attempt. The new device runs a code at most 3 times, each time with a fresh `session` and scalar, and spends an attempt when it takes a reply. After the third failed run the code ends: the new device tells its user that the code failed 3 times, and that someone else may have tried if its user did not.
 - **Expiry:** a code ends 5 minutes after the new device shows it, and once a run with it succeeds. A run still open then fails.
 - **Fresh codes:** the new device MUST NOT show a fresh code unless its user asks for one, after a code ends or at any time; asking ends the current code.
@@ -194,7 +194,7 @@ link-grant-body = {
 
 - **Relay:** each message is a CBOR item carried as [Encoding](README.md#encoding) says. The new device sends a hello for each run, and the server relays the run's later messages by `session`. A device's new hello replaces its open run. Paths: [api/openapi.json](../../api/openapi.json).
   - With a session, the new device sends its hello as its account's, naming its device registered there; a `client` device of the account takes the account's latest hello.
-  - Without a session, it sends its hello naming its device, which has no certificate. The server answers with the run's pairing and a token for the run's later messages, which is no session. The first account whose session enters the pairing takes the hello, and the run is then its account's. The server refuses the pairing to other accounts. Once the run's device registers on an account, only that account pairs the run, and a run paired with another account ends.
+  - Without a session, it first opens the run, naming its device, which has no certificate. The server answers with the run's pairing and a token for the run's messages, which is no session. The device then sends its hello as the run's first message with the token; until then no account pairs the run. The first account whose session enters the pairing takes the hello, and the run is then its account's. The server refuses the pairing to other accounts. Once the run's device registers on an account, only that account pairs the run, and a run paired with another account ends.
   - A run without a session is not given as waiting until its device registers on an account; it goes on after that.
   - The server bounds runs without a session: a run's token sends at most 8 later messages, each of at most 4096 bytes; an account enters at most 10 pairings the server does not hold within 15 minutes, then none until the oldest is 15 minutes old.
 - **CPace:** cipher suite CPACE-RISTR255-SHA512, initiator-responder: the new device is A, the issuing device B. PRS is the code's 6 characters as read above, in uppercase ASCII; CI the encoded `["skald link code", account]`, the account ID as a byte string, or in a run started without a session `["skald link code", pairing]`, the pairing's 6 characters in uppercase ASCII as a byte string, also after its device signs in; sid `session`; ADa and ADb empty. A side MUST fail the run on a share that does not decode or a K that is the identity, and MUST NOT reuse a scalar.
@@ -203,8 +203,8 @@ link-grant-body = {
 The new device:
 1. sends a hello and takes the first reply with its `session`;
 2. sends the request: its kind, keys and `name`;
-3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check;
-4. then pins `master`, signs `proof` and stores the complete certificate on the server: with its session, or without one in the request for its [device key session](#device-key-session).
+3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check. Without a session it cannot list the issuer's certificate, so it keeps the grant as unchecked and checks `signature` and the link object once its device key session gives it one. If that check fails, it drops the grant, ends the session and pins nothing;
+4. then signs `proof` and stores the complete certificate on the server: with its session, or without one in the request for its [device key session](#device-key-session). It pins `master` only once step 3 passed.
 
 The issuing device:
 1. tells its user to enter only a code shown on their own device, takes the account's latest hello, or for 12 characters the hello of their pairing, and sends a reply;
@@ -330,6 +330,7 @@ A client MUST warn its user when:
 - an account record's `recovery` changes;
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
+- its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
@@ -342,6 +343,16 @@ Two people check that their devices see the same master key for each other's acc
 - Two people compare the fingerprints their devices show for their own accounts over a channel they trust, such as in person or on a call; a fingerprint the server or a message gives proves nothing.
 - A device marks an account verified, for that master key, only on its person's yes to whether the fingerprint matches; an agent never marks one. A verification stays on the device that made it.
 - A verified account whose `master` changes in an accepted revision is no longer verified, and the device warns ([Device checks](#device-checks)).
+
+### Domain
+An organization lists its accounts' fingerprints in its domain's DNS, and member devices of a space whose policy names the domain check its members against them.
+
+- **Records:** TXT records at `_skald.<domain>`, one per account, its strings joined: the account ID as text, one space and the account's fingerprint as above, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10 01234 56789 …`, with no other whitespace. A TXT record of another form lists nothing.
+- **Domain name:** two labels or more joined by `.`, each of 1 to 63 lowercase ASCII letters, digits and `-`, none starting or ending with `-`; at most 246 characters, so `_skald.<domain>` fits in 253; no trailing dot. A device checks nothing against a `domain` of another form.
+- **Lookup:** with DNS over HTTPS [[RFC 8484](https://www.rfc-editor.org/rfc/rfc8484)] at the resolver the device's setting names. The device keeps the records for their TTL, or for an answer without records the negative TTL [[RFC 2308](https://www.rfc-editor.org/rfc/rfc2308)], and looks them up again after it. A resolver that fails leaves the members not checked.
+- A member the records list with the fingerprint the device shows for it is listed by the domain. One they list only with other fingerprints, and an admin they do not list, are key changes, and the device warns ([Device checks](#device-checks)). Other members they do not list show nothing.
+- The check comes on top of the roster, never instead of it: it changes no master key, role or device check.
+- DNSSEC is not checked: [threat model](../threat-model.md#trade-offs).
 
 ## Trust levels
 A recipient device sets the level of each message it accepts from the sending device, the one its scheme authenticates ([Envelope](README.md#envelope)), and of each task it claims from its `sender` ([Claim checks](queues.md#claim-checks)). The level sets how a message's text reaches the agent ([Device to agent](delivery.md#device-to-agent)) and a task's rights ([Running a task](queues.md#running-a-task)).
@@ -432,6 +443,7 @@ policy = {
   1 => [peer: mode, service: mode],  ; ceilings: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
   ? 3 => [own: wake, peer: wake, service: wake],  ; wakes: per trust level
+  ? 4 => tstr,             ; domain: the organization's domain name
   * int => any,            ; fields of later versions
 }
 
@@ -447,7 +459,8 @@ wake-pull = 3
 - `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
 - `wakes`: the most waking delivery mode for messages of each sender trust level, in every channel of the space ([Device to agent](delivery.md#device-to-agent)). Absent, there is no ceiling. A device takes a wake mode it does not know as `pull`.
-- A new space starts with `[read-only, read-only]`, 30 days and no `wakes`.
+- `domain`: [Domain](#domain).
+- A new space starts with `[read-only, read-only]`, 30 days, no `wakes` and no `domain`.
 
 ## Invite
 An admin invites a person by link. The link's secret proves the newcomer is the one invited and never reaches the server.
@@ -633,7 +646,7 @@ A browser writes entries only in the epoch of the channel's latest GroupInfo, un
 - The sender of each Commit uploads the new epoch's link and wraps. Any member device of an epoch uploads those it finds missing and can make.
 - Devices can judge an epoch differently, for example when only one has seen a revocation, so each uploads the link its own judgment gives.
 - A device never uploads again a link the server has had, having taken it from the device or listed it to it, nor one the server refused: a link that retention deleted stays deleted.
-- A device uploads each link, wrap and entry in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
+- A device uploads each link, wrap, entry and [queue key object](queues.md#queue-key-object) in a [`history`](delivery.md#frames) frame on its connection, which proves its key ([Connecting](delivery.md#connecting)). A session or a service token alone uploads none. A member `service` device uploads on a connection of its service token, as any member device does, in the token's channels only.
 - The server keeps the first link per channel, epoch and `prev` and the first wrap per channel, epoch and recipient, each only from a member device of its epoch. A later one changes nothing.
 - It answers `history-stored` when it keeps the item or keeps one in its place already, and otherwise `history-refused`, keeping nothing, with one of these problems. A client treats a problem it does not know as a refusal too.
 
@@ -692,7 +705,7 @@ A reader MUST drop an entry unless:
 - A recovery key holds 60 bits. Whoever holds the server's database tests a guess at an account's key offline, with its record or backup, at the cost of one [derivation](#account): about a second of a laptop core, with 256 MiB of memory. The salt makes each guess good for one account. Finding a key takes 2^59 derivations on average, about 18 billion laptop-years; hardware a million times faster takes about 18,000 years.
 - A link code holds 30 bits, and a CPace run gives a server or network attacker one online guess at it and no offline test. Each code takes an action of the new device's user, and the new device runs it at most 3 times, whoever answers: an attacker that answers its hellos gives it a certificate, a master key and a link object of its choice with a chance of at most 3 in 2^30 per user action, about 3 in a billion.
 - The new device does not count the issuing device's runs, which the issuing device counts itself: an attacker that answers its entries with hellos of its own gets at most 3 more guesses at each issuing device before it stops. Each issuing device counts only its own runs, so a code allows at most 3 at the new device plus 3 at each issuing device its user enters it on, each guess with a chance of 1 in 2^30. A success there still needs the issuing device's user to confirm the `name` and kind the attacker chose.
-- A run without a session is no account's until a session enters its pairing. A session of any account that knows a pairing can pair the run first and answer the new device's hellos, as the server can: the new device counts its runs whoever answers, so the chance stays at most 3 in 2^30 per action of its user. It spends one of those runs, and the person's issuing device then finds no run. A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes.
+- A run without a session is no account's until a session enters its pairing. A session of any account that knows a pairing can pair the run first and answer the new device's hellos, as the server can: the new device counts its runs whoever answers, so the chance stays at most 3 in 2^30 per action of its user. It spends one of those runs, and the person's issuing device then finds no run. A pairing holds 30 bits, which the server picks unique among the open runs and gives only to the run's device, and an account enters at most 10 pairings the server does not hold per 15 minutes.
 - In a run started without a session, CI binds the pairing: an issuing device completes the run only with a new device that ran it with the pairing its user entered.
 - A device's signing key with its certificate gives a session of its account with no sign-in. A stolen device thus gets a session again after its sessions end, until it is revoked; its revocation ends that session.
 - The issuing device certifies the device whose code its user enters, with the `name` and kind that device chose. A user persuaded to enter someone else's code, such as one a sign-in thief sends, links the thief's device; the issuing device's reminder to enter only a code shown on their own device is the only defense.

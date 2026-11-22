@@ -29,6 +29,12 @@ const STATE_KEY: &str = "mls_state_key";
 /// The `name` of a device whose host name is empty.
 const UNNAMED: &str = "skald device";
 
+/// What a device that waits says when its person may link it with the recovery key instead, and
+/// when it links so.
+pub const RECOVERY_OFFERED: &str =
+    "Or link it with the recovery key: skald sign-in --with-recovery-key";
+const RECOVERING: &str = "Linking with the recovery key: run skald sign-in --with-recovery-key.";
+
 /// The problem of a certificate beyond the devices an account may have.
 pub const DEVICES_LIMIT: &str = "https://skald.so/problems/devices-limit";
 
@@ -62,21 +68,19 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::MissingKeys => f.write_str(
-                "the secrets lack this device's private keys; skald never replaces them: \
-                 restore the secrets that held them",
+                "the secrets lack this device's private keys: restore the secrets that held \
+                 them",
             ),
             Error::UnreadableKeys => f.write_str(
-                "the secrets hold this device's private keys in a form skald cannot read; skald \
-                 never replaces them: restore the secrets that held them",
+                "this device's private keys in the secrets are unreadable: restore the secrets",
             ),
             Error::OtherKeys(device) => write!(
                 f,
-                "the private keys in the secrets are not those of this device, {device}; skald \
-                 never replaces them: restore the secrets that held them"
+                "the private keys in the secrets are not this device's, {device}: restore the \
+                 secrets"
             ),
             Error::MissingStateKey => f.write_str(
-                "the secrets lack the key of this device's MLS state; skald never replaces it: \
-                 restore the secrets that held it",
+                "the secrets lack this device's MLS state key: restore the secrets that held it",
             ),
             Error::Name(name) => write!(
                 f,
@@ -92,9 +96,8 @@ impl std::fmt::Display for Error {
                 "the server has this device's ID with other keys or name, or on another account",
             ),
             Error::DevicesLimit => f.write_str(
-                "the account has as many devices as it may on this server, so the server does not \
-                 store this device's certificate yet; once a device of the account is revoked, the \
-                 next skald command on this machine stores it",
+                "the account has as many devices as it may: revoke one, then run skald sign-in \
+                 again",
             ),
             Error::NoMasterKey => f.write_str(
                 "the account has no master key, so no recovery key: run skald sign-in without \
@@ -320,6 +323,29 @@ pub fn master_key(connection: &mut Connection, token: &str) -> Result<MasterKey,
         .map_err(|_| sign_in::Error::Unexpected("a master key answer without its key".to_owned()))
 }
 
+/// `POST /devices` of the device of `keys`, named `name`, with the session `token`: the same
+/// registration again, after a lost answer, is taken too.
+pub fn register(
+    connection: &mut Connection,
+    token: &str,
+    keys: &Keys,
+    name: &str,
+) -> Result<(), sign_in::Error> {
+    let registration = Registration {
+        device: keys.id().to_string(),
+        kind: "client",
+        signing: URL_SAFE_NO_PAD.encode(keys.signing.public_key()),
+        hpke: URL_SAFE_NO_PAD.encode(keys.hpke.public_key()),
+        name,
+    };
+    let body = serde_json::to_vec(&registration).expect("a registration is JSON");
+    match connection.send_json_as(Method::Post, "/devices", token, &body) {
+        Ok(_) => Ok(()),
+        Err(connection::Error::Refused { status: 409, .. }) => Err(Error::DeviceTaken.into()),
+        Err(err) => Err(err.into()),
+    }
+}
+
 /// `device`, the machine's own device in `state`, with its keys `keys`, signed in to `account`
 /// with the session `token`: it registers if it has not, then links as the account's first device
 /// or waits for linking. A recovery key it creates goes to `stored`, the secrets, kept in
@@ -352,7 +378,7 @@ impl Setup<'_> {
         }
         match self.device.link.clone() {
             Link::Certified { .. } => {
-                println!("This device holds its certificate, signed by the account's master key.");
+                println!("This device holds its certificate.");
                 self.say_if_no_recovery_key();
                 Ok(())
             }
@@ -362,16 +388,17 @@ impl Setup<'_> {
                 self.wait(offered)
             }
             Link::Recovering { .. } => {
-                println!(
-                    "This device is linking with the account's recovery key: to finish, run skald \
-                     sign-in --with-recovery-key at a terminal."
-                );
+                println!("{RECOVERING}");
                 self.wait(false)
             }
             Link::Granted { master, cert, link } => {
                 link_code::store(self.connection, self.state, self.token, master, cert, link)?;
                 Ok(())
             }
+            // Checked once the device has a session, before it sets up.
+            Link::Unchecked { .. } => Err(sign_in::Error::Unexpected(
+                "a grant not checked yet".to_owned(),
+            )),
             Link::Sent {
                 master,
                 cert,
@@ -390,42 +417,29 @@ impl Setup<'_> {
             return Ok(());
         };
         if offered {
-            println!(
-                "To link this device with the account's recovery key instead, run skald sign-in \
-                 --with-recovery-key at a terminal."
-            );
+            println!("{RECOVERY_OFFERED}");
         }
+        let presses = person.presses("Fresh code").map_err(sign_in::Error::Io)?;
         link_code::show(
             &mut link_code::NewDevice {
                 connection: self.connection,
                 state: self.state,
-                token: self.token,
-                account: self.account,
+                token: Some(self.token.to_owned()),
+                account: Some(self.account),
                 device: &self.device,
                 keys: self.keys,
+                sessionless: false,
             },
-            person,
+            (person, &presses),
+            link_code::NOT_LINKED,
+            |_| Ok(false),
         )
+        .map(drop)
     }
 
-    /// `POST /devices`: the same registration again, after a lost answer, is taken too.
+    /// `POST /devices` ([`register`]).
     fn register(&mut self) -> Done {
-        let registration = Registration {
-            device: self.keys.id().to_string(),
-            kind: "client",
-            signing: URL_SAFE_NO_PAD.encode(self.keys.signing.public_key()),
-            hpke: URL_SAFE_NO_PAD.encode(self.keys.hpke.public_key()),
-            name: &self.device.name,
-        };
-        let body = serde_json::to_vec(&registration).expect("a registration is JSON");
-        match self
-            .connection
-            .send_json_as(Method::Post, "/devices", self.token, &body)
-        {
-            Ok(_) => Ok(()),
-            Err(connection::Error::Refused { status: 409, .. }) => Err(Error::DeviceTaken.into()),
-            Err(err) => Err(err.into()),
-        }
+        register(self.connection, self.token, self.keys, &self.device.name)
     }
 
     /// `GET /account/master`, then [`no_recovery_key`] on its record; an answer it does not get
@@ -520,21 +534,14 @@ impl Setup<'_> {
         {
             Ok(_) => {
                 self.state.set_link(&Link::Certified { master, cert })?;
-                println!(
-                    "Created the account's master key and issued this device's certificate with \
-                     it: the device holds its certificate. The server keeps the master key sealed \
-                     to the account's recovery key."
-                );
+                println!("Created the account's master key; this device holds its certificate.");
                 Ok(())
             }
             Err(connection::Error::Refused { status: 409, .. }) => {
                 recovery::forget(self.secrets, self.stored)?;
                 self.state.set_recovery_waits(None)?;
                 self.state.set_link(&Link::Waiting)?;
-                println!(
-                    "Another device gave the account's master key first: this device dropped its \
-                     own."
-                );
+                println!("Another device created the account's master key first: this one waits.");
                 self.wait(false)
             }
             Err(err) => Err(err.into()),
@@ -580,20 +587,15 @@ fn own_certificate(body: &CertBody, keys: &Keys) -> Result<Created, Error> {
 
 /// Says that the account has no recovery key when its master key has no account `record`, as on
 /// an account made before recovery keys.
-fn no_recovery_key(record: Option<&str>) {
+pub fn no_recovery_key(record: Option<&str>) {
     if record.is_none() {
-        println!(
-            "This account has no recovery key: it was made before recovery keys, and none can be \
-             made for it."
-        );
+        println!("This account has no recovery key: it predates them.");
     }
 }
 
 /// Says that the device waits for linking.
 fn waits() {
-    println!(
-        "This device is not linked yet: it waits for linking by a linked device of the account."
-    );
+    println!("Not linked yet. Run skald sign-in at a terminal for a link code.");
 }
 
 #[cfg(test)]

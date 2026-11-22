@@ -2,10 +2,10 @@
 // Tests .github/workflows/e2e.yml, which runs the e2e tests of the client and of the adapters
 // against the latest Claude Code:
 //   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_relay.rs,
-//     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, recv.rs, state.rs and wait.rs of the
-//     client, and crates/adapters), the Claude Code plugin (.claude-plugin/ and
-//     plugins/claude-code/), its e2e or hook tests, a module the e2e tests take by #[path]
-//     or include!, found by following them from claude_code_e2e/main.rs and
+//     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, permission_prompts.rs, recv.rs,
+//     state.rs and wait.rs of the client, and crates/adapters), the Claude Code plugin
+//     (.claude-plugin/ and plugins/claude-code/), its e2e or hook tests, a module the e2e tests take
+//     by #[path] or include!, found by following them from claude_code_e2e/main.rs and
 //     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
 //     it;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
@@ -89,6 +89,7 @@ for (const changed of [
   'crates/client/src/hook.rs',
   'crates/client/src/main.rs',
   'crates/client/src/mcp.rs',
+  'crates/client/src/permission_prompts.rs',
   'crates/client/src/recv.rs',
   'crates/client/src/state.rs',
   'crates/client/src/wait.rs',

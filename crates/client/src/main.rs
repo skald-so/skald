@@ -42,6 +42,7 @@ mod copies;
 mod delivery;
 mod device;
 mod devices;
+mod domains;
 mod events;
 mod fingerprints;
 mod folders;
@@ -68,10 +69,12 @@ mod mcp;
 mod message_status;
 mod output;
 mod page;
+mod permission_prompts;
 mod person;
 mod plain_path;
 mod presence;
 mod proxy;
+mod queue_keys;
 mod queues;
 mod receipts;
 mod records;
@@ -235,22 +238,29 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: String,
     },
-    /// Signs this machine in to the server: it opens the server's sign-in page with its code filled
-    /// in, in the browser BROWSER names or the system's default, and prints the page's link for a
-    /// browser on any device; its person approves the code there. Run again, checks the session
-    /// with the server and says which account it is signed in to.
+    /// Signs this machine in to the server, or links its device with no sign-in. Run again, checks
+    /// the session with the server and says which account it is signed in to.
+    ///
+    /// Run by its person, a machine without a session and a linked device shows two ways at once.
+    /// One is the server's sign-in page: it opens it with its code filled in, in the browser BROWSER
+    /// names or the system's default, and prints its link for a browser on any device; its person
+    /// approves the code there. The other is a link code to type into skald link on a linked device
+    /// of the account: the code alone links the device, with no sign-in, and the device then gets
+    /// a session by its own key. Whichever finishes first wins. A code works for 5 minutes and up
+    /// to 3 runs; a failed run of a 12-character code changes its first 6 characters; Enter asks
+    /// for a fresh one. Without its person, it shows only the sign-in page.
     ///
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
     /// registers the device. On an account the server reports no master key for, the device is the
     /// account's first: it creates the account's master key, issues its own certificate with it and
     /// signs the account's personal space as its admin; on any other, the device waits for
-    /// linking. Run by its person at a terminal, it shows a link code to type into
-    /// skald link on a linked device of the account, and exits once that device linked it; Enter
-    /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
-    /// others add it to channels, on the server, here and on each skald send and skald recv.
+    /// linking: run by its person, it shows a link code and exits once a linked device linked it.
+    /// A device that holds its certificate keeps its KeyPackages, with which others add it to
+    /// channels, on the server, here and on each skald send and skald recv.
     ///
-    /// With --browser, as its person or as an agent, it asks its person on a local page it opens in
-    /// the browser instead: the link codes or the recovery key it shows. Its output holds neither.
+    /// With --browser, as its person or as an agent, it shows its person a local page it opens in
+    /// the browser instead: the sign-in link, the link codes or the recovery key. Its output holds
+    /// neither code nor key.
     ///
     /// With --with-recovery-key, a device that waits for linking links with the account's recovery
     /// key instead, only as its person at a terminal, who types the key there without echo. It
@@ -369,6 +379,15 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
+        #[arg(
+            long,
+            env = "SKALD_DNS_RESOLVER",
+            value_name = "URL",
+            hide = true,
+            default_value = domains::RESOLVER
+        )]
+        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -532,6 +551,26 @@ enum Command {
         #[arg(value_name = "PERIOD", value_parser = history_period)]
         period: u64,
     },
+    /// Names an organization's domain in the policy of a space this device follows, on a device of
+    /// an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then check the members against the fingerprints the
+    /// domain's DNS lists in TXT records at _skald.<domain>, each "<account ID> <fingerprint>", as
+    /// skald members shows.
+    SetDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The domain in lowercase, such as example.com.
+        #[arg(value_name = "DOMAIN", value_parser = domains::name)]
+        domain: String,
+    },
+    /// Clears the domain of a space this device follows, on a device of an admin of it, by the
+    /// space's next roster revision, which the device signs as skald create-channel does.
+    ClearDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+    },
     /// Makes a member of a space this device follows an admin, on a device of an admin of it, by the
     /// space's next roster revision, which the device signs as skald create-channel does.
     MakeAdmin {
@@ -673,7 +712,9 @@ enum Command {
     /// channel's presence. Without --deadline, a task a device of another account may claim gets
     /// one 7 days after enqueue. Says the task's ID and #<ref>; as an agent, only enqueued
     /// #<ref>. A task the server has not answered waits in the local state, and the next skald
-    /// enqueue or skald recv uploads it first, with the same bytes.
+    /// enqueue or skald recv uploads it first, with the same bytes. A stateless service agent's
+    /// run encrypts it to the queue key the channel's member devices publish, and fails unless the
+    /// server stores it within the run.
     Enqueue {
         /// The channel's ID, as skald channels shows it [default: the default channel of the
         /// working directory's space].
@@ -1089,9 +1130,9 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// SessionStart, SessionEnd, PostToolUse and Stop; Codex's SessionStart, PostToolUse,
-    /// UserPromptSubmit and Stop. It reads the hook input on standard input and runs in its
-    /// folder, as the agent --agent names or, without it, the agent the session's skald mcp
+    /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification; Codex's
+    /// SessionStart, PostToolUse, UserPromptSubmit and Stop. It reads the hook input on standard
+    /// input and runs in its folder, as the agent --agent names or, without it, the agent the session's skald mcp
     /// registers by default. SessionStart registers the session with the helper, starting one if
     /// none runs. On Claude Code, the helper writes the agent's messages into the session's
     /// cross-session socket as they come, and SessionEnd ends that; PostToolUse and Stop give the
@@ -1102,8 +1143,11 @@ enum Command {
     /// delivery-modes. A message longer than the limit is cut, and skald recv #<ref> shows it
     /// whole. Stop continues the turn with them, up to the CLI's cap of continuations in a row. On
     /// Codex, every message goes in only as that line, once for the new ones, to the session whose
-    /// hook ran last, and the hooks never wait on the network. It prints nothing while nothing
-    /// waits, and on a failure, which exits with 1.
+    /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
+    /// and a Notification of a permission prompt record that the session waits on its permission
+    /// prompt, once per prompt, which the person's skald recv shows once, without the prompt's
+    /// content. It prints nothing while nothing waits, on PermissionRequest and Notification, and
+    /// on a failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -1148,6 +1192,8 @@ impl Command {
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::SetHistoryPeriod { .. } => Some("set-history-period"),
+            Command::SetDomain { .. } => Some("set-domain"),
+            Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
             Command::AddRule { .. } => Some("add-rule"),
@@ -1201,6 +1247,8 @@ impl Command {
                 | Command::AddToChannel { .. }
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
+                | Command::SetDomain { .. }
+                | Command::ClearDomain { .. }
                 | Command::MakeAdmin { .. }
                 | Command::HandOverAdmin { .. }
                 | Command::Address
@@ -1457,11 +1505,13 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
     }
 }
 
-/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
-/// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
-/// holding the lock of the state directory, which it creates if it is missing. Without a state
-/// directory the run is stateless: it takes no lock and does not wait.
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv`, the
+/// commands of tasks a member runs ([`claims`]) and `skald enqueue` without a state directory, as no
+/// agent, in this process, without a helper, holding the lock of the state directory, which it
+/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
+/// does not wait.
 fn as_service(operation: Operation) -> ExitCode {
+    let stateless = operation.state_dir.is_none();
     if !matches!(
         operation.command,
         Command::Send { .. }
@@ -1470,17 +1520,19 @@ fn as_service(operation: Operation) -> ExitCode {
             | Command::Extend { .. }
             | Command::Complete { .. }
             | Command::Fail { .. }
-    ) || operation.agent.is_some()
+    ) && !(stateless && matches!(operation.command, Command::Enqueue { .. }))
+        || operation.agent.is_some()
     {
         return exit(Err(format!(
             "with {} and {} set, skald runs as the service agent of the key secret, which only \
              sends and receives, and as a member runs tasks: skald send, skald recv, skald claim, \
-             skald extend, skald complete and skald fail, without --agent",
+             skald extend, skald complete and skald fail, without --agent; without \
+             SKALD_STATE_DIR it also enqueues: skald enqueue",
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
     }
-    if operation.state_dir.is_none() {
+    if stateless {
         if operation.command.waits() {
             return exit(Err(
                 "a service agent's skald recv --wait needs a state directory: \
@@ -1582,6 +1634,7 @@ fn run_hook(
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         input.session.process = codex::parent();
+        input.session.codex = input.session.process.and_then(codex::exe_of);
     } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
@@ -1963,7 +2016,10 @@ fn performed(operation: Operation) -> Result<(), String> {
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members { space } => synced(
+        Command::Members {
+            space,
+            dns_resolver,
+        } => synced(
             state_dir,
             key_storage,
             speaks,
@@ -1971,7 +2027,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(spaces::members),
+        .and_then(|synced| spaces::members(synced, (&dns_resolver, timeout))),
         Command::Fingerprint { space: None, .. } => {
             state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
         }
@@ -2057,6 +2113,16 @@ fn performed(operation: Operation) -> Result<(), String> {
             (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
+        ),
+        Command::SetDomain { space, domain } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(Some(domain)),
+        ),
+        Command::ClearDomain { space } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(None),
         ),
         Command::MakeAdmin { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),
@@ -2266,9 +2332,19 @@ fn performed(operation: Operation) -> Result<(), String> {
             if cli == hook::Cli::Codex {
                 return codex::hook(&dir, &agent, (event, &input.session));
             }
+            // A later hook of the session tells that the prompt it waited on ended.
+            if matches!(
+                event,
+                hook::Event::SessionEnd | hook::Event::PostToolUse | hook::Event::Stop { .. }
+            ) {
+                permission_prompts::ended(&dir, input.session.id.as_deref())?;
+            }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
                 hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                hook::Event::PermissionRequest | hook::Event::PermissionPrompt => {
+                    permission_prompts::told(&dir, &agent, &input)
+                }
                 _ => recv::hook(
                     &dir,
                     key_storage,

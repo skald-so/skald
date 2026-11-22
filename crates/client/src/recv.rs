@@ -88,6 +88,8 @@ use crate::key_chain;
 use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::output::{self, Stream};
+use crate::permission_prompts;
+use crate::queue_keys;
 use crate::queues;
 use crate::receipts;
 use crate::reply;
@@ -450,8 +452,9 @@ fn ack_shown(follower: &mut Follower) -> Result<(), String> {
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]) and the
-/// wraps of their current epochs ([`crate::wraps`]) the server lacks.
+/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]), the
+/// wraps of their current epochs ([`crate::wraps`]) and their queue key objects
+/// ([`crate::queue_keys`]) the server lacks.
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -462,6 +465,7 @@ pub fn align(
     groups::align_with(follower, link);
     key_chain::upload_missing(follower, link, scope);
     wraps::upload_missing(follower, link, scope);
+    queue_keys::upload_missing(follower, link, scope);
     Ok(())
 }
 
@@ -1084,9 +1088,9 @@ pub fn kept_item(seq: u64) -> Vec<u8> {
     [b"kept:".as_slice(), &seq.to_be_bytes()].concat()
 }
 
-/// Shows each warning an agent's run kept for the person, each status and then each kept message
-/// the person's run has yet to show, in `form`, in order, and marks each shown; gives how many
-/// lines it showed.
+/// Shows each warning an agent's run kept for the person, each status, each kept message and then
+/// each recorded permission prompt ([`permission_prompts`]) the person's run has yet to show, in
+/// `form`, in order, and marks each shown; gives how many lines it showed.
 pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> {
     let state = &follower.state;
     let warnings = state.warnings().map_err(text)?;
@@ -1106,15 +1110,15 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
         }),
     )?;
     let kept = state.for_person().map_err(text)?;
-    Ok(shown
-        + shown_kept(
-            follower,
-            kept,
-            (form, &references),
-            (&mut written("a message"), &mut |seq| {
-                state.shown_to_person(seq, follower.service.is_some())
-            }),
-        )?)
+    shown += shown_kept(
+        follower,
+        kept,
+        (form, &references),
+        (&mut written("a message"), &mut |seq| {
+            state.shown_to_person(seq, follower.service.is_some())
+        }),
+    )?;
+    Ok(shown + permission_prompts::show_to_person(state, form)?)
 }
 
 /// Hands each kept status of a message `agent` sent in `space`, then each kept message that waits

@@ -92,7 +92,8 @@ pub fn unb64(text: &str) -> Vec<u8> {
 
 /// What the clouds of a test target share and a test that times the client takes alone
 /// ([`alone`]). Under `cargo test`, the tests of a target are threads of one process: no cloud of
-/// another test then runs beside the timed one. Under nextest, each test is a process of its own.
+/// another test then runs beside the timed one. Under nextest, each test is a process of its own:
+/// `.config/nextest.toml` runs such a test alone.
 static BESIDE: RwLock<()> = RwLock::new(());
 
 thread_local! {
@@ -453,6 +454,14 @@ impl Cloud {
             Value::String(text) => Some(unb64(text).try_into().expect("a 32-byte master key")),
             other => panic!("GET /account/master: {other}"),
         }
+    }
+
+    /// The devices of the account of the session the server gave last, which fails unless the
+    /// account has a master key.
+    pub fn devices_under_a_master_key(&self) -> Vec<Device> {
+        let token = self.last_token();
+        assert!(self.master(&token).is_some(), "no master key");
+        self.devices(&token)
     }
 
     /// The account's devices, from the server, for a session with `token`, each with its

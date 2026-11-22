@@ -216,15 +216,18 @@ fn page_url(html: &str) -> Option<String> {
     })
 }
 
-/// Waits until the stand-in has run after the `before` runs it had, for up to [`RUN_LIMIT`], while
-/// `run` goes on; gives what it was given. Fails unless it was given one argument, a file that
-/// holds a loopback URL with a query.
+/// Waits until `found` gives something of the stand-in's runs so far, the arguments of each, for up
+/// to [`RUN_LIMIT`], while `run` goes on; gives it.
 #[track_caller]
-pub fn wait_for_opening(opener: &Opener, before: usize, run: &mut Run) -> Opening {
+pub fn until_opened<T>(
+    opener: &Opener,
+    run: &mut Run,
+    found: impl Fn(&[Vec<String>]) -> Option<T>,
+) -> T {
     let deadline = Instant::now() + RUN_LIMIT;
-    let args = loop {
-        if let Some(args) = opener.openings().into_iter().nth(before) {
-            break args;
+    loop {
+        if let Some(found) = found(&opener.openings()) {
+            return found;
         }
         assert!(
             !run.exited(),
@@ -237,7 +240,15 @@ pub fn wait_for_opening(opener: &Opener, before: usize, run: &mut Run) -> Openin
             run.shown()
         );
         thread::sleep(Duration::from_millis(50));
-    };
+    }
+}
+
+/// Waits until the stand-in has run after the `before` runs it had, for up to [`RUN_LIMIT`], while
+/// `run` goes on; gives what it was given. Fails unless it was given one argument, a file that
+/// holds a loopback URL with a query.
+#[track_caller]
+pub fn wait_for_opening(opener: &Opener, before: usize, run: &mut Run) -> Opening {
+    let args = until_opened(opener, run, |openings| openings.get(before).cloned());
     assert_eq!(args.len(), 1, "the stand-in's arguments: {args:?}");
     let file = named_file(&args[0]);
     let html = fs::read_to_string(&file)
@@ -411,8 +422,9 @@ pub struct NewOnPage<'b> {
 
 impl<'b> NewOnPage<'b> {
     /// A new machine with the host name `host` and the settings `settings` signs in to `first`'s
-    /// account as an agent with `--browser`; its person approves its code. Gives it once its page
-    /// shows a link code and where it goes.
+    /// account through a pipe, its person approving its code, so it waits for linking with a
+    /// session; then its `skald sign-in` as an agent with `--browser`. Gives it once its page shows
+    /// a link code of its session and where it goes.
     pub fn start(
         world: &'b World,
         first: &Person,
@@ -428,11 +440,13 @@ impl<'b> NewOnPage<'b> {
         let known = ids(&cloud.devices(&first.token));
         let grants = cloud.grants().len();
         let started = cloud.relay.mark();
+        let mut piped = machine.start(&[SIGN_IN, SERVER, &cloud.url]);
+        approve_next_as(world, &first.user, grants, &mut piped);
+        let signed_in = piped.finish();
+        assert!(signed_in.success, "{signed_in:?}");
         let args = as_agent(&[SIGN_IN, SERVER, &cloud.url, PAGE]);
         let mut run = start_with(&machine, opener.program(), &args);
-        approve_next_as(world, &first.user, grants, &mut run);
-        // The stand-in's first run opened the sign-in page; its next, the command's page.
-        let paged = Paged::opened(&world.browser, &opener, 1, &mut run);
+        let paged = Paged::opened(&world.browser, &opener, 0, &mut run);
         paged.wait_for(&mut run, "a link code and where it goes", |text| {
             !codes_in(text).is_empty() && says(text, &["skald link"])
         });

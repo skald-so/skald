@@ -146,9 +146,12 @@ fn miss() {
 pub enum Came {
     #[default]
     Nothing,
-    /// Only messages and `space-notice`s, of these spaces.
-    In(BTreeSet<SpaceId>),
-    /// Anything else too, such as a status, a `link-notice`, or the connection's end.
+    /// Only messages and `space-notice`s, of these spaces, and statuses if `statuses`.
+    In {
+        spaces: BTreeSet<SpaceId>,
+        statuses: bool,
+    },
+    /// Anything else too, such as a `link-notice`, or the connection's end.
     Anything,
 }
 
@@ -160,22 +163,39 @@ impl Came {
         {
             LINKING.store(true, Ordering::SeqCst);
         }
+        let mut status = false;
         let spaces = match frame {
             Got::Entries(entries) => (entries.iter())
-                .map(|push| match push {
-                    Push::Message { envelope, .. } => Some(envelope.envelope().header.space),
-                    Push::SpaceNotice { space } => Some(*space),
-                    Push::LinkNotice | Push::Status { .. } | Push::Unknown(_) => None,
+                .filter_map(|push| match push {
+                    Push::Message { envelope, .. } => Some(Some(envelope.envelope().header.space)),
+                    Push::SpaceNotice { space } => Some(Some(*space)),
+                    Push::Status { .. } => {
+                        status = true;
+                        None
+                    }
+                    Push::LinkNotice | Push::Unknown(_) => Some(None),
                 })
                 .collect::<Option<Vec<_>>>(),
             Got::End | Got::Nothing => None,
         };
         *self = match (std::mem::take(self), spaces) {
             (Came::Anything, _) | (_, None) => Came::Anything,
-            (Came::Nothing, Some(spaces)) => Came::In(spaces.into_iter().collect()),
-            (Came::In(mut all), Some(spaces)) => {
-                all.extend(spaces);
-                Came::In(all)
+            (Came::Nothing, Some(spaces)) => Came::In {
+                spaces: spaces.into_iter().collect(),
+                statuses: status,
+            },
+            (
+                Came::In {
+                    mut spaces,
+                    statuses,
+                },
+                Some(more),
+            ) => {
+                spaces.extend(more);
+                Came::In {
+                    spaces,
+                    statuses: statuses || status,
+                }
             }
         };
     }
@@ -185,7 +205,19 @@ impl Came {
     pub fn concerns(&self, space: Option<SpaceId>) -> bool {
         match self {
             Came::Nothing => false,
-            Came::In(spaces) => space.is_none_or(|space| spaces.contains(&space)),
+            Came::In { spaces, statuses } => {
+                *statuses || space.is_none_or(|space| spaces.contains(&space))
+            }
+            Came::Anything => true,
+        }
+    }
+
+    /// Whether it may hold a message or a `space-notice` within the space `space`: statuses alone
+    /// do not.
+    pub fn brings_messages(&self, space: SpaceId) -> bool {
+        match self {
+            Came::Nothing => false,
+            Came::In { spaces, .. } => spaces.contains(&space),
             Came::Anything => true,
         }
     }
@@ -809,8 +841,8 @@ mod tests {
         assert!(!other.iter().any(blocked));
     }
 
-    /// What came is the spaces of the messages and notices that came, or anything once a status, a
-    /// frame that does not decode or a frame of another kind came.
+    /// What came is the spaces of the messages and notices that came and whether a status came, or
+    /// anything once a frame that does not decode or a frame of another kind came.
     #[test]
     fn what_came_is_its_spaces_or_anything() {
         use skald_proto::{
@@ -852,9 +884,17 @@ mod tests {
             &Frame::Batch(vec![Push::SpaceNotice { space: second }]).to_cbor(),
         );
         add(&mut came, &notice);
-        assert_eq!(came, Came::In([first, second].into()));
+        let spaces = BTreeSet::from([first, second]);
+        assert_eq!(
+            came,
+            Came::In {
+                spaces: spaces.clone(),
+                statuses: false
+            }
+        );
         assert!(came.concerns(Some(first)) && came.concerns(Some(second)) && came.concerns(None));
-        assert!(!came.concerns(Some(other)));
+        assert!(!came.concerns(Some(other)) && !came.brings_messages(other));
+        assert!(came.brings_messages(first) && came.brings_messages(second));
 
         let status = DeliveryStatus {
             msg_id: MessageId::generate(),
@@ -863,16 +903,27 @@ mod tests {
             timestamp: 1_800_000_000,
             unknown: Unknown::default(),
         };
-        for frame in [
-            Frame::Push(Push::Status { seq, status }).to_cbor(),
-            vec![0xff],
-            Frame::Batch(Vec::new()).to_cbor(),
-        ] {
-            let mut came = Came::In([first].into());
+        let status = Frame::Push(Push::Status { seq, status }).to_cbor();
+        let mut came = Came::default();
+        add(&mut came, &status);
+        assert!(came.concerns(Some(other)) && came.concerns(None));
+        assert!(!came.brings_messages(other));
+        add(&mut came, &message(first));
+        add(&mut came, &notice);
+        let statuses = Came::In {
+            spaces,
+            statuses: true,
+        };
+        assert_eq!(came, statuses);
+        assert!(came.concerns(Some(other)) && came.brings_messages(first));
+        assert!(!came.brings_messages(other));
+
+        for frame in [vec![0xff], Frame::Batch(Vec::new()).to_cbor()] {
+            let mut came = statuses.clone();
             add(&mut came, &frame);
             assert_eq!(came, Came::Anything);
             add(&mut came, &message(first));
-            assert!(came.concerns(Some(other)));
+            assert!(came.concerns(Some(other)) && came.brings_messages(other));
         }
     }
 

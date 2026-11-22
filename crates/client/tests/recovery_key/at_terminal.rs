@@ -48,8 +48,22 @@ pub fn first_at_terminal(
 }
 
 /// Every string in `text` in the shown form of a recovery key, 3 groups of 4 characters of
-/// Crockford's base32 joined by `-`, each once, in order.
+/// Crockford's base32 joined by `-`, each once, in order; not a link code of the same form, whose
+/// first 6 characters are a pairing a server gave ([`crate::relay::given_pairings`]).
 pub fn keys_in(text: &str) -> Vec<String> {
+    let pairings = crate::relay::given_pairings();
+    let mut keys = shaped_keys_in(text);
+    keys.retain(|key| {
+        let plain: String = key.chars().filter(|c| *c != '-').collect();
+        !pairings
+            .iter()
+            .any(|pairing| plain.starts_with(pairing.as_str()))
+    });
+    keys
+}
+
+/// Every string in `text` in the shown form of a recovery key, each once, in order.
+fn shaped_keys_in(text: &str) -> Vec<String> {
     const LENGTH: usize = 14;
     let chars: Vec<char> = text.chars().collect();
     let digit = |c: char| "0123456789ABCDEFGHJKMNPQRSTVWXYZ".contains(c);

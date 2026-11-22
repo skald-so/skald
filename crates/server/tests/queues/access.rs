@@ -6,8 +6,7 @@ use skald_proto::TaskId;
 use crate::bot::ops;
 use crate::kit::{DEFAULT, Given, UNKNOWN_TASK, World, assert_problem, queued};
 use crate::presence::{assert_refused_with, assert_unproved};
-use crate::tokens::{QUEUES, RECEIVE, SEND, grant};
-use crate::wire::now;
+use crate::tokens::{QUEUES, RECEIVE, SEND};
 
 /// alice's laptop enqueues a task; bob's and carol's laptops get it, and so does the bot on a token
 /// with `send` for `general`, in the list and on its own.
@@ -45,12 +44,11 @@ fn others_and_a_session_or_token_without_the_proof_read_no_task() {
     alice.stores(&task);
 
     let no_send = w.bot(&[RECEIVE, QUEUES]);
-    let owner = &w.fixture().team.alice;
-    let elsewhere = grant(w.stage.bot.id, &[other], &owner.laptop, now() + 86_400);
-    let created = w
-        .stage
-        .create_as(owner, w.stage.bot.id, &elsewhere, &[SEND, QUEUES]);
-    let other_only = w.bot_on(&created.token, "the bot with send in another channel");
+    let other_only = w.bot_in(
+        other,
+        &[SEND, QUEUES],
+        "the bot with send in another channel",
+    );
     for client in [&dave, &eve, &no_send, &other_only] {
         assert_refused_with(&client.list_tasks(default, true), None, &client.who);
         assert_refused_with(&client.read(default, task.task, true), None, &client.who);

@@ -4458,7 +4458,7 @@
       "post": {
         "operationId": "openSessionlessLinkRun",
         "summary": "Open a run without a session",
-        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The hello names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server gives the run's pairing, which the person enters on the issuing device with the code, and the run's token for its later messages. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
+        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The request names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server picks the run's pairing, which the device's hello binds and the person enters on the issuing device with the code, and gives it with the run's token for its messages; the hello follows as the run's first message, `POST /links/messages`. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4469,7 +4469,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LinkHelloRequest"
+                "$ref": "#/components/schemas/SessionlessLinkRunRequest"
               }
             }
           }
@@ -4491,7 +4491,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-link-message`, for `hello` bytes that do not decode as a `link-hello`.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4626,7 +4626,7 @@
       "post": {
         "operationId": "relaySessionlessLinkMessage",
         "summary": "Relay a later message of a run without a session",
-        "description": "A later message of the run of the request's run token, from its new device: `link-request` or `link-abort` (docs/protocol/membership.md, \"Link code\"). The server stores it as the bytes it got and gives it with the run's messages; a `link-abort` ends the run instead. A run's token sends at most 8 later messages, each of at most 4096 bytes.",
+        "description": "A message of the run of the request's run token, from its new device: first the run's `link-hello`, which the server keeps as the run's hello, then `link-request` or `link-abort` (docs/protocol/membership.md, \"Link code\"). The server stores a later message as the bytes it got and gives it with the run's messages; a `link-abort` ends the run instead. A run's token sends at most 8 later messages after its hello, each message of at most 4096 bytes.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4657,7 +4657,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-link-message`, for bytes that do not decode as a link message, a `link-hello`, which opens a run at `POST /links`, or a message of more than 4096 bytes.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-link-message`, for bytes that do not decode as a link message, a first message that is not a `link-hello`, a `link-hello` after the first, or a message of more than 4096 bytes.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -7065,6 +7065,144 @@
           },
           "413": {
             "description": "`too-large`: the value's `ct` is over 65552 bytes, 16 blocks of 4096 and the tag.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/channels/{channel}/queue-keys/{epoch}": {
+      "get": {
+        "operationId": "getQueueKey",
+        "summary": "The channel's queue key object of an epoch",
+        "description": "The queue key object of the epoch the server keeps, the first a member device of that epoch uploaded, as it encoded it (docs/protocol/queues.md, \"Queue key object\"). Devices upload them on their connection (docs/protocol/delivery.md, \"Frames\"; docs/protocol/membership.md, \"Uploads\"). Only for a device that may send in the channel (docs/protocol/delivery.md, \"Send\"): a device in the channel in the space's latest revision or, for a service token's device, with the token's `send` permission for the channel. Each request proves its device as `POST /mailbox/send` does, a `service` device's with its token: a session or a token alone reads none.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/DeviceProof"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Channel"
+          },
+          {
+            "name": "epoch",
+            "in": "path",
+            "required": true,
+            "description": "The epoch of the channel's group.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "security": [
+          {
+            "bearer": []
+          },
+          {
+            "serviceToken": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The epoch's queue key object.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueKeyObject"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid (`https://skald.so/problems/invalid-request`).",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request is not proved, and the server reads and keeps nothing: as for `POST /mailbox/send`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "`not-a-member`: the device may not send in the channel.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`no-channel`: the path names no space or channel ID, or `no-queue-key`: the server keeps no object of the epoch.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -11418,7 +11556,7 @@
         "required": ["device", "hello"],
         "properties": {
           "device": {
-            "description": "The new device: registered without a certificate on the session's account; at `POST /links`, with no certificate, registered on any account or none.",
+            "description": "The new device: registered without a certificate on the session's account.",
             "$ref": "#/components/schemas/DeviceId"
           },
           "hello": {
@@ -12100,6 +12238,20 @@
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
+      "QueueKeyObject": {
+        "type": "object",
+        "required": [
+          "queue_key"
+        ],
+        "properties": {
+          "queue_key": {
+            "description": "An encoded `queue-key` (docs/protocol/queues.md, \"Queue key object\"), in base64url without padding (RFC 4648, §5).",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "additionalProperties": false
+      },
       "QueueRequest": {
         "description": "A new queue: its name, and any settings other than the defaults: `at-least-once`, a lease of 300 seconds and 5 attempts.",
         "type": "object",
@@ -12375,8 +12527,19 @@
             "$ref": "#/components/schemas/LinkPairing"
           },
           "token": {
-            "description": "The run's token, for its later messages: `Authorization: Bearer <token>` at `GET` and `POST /links/messages`, until the run ends. It is no session. The server keeps only its SHA-256.",
+            "description": "The run's token, for its messages: `Authorization: Bearer <token>` at `GET` and `POST /links/messages`, until the run ends. It is no session. The server keeps only its SHA-256.",
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionlessLinkRunRequest": {
+        "type": "object",
+        "required": ["device"],
+        "properties": {
+          "device": {
+            "description": "The new device: with no certificate, registered on any account or none.",
+            "$ref": "#/components/schemas/DeviceId"
           }
         },
         "additionalProperties": false
