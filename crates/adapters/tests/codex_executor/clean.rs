@@ -10,7 +10,7 @@ use skald_adapters::codex::Executor;
 use skald_adapters::executor::{Mode, Request};
 use skald_proto::{Address, TrustLevel};
 
-use crate::fixtures::{Scratch, plain, token};
+use crate::fixtures::{Scratch, plain, set_in_this_process, token};
 use crate::stand_in::{
     ConfigHome, MARKERS, Script, StandIn, device_environment, finish, values_of,
 };
@@ -82,6 +82,7 @@ fn run_on(scratch: &Scratch, config: &ConfigHome, codex_home: bool) -> StandIn {
 /// A run gets none of the device's variables that Codex needs neither to run nor to sign in, and
 /// keeps `PATH`, which it needs to run.
 pub fn a_run_gets_none_of_the_device_s_other_variables() {
+    set_in_this_process(&MARKERS);
     let scratch = Scratch::new();
     let stand_in = run_on(&scratch, &plant(&scratch, true), true);
 
