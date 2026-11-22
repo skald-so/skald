@@ -2024,6 +2024,34 @@ impl State {
         Ok(added == 1)
     }
 
+    /// The result of the check of the certificate whose body has the SHA-256 `body` against
+    /// GitHub's API at `api` ([`crate::ssh_checks`]), if it was checked: the login GitHub gave if
+    /// it passed, `None` if it failed.
+    pub fn ssh_check(&self, api: &str, body: &[u8; 32]) -> Result<Option<Option<String>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT login FROM ssh_check WHERE api = ?1 AND body = ?2",
+                params![api, body],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Keeps the result of that check, `login` if it passed, unless it holds one.
+    pub fn keep_ssh_check(
+        &self,
+        api: &str,
+        body: &[u8; 32],
+        login: Option<&str>,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT OR IGNORE INTO ssh_check (api, body, login) VALUES (?1, ?2, ?3)",
+            params![api, body, login],
+        )?;
+        Ok(())
+    }
+
     /// The `seq` the device's next own message takes ([`OwnMessage`]).
     pub fn next_own_seq(&self) -> Result<u64, Error> {
         let last: Option<i64> = self
