@@ -32,44 +32,10 @@
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
-#[path = "../common/mod.rs"]
-mod common;
-
-// The spaces tests' accounts and revisions, the fixture and frames of the tests of storing sent
-// envelopes, the revocations of the tests of revocations on the server, the second devices of the
-// tests of delivering a mailbox, the anchors objects of the tests of anchors, and the requests and
-// checks of the tests of account deletion.
-#[path = "../spaces/api.rs"]
-mod api;
-#[path = "../account_deletion/deletion.rs"]
-mod deletion;
-#[path = "../mailbox/fixture.rs"]
-mod fixture;
-#[path = "../revocations/kit.rs"]
-mod kit;
-#[path = "../mailbox_delivery/link.rs"]
-mod link;
-#[path = "../mailbox_delivery/listener.rs"]
-mod listener;
-#[path = "../anchors/objects.rs"]
-mod objects;
-#[path = "../spaces/rosters.rs"]
-mod rosters;
-#[path = "../mailbox/wire.rs"]
-mod wire;
-
-// The API calls of the tests of sessions on the web.
-#[path = "../web_sessions/sessions.rs"]
-mod sessions;
-
-// The channel's group and history uploads of the tests of a channel's history.
-#[path = "../channel_history/kit.rs"]
-mod history;
-#[path = "../delivery_service/scene.rs"]
-mod scene;
-
-mod erasure;
-mod shared;
+// The modules the tests of erasing an account's data share (`erasure_common/mod.rs`).
+#[path = "../erasure_common/mod.rs"]
+mod erasure_common;
+use erasure_common::*;
 
 mod before;
 mod erased;

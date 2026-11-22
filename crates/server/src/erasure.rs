@@ -90,9 +90,8 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
             .await?;
     let devices: Vec<String> = devices.into_iter().map(|(device,)| device).collect();
     erase_queue_keys(conn, account, &devices).await?;
-    // Each statement takes the account as $1 and its devices as $2. Its sessions, service tokens,
-    // KeyPackages, presence values and revision long polls went at its deletion; the invites its
-    // devices signed expired by now, 30 days at most after the server stored them.
+    // Each statement takes the account as $1 and its devices as $2. The invites its devices signed
+    // expired by now, 30 days at most after the server stored them.
     for statement in [
         // Its devices' messages still waiting, but for handshake messages, which members need to
         // follow the group, and the statuses of messages to them.
@@ -106,10 +105,19 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
         "DELETE FROM sends
          WHERE sender_id = ANY($2::text[]::uuid[]) OR recipient_id = ANY($2::text[]::uuid[])",
         "DELETE FROM counted_messages WHERE sender_id = ANY($2::text[]::uuid[])",
+        // Its deletion deletes these too, but not every row: a long poll's of a space whose
+        // latest revision no longer lists the account, a key session of a device certified after.
+        "DELETE FROM key_packages WHERE device_id = ANY($2::text[]::uuid[])",
+        "DELETE FROM presence_values WHERE device_id = ANY($2::text[]::uuid[])",
+        "DELETE FROM long_poll_revisions WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM long_poll_link_runs WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM device_challenges WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM link_runs
          WHERE account_id = $1::uuid OR device_id = ANY($2::text[]::uuid[])",
+        "DELETE FROM sessions
+         WHERE account_id = $1::uuid OR device_id = ANY($2::text[]::uuid[])
+             OR key_device = ANY($2::text[]::uuid[])",
+        "DELETE FROM service_tokens WHERE device_id = ANY($2::text[]::uuid[])",
         "DELETE FROM device_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_user_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_pairings WHERE account_id = $1::uuid",

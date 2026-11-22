@@ -140,7 +140,7 @@ impl Shared {
 }
 
 /// `peer` acks every entry its mailbox holds in `db`.
-fn acks_all(peer: &mut Peer, db: &TestDb) {
+pub fn acks_all(peer: &mut Peer, db: &TestDb) {
     if let Some((last, _)) = mailbox(db, peer.id).last() {
         peer.socket.ack(u64::try_from(*last).expect("a seq from 1"));
     }

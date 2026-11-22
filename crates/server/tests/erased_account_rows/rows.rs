@@ -13,9 +13,10 @@ use crate::common::devices::{Device, random};
 use crate::deletion::deletes;
 use crate::erasure::{ERASED_AFTER, ERASURE, Kept, Traces, erased_within, move_deletion_back};
 use crate::history::{Item, WRAPS, formed_with, given, stores, wrap};
-use crate::scene::{Peer, Scene, empty, payloads, removing};
+use crate::scene::{Scene, empty, payloads, removing};
 use crate::sessions::Api;
-use crate::wire::{mailbox, query};
+use crate::shared::acks_all;
+use crate::wire::query;
 
 impl Kept {
     /// This, with `wraps`, wraps the account's devices signed to other accounts.
@@ -36,13 +37,6 @@ fn queue_key(channel: ChannelId, epoch: u64, signer: &Device) -> Item {
     };
     let signing = SigningKey::from_bytes(&signer.signing.secret);
     Item::QueueKey((sign_queue_key(&body, &signing).expect("a queue key object")).to_cbor())
-}
-
-/// `peer` acks every entry its mailbox holds in `db`.
-fn acks_all(peer: &mut Peer, db: &TestDb) {
-    if let Some((last, _)) = mailbox(db, peer.id).last() {
-        peer.socket.ack(u64::try_from(*last).expect("a seq from 1"));
-    }
 }
 
 /// Writes rows of alice's, of `s`, to the tables no request of these tests fills: a challenge of
