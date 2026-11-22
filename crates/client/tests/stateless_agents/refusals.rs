@@ -14,7 +14,7 @@ use crate::fixtures::cert_of;
 use crate::front::Answers;
 use crate::kit::{RECV, group_info_request, received};
 use crate::member::{JSON, texts_of};
-use crate::scene::{Agent, OWN_RECORD_REQUEST, Scene, names_revision};
+use crate::scene::{Agent, OWN_RECORD_REQUEST, Scene, change_field, names_revision};
 use crate::service_kit::{
     BOT, CREATE_SERVICE_TOKEN, REVOKE_SERVICE_TOKEN, Secrets, id_of, own_record, run_for_channels,
     token_of,
@@ -78,16 +78,7 @@ fn serve(scene: &Scene, revisions: &[Roster]) {
 /// bytes.
 fn change_group_info(scene: &Scene, change: impl Fn(&mut Vec<u8>) + Send + Sync + 'static) {
     let request = group_info_request(scene.space(), scene.channel());
-    scene.cloud().relay.rewrite(&request, move |body| {
-        let mut held: Value = serde_json::from_str(body).expect("a GroupInfo answer");
-        let given = held["group_info"].as_str().expect("a GroupInfo");
-        let mut bytes = URL_SAFE_NO_PAD
-            .decode(given)
-            .expect("a GroupInfo in base64url");
-        change(&mut bytes);
-        held["group_info"] = json!(URL_SAFE_NO_PAD.encode(&bytes));
-        held.to_string()
-    });
+    change_field(scene.cloud(), &request, "group_info", change);
 }
 
 /// Ada's second machine, linked by hand, joins the channel; it revokes Ada's first device, the one

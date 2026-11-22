@@ -34,6 +34,7 @@ use crate::anchors;
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
+use crate::domains;
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::groups;
@@ -1064,8 +1065,8 @@ impl Follower {
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
 /// devices it bars, the roles it sets, the members it adds to and removes from channels, the
-/// policy's `history` it sets, the service agents it removes and adds, and the `service` devices
-/// it adds to channels.
+/// policy's `history` and `domain` it sets, the service agents it removes and adds, and the
+/// `service` devices it adds to channels.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -1076,6 +1077,8 @@ struct Change {
     joined: Vec<(ChannelId, ChannelMember)>,
     left: Vec<(ChannelId, AccountId)>,
     history: Option<u64>,
+    /// The domain it names, or `None` inside if it clears it.
+    domain: Option<Option<String>>,
     dropped: Vec<DeviceId>,
     agents: Vec<ServiceAgent>,
     services: Vec<(ChannelId, DeviceId)>,
@@ -1148,6 +1151,7 @@ impl Change {
             .left
             .retain(|(_, account)| !change.removed.contains(account));
         change.history = Some(next.policy.history).filter(|&set| set != base.policy.history);
+        change.domain = Some(next.policy.domain.clone()).filter(|set| *set != base.policy.domain);
         change.dropped = (base.service_agents.iter())
             .map(|agent| agent.device)
             .filter(|device| {
@@ -1173,13 +1177,17 @@ impl Change {
     /// channel; it bars a device, sets a role and adds a member to a channel only of a member of
     /// `body`; it removes no member from the default channel, the first one, which keeps every
     /// member; and it puts its default channel first, with every member, only if `needs_default`;
-    /// it sets the policy's `history`; it removes a service agent's entry and its device from every
-    /// channel's `services`; it adds a service agent only while `body` has neither its device nor
-    /// its address, and its owner is no member's handle; and it adds a `service` device to a
-    /// channel's `services` only while `body` has the device's service agent entry.
+    /// it sets the policy's `history` and `domain`; it removes a service agent's entry and its
+    /// device from every channel's `services`; it adds a service agent only while `body` has
+    /// neither its device nor its address, and its owner is no member's handle; and it adds a
+    /// `service` device to a channel's `services` only while `body` has the device's service agent
+    /// entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
+        }
+        if let Some(domain) = &self.domain {
+            body.policy.domain.clone_from(domain);
         }
         // A change that would leave no member removes none.
         let _ = remove_members(body, &self.removed);
@@ -1691,15 +1699,17 @@ pub fn own_account(state: &State) -> Result<Option<AccountId>, String> {
 }
 
 /// Shows the members of `synced`, a space the device follows, with what their devices' SSH
-/// signatures showed ([`ssh_checks`]); warns if the device's account is its only admin
-/// ([`only_admin`]).
-pub fn members(synced: Synced) -> Result<(), String> {
+/// signatures showed ([`ssh_checks`]), checked against its domain's records at the resolver and
+/// within the timeout `resolver` gives ([`domains::check`]); warns if the device's account is its
+/// only admin ([`only_admin`]).
+pub fn members(synced: Synced, resolver: (&str, Duration)) -> Result<(), String> {
     let Synced {
         follower,
         roster,
         devices,
         ..
     } = synced;
+    let domain = domains::check(&follower.state, resolver, &roster, &follower.own)?;
     let mut verified = BTreeSet::new();
     for member in roster.body().members.iter() {
         if member.account != follower.own.account
@@ -1716,10 +1726,14 @@ pub fn members(synced: Synced) -> Result<(), String> {
     let (signatures, key_changes) = ssh_checks::check(&follower.state, &shown)?;
     warnings.extend(key_changes);
     warnings.extend(only_admin(&roster, follower.own.account));
-    print!(
-        "{}",
-        members_listing(&roster, &members, follower.this, &signatures)
+    let listing = members_listing(
+        &roster,
+        &members,
+        (follower.this, &signatures),
+        domain.as_ref(),
     );
+    warnings.extend(domain.into_iter().flat_map(|domain| domain.warnings));
+    print!("{listing}");
     for warning in warnings {
         eprintln!("skald: warning: {warning}");
     }
@@ -1782,14 +1796,21 @@ fn member_devices<'r, 'd>(
 /// members and their accounts ([`member_devices`]): each member's handle and role, and under it its
 /// account's fingerprint, then each device of its account with a valid certificate, then each
 /// revoked one, as `skald devices` shows them, `this` device marked and each line ending with what
-/// `signatures` shows of its SSH signature.
+/// `signatures` shows of its SSH signature. With the space's `domain`, it shows the domain first,
+/// and under each member's fingerprint whether the domain lists it.
 fn members_listing(
     roster: &Roster,
     members: &[(&Member, Option<Shown>)],
-    this: DeviceId,
-    signatures: &ssh_checks::Results,
+    (this, signatures): (DeviceId, &ssh_checks::Results),
+    domain: Option<&domains::Checked>,
 ) -> String {
     let mut out = heading(roster);
+    if let Some(domain) = domain {
+        match &domain.listed {
+            Ok(_) => out.push_str(&format!("  domain {}\n", domain.domain)),
+            Err(why) => out.push_str(&format!("  domain {}, not checked: {why}\n", domain.domain)),
+        }
+    }
     for (member, shown) in members {
         out.push_str(&format!(
             "  {}  {}\n",
@@ -1800,6 +1821,11 @@ fn members_listing(
             continue;
         };
         out.push_str(&format!("    {}\n", shown.fingerprint));
+        if let Some(domain) = domain.filter(|domain| {
+            (domain.listed.as_ref()).is_ok_and(|listed| listed.contains(&member.account))
+        }) {
+            out.push_str(&format!("    listed by {}\n", domain.domain));
+        }
         if shown.linked.is_empty() {
             out.push_str("    no device with a valid certificate\n");
         }
@@ -2028,7 +2054,7 @@ pub(crate) mod tests {
             };
             let own = self.own();
             let (members, warnings) = member_devices(roster, &devices, &own, &BTreeSet::new());
-            let listing = members_listing(roster, &members, this, &Default::default());
+            let listing = members_listing(roster, &members, (this, &Default::default()), None);
             (listing, warnings)
         }
     }
@@ -2127,7 +2153,7 @@ pub(crate) mod tests {
         let verified = BTreeSet::from([pair.bob]);
 
         let (members, _) = member_devices(&roster, &devices, &pair.own(), &verified);
-        let shown = members_listing(&roster, &members, this, &Default::default());
+        let shown = members_listing(&roster, &members, (this, &Default::default()), None);
 
         let ada = fingerprint_line(pair.ada, &pair.ada_master.public_key(), false);
         let bob = fingerprint_line(pair.bob, &pair.bob_master.public_key(), true);
@@ -2431,6 +2457,7 @@ pub(crate) mod tests {
         );
         next.channels[1].members[1].history = false;
         next.policy.history = 2 * HISTORY_MIN;
+        next.policy.domain = Some("corp.example".to_owned());
         bar(&mut next, bob, barred);
         make(&mut next, dave, Role::Admin);
         make(&mut next, ada, Role::Member);
@@ -2455,6 +2482,7 @@ pub(crate) mod tests {
                 joined: vec![(team, dave_in)],
                 left: vec![(team, bob)],
                 history: Some(2 * HISTORY_MIN),
+                domain: Some(Some("corp.example".to_owned())),
                 dropped: vec![old.device],
                 agents: vec![deploy.clone()],
                 services: vec![(team, deploy.device)],
@@ -2482,12 +2510,37 @@ pub(crate) mod tests {
         expected.channels[1].members.push(dave_in);
         expected.channels[1].services.push(deploy.device);
         expected.policy.history = 2 * HISTORY_MIN;
+        expected.policy.domain = Some("corp.example".to_owned());
         bar(&mut expected, bob, barred);
         make(&mut expected, dave, Role::Admin);
         make(&mut expected, ada, Role::Member);
         expected.service_agents = vec![watch, release, deploy];
         (expected.space, expected.signer) = (space, signer);
         assert_eq!(latest, expected);
+    }
+
+    /// A revision that clears the domain clears it in a later revision, and one that changes
+    /// nothing of it leaves a later revision's domain as it is.
+    #[test]
+    fn change_clears_the_domain_in_a_later_revision() {
+        let [ada, bob] = [(); 2].map(|()| AccountId::generate());
+        let default = ChannelId::generate();
+        let named = |domain: Option<&str>| {
+            let mut body = acme(&[ada, bob], &[(default, &[ada, bob])]);
+            body.policy.domain = domain.map(str::to_owned);
+            body
+        };
+        let cleared = Change::between(&named(Some("corp.example")), &named(None));
+        assert_eq!(cleared.domain, Some(None));
+        let mut latest = named(Some("other.example"));
+        cleared.onto(&mut latest, false);
+        assert_eq!(latest.policy.domain, None);
+
+        let unchanged = Change::between(&named(None), &named(None));
+        assert_eq!(unchanged.domain, None);
+        let mut latest = named(Some("other.example"));
+        unchanged.onto(&mut latest, false);
+        assert_eq!(latest.policy.domain.as_deref(), Some("other.example"));
     }
 
     /// Of a change, what no longer applies to a later revision is left out: a removed or barred
@@ -2514,6 +2567,7 @@ pub(crate) mod tests {
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
             history: None,
+            domain: None,
             // An agent the revision does not list.
             dropped: vec![agent("ops", "gone-bot", 10).device],
             agents: vec![
