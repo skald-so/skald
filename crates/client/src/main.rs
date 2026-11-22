@@ -97,7 +97,6 @@ mod tasks;
 mod test_dir;
 #[cfg(test)]
 mod test_dir_tests;
-mod timing;
 mod tls;
 mod update;
 mod uploads;

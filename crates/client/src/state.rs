@@ -644,9 +644,7 @@ impl State {
     /// Opens the state in `dir`, which exists, creating it if it is missing, and migrates its
     /// schema to the latest.
     pub fn open(dir: &Path) -> Result<Self, Error> {
-        let _span = crate::timing::span_over("state open", 5);
         let mut db = Connection::open(dir.join(FILE))?;
-        crate::timing::watch(&db);
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         db.pragma_update(None, "secure_delete", true)?;
         let mode: String =

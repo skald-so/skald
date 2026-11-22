@@ -608,10 +608,8 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
-                let span = crate::timing::span_over("helper look", 5);
                 let looked = sessions.look(&dir);
                 sessions.keep_presence(&dir, false);
-                drop(span);
                 match looked {
                     Some(true) => last = Instant::now(),
                     Some(false) if last.elapsed() >= idle => break None,
@@ -656,7 +654,6 @@ enum Served {
 
 /// Serves the command on `stream`, by the state in `dir`; a `skald recv --wait` joins `sessions`.
 fn serve_one(mut stream: UnixStream, dir: &Path, sessions: &mut Sessions) -> Served {
-    let _span = crate::timing::span("helper command");
     let ready = stream
         .set_nonblocking(false)
         .and_then(|()| stream.set_read_timeout(Some(GREETING)));

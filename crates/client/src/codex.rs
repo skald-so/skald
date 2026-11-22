@@ -497,7 +497,6 @@ impl Served {
     pub fn looks(&mut self, dir: &Path) -> bool {
         let due = (self.loaded).is_none_or(|loaded| loaded.elapsed() >= ALIVE_EVERY);
         if std::mem::take(&mut self.reload) || due {
-            let _span = crate::timing::span_over("codex reload", 5);
             self.load(dir);
         }
         !self.live.is_empty()
@@ -509,7 +508,6 @@ impl Served {
     /// give its hooks nothing and wake nothing; then wakes the idle ones ([`Served::wake`]). Gives
     /// whether it took in; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
-        let _span = crate::timing::span_over("codex look", 5);
         self.looks(dir);
         let gone: Vec<String> = (self.live.iter_mut())
             .filter_map(|(thread, live)| (!live.runs()).then(|| thread.clone()))
@@ -536,17 +534,13 @@ impl Served {
             }
         }
         for (agent, folder) in runs.values() {
-            let span = crate::timing::span("codex intake");
-            let ran = self.run(dir, folder, agent);
-            drop(span);
-            match ran? {
+            match self.run(dir, folder, agent)? {
                 true => self.failed = None,
                 false => self.failed = Some(Instant::now()),
             }
         }
         self.queued(dir);
         if std::mem::take(&mut self.due) || !runs.is_empty() {
-            let _span = crate::timing::span_over("codex wake", 5);
             self.wake(dir);
         }
         Some(!runs.is_empty())
@@ -590,10 +584,7 @@ impl Served {
                 }
                 // Before it runs, so no hook of the turn it starts gives the signal again.
                 let _ = state.signals_given(&seqs, agent);
-                let span = crate::timing::span("codex queue spawn");
-                let spawned = queue(codex, &thread, session.home.as_deref()).spawn();
-                drop(span);
-                match spawned {
+                match queue(codex, &thread, session.home.as_deref()).spawn() {
                     Ok(child) => {
                         let started = Instant::now();
                         let agent = agent.to_owned();

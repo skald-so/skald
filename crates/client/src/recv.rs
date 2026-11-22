@@ -350,10 +350,7 @@ fn received(
             Scope::All => None,
         });
     });
-    let _run = crate::timing::span("recv run");
-    let mut follower = crate::timing::timed("recv following", || {
-        spaces::following(dir, storage, speaks, timeout, scope)
-    })?;
+    let mut follower = spaces::following(dir, storage, speaks, timeout, scope)?;
     let ran_as = match (scope, agent) {
         (Scope::Only(space), Some(agent)) => {
             follower
@@ -365,16 +362,11 @@ fn received(
         _ => None,
     };
     let mut link = Link::new(&follower)?;
-    let flushed = crate::timing::timed("recv flush", || {
-        groups::flush(&mut follower, &mut link, scope)
-    });
-    if let Err(err) = flushed {
+    if let Err(err) = groups::flush(&mut follower, &mut link, scope) {
         eprintln!("skald: warning: {err}");
     }
     let queued = send::queued(&follower.state, scope)?;
-    let mut delivered = crate::timing::timed("recv deliver", || {
-        send::deliver(&mut follower, &queued, timeout, None)
-    });
+    let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
     let reported = match (agent, form) {
         (Some(_), _) => Reported::Quiet,
         (None, Form::Json) => Reported::Json(None),
@@ -385,26 +377,15 @@ fn received(
     }
     // The entries go out on the outbox's connection, which then gets the mailbox.
     let flushed = std::mem::replace(&mut link.mailbox, delivered.mailbox.take());
-    crate::timing::timed("recv history upload", || {
-        history::upload(&mut follower, &mut link, scope)
-    });
-    crate::timing::timed("recv queues upload", || {
-        queues::upload_received(&mut follower, scope)
-    });
+    history::upload(&mut follower, &mut link, scope);
+    queues::upload_received(&mut follower, scope);
     let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
-    let received = crate::timing::timed("recv receive", || {
-        receive(&mut follower, mailbox, (timeout, scope), &mut synced)
-    });
-    let aligned = crate::timing::timed("recv align", || {
-        align(&mut follower, &mut link, scope, &mut synced)
-    });
+    let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
+    let aligned = align(&mut follower, &mut link, scope, &mut synced);
     // Completes and fails that wait, and their results, go out before what the run shows.
-    crate::timing::timed("recv finish waiting", || {
-        claims::finish_waiting(&mut follower, scope, &synced)
-    });
-    let mut checks = crate::timing::timed("recv checks", || Checks::new(&follower, synced));
-    let span = crate::timing::span("recv show and hand");
+    claims::finish_waiting(&mut follower, scope, &synced);
+    let mut checks = Checks::new(&follower, synced);
     let shown = match checks.as_mut() {
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
         Err(err) => Err(err.clone()),
@@ -419,9 +400,7 @@ fn received(
         (Some((space, agent)), None) => hand_over(&follower, (space, agent), form),
         (None, _) => show_to_person(&follower, form),
     };
-    drop(span);
     if let Ok(checks) = &checks {
-        let _span = crate::timing::span("recv receipts");
         receipts::send(&mut follower, &checks.synced, scope);
     }
     // What waits for the person's decision is no news a wait ends for.
@@ -442,7 +421,7 @@ fn received(
     }
     if waits && let Ok(mut checks) = checks {
         // A failure leaves it to the first message.
-        let _ = crate::timing::timed("recv ask server", || checks.ask_server(&mut follower));
+        let _ = checks.ask_server(&mut follower);
         // Its connection goes back to be kept.
         link.mailbox = None;
         intake::leave(Intake::new(follower, checks, link));
@@ -474,17 +453,10 @@ pub fn align(
     scope: Scope,
     synced: &mut Rosters,
 ) -> Result<(), String> {
-    use crate::timing::timed;
-    timed("align take in", || {
-        groups::take_in(follower, link, scope, synced)
-    })?;
-    timed("align groups", || groups::align_with(follower, link));
-    timed("align key chain", || {
-        key_chain::upload_missing(follower, link, scope)
-    });
-    timed("align wraps", || {
-        wraps::upload_missing(follower, link, scope)
-    });
+    groups::take_in(follower, link, scope, synced)?;
+    groups::align_with(follower, link);
+    key_chain::upload_missing(follower, link, scope);
+    wraps::upload_missing(follower, link, scope);
     Ok(())
 }
 

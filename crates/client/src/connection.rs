@@ -491,7 +491,6 @@ impl Connector for Dial {
 impl Dial {
     /// A connection to the host and port of `uri`, with `config`'s buffers and `TCP_NODELAY`.
     fn socket(&self, uri: &Uri, config: &ureq::config::Config) -> Result<Socket, Error> {
-        let _span = crate::timing::span("http connect");
         let stream = dial(
             self.proxy.as_ref(),
             uri,
@@ -1208,10 +1207,7 @@ impl Connection {
         mut send: impl FnMut(NonZeroU64) -> Result<Answer<T>, Error>,
     ) -> Result<T, Error> {
         loop {
-            let span = crate::timing::span("http request");
-            let sent = send(self.version);
-            drop(span);
-            let (status, content, body) = match sent? {
+            let (status, content, body) = match send(self.version)? {
                 Answer::Served(value, latest) => {
                     self.latest = latest;
                     return Ok(value);
