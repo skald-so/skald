@@ -42,6 +42,7 @@ Apps that run Claude Code or Codex sessions for you. Results of the [live checks
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
 - Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
 - Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
+- A task the session claims with `skald --agent <the session's agent> claim` stays claimed while the session runs: the device extends the claim. Once the session stops, the lease ends; a claim found lost is said in the next tool result.
 - Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
 - When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
 

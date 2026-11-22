@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Tests the build of the website and docs, site/build.mjs, after npm ci in site/:
 //   - docs/ builds, with a page for each of its Markdown files, a docs start page at /start that
-//     links to every page, and the main page at /;
+//     links to every page, the main page at /, and the privacy policy at /privacy with each of its
+//     sections and the contact address;
 //   - the main page's links: Docs, Get started and Read the docs to the docs start page, GitHub to
 //     the repository, Sign in to the cloud's web app, the first point to "The server sees" of the
-//     threat model, Security to the threat model, Trademarks to TRADEMARKS.md on GitHub at
-//     SKALD_SITE_REF, and the mail address; its only command is the README's npm install; each
-//     bundled font's license ships with the build; the docs' title leads to it outside VitePress's
-//     router;
+//     threat model, Security to the threat model, Privacy to the privacy policy, Trademarks to
+//     TRADEMARKS.md on GitHub at SKALD_SITE_REF, and the mail address; its only command is the
+//     README's npm install; each bundled font's license ships with the build; the docs' title leads
+//     to it outside VitePress's router;
 //   - on a scratch repository: a README.md is its directory's page; the docs start page links to
 //     every page, unless docs/start.md replaces it; a heading gets GitHub's ID, which a link to it
 //     from another page resolves to; a link to a file outside docs/ goes to it on GitHub at
@@ -47,6 +48,28 @@ const read = (file) => (fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
     for (const file of listed.stdout.split('\n').filter(Boolean)) {
       const page = file.replace(/^docs\//, '').replace(/(^|\/)README\.md$/, '$1index.md').replace(/\.md$/, '.html');
       if (!fs.existsSync(path.join(out, page))) fail(`the site has no page ${page} for ${file}`);
+    }
+    const privacy = read(path.join(out, 'privacy.html'));
+    if (privacy === '') fail('the site has no privacy policy at /privacy, privacy.html');
+    else {
+      const sections = [
+        'who-runs-the-cloud',
+        'what-the-cloud-keeps',
+        'sign-in',
+        'github',
+        'google',
+        'how-the-cloud-uses-it',
+        'cookies-and-browser-storage',
+        'who-else-processes-data',
+        'how-long-the-cloud-keeps-data',
+        'legal-basis',
+        'transfers',
+        'your-rights',
+        'deletion-and-other-requests',
+        'changes',
+      ];
+      for (const id of sections) if (!privacy.includes(`id="${id}"`)) fail(`the privacy policy has no section ${id}`);
+      if (!privacy.includes('href="mailto:info@skald.so"')) fail('the privacy policy has no link to info@skald.so');
     }
     const start = read(path.join(out, 'start.html'));
     for (const file of listed.stdout.split('\n').filter(Boolean)) {
@@ -89,6 +112,7 @@ function mainPage(out, ref) {
     'Docs -> /start',
     `GitHub -> ${github}`,
     'Security -> /threat-model',
+    'Privacy -> /privacy',
     `Trademarks -> ${github}/blob/${ref}/TRADEMARKS.md`,
     'info@skald.so -> mailto:info@skald.so',
   ];
@@ -126,6 +150,7 @@ write('docs/private.md', '# Private\n');
 write('docs/guide.md', '# Guide\n\n## 1. Install the `client`\n\nText.\n');
 write('docs/sub/README.md', '# Sub\n\n[Guide step](../guide.md#1-install-the-client)\n');
 write('docs/threat-model.md', '# Threat model\n\n## The server sees\n');
+write('docs/privacy.md', '# Privacy policy\n');
 const page = (links) => `# Links\n\n${links.map((link) => `- [link](${link})`).join('\n')}\n`;
 const good = ['guide.md', 'sub/README.md', 'sub/README.md#sub', '../NOTES.md#second-part', '../tools', '../tools/run.sh', '#links'];
 write('docs/links.md', page(good));
