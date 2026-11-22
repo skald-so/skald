@@ -3,7 +3,7 @@
 //! its account with no sign-in. A device the server holds no certificate of sends one, which the
 //! server stores with the checks and the devices limit of `PUT /devices/{device}/cert`, registering
 //! a device it does not have. A device has one such session at a time; it ends as any device
-//! session does, and when its device is revoked.
+//! session does, and when its device is revoked. No device of a deleted account gets one.
 
 use axum::Json;
 use axum::body::Bytes;
@@ -270,9 +270,9 @@ async fn check_new(
     check_on_account(state, &account, cert, id).await
 }
 
-/// Refuses device `id` if checks 3 and 4 of "Device checks" revoke it, against the master key of
-/// `account`, the certificates its devices hold with `sent` if given, and its stored revocations,
-/// read in `tx`.
+/// Refuses device `id` if `account` is deleted, each of whose devices is served as a revoked one,
+/// or if checks 3 and 4 of "Device checks" revoke it, against the master key of `account`, the
+/// certificates its devices hold with `sent` if given, and its stored revocations, read in `tx`.
 async fn unrevoked(
     tx: &mut Transaction<'_, Postgres>,
     account: &str,
@@ -280,12 +280,15 @@ async fn unrevoked(
     id: DeviceId,
 ) -> Result<(), Refusal> {
     let failed = |err| Refusal::Database("read the revocations", err);
-    let (master,): (Option<Vec<u8>>,) =
-        sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
+    let (master, deleted): (Option<Vec<u8>>, bool) =
+        sqlx::query_as("SELECT master, deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid")
             .bind(account)
             .fetch_one(&mut **tx)
             .await
             .map_err(failed)?;
+    if deleted {
+        return Err(Refusal::DeviceRevoked);
+    }
     let master: [u8; 32] = master
         .and_then(|master| master.try_into().ok())
         .ok_or_else(|| Refusal::Cert("the account has no master key".to_owned()))?;

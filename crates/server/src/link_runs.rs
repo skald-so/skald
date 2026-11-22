@@ -2,17 +2,16 @@
 //! between its two sides, as the bytes it got, and never sees the code. A hello naming a device
 //! without a certificate opens the device's run and replaces its open one; later messages go by
 //! the run's `session`. A run ends on a `link-abort` from either side, once its device has a
-//! certificate and at its expiry; a sweep deletes the runs that ended so. A run that opens, or
-//! whose device registers, sends each connection of the account's device sessions a `link-notice`,
-//! through any instance.
+//! certificate and at its expiry; a sweep deletes the runs that ended so. A deletion of its
+//! account, or of its device's, deletes it. A run that opens, or whose device registers, sends each
+//! connection of the account's device sessions a `link-notice`, through any instance.
 //!
 //! - With a session, the hello names a device registered on its account, and the run is the
 //!   account's.
-//! - Without one, the device opens its run first and gets its pairing, then sends its hello by the
-//!   run's token, by which it reaches its run; the run is no account's until a session enters its
-//!   pairing; the first account to enter it pairs it, unless the device
-//!   registered on another account. The run is given as waiting only once its device registers on
-//!   an account.
+//! - Without one, the device, not revoked, opens its run first and gets its pairing, then sends its
+//!   hello by the run's token, by which it reaches its run; the run is no account's until a session
+//!   enters its pairing; the first account to enter it pairs it, unless the device registered on
+//!   another account. The run is given as waiting only once its device registers on an account.
 
 use std::time::Duration;
 
@@ -228,24 +227,28 @@ pub(crate) async fn open(
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `POST /links`: without a session, a device without a certificate opens its run, which replaces
-/// its open one: the server picks the run's pairing, unique among the runs that hold one, and gives
-/// it with the run's token. The run's hello comes as its first message, [`run_relay`].
+/// `POST /links`: without a session, a device without a certificate, not revoked, opens its run,
+/// which replaces its open one: the server picks the run's pairing, unique among the runs that hold
+/// one, and gives it with the run's token. The run's hello comes as its first message,
+/// [`run_relay`].
 pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes) -> Answer {
     let request: SessionlessRunRequest = parse(&body)?;
     let device: DeviceId =
         (request.device.parse()).map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
     let mut tx = start_run(&state, device).await?;
     let failed = |err| Refusal::Database("open a link run", err);
-    let certified: Option<(bool,)> = sqlx::query_as(
-        "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
+    // A deletion of the device's account revokes it under the row's lock, then ends its runs.
+    let held: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT cert IS NOT NULL, revoked FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
     )
     .bind(device.to_string())
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
-    if certified.is_some_and(|(certified,)| certified) {
-        return Err(Refusal::DeviceCertified);
+    match held {
+        Some((true, _)) => return Err(Refusal::DeviceCertified),
+        Some((_, true)) => return Err(Refusal::DeviceRevoked),
+        _ => {}
     }
     let token = random_token();
     // A pairing an open or ended run holds is drawn again.
