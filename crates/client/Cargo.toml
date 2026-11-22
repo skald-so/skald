@@ -31,7 +31,8 @@ getrandom = "0.4"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-io"] }
-rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
+# `trace` times the state's statements for the opt-in timing marks (`src/timing.rs`).
+rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 semver = "1"

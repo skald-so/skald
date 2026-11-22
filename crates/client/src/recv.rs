@@ -474,10 +474,17 @@ pub fn align(
     scope: Scope,
     synced: &mut Rosters,
 ) -> Result<(), String> {
-    groups::take_in(follower, link, scope, synced)?;
-    groups::align_with(follower, link);
-    key_chain::upload_missing(follower, link, scope);
-    wraps::upload_missing(follower, link, scope);
+    use crate::timing::timed;
+    timed("align take in", || {
+        groups::take_in(follower, link, scope, synced)
+    })?;
+    timed("align groups", || groups::align_with(follower, link));
+    timed("align key chain", || {
+        key_chain::upload_missing(follower, link, scope)
+    });
+    timed("align wraps", || {
+        wraps::upload_missing(follower, link, scope)
+    });
     Ok(())
 }
 
