@@ -36,6 +36,7 @@ mod history;
 mod history_retention;
 mod http_client;
 mod instances;
+mod invites;
 mod key_packages;
 mod link_runs;
 mod links;
@@ -188,9 +189,9 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries, deletes history past its retention and ended link runs, applies tasks' lease ends and
-/// deadlines, and listens to the other instances on that database in tasks on the Tokio runtime it
-/// is called on.
+/// entries, deletes history past its retention, ended link runs and expired invites, applies tasks'
+/// lease ends and deadlines, and listens to the other instances on that database in tasks on the
+/// Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
@@ -210,6 +211,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         send_rate.map(|rate| rate.window),
     ));
     tokio::spawn(link_runs::sweep(db.clone()));
+    tokio::spawn(invites::sweep(db.clone()));
     tokio::spawn(claims::run(db.clone(), settings.history_retention));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
@@ -364,6 +366,14 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route("/health", get(health))
         .route(
+            "/invites/{invite}",
+            get(invites::given).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/invites/{invite}/acceptance",
+            put(invites::accept).layer(checked(Statement::Header)),
+        )
+        .route(
             "/key-packages",
             post(key_packages::hand_out).layer(checked(Statement::Header)),
         )
@@ -419,6 +429,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::list)
                 .post(spaces::create)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/acceptances",
+            get(invites::waiting).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/channels",
@@ -501,6 +515,14 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(
             "/spaces/{space}/devices",
             get(spaces::devices).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/invites",
+            post(invites::issue).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/invites/{invite}",
+            put(invites::store).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/members",

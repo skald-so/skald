@@ -1,9 +1,10 @@
 //! The history entries of the device's channel messages (`docs/protocol/membership.md`, "History
 //! entry", "Clean epochs" and "Uploads").
 //!
-//! - The device writes an entry of each channel message with an `a2a` body it sends, under the key
-//!   of the epoch it encrypts the message in, if it judged that epoch clean ([`crate::key_chain`]):
-//!   the content, signed by the device. The entry goes into the outbox with the message's envelope.
+//! - The device writes an entry of each channel message with an `a2a` or `task-result` body it
+//!   sends, under the key of the epoch it encrypts the message in, if it judged that epoch clean
+//!   ([`crate::key_chain`]): the content, signed by the device. The entry goes into the outbox with
+//!   the message's envelope.
 //! - Once the server stored the envelope, the device uploads the entry, by that run or a later one,
 //!   with the same bytes until the server stores or refuses it. A refused entry is not uploaded
 //!   again, and the run says the message is not in the history; the entry of a refused envelope
@@ -61,10 +62,11 @@ pub fn entry(
     }
 }
 
-/// Whether a message of `content` sent at `epoch` has an entry: with an `a2a` body, in an epoch
-/// `judgments` hold clean.
+/// Whether a message of `content` sent at `epoch` has an entry: with an `a2a` or `task-result`
+/// body, in an epoch `judgments` hold clean.
 fn written(content: &Content, judgments: &BTreeMap<u64, bool>, epoch: u64) -> bool {
-    matches!(content.body, Some(Body::A2a(_))) && judgments.get(&epoch) == Some(&true)
+    (matches!(content.body, Some(Body::A2a(_))) || content.task_result().is_some())
+        && judgments.get(&epoch) == Some(&true)
 }
 
 /// Uploads the entries within `scope` whose messages the server stored, in `history` frames on

@@ -1,0 +1,56 @@
+#!/usr/bin/env node
+// Tests how the workflows that a PR into dev starts treat a draft PR:
+//   - each, but the PR title workflow, starts when a PR is opened, gets a push, is reopened or is
+//     marked ready for review;
+//   - on a draft PR each of its jobs is skipped whatever happens in the run, and on a PR ready for
+//     review one may run;
+//   - on a push to dev, a schedule or a manual run on dev, whichever it starts on, none of its jobs
+//     is skipped; the release workflow, which skips its publishing jobs there, has its own tests
+//     (script/release-workflow-test);
+//   - the PR title workflow runs on a draft PR too.
+import path from 'node:path';
+import { reporter } from './lib/report.mjs';
+import { event, jobsFor, readWorkflows, runsFor, triggers } from './lib/workflows.mjs';
+
+const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+const titleFile = '.github/workflows/pr-title.yml';
+const releaseFile = '.github/workflows/release.yml';
+const { fail, done } = reporter('draft-prs-workflow-test');
+
+const workflows = readWorkflows(root);
+const ref = 'refs/pull/7/merge';
+const types = ['opened', 'synchronize', 'reopened', 'ready_for_review'];
+const started = new Set();
+for (const [file, workflow] of Object.entries(workflows)) {
+  for (const name of ['pull_request', 'pull_request_target']) {
+    const ready = event(name, ref);
+    if (!runsFor(workflow, ready)) continue;
+    started.add(file);
+    const draft = event(name, ref, { draft: true });
+    const onDraft = Object.entries(jobsFor(workflow, draft)).filter(([, state]) => !state.skipped).map(([key]) => key);
+    const onReady = Object.entries(jobsFor(workflow, ready)).filter(([, state]) => !state.skipped).map(([key]) => key);
+    if (file === titleFile) {
+      if (onDraft.length === 0) fail(`${file} runs no job on a draft PR`);
+      continue;
+    }
+    const listed = triggers(workflow)[name].types;
+    const missing = listed === undefined ? ['ready_for_review'] : types.filter((type) => ![].concat(listed).includes(type));
+    if (missing.length > 0) fail(`${file} does not start on a PR ${missing.join(', ')}`);
+    if (onDraft.length > 0) fail(`${file} may run on a draft PR its jobs ${onDraft.join(', ')}`);
+    if (onReady.length === 0) fail(`${file} runs no job on a PR ready for review`);
+  }
+  if (!started.has(file) || file === titleFile || file === releaseFile) continue;
+  for (const [name, ref] of [
+    ['push', 'refs/heads/dev'],
+    ['schedule', 'refs/heads/dev'],
+    ['workflow_dispatch', 'refs/heads/dev'],
+  ]) {
+    const ev = event(name, ref);
+    if (!runsFor(workflow, ev)) continue;
+    const skipped = Object.entries(jobsFor(workflow, ev)).filter(([, state]) => state.skipped).map(([key]) => key);
+    if (skipped.length > 0) fail(`${file} skips on a ${name} on ${ref} its jobs ${skipped.join(', ')}`);
+  }
+}
+if (!workflows[titleFile]) fail(`${titleFile} is missing`);
+if (!started.has('.github/workflows/ci.yml')) fail('a PR into dev does not start .github/workflows/ci.yml');
+done();

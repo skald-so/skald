@@ -7,9 +7,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, StateKey};
-use skald_proto::{
-    AccountBody, AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown,
-};
+use skald_proto::{AccountId, CERT_NAME_MAX, Cbor as _, CertBody, DeviceId, DeviceKind, Unknown};
 use zeroize::Zeroizing;
 
 use crate::connection::{self, Connection, Method};
@@ -565,16 +563,9 @@ fn own_certificate(body: &CertBody, keys: &Keys) -> Result<Created, Error> {
     let cert = skald_crypto::issue(body, &master, &keys.signing)
         .map_err(|err| Error::Cert(err.to_string()))?;
     let recovery = RecoveryKey::generate();
-    let account = AccountBody {
-        account: body.account,
-        master: public,
-        recovery: HpkeKey::from_recovery_key(&recovery.to_bytes()).public_key(),
-        revision: 1,
-        unknown: Unknown::default(),
-    };
+    let (account, backup) = skald_crypto::new_recovery(&master, &recovery, body.account);
     let record = skald_crypto::sign_account(&account, &master)
         .expect("an account record of the spec's form");
-    let backup = skald_crypto::seal_master_backup(&master, &recovery, body.account);
     drop(master);
     skald_crypto::check_device(&public, std::slice::from_ref(&cert), body.device)
         .map_err(|err| Error::Cert(err.to_string()))?;
@@ -748,25 +739,20 @@ mod tests {
         // with that recovery key to the master key.
         let record = skald_proto::AccountRecord::from_cbor(&created.record).expect("a record");
         assert_eq!(skald_crypto::check_account(&record, &master), Ok(()));
-        let recovery = HpkeKey::from_recovery_key(&created.recovery.to_bytes()).public_key();
         assert_eq!(
-            (
-                record.body().account,
-                record.body().recovery,
-                record.body().revision
-            ),
-            (body.account, recovery, 1)
+            (record.body().account, record.body().revision),
+            (body.account, 1)
         );
         let backup = skald_proto::MasterBackup::from_cbor(&created.backup).expect("a backup");
-        let opened =
-            skald_crypto::open_master_backup(&backup, &created.recovery, body.account, &master)
-                .expect("the backup opens");
-        assert_eq!(opened.public_key(), master);
+        let opened = skald_crypto::open_recovery(&record, &backup, &created.recovery)
+            .expect("the backup opens");
+        assert_eq!(opened.master.public_key(), master);
+        assert_eq!(opened.hpke.public_key(), record.body().recovery);
         let other = own_certificate(&body, &keys).expect("issued");
         assert_ne!(other.master, master, "a new master key each time");
         assert_ne!(
-            *other.recovery.to_bytes(),
-            *created.recovery.to_bytes(),
+            *other.recovery.shown(),
+            *created.recovery.shown(),
             "a new recovery key each time"
         );
         // A body the device's keys do not prove is not issued.

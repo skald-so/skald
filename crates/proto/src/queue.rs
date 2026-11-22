@@ -1,9 +1,13 @@
 //! Queues and tasks: `docs/protocol/queues.md`, "Tasks", "Queue key", "Claims and leases" and
 //! "Results".
 
+use std::num::NonZeroU64;
+
 use crate::address::{Address, Name};
-use crate::cbor::{self, Codec, DecodeError, FieldProblem, Item, MapOut, Unknown, field_error};
-use crate::content::{Content, TASK};
+use crate::cbor::{
+    self, Cbor as _, Codec, DecodeError, FieldProblem, Item, MapOut, Unknown, field_error,
+};
+use crate::content::{Content, TASK, TASK_RESULT};
 use crate::history::at_least;
 use crate::id::{ChannelId, ClaimId, DeviceId, QueueId, TaskId};
 use crate::signed::{Signed, SignedBody};
@@ -323,24 +327,65 @@ impl Task {
     /// Content with this as its `task` body ("Tasks"): from `from`, to `to`, with `hops`, and no
     /// `counter`, other body, `reply_to`, delegation, grant or attachments.
     pub fn content(&self, from: Address, to: Option<Address>, hops: u64) -> Content {
-        let body = MapOut::new(&Unknown::default())
-            .put(TASK, self.encode())
-            .finish();
-        let unknown = cbor::parse(&body)
-            .and_then(|item| item.map("content").map(cbor::Fields::unknown))
-            .expect("a map of one task body");
-        Content {
-            from,
-            to,
-            counter: None,
+        body_content((TASK, self.encode()), (from, to), None, hops)
+    }
+}
+
+impl TaskResult {
+    /// Content with this as its `task-result` body ("Results"): from `from`, to `to`, with
+    /// `counter` and `hops`, and no other body, `reply_to`, delegation, grant or attachments.
+    pub fn content(
+        &self,
+        (from, to): (Address, Address),
+        counter: NonZeroU64,
+        hops: u64,
+    ) -> Content {
+        body_content(
+            (TASK_RESULT, self.encode()),
+            (from, Some(to)),
+            Some(counter),
             hops,
-            reply_to: None,
-            body: None,
-            delegation: None,
-            grant: None,
-            attachments: None,
-            unknown,
-        }
+        )
+    }
+}
+
+impl Content {
+    /// Its `task` body, if it has one: decoded, or why it does not decode.
+    pub fn task(&self) -> Option<Result<Task, DecodeError>> {
+        let bytes = self.unknown.get(i128::from(TASK))?;
+        Some(Task::from_cbor(bytes))
+    }
+
+    /// Its `task-result` body, if it has one: decoded, or why it does not decode.
+    pub fn task_result(&self) -> Option<Result<TaskResult, DecodeError>> {
+        let bytes = self.unknown.get(i128::from(TASK_RESULT))?;
+        Some(TaskResult::from_cbor(bytes))
+    }
+}
+
+/// Content whose one body is `encoded` under `key`: from `from`, to `to`, with `counter` and
+/// `hops`, and no `reply_to`, delegation, grant or attachments.
+fn body_content(
+    (key, encoded): (u64, Vec<u8>),
+    (from, to): (Address, Option<Address>),
+    counter: Option<NonZeroU64>,
+    hops: u64,
+) -> Content {
+    let body = MapOut::new(&Unknown::default()).put(key, encoded).finish();
+    let unknown = cbor::parse(&body)
+        .and_then(|item| item.map("content").map(cbor::Fields::unknown))
+        .expect("a map of one body");
+    Content {
+        from,
+        to,
+        counter,
+        hops,
+        reply_to: None,
+        body: None,
+        delegation: None,
+        grant: None,
+        attachments: None,
+        unknown,
     }
 }
 

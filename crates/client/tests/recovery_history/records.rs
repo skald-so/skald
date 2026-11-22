@@ -2,7 +2,7 @@
 //! checked with the `master` the roster gives for it: a later one with a new `recovery` warns and
 //! takes the later wraps, and one that does not verify with that key changes nothing.
 
-use skald_crypto::{HpkeKey, RecoveryKey, SigningKey, sign_account};
+use skald_crypto::{HpkeKey, SigningKey, sign_account};
 use skald_proto::{AccountBody, AccountRecord, Cbor as _, Unknown};
 
 use crate::chain::{adds_to_channel, commits_empty};
@@ -50,9 +50,9 @@ impl Records {
     }
 }
 
-/// The HPKE key pair of a new recovery key.
+/// A new recovery HPKE key pair, as a new recovery key derives one.
 fn new_recovery() -> HpkeKey {
-    HpkeKey::from_recovery_key(&RecoveryKey::generate().to_bytes())
+    HpkeKey::generate()
 }
 
 /// Bob's device commits an empty Commit in the talk's channel, and Ada's next `skald recv` runs;

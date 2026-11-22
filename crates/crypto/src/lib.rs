@@ -4,6 +4,7 @@ mod account;
 mod anchors;
 mod cert;
 mod cpace;
+mod fingerprint;
 mod grant;
 mod history;
 mod hpke;
@@ -21,12 +22,13 @@ mod trust;
 mod wrap;
 
 pub use account::{
-    AccountError, RecoveryKey, RecoveryKeyError, check_account, open_master_backup,
-    seal_master_backup, seal_master_backup_with_ephemeral, sign_account,
+    AccountError, PASTE_END, PASTE_START, Recovered, RecoveryKey, RecoveryKeyError, check_account,
+    new_recovery, new_recovery_with_nonce, open_recovery, sign_account,
 };
 pub use anchors::{check_anchors, check_link, sign_anchors, sign_link};
 pub use cert::{ChainProblem, DeviceCheckError, check_device, issue, passes_proof_check};
 pub use cpace::{CpaceError, CpaceInitiator, CpaceResponder, Isk};
+pub use fingerprint::account_fingerprint;
 pub use grant::{GrantError, check_grant};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};

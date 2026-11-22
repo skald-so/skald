@@ -4093,6 +4093,268 @@
         }
       }
     },
+    "/invites/{invite}": {
+      "get": {
+        "operationId": "getInvite",
+        "summary": "An invite with its space",
+        "description": "The invite as the server got it (docs/protocol/membership.md, \"Invite\"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite has an acceptance; then only sessions of that acceptance's account, which also get the space's revisions and devices until the invite ends.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Invite"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The invite and its space.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InviteWithSpace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. Once it has an acceptance, it goes only to that acceptance's account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/invites/{invite}/acceptance": {
+      "put": {
+        "operationId": "storeAcceptance",
+        "summary": "Store an invite's acceptance",
+        "description": "Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, \"Invite\"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Invite"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcceptanceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The invite has this acceptance with these bytes: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredAcceptance"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredAcceptance"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-acceptance`, for bytes that do not decode as an `acceptance`, one of another invite, one with another master key than the server holds for the account, or one whose signature does not verify with the invite's `key`.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The acceptance names another account than the session's.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. Once it has an acceptance, it goes only to that acceptance's account.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The problem `https://skald.so/problems/acceptance-taken`: the invite has another acceptance.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/key-packages": {
       "post": {
         "operationId": "handOutKeyPackages",
@@ -5657,6 +5919,121 @@
           },
           "409": {
             "description": "Another space has the name, or the account's space with it has a revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/acceptances": {
+      "get": {
+        "operationId": "getWaitingAcceptances",
+        "summary": "The space's waiting acceptances",
+        "description": "The acceptances of the space's invites that have not ended, for an admin's session, each with its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, \"Invite\").",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The waiting acceptances, oldest first.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaitingAcceptances"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -8822,7 +9199,287 @@
             }
           },
           "404": {
-            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1. A service token gets only its own space.",
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, to its creator before revision 1, and to the account of an invite's acceptance until the invite ends. A service token gets only its own space.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/invites": {
+      "post": {
+        "operationId": "createInvite",
+        "summary": "A new invite ID",
+        "description": "The server issues an invite ID for the space; it stores an invite only under an ID it issued for its space. An ID with no invite ends 30 days after its issue.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Issued.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewInvite"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/invites/{invite}": {
+      "put": {
+        "operationId": "storeInvite",
+        "summary": "Store an invite",
+        "description": "Stores an invite of the space under an ID the server issued for it, as the bytes the server got (docs/protocol/membership.md, \"Invite\"), from a session of an admin in the space's latest revision. Its `signer` is a `client` device of the session's account with a certificate, not revoked; its `expires` is at most 30 days after the server stores it; its channels are in the latest revision, the default channel first.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Invite"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InviteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The server holds this invite with these bytes under this ID: a retry after a lost answer.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredInvite"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Stored.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredInvite"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the request is invalid: a malformed body; or the problem `https://skald.so/problems/invalid-invite`, for an ID the server did not issue for this space or one that ended, bytes that do not decode as an `invite`, another ID or space than this one, a `signer` that is no `client` device of the session's account with a certificate or is revoked, a signature that does not verify with its key, an `expires` passed or more than 30 days ahead, or channels that the latest revision lacks or without its default channel first.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session, or an unknown one, or an `Authorization` header that is not `Bearer <token>` of a device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The session's account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The problem `https://skald.so/problems/invite-taken`: the server holds another invite under this ID.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -9024,7 +9681,7 @@
             }
           },
           "404": {
-            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, and to its creator before revision 1. A service token gets only its own space.",
+            "description": "No such space, or the session's account does not get it: a space goes to the accounts that are members in its latest revision, to its creator before revision 1, and to the account of an invite's acceptance until the invite ends. A service token gets only its own space.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -9868,6 +10525,15 @@
           "pattern": "^[A-Za-z0-9_-]+$"
         }
       },
+      "Invite": {
+        "name": "invite",
+        "in": "path",
+        "required": true,
+        "description": "The invite's ID.",
+        "schema": {
+          "$ref": "#/components/schemas/InviteId"
+        }
+      },
       "ProtocolVersion": {
         "name": "Skald-Protocol-Version",
         "in": "header",
@@ -9948,6 +10614,23 @@
       }
     },
     "schemas": {
+      "Acceptance": {
+        "description": "An acceptance's CBOR bytes (docs/protocol/membership.md, \"Invite\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "AcceptanceRequest": {
+        "type": "object",
+        "required": [
+          "acceptance"
+        ],
+        "properties": {
+          "acceptance": {
+            "$ref": "#/components/schemas/Acceptance"
+          }
+        },
+        "additionalProperties": false
+      },
       "AccountAnchors": {
         "type": "object",
         "required": ["anchors"],
@@ -10588,6 +11271,80 @@
         },
         "additionalProperties": false
       },
+      "Invite": {
+        "description": "An invite's CBOR bytes (docs/protocol/membership.md, \"Invite\") in base64url without padding (RFC 4648, §5).",
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "InviteId": {
+        "description": "An invite's ID: a UUIDv7 in the lowercase hyphenated form (docs/protocol/README.md, \"Identifiers\").",
+        "type": "string",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "InviteRequest": {
+        "type": "object",
+        "required": [
+          "invite"
+        ],
+        "properties": {
+          "invite": {
+            "$ref": "#/components/schemas/Invite"
+          }
+        },
+        "additionalProperties": false
+      },
+      "InviteWithSpace": {
+        "type": "object",
+        "required": [
+          "invite",
+          "revisions",
+          "devices",
+          "revocations",
+          "records"
+        ],
+        "properties": {
+          "invite": {
+            "description": "The invite as the server got it.",
+            "$ref": "#/components/schemas/Invite"
+          },
+          "revisions": {
+            "description": "The space's revisions as stored, from revision 1 on, in order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RosterRevision"
+            }
+          },
+          "devices": {
+            "description": "As in `SpaceDevices`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          },
+          "revocations": {
+            "description": "As in `SpaceDevices`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revocation"
+            }
+          },
+          "records": {
+            "description": "As in `SpaceDevices`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountRecord"
+            }
+          },
+          "deleted": {
+            "description": "As in `SpaceDevices`.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountId"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "KeyPackage": {
         "description": "A KeyPackage in an `MLSMessage` (RFC 9420, §6 and §10) in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -10944,7 +11701,7 @@
             "$ref": "#/components/schemas/AccountRecord"
           },
           "backup": {
-            "description": "The master backup, sealed to the recovery key the account record names.",
+            "description": "The master backup, sealed with the recovery key of the account record.",
             "$ref": "#/components/schemas/MasterBackup"
           }
         },
@@ -10956,6 +11713,18 @@
         "properties": {
           "channel": {
             "$ref": "#/components/schemas/ChannelId"
+          }
+        },
+        "additionalProperties": false
+      },
+      "NewInvite": {
+        "type": "object",
+        "required": [
+          "invite"
+        ],
+        "properties": {
+          "invite": {
+            "$ref": "#/components/schemas/InviteId"
           }
         },
         "additionalProperties": false
@@ -11843,6 +12612,19 @@
         },
         "additionalProperties": false
       },
+      "StoredAcceptance": {
+        "type": "object",
+        "required": [
+          "acceptance"
+        ],
+        "properties": {
+          "acceptance": {
+            "description": "The acceptance as stored.",
+            "$ref": "#/components/schemas/Acceptance"
+          }
+        },
+        "additionalProperties": false
+      },
       "StoredAnchors": {
         "type": "object",
         "required": ["anchors"],
@@ -11850,6 +12632,19 @@
           "anchors": {
             "description": "The anchors object as stored.",
             "$ref": "#/components/schemas/Anchors"
+          }
+        },
+        "additionalProperties": false
+      },
+      "StoredInvite": {
+        "type": "object",
+        "required": [
+          "invite"
+        ],
+        "properties": {
+          "invite": {
+            "description": "The invite as stored.",
+            "$ref": "#/components/schemas/Invite"
           }
         },
         "additionalProperties": false
@@ -12021,6 +12816,50 @@
         "properties": {
           "username": {
             "$ref": "#/components/schemas/Username"
+          }
+        },
+        "additionalProperties": false
+      },
+      "WaitingAcceptance": {
+        "type": "object",
+        "required": [
+          "acceptance",
+          "devices",
+          "revocations"
+        ],
+        "properties": {
+          "acceptance": {
+            "description": "The acceptance as the server got it.",
+            "$ref": "#/components/schemas/Acceptance"
+          },
+          "devices": {
+            "description": "The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Device"
+            }
+          },
+          "revocations": {
+            "description": "The stored revocations of the acceptance's account, each as the server got it, once.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Revocation"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "WaitingAcceptances": {
+        "type": "object",
+        "required": [
+          "acceptances"
+        ],
+        "properties": {
+          "acceptances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaitingAcceptance"
+            }
           }
         },
         "additionalProperties": false
