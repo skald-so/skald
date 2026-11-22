@@ -5,7 +5,9 @@
 use skald_adapters::claude_code::Executor;
 use skald_adapters::executor::Mode;
 
-use crate::fixtures::{CHECKED, MARKERS, Scratch, StandIn, device_environment, run, token};
+use crate::fixtures::{
+    CHECKED, MARKERS, Scratch, StandIn, device_environment, run, set_in_this_process, token,
+};
 
 const PROMPT: &str = "Say done.";
 
@@ -125,6 +127,7 @@ fn read_only_runs_on_the_checked_claude_code_and_later_ones() {
 /// needs neither to run nor to sign in.
 #[test]
 fn a_session_runs_in_its_folder_without_the_device_s_other_variables() {
+    set_in_this_process(&MARKERS);
     for mode in [Mode::Full, Mode::ReadOnly] {
         let scratch = Scratch::new();
         let line = format!("{CHECKED} (Claude Code)");

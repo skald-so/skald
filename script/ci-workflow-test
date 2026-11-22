@@ -22,11 +22,11 @@
 //     web/kit-diff/ and site/references-diff/, after their tests fail;
 //   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
 //     checkout keeps no credentials, and a job's token reads contents at most.
-// And the job that runs the client's tests on Windows:
-//   - one job of a PR into dev runs `cargo nextest run -p skald-client --locked --no-fail-fast`,
-//     with no other option but --test-threads, on a windows-2025 runner, in a step that may run and
-//     whose failure fails the job: every test of the client, none left out (the client is a binary,
-//     which has no doctests);
+// And the job that runs the client's and the adapters' tests on Windows:
+//   - one job of a PR into dev runs `cargo nextest run -p skald-client -p skald-adapters --locked
+//     --no-fail-fast`, with no other option but --test-threads, on a windows-2025 runner, in a step
+//     that may run and whose failure fails the job: every test of the client and the adapters, none
+//     left out (neither has doctests);
 //   - the job writes .cargo/config.toml only by copying to it a Cargo config file of the repository
 //     that sets only optimization levels, and sets no NEXTEST_PROFILE, NEXTEST_RETRIES,
 //     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: debug assertions and overflow checks
@@ -433,8 +433,8 @@ const args = cargoTest(tests[0] ?? '') ?? [];
 // The options but --test-threads <n>, which changes only how many tests run at once.
 const threads = args.indexOf('--test-threads');
 const options = threads >= 0 && /^[1-9][0-9]*$/.test(args[threads + 1] ?? '') ? args.toSpliced(threads, 2) : args;
-if (options.join(' ') !== '-p skald-client --locked --no-fail-fast') {
-  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
+if (options.join(' ') !== '-p skald-client -p skald-adapters --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client -p skald-adapters --locked --no-fail-fast: every test of the client and the adapters, from the lockfile`);
 }
 const last = commands(testStep.run)
   .map((line) => line.trim())
