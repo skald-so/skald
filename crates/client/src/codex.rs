@@ -505,8 +505,8 @@ impl Served {
     /// Serves the sessions registered in the state in `dir` ([`Served::looks`]), `came` what came
     /// on the connection: ends those whose Codex process ended; takes in once for each space of a
     /// session it has not taken in for, or that `came` may bring messages of, as statuses alone
-    /// give a session's hooks and wakes nothing; then wakes the idle ones
-    /// ([`Served::wake`]). Gives whether it took in; `None` once a run panicked.
+    /// give its hooks nothing and wake nothing; then wakes the idle ones ([`Served::wake`]). Gives
+    /// whether it took in; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         self.looks(dir);
         let gone: Vec<String> = (self.live.iter_mut())
