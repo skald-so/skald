@@ -3,15 +3,12 @@
 //! it, expiring within 30 days, naming channels of the latest revision with the default channel
 //! first; once, also when sent twice.
 
-use std::time::Duration;
-
 use skald_proto::{ChannelId, DeviceKind, InviteId, Role};
 
 use crate::api::{ACME, Person, assert_refused};
-use crate::common::device_flow::{DeviceFlow, INTERVAL, json, text};
+use crate::common::device_flow::{DeviceFlow, json, text};
 use crate::common::devices::assert_taken;
-use crate::common::sign_in::{CLIENT_SECRET, SECRET_ENV, SignIn, github_args, github_stand_in};
-use crate::common::{Server, TestDb, on_free_port};
+use crate::common::sign_in::{SignIn, WebAddress};
 use crate::rosters::first;
 use crate::scene::{
     DAY, MALFORMED, Scene, assert_stored, broken, gets_no_invite, made, signed_invite,
@@ -221,29 +218,6 @@ fn malformed_invites_and_other_bytes_under_a_stored_id_are_refused() {
     scene.gets_invite(&scene.f.eve, &invite);
 }
 
-/// A server whose public address is `http://api.skald.test:<port>` and whose web address, set by
-/// `--web-url`, is `http://app.skald.test:<port>`, `<port>` the one it listens on; browsers sign in
-/// on the web address, the flow's `stand.public`.
-fn with_web_address() -> DeviceFlow {
-    let db = TestDb::create();
-    let (github, server, web) = on_free_port(Duration::from_secs(30), |port| {
-        let public = format!("http://api.skald.test:{port}");
-        let web = format!("http://app.skald.test:{port}");
-        let github = github_stand_in(&web);
-        let mut args = vec!["--public-url", &public, "--web-url", &web, INTERVAL, "1"];
-        args.extend(github_args(&github));
-        let listen = format!("127.0.0.1:{port}");
-        let server = Server::try_launch(&db, &listen, &args, &[(SECRET_ENV, CLIENT_SECRET)])?;
-        Ok((github, server, web))
-    });
-    DeviceFlow::of(SignIn {
-        db,
-        github,
-        server,
-        public: web,
-    })
-}
-
 /// The answer that issues an invite ID names the server's web address, which an invite link starts
 /// with: its public address by default, and the address `--web-url` sets.
 #[test]
@@ -258,7 +232,13 @@ fn the_answer_that_issues_an_id_names_the_servers_web_address() {
         text(&response)
     );
 
-    let flow = with_web_address();
+    let (stand, _) = SignIn::with_web_address(WebAddress::Argument, |port| {
+        (
+            format!("http://api.skald.test:{port}"),
+            format!("http://app.skald.test:{port}"),
+        )
+    });
+    let flow = DeviceFlow::of(stand);
     let alice = Person::new(&flow, 3_817_100_801, "alice");
     let space = alice.create_space(ACME);
     assert_taken(

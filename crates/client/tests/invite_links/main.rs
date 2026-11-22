@@ -69,6 +69,7 @@ mod creating;
 mod lost;
 mod refusals;
 mod secret;
+mod web_address;
 
 use std::collections::BTreeSet;
 use std::time::Instant;

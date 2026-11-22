@@ -23,6 +23,13 @@ pub const NOT_AT_TERMINAL: &str = "skald invite shows an invite link only at a t
 pub const DEFAULT_DAYS: u64 = 7;
 pub const MOST_DAYS: u64 = 30;
 
+/// A day, in seconds.
+const DAY: u64 = 86_400;
+
+/// How much earlier than 30 days ahead an invite of 30 days expires, in seconds: the server takes
+/// one expiring at most 30 days after it stores it, by its own clock, which may lag the device's.
+const MARGIN: u64 = 30;
+
 /// How many times a run sends a request after it got no answer.
 const SENDS: usize = 3;
 
@@ -96,25 +103,34 @@ pub fn create(synced: Synced, asked: &Asked) -> Result<(), String> {
     let (invite, web) = issue(&mut follower, space.id)?;
     let web = web.ok_or("the server names no web address, which an invite link starts with")?;
     let secret = InviteSecret::generate();
-    let body = InviteBody {
-        invite,
-        space: space.id,
-        key: secret.invite_key().public_key(),
-        role,
-        channels,
-        signer: follower.this,
-        expires: now() + asked.days * 86_400,
-        unknown: Unknown::default(),
-    };
-    let signed =
-        sign_invite(&body, keys.signing()).map_err(|err| format!("the invite fails: {err}"))?;
-    store(&mut follower, space.id, &signed)?;
     let link = InviteLink {
         web,
         invite,
         secret,
         revision: roster.hash(),
     };
+    // The link must read back to what made it: so the web address is an origin with nothing a
+    // terminal acts on.
+    if !InviteLink::parse(&link.shown()).is_ok_and(|read| read.web == link.web) {
+        return Err(format!(
+            "the server names \"{}\" as its web address, which is no origin such as \
+             https://skald.example; nothing was stored",
+            printable(&link.web)
+        ));
+    }
+    let body = InviteBody {
+        invite,
+        space: space.id,
+        key: link.secret.invite_key().public_key(),
+        role,
+        channels,
+        signer: follower.this,
+        expires: expiry(now(), asked.days),
+        unknown: Unknown::default(),
+    };
+    let signed =
+        sign_invite(&body, keys.signing()).map_err(|err| format!("the invite fails: {err}"))?;
+    store(&mut follower, space.id, &signed)?;
     let role = match role {
         Role::Admin => "an admin",
         _ => "a member",
@@ -126,6 +142,12 @@ pub fn create(synced: Synced, asked: &Asked) -> Result<(), String> {
     println!("{}", link.shown().as_str());
     println!("The link admits one person: send it only to them, over a channel you trust.");
     Ok(())
+}
+
+/// The `expires` of an invite made at `now` for `days`: that many days ahead, but [`MARGIN`] short
+/// of 30 days at most.
+fn expiry(now: u64, days: u64) -> u64 {
+    now + (days * DAY).min(MOST_DAYS * DAY - MARGIN)
 }
 
 /// `POST /spaces/<space>/invites`: an invite ID the server issues for `space`, and the server's web
@@ -172,4 +194,19 @@ fn sent(
         "{failed}; an invite the server took without answering admits no one, as its link was \
          never shown, and ends when it expires"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An invite expires the days asked ahead, and one of 30 days a margin short of them.
+    #[test]
+    fn expiry_is_the_days_ahead_and_30_days_a_margin_short() {
+        let now = 1_800_000_000;
+        assert_eq!(expiry(now, 1), now + DAY);
+        assert_eq!(expiry(now, 7), now + 7 * DAY);
+        assert_eq!(expiry(now, 29), now + 29 * DAY);
+        assert_eq!(expiry(now, 30), now + 30 * DAY - MARGIN);
+    }
 }
