@@ -312,6 +312,16 @@ impl Session {
         }
     }
 
+    /// The person dismisses the permission prompt the terminal session shows: Esc, as Claude Code
+    /// takes it, so the session then exits when asked.
+    pub fn dismiss_prompt(&mut self) {
+        let Running::Terminal { input, .. } = &self.running else {
+            panic!("only a terminal session shows a permission prompt");
+        };
+        typed(input, b"\x1b").expect("press Esc");
+        thread::sleep(Duration::from_secs(1));
+    }
+
     /// Waits until a turn holding `text` reached `model`; fails after a while, showing what the
     /// session printed.
     #[track_caller]
@@ -431,7 +441,10 @@ impl Session {
             thread::sleep(Duration::from_millis(100));
         }
         match &mut self.running {
-            Running::Terminal { child, .. } => drop(child.kill()),
+            Running::Terminal { child, .. } => {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             Running::App { child, .. } => {
                 let _ = child.kill();
                 let _ = child.wait();

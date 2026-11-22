@@ -161,6 +161,7 @@ pub fn frames() -> Vec<(&'static str, Frame, String)> {
             },
             &format!("83 03 50{MSG_1} 41a0"),
         ),
+        history(HistoryItem::QueueKey(hex("a0")), "82 04 41a0"),
         (
             "history-stored",
             Frame::HistoryStored { upload: 5 },

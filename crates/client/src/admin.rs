@@ -1,7 +1,8 @@
 //! `skald remove-member`, `skald exclude-device`, `skald add-to-channel`, `skald
-//! remove-from-channel`, `skald set-history-period`, `skald make-admin` and `skald
-//! hand-over-admin`: an admin's device changes a space's members, their roles or its policy's
-//! `history` by the next roster revision, which it signs, checks as its members
+//! remove-from-channel`, `skald set-history-period`, `skald set-domain`, `skald clear-domain`,
+//! `skald make-admin` and `skald hand-over-admin`: an admin's device changes a space's members,
+//! their roles or its policy's `history` or `domain` by the next roster revision, which it signs,
+//! checks as its members
 //! accept it, and writes and sends as [`crate::spaces`] says (`docs/protocol/membership.md`,
 //! "Roster" and "Policy"). It then brings the groups of the space's channels in line with it
 //! ([`crate::groups`]): it removes the devices no longer admitted, adds a new channel member's
@@ -34,6 +35,8 @@ pub enum Edit {
     RemoveFromChannel { channel: String, handle: String },
     /// Sets the policy's `history` to these seconds, at least a day.
     HistoryPeriod(u64),
+    /// Names this domain in the policy, a domain name ([`crate::domains::name`]), or clears it.
+    Domain(Option<String>),
     /// Makes the member of this handle an admin.
     MakeAdmin(String),
     /// Makes the member of this handle an admin, if it is not one, and the device's account a
@@ -168,6 +171,19 @@ fn make(
             }
             body.policy.history = *seconds;
             Ok(format!("Set the history period to {period}"))
+        }
+        Edit::Domain(domain) => {
+            if body.policy.domain == *domain {
+                return Err(match domain {
+                    Some(domain) => format!("the space {space} names the domain {domain} already"),
+                    None => format!("the space {space} names no domain"),
+                });
+            }
+            body.policy.domain.clone_from(domain);
+            Ok(match domain {
+                Some(domain) => format!("Named the domain {domain}"),
+                None => "Cleared the domain".to_owned(),
+            })
         }
         Edit::MakeAdmin(handle) => {
             let account = member(body, handle)?.account;
@@ -323,6 +339,14 @@ mod tests {
         expected.policy.history = 36 * 3_600;
         assert_eq!(set, expected);
 
+        let named = edited(Edit::Domain(Some("corp.example".to_owned())));
+        let mut expected = body.clone();
+        expected.policy.domain = Some("corp.example".to_owned());
+        assert_eq!(named, expected);
+        let mut cleared = named;
+        make(&mut cleared, &Edit::Domain(None), own, certs).unwrap();
+        assert_eq!(cleared, body);
+
         let made = edited(Edit::MakeAdmin("bob".to_owned()));
         let mut expected = body.clone();
         set_role(&mut expected, bob, Role::Admin);
@@ -378,8 +402,13 @@ mod tests {
         let same = Edit::HistoryPeriod(body.policy.history);
         let mut made = body.clone();
         set_role(&mut made, cert.body().account, Role::Admin);
-        let cases: [(&RosterBody, Edit, &str); 14] = [
+        let mut named = body.clone();
+        named.policy.domain = Some("corp.example".to_owned());
+        let name = Edit::Domain(Some("corp.example".to_owned()));
+        let cases: [(&RosterBody, Edit, &str); 16] = [
             (&body, same, "already"),
+            (&named, name, "already"),
+            (&body, Edit::Domain(None), "no domain"),
             (&made, Edit::MakeAdmin("bob".to_owned()), "already"),
             (&body, Edit::MakeAdmin("carol".to_owned()), "no member"),
             (&body, Edit::HandOver("carol".to_owned()), "no member"),

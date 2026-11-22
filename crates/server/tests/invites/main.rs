@@ -15,8 +15,8 @@
 //!
 //! The interfaces, as these tests use them, each request stating the protocol version, with a
 //! device session's `Authorization: Bearer <token>`:
-//! - `POST /spaces/{space}/invites`, without a body: `201` with `{"invite": <ID>}`, a new invite ID
-//!   for the space.
+//! - `POST /spaces/{space}/invites`, without a body: `201` with `{"invite": <ID>, "web": <URL>}`, a
+//!   new invite ID for the space and the server's web address.
 //! - `PUT /spaces/{space}/invites/{invite}` of `{"invite": <bytes>}`: stores the invite with that
 //!   ID; `201` once stored, `200` for the same bytes again.
 //! - `GET /invites/{invite}`: `200` with `{"invite": <bytes>, "revisions": [<bytes>, ...],
