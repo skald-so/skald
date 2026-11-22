@@ -81,8 +81,9 @@ fn on_one_device_the_enqueuing_agent_gets_the_result_in_its_inbox_and_the_claime
 
     let mut session = session_in(machine, folder, &[AGENT, crate::agents::CLAUDE], CLIENT);
     let inbox = session.inbox();
-    drop(session);
 
     assert_one_result(&inbox, task, DONE, (CODEX, OWN));
+    // The session lives on: its answer comes before its run marks the result handed over.
     shows_read(machine, result.msg_id);
+    drop(session);
 }
