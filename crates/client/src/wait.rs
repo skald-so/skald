@@ -9,7 +9,8 @@
 //!   goes to its command, so a message is marked handed over only once the command has written it
 //!   out; the command exits after.
 //! - In one-shot mode it holds its own connection and takes the local state's lock only for each
-//!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]). Once a helper
+//!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]), and for each
+//!   look of its agent's heartbeat ([`heartbeat::beat_here`]). Once a helper
 //!   runs, it goes on through it, as any command does ([`helper::route`]): it ends when the helper
 //!   is newer.
 //! - Between runs it watches the connection kept: a WebSocket or an event stream; with none, a
@@ -37,7 +38,7 @@ use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::{self, State};
-use crate::{Command, Operation, claude_socket, codex, connection, folders, uploads};
+use crate::{Command, Operation, claude_socket, codex, connection, folders, heartbeat, uploads};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -102,8 +103,16 @@ pub fn here(
             return Ok(None);
         }
         watch.start();
+        let mut beat_at = Instant::now() + heartbeat::TICK;
         loop {
             thread::sleep(TICK);
+            if Instant::now() >= beat_at {
+                beat_at = Instant::now() + heartbeat::TICK;
+                if let Ok(Some(agent)) = operation.agent() {
+                    let settings = (operation.speaks, operation.timeout);
+                    heartbeat::beat_here(dir, operation.key_storage, settings, &agent);
+                }
+            }
             if helper::running(dir) {
                 // It goes on through the helper, on the helper's connection.
                 watch.stop_poll();
@@ -287,6 +296,8 @@ pub struct Sessions {
     ends: BTreeMap<uploads::Running, (Instant, u64)>,
     /// What the presence was last checked with.
     kept: uploads::Kept,
+    /// The heartbeat of the claims of the sessions' agents.
+    beats: heartbeat::Beats,
     /// The last permission prompt the person's run has yet to show, when it was last read.
     prompts: Option<(u64, Instant)>,
 }
@@ -411,6 +422,17 @@ impl Sessions {
         self.kept.check(dir, &live, anyway);
     }
 
+    /// Extends the claims of the agents whose sessions run, by the state in `dir`, as they are due
+    /// ([`heartbeat::Beats`]); once it found one lost, runs each session again, so its agent's
+    /// next output says so, and checks the presence.
+    pub fn beat(&mut self, dir: &Path) {
+        let running = self.live().running;
+        if self.beats.check(dir, &running) {
+            self.ran();
+            self.keep_presence(dir, true);
+        }
+    }
+
     /// Ends the sessions, as the helper exits, and checks the presence by the state in `dir` with
     /// their agents `offline`.
     pub fn end(mut self, dir: &Path) {
@@ -426,6 +448,7 @@ impl Sessions {
 
     /// Notes that a command ran.
     pub fn ran(&mut self) {
+        self.beats.ran();
         for waiting in &mut self.waiting {
             waiting.due = true;
         }

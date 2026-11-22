@@ -29,6 +29,7 @@
 
 mod busy;
 mod failing;
+// Shared with the Codex executor's tests.
 mod harness;
 mod once;
 mod queued;

@@ -79,6 +79,71 @@ pub fn check(state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), S
     run.check(state, certs)
 }
 
+/// A GitHub user GitHub's API gives by login: its ID, its login as GitHub spells it and its SSH
+/// keys, as OpenSSH public key lines.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Found {
+    pub id: u64,
+    pub login: String,
+    pub keys: Vec<String>,
+}
+
+/// What GitHub's API gives for a login.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ByLogin {
+    Found(Found),
+    /// No such user.
+    NoUser,
+    /// Nothing: GitHub cannot be reached or gives anything else, its rate limit included.
+    Unavailable,
+}
+
+/// What GitHub's API, as the operation running reaches it ([`set`]), gives for `login`, a valid
+/// login ([`valid_login`]): `GET /users/{login}`, then its SSH keys as [`check`] takes them.
+pub fn by_login(login: &str) -> ByLogin {
+    let (api, timeout) = {
+        let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
+        let run =
+            run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
+        (run.api.clone(), run.timeout)
+    };
+    match connection::agent_to(&api, timeout) {
+        Ok(agent) => user_by_login(&agent, &api, login),
+        Err(_) => ByLogin::Unavailable,
+    }
+}
+
+/// [`by_login`] through `agent`, to GitHub's API at `api`.
+fn user_by_login(agent: &ureq::Agent, api: &str, login: &str) -> ByLogin {
+    let user: User = match get(agent, &format!("{api}/users/{login}")) {
+        Some(Answer::Found(body)) => match serde_json::from_slice(&body) {
+            Ok(user) => user,
+            Err(_) => return ByLogin::Unavailable,
+        },
+        Some(Answer::NotFound) => return ByLogin::NoUser,
+        None => return ByLogin::Unavailable,
+    };
+    let (Some(id), true) = (user.id, valid_login(&user.login)) else {
+        return ByLogin::Unavailable;
+    };
+    match ssh_keys(agent, api, &user.login) {
+        Some(keys) => ByLogin::Found(Found {
+            id,
+            login: user.login,
+            keys,
+        }),
+        None => ByLogin::Unavailable,
+    }
+}
+
+/// Whether `login` is of a GitHub login's form: 1 to 39 ASCII letters, digits and `-`.
+pub fn valid_login(login: &str) -> bool {
+    (1..=LOGIN_MAX).contains(&login.len())
+        && login
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 /// The checks of one operation: against GitHub's API at `api`, each request failing after
 /// `timeout`; once GitHub gives nothing, the operation asks it nothing more.
 struct Run {
@@ -231,6 +296,8 @@ impl<'a> Github<'a> {
 #[derive(Deserialize)]
 struct User {
     login: String,
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 /// An SSH key as GitHub's API lists it.
@@ -240,22 +307,25 @@ struct Key {
 }
 
 /// What GitHub's API at `api` lists for the user `user`: its login, from `GET /user/{id}`, and its
-/// SSH keys, every page of `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys`.
-/// `None` when it cannot be reached or gives anything else, its rate limit, a malformed login or
-/// lists of more than [`PAGES`] pages included.
+/// SSH keys ([`ssh_keys`]). `None` when it cannot be reached or gives anything else, its rate
+/// limit, a malformed login or lists of more than [`PAGES`] pages included.
 fn list(agent: &ureq::Agent, api: &str, user: u64) -> Option<Listed> {
     let found: User = match get(agent, &format!("{api}/user/{user}"))? {
         Answer::Found(body) => serde_json::from_slice(&body).ok()?,
         Answer::NotFound => return Some(Listed::NoUser),
     };
     let login = found.login;
-    let valid = (1..=LOGIN_MAX).contains(&login.len())
-        && login
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
-    if !valid {
+    if !valid_login(&login) {
         return None;
     }
+    let keys = ssh_keys(agent, api, &login)?;
+    Some(Listed::User { login, keys })
+}
+
+/// The SSH keys GitHub's API at `api` lists for the user `login`: every page of
+/// `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys`. `None` when it cannot be
+/// reached or gives anything else, lists of more than [`PAGES`] pages included.
+fn ssh_keys(agent: &ureq::Agent, api: &str, login: &str) -> Option<Vec<String>> {
     let mut keys = Vec::new();
     'lists: for list in ["keys", "ssh_signing_keys"] {
         for page in 1..=PAGES {
@@ -272,7 +342,7 @@ fn list(agent: &ureq::Agent, api: &str, user: u64) -> Option<Listed> {
         }
         return None;
     }
-    Some(Listed::User { login, keys })
+    Some(keys)
 }
 
 /// An answer of GitHub's API that gives something.
@@ -433,6 +503,38 @@ mod tests {
             state.ssh_check(github.url(), &hash(&malformed)).unwrap(),
             None
         );
+    }
+
+    /// A user by login gives its ID, its login as GitHub spells it and the keys of both its lists;
+    /// a login GitHub does not have, no user; GitHub's errors, nothing.
+    #[test]
+    fn a_user_by_login_gives_its_id_login_and_keys() {
+        let github = github();
+        github.put_user(skald_github_stand_in::User::new(9, "Ada-Keys"));
+        github.put_ssh_keys(skald_github_stand_in::SshKeys {
+            user: 9,
+            authentication: vec!["ssh-ed25519 AAAA1".to_owned()],
+            signing: vec!["ssh-ed25519 AAAA2".to_owned()],
+        });
+        let agent = connection::agent_to(github.url(), TIMEOUT).unwrap();
+        let by = |login| user_by_login(&agent, github.url(), login);
+
+        assert_eq!(
+            by("ada-keys"),
+            ByLogin::Found(Found {
+                id: 9,
+                login: "Ada-Keys".to_owned(),
+                keys: vec![
+                    "ssh-ed25519 AAAA1".to_owned(),
+                    "ssh-ed25519 AAAA2".to_owned()
+                ],
+            })
+        );
+        assert_eq!(by("bob"), ByLogin::NoUser);
+        for fault in [Fault::RateLimited, Fault::ApiStatus { status: 500 }] {
+            github.set_faults(&[fault]);
+            assert_eq!(by("ada-keys"), ByLogin::Unavailable, "{fault:?}");
+        }
     }
 
     /// Once GitHub answers with an error, the operation asks it nothing more, in that check or a

@@ -1,5 +1,5 @@
-//! The harness of the test targets whose binary also stands in for the `codex` command, whose
-//! arguments libtest would refuse.
+//! A test binary's own harness, for a binary that also stands in for a command whose arguments
+//! libtest would refuse.
 
 use std::panic;
 use std::process::ExitCode;
