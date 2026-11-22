@@ -228,6 +228,19 @@ struct Cli {
     )]
     github_api_url: String,
 
+    /// The URL of the DNS-over-HTTPS resolver that looks up the records of a space's domain:
+    /// skald members checks its members against them, and key changes they show count only in
+    /// runs with it.
+    #[arg(
+        long,
+        env = domains::RESOLVER_SETTING,
+        value_name = "URL",
+        global = true,
+        hide = true,
+        default_value = domains::RESOLVER
+    )]
+    dns_resolver: String,
+
     #[command(subcommand)]
     command: Command,
 }
@@ -382,15 +395,6 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
-        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
-        #[arg(
-            long,
-            env = domains::RESOLVER_SETTING,
-            value_name = "URL",
-            hide = true,
-            default_value = domains::RESOLVER
-        )]
-        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -1519,6 +1523,7 @@ fn main() -> ExitCode {
         key_storage: cli.key_storage,
         agent: cli.agent,
         github_api: cli.github_api_url,
+        dns_resolver: cli.dns_resolver,
         command: cli.command,
         said: link_prompt::Said::default(),
         said_key_changes: AtomicBool::new(false),
@@ -1935,6 +1940,9 @@ struct Operation {
     /// The base URL of GitHub's REST API.
     #[serde(default = "github_api")]
     github_api: String,
+    /// The DNS-over-HTTPS resolver's URL, as the client that started the run had it.
+    #[serde(default = "dns_resolver")]
+    dns_resolver: String,
     command: Command,
     /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
     /// runs `skald recv` again and again, and says each once.
@@ -1951,6 +1959,11 @@ fn github_api() -> String {
     update::GITHUB_API_URL.to_owned()
 }
 
+/// The DNS-over-HTTPS resolver's URL by default.
+fn dns_resolver() -> String {
+    domains::RESOLVER.to_owned()
+}
+
 impl Operation {
     /// The operation of `command`, a step of its own interactive command, as the person.
     fn step(&self, command: Command) -> Self {
@@ -1962,6 +1975,7 @@ impl Operation {
             key_storage: self.key_storage,
             agent: None,
             github_api: self.github_api.clone(),
+            dns_resolver: self.dns_resolver.clone(),
             command,
             said: link_prompt::Said::default(),
             said_key_changes: AtomicBool::new(false),
@@ -1971,11 +1985,7 @@ impl Operation {
     /// The sources whose key changes its runs count ([`key_changes::sources`]): its GitHub API's
     /// and its resolver's.
     fn key_change_sources(&self) -> Vec<String> {
-        let resolver = match &self.command {
-            Command::Members { dns_resolver, .. } => dns_resolver.clone(),
-            _ => domains::resolver(),
-        };
-        key_changes::sources(&self.github_api, &resolver)
+        key_changes::sources(&self.github_api, &self.dns_resolver)
     }
 
     /// Whether it shows as JSON: a `skald recv --json`.
@@ -2052,6 +2062,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
         state_dir,
         key_storage,
         github_api,
+        dns_resolver,
         command,
         said,
         ..
@@ -2173,10 +2184,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members {
-            space,
-            dns_resolver,
-        } => synced(
+        Command::Members { space } => synced(
             state_dir,
             key_storage,
             speaks,

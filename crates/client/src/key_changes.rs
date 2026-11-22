@@ -2,10 +2,12 @@
 //!
 //! - The device keeps each key change in its local state as it warns of it ([`keep`]). One that an
 //!   SSH signature or a domain's records show is kept with the address of the GitHub API or
-//!   resolver that showed it, and counts only for runs with that address, as their results do.
+//!   resolver that showed it, and counts only for runs with that address, as their results do: the
+//!   address the client that started the run has, also through a helper.
 //! - Until its person has seen them, each command, as the person or as an agent, and each tool call
 //!   of the MCP server says on one line how many wait and that `skald key-changes` at a terminal
-//!   shows them ([`say`]); with `--json`, as an object. The line names nothing of any space.
+//!   shows them ([`say`]); with `--json`, as an object. The line names nothing of any space. A
+//!   service agent's runs never say it: no person sees them at a terminal.
 //! - `skald key-changes` shows them only to its person at a terminal, and counts them seen once the
 //!   person presses Enter, as `skald fingerprint` takes its person's answer ([`run`]); from a pipe
 //!   or as an agent it shows none. Killed before the Enter, it counts none seen.
@@ -15,6 +17,7 @@ use std::process::ExitCode;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest as _, Sha256};
 
 use crate::devices::text;
 use crate::link_code;
@@ -61,6 +64,14 @@ pub fn keep_from(state: &State, source: &str, line: &str) -> Result<(), String> 
     (state.keep_key_change((line, source), line, false))
         .map(drop)
         .map_err(text)
+}
+
+/// The key of a key change about `bytes`, an object of the kind `kind` names: the kind and the
+/// SHA-256 of the bytes, in hex.
+pub fn key_of(kind: &str, bytes: &[u8]) -> String {
+    let hash: [u8; 32] = Sha256::digest(bytes).into();
+    let hex: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{kind} {hex}")
 }
 
 /// Keeps `line`, the warning of the key change `key`, in `state` for its person unless it was ever

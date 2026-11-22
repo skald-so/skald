@@ -32,13 +32,6 @@ pub const RESOLVER: &str = "https://cloudflare-dns.com/dns-query";
 /// The setting that names the resolver.
 pub const RESOLVER_SETTING: &str = "SKALD_DNS_RESOLVER";
 
-/// The resolver [`RESOLVER_SETTING`] names, or [`RESOLVER`].
-pub fn resolver() -> String {
-    (std::env::var(RESOLVER_SETTING).ok())
-        .filter(|resolver| !resolver.is_empty())
-        .unwrap_or_else(|| RESOLVER.to_owned())
-}
-
 /// The label before a domain of the name its records are at.
 const LABEL: &str = "_skald";
 

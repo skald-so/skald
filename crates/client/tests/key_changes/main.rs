@@ -57,6 +57,11 @@ mod records;
 mod refusals;
 mod ssh;
 
+// Tests beside the acceptance tests.
+mod other_masters;
+mod paths;
+mod resolvers;
+
 // The modules the tests of the channel history share (`history_common/mod.rs`).
 #[path = "../history_common/mod.rs"]
 mod history_common;

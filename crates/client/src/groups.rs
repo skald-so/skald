@@ -51,7 +51,6 @@ use std::num::NonZeroU64;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use sha2::Digest as _;
 use skald_crypto::{
     ChannelView, DeviceCheckError, Joining, MemberDevice, MlsContent, MlsDevice, MlsError,
     MlsFraming, Processed, SealedState, StateKey, check_device, check_key_package,
@@ -721,9 +720,8 @@ fn key_packages(
                     "the server handed out a KeyPackage of the device {device} that fails its \
                      checks: {err}; this device does not add it"
                 );
-                let hash: [u8; 32] = sha2::Sha256::digest(&package).into();
-                let key: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
-                key_changes::keep_once(&follower.state, &format!("key package {key}"), &warning)?;
+                let key = key_changes::key_of("key package", &package);
+                key_changes::keep_once(&follower.state, &key, &warning)?;
                 eprintln!("skald: warning: {warning}");
             }
         }

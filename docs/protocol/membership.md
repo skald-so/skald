@@ -327,7 +327,7 @@ The master key is the one the client pinned: its own account's on linking or, fo
 
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
-- an account record's `recovery` changes, or a record the server gives names the account's `master` and its signature does not verify with it;
+- an account record's `recovery` changes, or a record the server gives fails the check of [Account](#account), once per record; one that names the master key of the record the client holds and verifies with it does not count, as an account's records stay so after its `master` changes;
 - a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
@@ -337,7 +337,7 @@ A client MUST warn its user when:
 - two valid devices of an account have the same `name`.
 
 All but the first and the last are **key changes**. A client keeps each in its local state until its person sees it:
-- Until then, each command, as the person or as an agent, and each tool call of its MCP server says on one line how many wait and which command shows them; with JSON output, as a field. The line names no space, account or device.
+- Until then, each command, as the person or as an agent, and each tool call of its MCP server says on one line how many wait and which command shows them; with JSON output, as a field. The line names no space, account or device. A [service device](#service-device)'s runs do not say it: no person sees them at a terminal.
 - One an `ssh` signature or a domain shows counts only in runs with the GitHub API or resolver that showed it, as their results do.
 - The command shows them only to the person at a terminal, never as an agent or through a pipe, and counts them seen once the person confirms.
 

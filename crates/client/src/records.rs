@@ -6,13 +6,13 @@
 //!   own, the roster's for others. Of the valid ones it takes the one with the highest `revision`.
 //! - It keeps the record it takes in its local state, and warns when the record changes the
 //!   account's `recovery`. It warns once of each record of a member account the server gives that
-//!   names the account's `master` and whose signature does not verify with it. Both are key changes
-//!   ([`key_changes`]). One naming another master key is not: a change of the member's `master`
-//!   leaves its earlier records so, and that change warns itself.
+//!   fails its check with that account's `master`. Both are key changes ([`key_changes`]). A record
+//!   that names the master key of the record the device holds, and verifies with it, does not
+//!   count: the account's earlier records stay so after a change of its `master`, which warns
+//!   itself.
 //! - The recovery key of the record it takes is the one it wraps each clean epoch's key to
 //!   ([`crate::wraps`]); an account without a valid record gets no wrap.
 
-use sha2::{Digest as _, Sha256};
 use skald_crypto::{AccountError, check_account};
 use skald_proto::{AccountId, AccountRecord, Cbor as _, Member, Roster};
 
@@ -92,16 +92,23 @@ fn failed(
     let Some(master) = master_of(roster, own, account) else {
         return Ok(Vec::new());
     };
+    let held = held(state, account)?.map(|held| held.body().master);
     let mut warnings = Vec::new();
     for record in devices.records.iter() {
         if record.body().account != account {
             continue;
         }
-        if check_account(record, &master) != Err(AccountError::Signature) {
+        let named = record.body().master;
+        let fails = match check_account(record, &master) {
+            Ok(()) => false,
+            Err(AccountError::Master) => {
+                held != Some(named) || check_account(record, &named).is_err()
+            }
+            Err(_) => true,
+        };
+        if !fails {
             continue;
         }
-        let hash: [u8; 32] = Sha256::digest(record.to_cbor()).into();
-        let key: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
         let warning = format!(
             "the server gives an account record of the member {} ({account}) in the space {} that \
              fails its check with the account's master key: it may be forged; this device ignores \
@@ -109,7 +116,8 @@ fn failed(
             member.handle.as_str(),
             roster.body().name.as_str()
         );
-        if key_changes::keep_once(state, &format!("account record {key}"), &warning)? {
+        let key = key_changes::key_of("account record", &record.to_cbor());
+        if key_changes::keep_once(state, &key, &warning)? {
             warnings.push(warning);
         }
     }
