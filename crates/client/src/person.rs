@@ -250,11 +250,31 @@ fn input_waits(timeout: Duration) -> bool {
     }
 }
 
-/// Forgets the lines its person entered so far, if a thread reads them.
-pub fn forget_entered() {
-    if LINES.get().is_some() {
-        Presses::Terminal.drain();
+/// Shows its person a prompt with `show`, then gives the line entered after it, without its end;
+/// `None` once the input ends. Lines entered before are forgotten first, so that the one entered as
+/// the prompt shows is the answer.
+pub fn answer(show: impl FnOnce() -> Result<(), String>) -> Result<Option<String>, String> {
+    answer_from(LINES.get(), show)
+}
+
+/// [`answer`], from `lines` once a thread reads them; otherwise from the standard input.
+fn answer_from(
+    lines: Option<&'static Mutex<Receiver<String>>>,
+    show: impl FnOnce() -> Result<(), String>,
+) -> Result<Option<String>, String> {
+    if let Some(lines) = lines {
+        let lines = lines.lock().unwrap_or_else(PoisonError::into_inner);
+        while lines.try_recv().is_ok() {}
     }
+    show()?;
+    let mut input = match lines {
+        Some(lines) => Input::Lines(lines, Vec::new()),
+        None => Input::Stdin(io::stdin().lock()),
+    };
+    let mut line = String::new();
+    let read =
+        (input.read_line(&mut line)).map_err(|err| format!("cannot read the terminal: {err}"))?;
+    Ok((read > 0).then(|| line.trim_end_matches(['\r', '\n']).to_owned()))
 }
 
 /// What its person enters at the terminal: from the thread that reads its lines, once one does;
@@ -353,6 +373,21 @@ mod tests {
         let mut output = Vec::new();
         let answer = ask(&mut input.as_bytes(), &mut output, QUESTION).expect("asked");
         (answer, String::from_utf8(output).expect("UTF-8"))
+    }
+
+    /// The answer is the line entered as the prompt shows; one entered before it is forgotten.
+    #[test]
+    fn answer_is_the_line_entered_as_the_prompt_shows() {
+        let (entered, lines) = mpsc::channel();
+        let lines = Box::leak(Box::new(Mutex::new(lines)));
+        entered.send("before".to_owned()).unwrap();
+        let answer = answer_from(Some(lines), move || {
+            entered.send("as it shows".to_owned()).unwrap();
+            // The input ends: an answer forgotten gives none rather than a wait.
+            drop(entered);
+            Ok(())
+        });
+        assert_eq!(answer, Ok(Some("as it shows".to_owned())));
     }
 
     #[test]

@@ -198,11 +198,19 @@ struct View {
     ended: bool,
     /// The latest version the browser took.
     taken: u64,
+    /// Each version, as the browser would take it.
+    #[cfg(test)]
+    versions: Vec<serde_json::Value>,
 }
 
 impl View {
     fn changed(&mut self) {
         self.version += 1;
+        #[cfg(test)]
+        {
+            let version = serde_json::from_str(&self.json()).expect("the view's JSON");
+            self.versions.push(version);
+        }
     }
 
     /// The view as the browser takes it.
@@ -458,6 +466,50 @@ impl Page {
         }
         drop(view);
         server.take();
+    }
+}
+
+#[cfg(test)]
+impl Page {
+    /// A page in `dir` that is open already, with nothing listening or run.
+    pub fn open_for_tests(dir: &Path) -> Self {
+        let opener = Opener {
+            program: PathBuf::new(),
+            before: Vec::new(),
+            exits_failing: true,
+        };
+        let page = Page::new(dir, opener);
+        *page.server.lock().unwrap() = Some(Server {
+            stop: Arc::default(),
+            thread: None,
+            file: dir.join("page.html"),
+        });
+        page
+    }
+
+    /// Each version of the view so far, as the browser would take it.
+    pub fn versions(&self) -> Vec<serde_json::Value> {
+        self.shared.view().versions.clone()
+    }
+
+    /// The person presses the button `button` of the question the page asks now, if it has one;
+    /// gives whether the question took it.
+    pub fn press(&self, button: &str) -> bool {
+        let pressed = {
+            let view = self.shared.view();
+            let Some(asked) = view.question.as_ref() else {
+                return false;
+            };
+            let Some(at) = asked.buttons.iter().position(|named| named == button) else {
+                return false;
+            };
+            Given {
+                question: asked.id,
+                button: at,
+                text: None,
+            }
+        };
+        take(&self.shared, &pressed)
     }
 }
 
@@ -1088,40 +1140,26 @@ mod tests {
         assert_eq!(answered.try_iter().count(), 2);
     }
 
-    /// What the page shows and its question replace the ones before in one change: no view the
-    /// browser takes shows the new text under the question before, and the new question takes
-    /// the answer.
+    /// What the page shows and its question replace the ones before in one change: no version of
+    /// the view shows the new text under the question before, and the new question takes the
+    /// answer.
     #[test]
     fn shown_text_and_its_question_change_in_one_view() {
         let dir = crate::test_dir::TestDir::new("page-show-asking");
-        let opener = Opener {
-            program: PathBuf::new(),
-            before: Vec::new(),
-            exits_failing: true,
-        };
-        let page = Page::new(&dir, opener);
-        // Open already: nothing listens or runs.
-        *page.server.lock().unwrap() = Some(Server {
-            stop: Arc::default(),
-            thread: None,
-            file: dir.join("page.html"),
-        });
+        let page = Page::open_for_tests(&dir);
         let _presses = page.ask("", &["Fresh code"], None, false).unwrap();
         page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
-        let before = page.shared.view().version;
+        let before = page.versions().len();
 
         let answered = page.show_asking("KEY", "Write it down.", &["Written down"]);
-        let view: serde_json::Value =
-            serde_json::from_str(&view_after(&page.shared, before)).unwrap();
-        assert_eq!(view["version"], before + 1, "one change: {view}");
-        assert_eq!(view["shown"], "KEY", "{view}");
-        assert_eq!(view["question"]["buttons"], json!(["Written down"]));
-        let pressed = Given {
-            question: view["question"]["id"].as_u64().unwrap(),
-            button: 0,
-            text: None,
-        };
-        assert!(take(&page.shared, &pressed));
+        let versions = page.versions();
+        assert_eq!(versions.len(), before + 1, "one change: {versions:?}");
+        assert_eq!(versions[before]["shown"], "KEY");
+        assert_eq!(
+            versions[before]["question"]["buttons"],
+            json!(["Written down"])
+        );
+        assert!(page.press("Written down"));
         assert_eq!(answered.unwrap().try_recv(), Ok(Answer::Button(0)));
     }
 
