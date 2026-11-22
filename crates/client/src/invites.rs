@@ -154,9 +154,11 @@ fn expiry(now: u64, days: u64) -> u64 {
 /// address, if it names one.
 fn issue(follower: &mut Follower, space: SpaceId) -> Result<(InviteId, Option<String>), String> {
     let path = format!("/spaces/{space}/invites");
-    let answer = sent(follower, |connection, token| {
-        connection.post_as(&path, token)
-    })?;
+    let answer = sent(
+        &mut follower.connection,
+        &follower.token,
+        |connection, token| connection.post_as(&path, token),
+    )?;
     let unexpected = || "unexpected answer from the server: an invite without its ID".to_owned();
     let issued: Issued = serde_json::from_slice(&answer).map_err(|_| unexpected())?;
     Ok((issued.invite.parse().map_err(|_| unexpected())?, issued.web))
@@ -167,19 +169,22 @@ fn store(follower: &mut Follower, space: SpaceId, invite: &Invite) -> Result<(),
     let path = format!("/spaces/{space}/invites/{}", invite.body().invite);
     let request = serde_json::json!({ "invite": URL_SAFE_NO_PAD.encode(invite.to_cbor()) });
     let request = request.to_string();
-    sent(follower, |connection, token| {
-        connection.send_json_as(Method::Put, &path, token, request.as_bytes())
-    })
+    sent(
+        &mut follower.connection,
+        &follower.token,
+        |connection, token| connection.send_json_as(Method::Put, &path, token, request.as_bytes()),
+    )
     .map(drop)
 }
 
-/// The answer to what `send` sends on the follower's connection as its session, sent again on a new
+/// The answer to what `send` sends on `connection` as the session `token`, sent again on a new
 /// connection while the server does not answer.
 fn sent(
-    follower: &mut Follower,
+    connection: &mut Connection,
+    token: &str,
     send: impl Fn(&mut Connection, &str) -> Result<Vec<u8>, connection::Error>,
 ) -> Result<Vec<u8>, String> {
-    resent(follower, send).map_err(|err| match err {
+    resent(connection, token, send).map_err(|err| match err {
         err if err.reached() => text(err),
         err => format!(
             "{}; an invite the server took without answering admits no one, as its link was \
@@ -192,15 +197,16 @@ fn sent(
 /// As [`sent`], giving the error of the last send: the server's answer, or none after the last of
 /// [`SENDS`] sends.
 pub fn resent(
-    follower: &mut Follower,
+    connection: &mut Connection,
+    token: &str,
     send: impl Fn(&mut Connection, &str) -> Result<Vec<u8>, connection::Error>,
 ) -> Result<Vec<u8>, connection::Error> {
     let mut sends = 1;
     loop {
-        match send(&mut follower.connection, &follower.token) {
+        match send(connection, token) {
             Err(err) if !err.reached() && sends < SENDS => {
                 sends += 1;
-                follower.connection = follower.connection.again()?;
+                *connection = connection.again()?;
             }
             answer => return answer,
         }
@@ -209,6 +215,10 @@ pub fn resent(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use skald_proto::VersionRange;
+
     use super::*;
 
     /// An invite expires the days asked ahead, and one of 30 days a margin short of them.
@@ -219,5 +229,57 @@ mod tests {
         assert_eq!(expiry(now, 7), now + 7 * DAY);
         assert_eq!(expiry(now, 29), now + 29 * DAY);
         assert_eq!(expiry(now, 30), now + 30 * DAY - MARGIN);
+    }
+
+    /// The sends of `answers` in turn by [`resent`] on a connection to `http://127.0.0.1:9`: what
+    /// it gives, and how many it sent.
+    fn resends(
+        answers: Vec<Result<Vec<u8>, connection::Error>>,
+    ) -> (Result<Vec<u8>, String>, usize) {
+        let mut connection = Connection::new(
+            "http://127.0.0.1:9",
+            VersionRange::default(),
+            Duration::from_secs(1),
+        )
+        .expect("a connection");
+        let answers = std::cell::RefCell::new(answers.into_iter());
+        let count = std::cell::Cell::new(0);
+        let given = sent(&mut connection, "token", |_, token| {
+            assert_eq!(token, "token");
+            count.set(count.get() + 1);
+            answers
+                .borrow_mut()
+                .next()
+                .expect("no more sends than answers")
+        });
+        (given, count.get())
+    }
+
+    /// A send the server does not answer is sent again, [`SENDS`] times in all; then the error
+    /// says an invite the server took admits no one.
+    #[test]
+    fn unanswered_sends_are_sent_again_up_to_sends() {
+        let unanswered = || Err(connection::Error::Unreachable("no answer".to_owned()));
+        let (given, count) = resends((0..SENDS + 1).map(|_| unanswered()).collect());
+        assert_eq!(count, SENDS);
+        assert!(given.unwrap_err().contains("admits no one"));
+
+        let mut answers: Vec<_> = (1..SENDS).map(|_| unanswered()).collect();
+        answers.push(Ok(b"taken".to_vec()));
+        assert_eq!(resends(answers), (Ok(b"taken".to_vec()), SENDS));
+    }
+
+    /// The server's answer, a refusal too, is given at once, as it says.
+    #[test]
+    fn an_answer_is_given_at_once() {
+        let refused = connection::Error::Refused {
+            status: 409,
+            kind: "invite-taken".to_owned(),
+            detail: String::new(),
+            task: None,
+        };
+        let (given, count) = resends(vec![Err(refused), Ok(Vec::new())]);
+        assert_eq!(count, 1);
+        assert!(!given.unwrap_err().contains("admits no one"));
     }
 }

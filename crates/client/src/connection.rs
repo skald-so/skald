@@ -235,17 +235,24 @@ fn loopback(host: &str) -> bool {
     }
 }
 
-/// The origin (RFC 6454) of the server at `base`, a server URL, in its ASCII serialization: such as
-/// `https://api.skald.so`, without a path or its scheme's port.
-fn origin(base: &str) -> String {
-    let uri: Uri = base.parse().expect("a server URL is a URI");
-    let scheme = uri.scheme_str().unwrap_or_default().to_ascii_lowercase();
-    let host = uri.host().unwrap_or_default().to_ascii_lowercase();
-    let default = if scheme == "https" { 443 } else { 80 };
-    match uri.port_u16().filter(|&port| port != default) {
+/// The origin (RFC 6454) of `url`, an `http` or `https` URL with a host, in its ASCII
+/// serialization: such as `https://api.skald.so`, without a path or its scheme's port.
+pub fn origin(url: &str) -> Option<String> {
+    let uri: Uri = url.parse().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let default = match scheme.as_str() {
+        "https" => 443,
+        "http" => 80,
+        _ => return None,
+    };
+    let host = uri
+        .host()
+        .filter(|host| !host.is_empty())?
+        .to_ascii_lowercase();
+    Some(match uri.port_u16().filter(|&port| port != default) {
         Some(port) => format!("{scheme}://{host}:{port}"),
         None => format!("{scheme}://{host}"),
-    }
+    })
 }
 
 /// The URL of the WebSocket at `path` on the server at `base`: `wss://` over TLS, otherwise
@@ -1114,7 +1121,8 @@ impl Connection {
             .ok()
             .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
             .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
-        let signature = key.sign(label, &[&challenge, origin(&self.base).as_bytes()]);
+        let origin = origin(&self.base).expect("a server URL is an http or https URL");
+        let signature = key.sign(label, &[&challenge, origin.as_bytes()]);
         Ok((challenge, signature))
     }
 
@@ -1556,8 +1564,17 @@ pub(crate) mod tests {
             ("http://localhost:80", "http://localhost"),
             ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
             ("http://[::1]:8080", "http://[::1]:8080"),
+            ("http://127.0.0.1:9/?a#b", "http://127.0.0.1:9"),
         ] {
-            assert_eq!(origin(base), expected, "{base}");
+            assert_eq!(origin(base).as_deref(), Some(expected), "{base}");
+        }
+        for url in [
+            "https://",
+            "ftp://skald.test",
+            "skald.test",
+            "javascript:alert(1)",
+        ] {
+            assert_eq!(origin(url), None, "{url}");
         }
     }
 

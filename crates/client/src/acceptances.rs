@@ -19,8 +19,9 @@
 //!   acceptance is done and the device joins the channels as any member's does
 //!   ([`crate::groups`]); when the invite ends first, the device says so and follows the space no
 //!   more.
-//! - The server's web address, which invite links start with, is the origin of the device flow's
-//!   page ([`crate::sign_in`]), or the server's own address.
+//! - The server's web address, which invite links start with, is the one it names in its answers
+//!   to `GET /session` and `GET /devices`, which every sign-in and every run that follows spaces
+//!   get ([`record_web`]), or the origin of the server's own address.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,7 +37,7 @@ use skald_proto::{
     SpaceId, Unknown, VersionRange,
 };
 
-use crate::connection::{self, Method, printable};
+use crate::connection::{self, Method, origin, printable};
 use crate::devices::{self, date, text};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::invites::resent;
@@ -125,19 +126,26 @@ impl Reader {
 /// Whether `web`, an invite link's web address, is that of the server at `server`: `recorded`, the
 /// one the state recorded, or the origin of `server`.
 fn serves(server: &str, recorded: Option<&str>, web: &str) -> bool {
-    (recorded.into_iter().map(str::to_owned))
+    let Some(web) = origin(web) else {
+        return false;
+    };
+    (recorded.map(str::to_owned).into_iter())
         .chain(origin(server))
-        .any(|known| known.eq_ignore_ascii_case(web))
+        .any(|known| known == web)
 }
 
-/// The origin of `url`, its scheme and authority, if it is an `http` or `https` URL.
-pub fn origin(url: &str) -> Option<String> {
-    let (scheme, rest) = url.split_once("://")?;
-    if !matches!(scheme, "http" | "https") {
-        return None;
+/// Records in `state` `web`, the web address the server at `server` names in an answer, if it is
+/// an origin other than the one recorded; warns if it cannot.
+pub fn record_web(state: &State, server: &str, web: Option<&str>) {
+    let Some(web) = web.filter(|web| origin(web).as_deref() == Some(*web)) else {
+        return;
+    };
+    if state.web(server).ok().flatten().as_deref() == Some(web) {
+        return;
     }
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
-    (!authority.is_empty()).then(|| format!("{scheme}://{authority}"))
+    if let Err(err) = state.set_web(server, web) {
+        eprintln!("skald: warning: the server's web address is not recorded: {err}");
+    }
 }
 
 /// The invite, as the newcomer's device checked it: the revision the link names, the latest one
@@ -192,14 +200,6 @@ fn accepted(
             link.web,
             printable(&reader.server)
         ));
-    }
-    let held = reader.state.acceptances().map_err(text)?;
-    if held.iter().any(|held| held.invite == link.invite) {
-        return Err(
-            "this device accepted the invite already: skald recv sends the acceptance until the \
-             server takes it, and joins the space once an admin's device admits this account"
-                .to_owned(),
-        );
     }
     let mut connection = devices::to_session(&reader.server, speaks, timeout)?;
     let body = match connection.get_as(&invite_path(link.invite), &reader.token) {
@@ -350,9 +350,9 @@ fn latest_from(
     Ok(followed.accepted.last().unwrap_or(anchor).clone())
 }
 
-/// The certificate of the device that signed `invite`, a `client` device of an admin in `latest`
-/// with a valid certificate among `devices`, chained to the admin's master key, whose key verifies
-/// the invite's signature.
+/// The certificate of the device that signed `invite`, a `client` or `browser` device of an admin
+/// in `latest` with a valid certificate among `devices`, chained to the admin's master key, whose
+/// key verifies the invite's signature.
 fn signer<'d>(
     invite: &Invite,
     latest: &Roster,
@@ -379,10 +379,10 @@ fn signer<'d>(
                 member.handle.as_str()
             )
         })?;
-    if cert.body().kind != DeviceKind::Client {
+    if !matches!(cert.body().kind, DeviceKind::Client | DeviceKind::Browser) {
         return Err(format!(
-            "the invite is signed by the device {id}, which is no client device of an admin of \
-             the space {name}; nothing was signed"
+            "the invite is signed by the device {id}, which is neither a client nor a browser \
+             device of an admin of the space {name}; nothing was signed"
         ));
     }
     check_invite(invite, &cert.body().signing).map_err(|_| {
@@ -503,9 +503,11 @@ fn send(follower: &mut Follower, invite: InviteId, acceptance: &[u8]) -> Result<
     let path = format!("/invites/{invite}/acceptance");
     let request = serde_json::json!({ "acceptance": URL_SAFE_NO_PAD.encode(acceptance) });
     let request = request.to_string();
-    resent(follower, |connection, token| {
-        connection.send_json_as(Method::Put, &path, token, request.as_bytes())
-    })
+    resent(
+        &mut follower.connection,
+        &follower.token,
+        |connection, token| connection.send_json_as(Method::Put, &path, token, request.as_bytes()),
+    )
     .map(drop)
     .map_err(|err| match err {
         connection::Error::Refused {
@@ -601,6 +603,8 @@ mod tests {
         let app = Some("https://app.skald.test");
         assert!(serves(api, app, "https://app.skald.test"));
         assert!(serves(api, app, "https://API.skald.test"));
+        assert!(serves(api, app, "https://APP.skald.test:443"));
+        assert!(!serves(api, app, "skald.test"));
         assert!(serves(api, None, "https://api.skald.test"));
         assert!(!serves(api, None, "https://app.skald.test"));
         assert!(!serves(api, app, "https://elsewhere.test"));
@@ -611,18 +615,25 @@ mod tests {
         ));
     }
 
-    /// An origin is the scheme and authority of an `http` or `https` URL.
+    /// The state records a web address the server names only if it is an origin.
     #[test]
-    fn origin_is_the_scheme_and_authority() {
-        for (url, origin_of) in [
-            ("https://app.skald.so/device", Some("https://app.skald.so")),
-            ("http://skald.test:4431", Some("http://skald.test:4431")),
-            ("http://127.0.0.1:9/?a#b", Some("http://127.0.0.1:9")),
-            ("https://", None),
-            ("ftp://skald.test", None),
-            ("skald.test", None),
+    fn only_an_origin_is_recorded_as_the_web_address() {
+        let dir = crate::test_dir::TestDir::new("acceptances-web");
+        let state = State::open(&dir).unwrap();
+        let api = "https://api.skald.test";
+        for named in [
+            None,
+            Some("https://app.skald.test/app"),
+            Some("javascript:alert(1)"),
+            Some("https://APP.skald.test"),
         ] {
-            assert_eq!(origin(url).as_deref(), origin_of, "{url}");
+            record_web(&state, api, named);
+            assert_eq!(state.web(api).unwrap(), None, "{named:?}");
         }
+        record_web(&state, api, Some("https://app.skald.test"));
+        assert_eq!(
+            state.web(api).unwrap().as_deref(),
+            Some("https://app.skald.test")
+        );
     }
 }

@@ -2,11 +2,13 @@
 //! follows `acme` from the link's revision and anchors it, and once a revision admits him, his
 //! device joins the default channel by itself and exchanges messages with Ada's there.
 
-use crate::fixtures::send;
+use skald_proto::{DeviceKind, Role};
+
+use crate::fixtures::{Issuer, add_device_of_kind, send};
 use crate::kit::{assert_members, group, received};
 use crate::talk::{ADA_HOST, received_until};
-use crate::world::{ACME, CREATE_CHANNEL, MEMBER, run, words};
-use crate::{HANDLE, Scene, YES, accept_at_terminal, says_after};
+use crate::world::{ACME, ADMIN, CREATE_CHANNEL, MEMBER, run, words};
+use crate::{HANDLE, NO, Scene, YES, accept_at_terminal, give_invite, resigned, says_after};
 
 /// What Bob's and Ada's machines say to each other in `acme`'s default channel.
 const BOB_SAYS: &str = "invite acceptance test: bob says hello to acme";
@@ -134,4 +136,54 @@ fn acceptance_asks_for_the_handle_the_person_names() {
         Some(made.revision.hash()),
         "Bob's anchors object does not name acme at the link's revision"
     );
+}
+
+/// The relay gives the invite signed by a `browser` device of Ada's, an admin, that her device
+/// certified, naming it as `signer`: an admin's device. `skald accept-invite` at a terminal on
+/// Bob's machine, given the link, shows the browser's name and, confirmed, succeeds; the server
+/// holds his acceptance.
+#[test]
+fn invite_signed_by_an_admin_s_browser_device_is_accepted() {
+    let scene = Scene::new(
+        (7_305_411_001, "ada-invites-from-her-browser"),
+        (7_305_411_002, "bob-invited-from-a-browser"),
+    );
+    let made = scene.invite();
+    let browser = add_device_of_kind(
+        scene.cloud(),
+        (scene.ada.account, DeviceKind::Browser),
+        "ada-browser",
+        &Issuer::Device(&scene.ada),
+    );
+    give_invite(
+        scene.cloud(),
+        &resigned(&made, &browser.signing, |body| body.signer = browser.id),
+    );
+
+    let accepted = accept_at_terminal(&scene.bob.machine, &made.link, &[], (YES, &[]));
+
+    assert!(accepted.shown.success, "{}", accepted.text());
+    assert!(
+        accepted.summary.contains("ada-browser"),
+        "it does not show the browser: {}",
+        accepted.summary
+    );
+    scene.assert_bob_accepted(&made, scene.bob.handle.as_str());
+}
+
+/// An invite to `acme` for an admin: `skald accept-invite` at a terminal on Bob's machine, given
+/// the link, shows the role `admin`, not `member`; Bob declines.
+#[test]
+fn invite_for_an_admin_shows_the_role_admin() {
+    let scene = Scene::new(
+        (7_305_411_101, "ada-hands-over-the-keys"),
+        (7_305_411_102, "bob-asked-to-lead"),
+    );
+    let made = scene.invite_with(|body| body.role = Role::Admin);
+
+    let declined = accept_at_terminal(&scene.bob.machine, &made.link, &[], (NO, &[]));
+
+    let shown = |word: &str| (declined.summary.lines()).any(|line| words(line).contains(&word));
+    assert!(shown(ADMIN), "it does not show admin: {}", declined.summary);
+    assert!(!shown(MEMBER), "it shows member: {}", declined.summary);
 }

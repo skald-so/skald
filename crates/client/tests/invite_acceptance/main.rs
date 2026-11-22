@@ -74,6 +74,7 @@ mod lost;
 mod refusals;
 mod secret;
 mod terminal_only;
+mod web_address;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the anchors
 // objects of the tests of anchors, and the terminal of the tests of the recovery key.
@@ -128,9 +129,16 @@ pub struct Scene {
 impl Scene {
     /// Ada is GitHub user `ada.0` with the login `ada.1`, Bob `bob.0` with `bob.1`.
     pub fn new(ada: (u64, &str), bob: (u64, &str)) -> Self {
+        Self::with(ada, bob, |_| {})
+    }
+
+    /// As [`Scene::new`], with `before_bob` done to the cloud once Ada created `acme`, before Bob
+    /// signs up.
+    pub fn with(ada: (u64, &str), bob: (u64, &str), before_bob: impl FnOnce(&Cloud)) -> Self {
         let (world, front) = fronted();
         let ada = world.sign_up(ada.0, ada.1, ADA_HOST);
         let space = create_space(&world.cloud, &ada, ACME);
+        before_bob(&world.cloud);
         let bob = world.sign_up(bob.0, bob.1, BOB_HOST);
         Scene {
             world,

@@ -16,6 +16,7 @@ use sqlx::{PgConnection, PgPool};
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::{self, Event};
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::sign_in;
 use crate::spaces::{self, Found};
 use crate::sweeps::{self, PAGE, PAUSE};
 use crate::{AppState, mailboxes, revocations};
@@ -108,7 +109,7 @@ pub(crate) async fn issue(
         true,
         NewInvite {
             invite: invite.to_string(),
-            web: (state.sign_in.as_deref()).map(|settings| settings.web().origin()),
+            web: sign_in::web_origin(state.sign_in.as_deref()),
         },
     )
 }

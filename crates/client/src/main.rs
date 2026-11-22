@@ -1536,7 +1536,7 @@ fn main() -> ExitCode {
     }
     if let Command::AcceptInvite { given, handle } = &operation.command {
         let (given, handle) = (given.clone(), handle.clone());
-        return accept_invite(operation, !one_shot, &given, handle.as_deref());
+        return accept_invite(operation, &given, handle.as_deref());
     }
     if let Command::Fingerprint {
         space: Some(space),
@@ -1856,13 +1856,8 @@ fn fingerprint(operation: Operation, starts: bool, space: &str, handle: &str) ->
 }
 
 /// `skald accept-invite` as `operation` says ([`acceptances::run`]): its step goes through the
-/// helper that runs, or one it starts if `starts`; otherwise it runs here, holding the lock.
-fn accept_invite(
-    operation: Operation,
-    starts: bool,
-    given: &[String],
-    handle: Option<&str>,
-) -> ExitCode {
+/// helper if one runs; otherwise it runs here, holding the lock.
+fn accept_invite(operation: Operation, given: &[String], handle: Option<&str>) -> ExitCode {
     let dir = match state::dir(operation.state_dir.clone()) {
         Ok(dir) => dir,
         Err(err) => return exit(Err(err)),
@@ -1874,7 +1869,7 @@ fn accept_invite(
         (given, handle),
         |step| {
             let operation = operation.step(Command::AcceptInviteStep { step });
-            let route = helper::route(&dir, &operation, false, starts);
+            let route = helper::route(&dir, &operation, false, false);
             routed(route, operation)
         },
     )

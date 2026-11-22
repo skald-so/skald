@@ -5,9 +5,9 @@
 //! already a member, and an invite the server no longer holds.
 
 use skald_crypto::InviteSecret;
-use skald_proto::{Role, Roster};
+use skald_proto::{DeviceKind, Role, Roster};
 
-use crate::fixtures::{Issuer, add_device};
+use crate::fixtures::{Issuer, add_device, add_device_of_kind};
 use crate::world::{next_by, next_with, now, store};
 use crate::{
     Made, Scene, assert_refused_saying, give_invite, give_revisions, link_of, refused_at_terminal,
@@ -210,4 +210,64 @@ fn invite_the_server_no_longer_holds_is_refused_as_ended() {
 
     assert_refused_saying(&refused, &["ended"]);
     scene.assert_nothing_accepted(&made, since);
+}
+
+/// The link of an invite the server holds names a hash that none of `acme`'s revisions has.
+/// `skald accept-invite`, given it, fails saying `revision`, and Bob's machine accepts nothing.
+#[test]
+fn link_naming_a_revision_the_space_lacks_is_refused() {
+    let scene = Scene::new(
+        (7_305_410_001, "ada-whose-link-names-no-revision"),
+        (7_305_410_002, "bob-gets-a-link-to-no-revision"),
+    );
+    let made = scene.invite();
+    let link = link_of(&scene.cloud().public, made.id(), &made.secret, [7; 32]);
+    let since = scene.cloud().relay.mark();
+
+    let refused = refused_at_terminal(&scene.bob.machine, &link);
+
+    assert_refused_saying(&refused, &["revision"]);
+    scene.assert_nothing_accepted(&made, since);
+}
+
+/// The relay gives the invite signed by a `service` device of Ada's, an admin, that her device
+/// certified, naming it as `signer`: no admin's device, which is a `client` or `browser` device.
+/// `skald accept-invite`, given the link, fails saying `browser`; Bob's machine accepts nothing.
+#[test]
+fn invite_signed_by_a_service_device_of_an_admin_is_refused() {
+    let scene = Scene::new(
+        (7_305_410_101, "ada-whose-ci-signs-an-invite"),
+        (7_305_410_102, "bob-invited-by-ci"),
+    );
+    let made = scene.invite();
+    let service = add_device_of_kind(
+        scene.cloud(),
+        (scene.ada.account, DeviceKind::Service),
+        "ada-ci-runner",
+        &Issuer::Device(&scene.ada),
+    );
+    let by_service = resigned(&made, &service.signing, |body| body.signer = service.id);
+    give_invite(scene.cloud(), &by_service);
+    let since = scene.cloud().relay.mark();
+
+    let refused = refused_at_terminal(&scene.bob.machine, &made.link);
+
+    assert_refused_saying(&refused, &["browser"]);
+    scene.assert_nothing_accepted(&made, since);
+}
+
+/// Bob accepts an invite to `acme`, which his device then follows. `skald accept-invite`, given
+/// its link again, fails saying `already`; the server still holds his one acceptance.
+#[test]
+fn space_the_device_follows_already_is_refused() {
+    let scene = Scene::new(
+        (7_305_410_201, "ada-whose-link-bob-reuses"),
+        (7_305_410_202, "bob-accepts-twice"),
+    );
+    let made = scene.bob_accepts();
+
+    let refused = refused_at_terminal(&scene.bob.machine, &made.link);
+
+    assert_refused_saying(&refused, &["already"]);
+    scene.assert_bob_accepted(&made, scene.bob.handle.as_str());
 }
