@@ -3283,6 +3283,7 @@ name = "skald-adapters"
 version = "0.1.2"
 dependencies = [
  "serde_json",
+ "skald-proto",
 ]
 
 [[package]]

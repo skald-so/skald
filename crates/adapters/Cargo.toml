@@ -8,3 +8,7 @@ license.workspace = true
 [dependencies]
 # Claude Code's JSON result; the tests' model stub and the config they give Claude Code.
 serde_json = "1.0"
+
+[dev-dependencies]
+# The tests' requests: their sender's address and trust level.
+skald-proto = { path = "../proto" }
