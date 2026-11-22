@@ -69,11 +69,13 @@ use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
 use crate::history;
 use crate::key_chain;
+use crate::key_changes;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::queue_keys;
 use crate::recv;
+use crate::results;
 use crate::revocations;
 use crate::send::{self, Answer, Key, Wire};
 use crate::spaces::{Follower, Scope, now};
@@ -714,10 +716,15 @@ fn key_packages(
             Ok(_) => {
                 taken.entry(device).or_insert(package);
             }
-            Err(err) => eprintln!(
-                "skald: warning: the server handed out a KeyPackage of the device {device} that \
-                 fails its checks: {err}; this device does not add it"
-            ),
+            Err(err) => {
+                let warning = format!(
+                    "the server handed out a KeyPackage of the device {device} that fails its \
+                     checks: {err}; this device does not add it"
+                );
+                let key = key_changes::key_of("key package", &package);
+                key_changes::keep_once(&follower.state, &key, &warning)?;
+                eprintln!("skald: warning: {warning}");
+            }
         }
     }
     Ok(taken.into_values().collect())
@@ -1764,15 +1771,25 @@ fn encrypted<'r>(
             .ok_or_else(|| format!("the counter in the channel {channel} has no next"))?;
         let msg_id = MessageId::generate();
         let content = content(msg_id, counter);
-        let (own, gets) = match &sending {
-            Sending::Message(agent, _) => {
+        // A result of a task this device enqueued is kept for it as its own message is.
+        let own_from = match &sending {
+            Sending::Message(agent, _) => Some(*agent),
+            Sending::Result { agent, task, .. }
+                if results::kept_here(follower, (channel, *task), msg_id, &content)? =>
+            {
+                Some(*agent)
+            }
+            Sending::Receipt(..) | Sending::Result { .. } => None,
+        };
+        let (own, gets) = match own_from {
+            Some(agent) => {
                 let key = key_packages::state_key(&follower.secrets, sealed)?;
                 let seq = follower.state.next_own_seq().map_err(text)?;
                 let at = ((space, channel, msg_id), seq);
-                let (own, gets) = recv::own_message(follower, &key, at, (&content, *agent))?;
+                let (own, gets) = recv::own_message(follower, &key, at, (&content, agent))?;
                 (Some(own), gets)
             }
-            Sending::Receipt(..) | Sending::Result { .. } => (None, false),
+            None => (None, false),
         };
         let (agent, readers, issued, ended) = match sending {
             Sending::Message(agent, readers) => (agent.map(str::to_owned), readers, None, None),

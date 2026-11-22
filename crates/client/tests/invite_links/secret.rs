@@ -6,6 +6,7 @@
 use skald_crypto::InviteLink;
 
 use crate::keys::holds;
+use crate::world;
 use crate::{Admin, invite_at_terminal, shown_link};
 
 /// Fails unless `link`'s secret and its invite private key are in `shown`, what the run showed,
@@ -18,26 +19,12 @@ pub fn assert_secret_nowhere(admin: &Admin, link: &InviteLink, shown: &str) {
         holds(shown.as_bytes(), secret.as_ref()),
         "the check finds no secret in the link itself: {shown}"
     );
-    let cloud = admin.cloud();
-    let mut kept = vec![
-        ("the requests".to_owned(), cloud.relay.sent_bytes()),
-        (
-            "the database".to_owned(),
-            cloud.rows().join("\n").into_bytes(),
-        ),
-    ];
-    for file in admin.ada.machine.files() {
-        if let Ok(bytes) = std::fs::read(&file) {
-            kept.push((file.display().to_string(), bytes));
-        }
-    }
-    for (what, bytes) in kept {
-        assert!(!holds(&bytes, secret.as_ref()), "{what} holds the secret");
-        assert!(
-            !holds(&bytes, private.as_ref()),
-            "{what} holds the invite private key"
-        );
-    }
+    world::assert_secret_nowhere(
+        admin.cloud(),
+        &admin.ada.machine,
+        secret.as_ref(),
+        private.as_ref(),
+    );
 }
 
 /// `skald invite acme` at a terminal on Ada's machine shows a link; its secret and invite private

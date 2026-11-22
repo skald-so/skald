@@ -411,6 +411,7 @@ fn show(
                 after_missing: false,
                 reply_to: None,
                 refused: Vec::new(),
+                result: None,
             };
             println!("{}", message.shown(Form::Short, reference, None));
         }
@@ -622,7 +623,7 @@ fn claimer(
 
 /// The address of the service agent of the `service` device `device` in the space of `roster` on
 /// `server`, if the space lists one.
-fn service_address(roster: &Roster, device: DeviceId, server: &ServerName) -> Option<Address> {
+pub fn service_address(roster: &Roster, device: DeviceId, server: &ServerName) -> Option<Address> {
     let body = roster.body();
     recv::service_entry(roster, device).map(|entry| {
         Address::new(

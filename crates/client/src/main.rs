@@ -27,6 +27,7 @@ macro_rules! eprintln {
     };
 }
 
+mod acceptances;
 mod admin;
 mod agents;
 mod anchors;
@@ -65,6 +66,7 @@ mod invites;
 mod joined;
 mod kept_certs;
 mod key_chain;
+mod key_changes;
 mod key_packages;
 mod link_code;
 mod link_prompt;
@@ -88,6 +90,7 @@ mod recovery_link;
 mod recovery_wraps;
 mod recv;
 mod reply;
+mod results;
 mod revocations;
 mod secrets;
 mod send;
@@ -117,6 +120,7 @@ use std::io::IsTerminal as _;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use clap::builder::FalseyValueParser;
@@ -231,6 +235,19 @@ struct Cli {
         default_value = update::GITHUB_API_URL
     )]
     github_api_url: String,
+
+    /// The URL of the DNS-over-HTTPS resolver that looks up the records of a space's domain:
+    /// skald members checks its members against them, and key changes they show count only in
+    /// runs with it.
+    #[arg(
+        long,
+        env = domains::RESOLVER_SETTING,
+        value_name = "URL",
+        global = true,
+        hide = true,
+        default_value = domains::RESOLVER
+    )]
+    dns_resolver: String,
 
     #[command(subcommand)]
     command: Command,
@@ -403,15 +420,6 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
-        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
-        #[arg(
-            long,
-            env = "SKALD_DNS_RESOLVER",
-            value_name = "URL",
-            hide = true,
-            default_value = domains::RESOLVER
-        )]
-        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -430,6 +438,15 @@ enum Command {
     /// the helper.
     #[command(skip)]
     FingerprintStep { step: fingerprints::Step },
+    /// Shows the key changes this device warned of that you have not seen, such as a member's
+    /// master key or a device's certificate the server swapped, then counts them seen once you
+    /// press Enter. Until then every command says how many wait. Only for its person at a
+    /// terminal: through a pipe or as an agent it shows none.
+    KeyChanges,
+    /// The step of skald key-changes after its person pressed Enter, which skald key-changes hands
+    /// to the helper.
+    #[command(skip)]
+    KeyChangesStep { step: key_changes::Step },
     /// Adds a channel to a space this device follows, on a device of an admin of it: the device
     /// signs the space's next roster revision with the channel, its account the channel's member.
     /// It first accepts the revisions the server has; when another revision comes first, it signs
@@ -462,6 +479,23 @@ enum Command {
         #[arg(long, value_name = "DAYS", default_value_t = invites::DEFAULT_DAYS, value_parser = invite_days)]
         days: u64,
     },
+    /// Accepts an invite link to a space of another account, as its person at a terminal: asks for
+    /// the link, checks the invite against the roster revision the link names, shows it and asks
+    /// to confirm, then stores the acceptance with the account's username or another handle. The
+    /// device then follows the space, and skald recv joins its channels once an admin's device
+    /// admits the account.
+    AcceptInvite {
+        /// The handle to ask for in the space, by default the account's username.
+        #[arg(long, value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: Option<String>,
+        /// Never taken: the link goes only into the terminal, when asked.
+        #[arg(hide = true, value_name = "LINK")]
+        given: Vec<String>,
+    },
+    /// The step of skald accept-invite after its person's answers, which skald accept-invite hands
+    /// to the helper.
+    #[command(skip)]
+    AcceptInviteStep { step: acceptances::Step },
     /// Creates a service agent of a space this device follows, on a device of an admin of it: a
     /// device of the admin's account that runs without a person, such as in CI, at the address
     /// OWNER/AGENT. Its keys are made here; it is registered and certified, and the space's next
@@ -1226,6 +1260,9 @@ impl Command {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::Invite { .. } => Some("invite"),
+            Command::AcceptInvite { .. } | Command::AcceptInviteStep { .. } => {
+                Some("accept-invite")
+            }
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
             Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
@@ -1258,6 +1295,7 @@ impl Command {
             Command::DeliveryModes { .. } => Some("delivery-modes"),
             Command::Held | Command::HeldStep { .. } => Some("held"),
             Command::FingerprintStep { .. } => Some("fingerprint"),
+            Command::KeyChanges | Command::KeyChangesStep { .. } => Some("key-changes"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -1342,6 +1380,51 @@ impl Command {
             )
     }
 
+    /// Whether it says what it says as JSON: `--json`.
+    fn json(&self) -> bool {
+        self.prompts_as_json()
+            || matches!(
+                self,
+                Command::Reply { json: true, .. }
+                    | Command::MessageStatus { json: true, .. }
+                    | Command::DeliveryModes { json: true }
+            )
+    }
+
+    /// Whether it says the devices waiting for linking as JSON ([`link_prompt::show`]).
+    fn prompts_as_json(&self) -> bool {
+        matches!(
+            self,
+            Command::Recv { json: true, .. }
+                | Command::Send { json: true, .. }
+                | Command::Agents { json: true, .. }
+                | Command::Queues { json: true, .. }
+                | Command::Enqueue { json: true, .. }
+                | Command::Tasks { json: true, .. }
+                | Command::Claim { json: true, .. }
+        )
+    }
+
+    /// Whether a run of it says how many key changes wait ([`key_changes::say`]): each command's but
+    /// a hook's, the helper's, the steps of interactive commands, which say it themselves, and the
+    /// MCP server's own, which say it in each tool call.
+    fn says_key_changes(&self) -> bool {
+        !matches!(
+            self,
+            Command::Hook { .. }
+                | Command::Helper { .. }
+                | Command::LinkStep { .. }
+                | Command::HeldStep { .. }
+                | Command::FingerprintStep { .. }
+                | Command::KeyChanges
+                | Command::KeyChangesStep { .. }
+                | Command::Mcp {
+                    call: None | Some(mcp::Call::Register | mcp::Call::Hold { .. }),
+                    ..
+                }
+        )
+    }
+
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
     fn traces(&self) -> bool {
         matches!(
@@ -1372,8 +1455,9 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
-            // It takes its person's answers here and its steps lock ([`link`], [`held`]).
-            Command::Link { .. } | Command::Held => None,
+            // It takes its person's answers here and its steps lock ([`link`], [`held`],
+            // [`key_changes`]).
+            Command::Link { .. } | Command::Held | Command::KeyChanges => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
             _ => Some(false),
         }
@@ -1490,8 +1574,10 @@ fn main() -> ExitCode {
         key_storage: cli.key_storage,
         agent: cli.agent,
         github_api: cli.github_api_url,
+        dns_resolver: cli.dns_resolver,
         command: cli.command,
         said: link_prompt::Said::default(),
+        said_key_changes: AtomicBool::new(false),
     };
     if let Err(err) = operation.agent() {
         return exit(Err(err));
@@ -1538,6 +1624,13 @@ fn main() -> ExitCode {
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
     }
+    if let Command::AcceptInvite { given, handle } = &operation.command {
+        let (given, handle) = (given.clone(), handle.clone());
+        return accept_invite(operation, &given, handle.as_deref());
+    }
+    if let Command::KeyChanges = operation.command {
+        return key_changes(operation);
+    }
     if let Command::Fingerprint {
         space: Some(space),
         handle: Some(handle),
@@ -1580,6 +1673,7 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
 /// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
 /// does not wait.
 fn as_service(operation: Operation) -> ExitCode {
+    service::set_running();
     let stateless = operation.state_dir.is_none();
     if !matches!(
         operation.command,
@@ -1664,7 +1758,7 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
     recovery::say_if_waiting(dir);
     let mut held: Option<Option<lock::Lock>> = None;
     let mut starts = starts;
-    link_code::run(dir, person, |step| {
+    let code = link_code::run(dir, person, |step| {
         let operation = operation.step(Command::LinkStep { step });
         if held.is_none() {
             // A later step needs the helper that holds its run. What it shows goes to the run's
@@ -1678,7 +1772,9 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
             }
         }
         exit(here(operation))
-    })
+    });
+    key_changes::say(dir, &operation.key_change_sources(), false);
+    code
 }
 
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
@@ -1827,15 +1923,9 @@ fn held(operation: Operation, starts: bool) -> ExitCode {
     if let Err(err) = operation.agent() {
         return exit(Err(err));
     }
-    let dir = match state::dir(operation.state_dir.clone()) {
-        Ok(dir) => dir,
-        Err(err) => return exit(Err(err)),
-    };
-    let mut starts = starts;
-    held::run(&dir, |step| {
-        let operation = operation.step(Command::HeldStep { step });
-        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
-        routed(route, operation)
+    let step = |step| Command::HeldStep { step };
+    interactive(&operation, (starts, true), step, |dir, steps| {
+        held::run(dir, steps)
     })
 }
 
@@ -1843,16 +1933,66 @@ fn held(operation: Operation, starts: bool) -> ExitCode {
 /// ([`fingerprints::run`]): each step goes through the helper that runs, or one it starts if
 /// `starts`; otherwise it runs here, holding the lock for the step.
 fn fingerprint(operation: Operation, starts: bool, space: &str, handle: &str) -> ExitCode {
+    let step = |step| Command::FingerprintStep { step };
+    interactive(&operation, (starts, true), step, |dir, steps| {
+        fingerprints::run(dir, space, handle, steps)
+    })
+}
+
+/// `skald key-changes` as `operation` says, by its person at a terminal ([`key_changes::run`]):
+/// its step goes through the helper that runs, or runs here holding the lock.
+fn key_changes(operation: Operation) -> ExitCode {
+    let sources = operation.key_change_sources();
+    let step = |step| Command::KeyChangesStep { step };
+    interactive(&operation, (false, false), step, |dir, steps| {
+        key_changes::run(dir, &sources, steps)
+    })
+}
+
+/// An interactive command as `operation` says, which `run` runs in its state directory with its
+/// steps, each made a command by `command`: each goes through the helper that runs, or one it
+/// starts if `starts`; otherwise it runs here, holding the lock for the step. Then, if `says`, it
+/// says how many key changes wait ([`key_changes::say`]).
+fn interactive<S>(
+    operation: &Operation,
+    (starts, says): (bool, bool),
+    command: fn(S) -> Command,
+    run: impl FnOnce(&Path, &mut dyn FnMut(S) -> ExitCode) -> ExitCode,
+) -> ExitCode {
     let dir = match state::dir(operation.state_dir.clone()) {
         Ok(dir) => dir,
         Err(err) => return exit(Err(err)),
     };
     let mut starts = starts;
-    fingerprints::run(&dir, space, handle, |step| {
-        let operation = operation.step(Command::FingerprintStep { step });
+    let code = run(&dir, &mut |step| {
+        let operation = operation.step(command(step));
         let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
         routed(route, operation)
-    })
+    });
+    if says {
+        key_changes::say(&dir, &operation.key_change_sources(), false);
+    }
+    code
+}
+
+/// `skald accept-invite` as `operation` says ([`acceptances::run`]): its step goes through the
+/// helper if one runs; otherwise it runs here, holding the lock.
+fn accept_invite(operation: Operation, given: &[String], handle: Option<&str>) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let settings = (operation.speaks, operation.timeout);
+    acceptances::run(
+        (&dir, operation.key_storage),
+        settings,
+        (given, handle),
+        |step| {
+            let operation = operation.step(Command::AcceptInviteStep { step });
+            let route = helper::route(&dir, &operation, false, false);
+            routed(route, operation)
+        },
+    )
 }
 
 /// Runs `operation` in this process, then closes the connection it kept.
@@ -1875,16 +2015,28 @@ struct Operation {
     /// The base URL of GitHub's REST API.
     #[serde(default = "github_api")]
     github_api: String,
+    /// The DNS-over-HTTPS resolver's URL, as the client that started the run had it.
+    #[serde(default = "dns_resolver")]
+    dns_resolver: String,
     command: Command,
     /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
     /// runs `skald recv` again and again, and says each once.
     #[serde(skip)]
     said: link_prompt::Said,
+    /// Whether a run of it said how many key changes wait ([`key_changes::say`]): a `skald recv
+    /// --wait` says it once.
+    #[serde(default)]
+    said_key_changes: AtomicBool,
 }
 
 /// The base URL of GitHub's REST API by default.
 fn github_api() -> String {
     update::GITHUB_API_URL.to_owned()
+}
+
+/// The DNS-over-HTTPS resolver's URL by default.
+fn dns_resolver() -> String {
+    domains::RESOLVER.to_owned()
 }
 
 impl Operation {
@@ -1898,9 +2050,17 @@ impl Operation {
             key_storage: self.key_storage,
             agent: None,
             github_api: self.github_api.clone(),
+            dns_resolver: self.dns_resolver.clone(),
             command,
             said: link_prompt::Said::default(),
+            said_key_changes: AtomicBool::new(false),
         }
+    }
+
+    /// The sources whose key changes its runs count ([`key_changes::sources`]): its GitHub API's
+    /// and its resolver's.
+    fn key_change_sources(&self) -> Vec<String> {
+        key_changes::sources(&self.github_api, &self.dns_resolver)
     }
 
     /// Whether it shows as JSON: a `skald recv --json`.
@@ -1947,17 +2107,39 @@ fn perform(operation: Operation) -> Result<(), String> {
     ran
 }
 
-/// [`perform`] without its check of the presence.
+/// [`perform`] without its check of the presence. A run that says how many key changes wait
+/// ([`Command::says_key_changes`]) says it after its command, a tool call before it, as its result
+/// is its first output.
 fn performed(operation: Operation) -> Result<(), String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
     ssh_checks::set(&operation.github_api, operation.timeout);
+    let sources = operation.key_change_sources();
+    let says = (operation.command.says_key_changes() && !service::running())
+        .then(|| state::dir(operation.state_dir.clone()).ok())
+        .flatten()
+        .map(|dir| (dir, operation.command.json()));
+    let tool_call = matches!(operation.command, Command::Mcp { .. });
+    let say = |(dir, json): &(PathBuf, bool)| key_changes::say(dir, &sources, *json);
+    if tool_call && let Some(says) = &says {
+        say(says);
+    }
+    let ran = command_performed(operation, agent);
+    if !tool_call && let Some(says) = &says {
+        say(says);
+    }
+    ran
+}
+
+/// [`performed`] without what it says of the key changes, as `agent` if given.
+fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), String> {
     let Operation {
         speaks,
         timeout,
         state_dir,
         key_storage,
         github_api,
+        dns_resolver,
         command,
         said,
         ..
@@ -1974,16 +2156,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
         }
         if command.prompts() {
-            let json = matches!(
-                command,
-                Command::Recv { json: true, .. }
-                    | Command::Send { json: true, .. }
-                    | Command::Agents { json: true, .. }
-                    | Command::Queues { json: true, .. }
-                    | Command::Enqueue { json: true, .. }
-                    | Command::Tasks { json: true, .. }
-                    | Command::Claim { json: true, .. }
-            );
+            let json = command.prompts_as_json();
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
         // An MCP server says it once, to its agent CLI's log, not in a tool's result.
@@ -1996,6 +2169,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                 | Command::FingerprintStep {
                     step: fingerprints::Step::Verify { .. }
                 }
+                | Command::KeyChangesStep { .. }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -2096,10 +2270,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members {
-            space,
-            dns_resolver,
-        } => synced(
+        Command::Members { space } => synced(
             state_dir,
             key_storage,
             speaks,
@@ -2125,6 +2296,19 @@ fn performed(operation: Operation) -> Result<(), String> {
         .and_then(|synced| fingerprints::show(&synced, handle.as_deref().unwrap_or_default())),
         Command::FingerprintStep { step } => state::dir(state_dir)
             .and_then(|dir| fingerprints::step(&dir, key_storage, (speaks, timeout), step)),
+        // It runs through `accept_invite`.
+        Command::AcceptInvite { .. } => {
+            Err("skald accept-invite runs only through its own process".to_owned())
+        }
+        Command::AcceptInviteStep { step } => state::dir(state_dir)
+            .and_then(|dir| acceptances::step(&dir, key_storage, (speaks, timeout), step)),
+        // It runs through `key_changes`.
+        Command::KeyChanges => {
+            Err("skald key-changes runs only through its own process".to_owned())
+        }
+        Command::KeyChangesStep { step } => {
+            state::dir(state_dir).and_then(|dir| key_changes::step(&dir, &step))
+        }
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,
@@ -2537,8 +2721,8 @@ fn performed(operation: Operation) -> Result<(), String> {
 }
 
 /// One run of `skald recv` for `operation`, a `skald recv --wait`, which leaves its connection to
-/// watch ([`wait`]), and the devices waiting for linking it did not say yet ([`link_prompt`]):
-/// whether it showed what the wait waits for.
+/// watch ([`wait`]), the devices waiting for linking it did not say yet ([`link_prompt`]) and, once,
+/// how many key changes wait ([`key_changes::say`]): whether it showed what the wait waits for.
 fn received(operation: &Operation) -> Result<bool, String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
@@ -2560,8 +2744,14 @@ fn received(operation: &Operation) -> Result<bool, String> {
         operation.json(),
         &operation.said,
     );
-    // The person's wait shows it as a warning; an agent's waits for a message.
-    Ok(shown || (prompted && agent.is_none()))
+    let said = !service::running()
+        && !operation.said_key_changes.load(Ordering::Relaxed)
+        && key_changes::say(&dir, &operation.key_change_sources(), operation.json());
+    if said {
+        operation.said_key_changes.store(true, Ordering::Relaxed);
+    }
+    // The person's wait shows them as warnings; an agent's waits for a message.
+    Ok(shown || ((prompted || said) && agent.is_none()))
 }
 
 /// Runs `command` on the state in `state_dir`, its secrets in `storage`, with `settings`, its
