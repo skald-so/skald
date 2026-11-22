@@ -198,7 +198,7 @@ claim = {
 - `generation`: one more than the task's previous claim; never reused, restarts included. An agent passes it as a fencing token to systems that take one, so they refuse a write with a lower one. It uses the task ID to make its own side effects idempotent.
 - **Lease:** the claim holds the task for `lease` seconds from the claim or the last extension. The holder counts it on its own clock from when it sent the request; if it passes without an answered extension, the holder SHOULD stop the work, as the server may hand the task to another device.
 - **Heartbeat:** the holder sends `extend` each time a third of the lease has passed, and at once when the progress changes. It sends it only while the task runs, with the progress `started`, or waits for its user's yes, with `awaiting-approval` ([Running a task](#running-a-task)):
-  - with the helper, the helper sends it while the agent session that holds the claim runs, or the task waits;
+  - with the helper, the helper sends it while the agent session that holds the claim runs, or the task waits; a claim's session is any session of its agent on the device;
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
 - Extend, complete, fail and release name the task, `claim_id` and `generation`; extend also states the progress, fail whether to retry.
