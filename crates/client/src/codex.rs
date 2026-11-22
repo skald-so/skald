@@ -532,6 +532,10 @@ pub struct Served {
     live: BTreeMap<String, Live>,
     /// When the last intake failed, if it did.
     failed: Option<Instant>,
+    /// The receipts due in each space of a session when it last took in for the space
+    /// ([`State::receipts_due_in`]), unless that intake failed: those an intake leaves due wait for
+    /// their channel, so only another one brings an intake ([`newly_due`]).
+    owed: BTreeMap<SpaceId, BTreeSet<(i64, bool)>>,
     /// The clients on the sessions' app-servers.
     #[cfg(unix)]
     watchers: codex_app_server::Watchers,
@@ -586,6 +590,7 @@ impl Served {
             reloaded: false,
             live: BTreeMap::new(),
             failed: None,
+            owed: BTreeMap::new(),
             #[cfg(unix)]
             watchers: codex_app_server::Watchers::default(),
             due: true,
@@ -619,10 +624,10 @@ impl Served {
     /// on the connection: ends those whose Codex process ended; hands over what their rollouts
     /// confirm ([`codex_confirm::confirm`]); takes in once for each space of a session it has not
     /// taken in for, that `came` may bring messages of, as statuses alone give its hooks nothing
-    /// and wake nothing, or in which the device owes a receipt, so a `read` that its own reading or
-    /// a `Stop` hook's confirmation made due goes, checked when it reloads the sessions or confirms
-    /// a message; then wakes the idle ones ([`Served::wake`]). Gives whether it took in; `None`
-    /// once a run panicked.
+    /// and wake nothing, or in which a receipt became due since it last took in for the space
+    /// ([`newly_due`]), so a `read` that its own reading or a `Stop` hook's confirmation made due
+    /// goes, checked when it reloads the sessions or confirms a message; then wakes the idle ones
+    /// ([`Served::wake`]). Gives whether it took in; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         self.looks(dir);
         let reloaded = std::mem::take(&mut self.reloaded);
@@ -640,6 +645,8 @@ impl Served {
             for thread in gone {
                 self.live.remove(&thread);
             }
+            let live = &self.live;
+            (self.owed).retain(|space, _| live.values().any(|live| live.session.space == *space));
             self.watch(dir);
         }
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
@@ -655,8 +662,10 @@ impl Served {
                 });
             let owes = retry
                 && (reloaded || confirmed)
-                && opened(&mut state, dir)
-                    .is_some_and(|state| state.receipts_due_in(session.space).unwrap_or(false));
+                && opened(&mut state, dir).is_some_and(|state| {
+                    (state.receipts_due_in(session.space))
+                        .is_ok_and(|due| newly_due(self.owed.get(&session.space), &due))
+                });
             if !std::mem::replace(&mut live.taken, true)
                 || (retry && came.brings_messages(session.space))
                 || owes
@@ -666,11 +675,15 @@ impl Served {
             }
         }
         drop(state);
-        for (agent, folder) in runs.values() {
-            match self.run(dir, folder, agent)? {
-                true => self.failed = None,
-                false => self.failed = Some(Instant::now()),
-            }
+        for (space, (agent, folder)) in &runs {
+            let took = self.run(dir, folder, agent)?;
+            self.failed = (!took).then(Instant::now);
+            let due = (took.then(|| State::open(dir).and_then(|s| s.receipts_due_in(*space))))
+                .and_then(Result::ok);
+            match due {
+                Some(due) => self.owed.insert(*space, due),
+                None => self.owed.remove(space),
+            };
         }
         self.queued(dir);
         let resend = (self.resend_at).is_some_and(|at| at <= Instant::now());
@@ -858,9 +871,31 @@ impl Served {
     }
 }
 
+/// Whether a receipt of `due` is not among `owed`, those due when the helper last took in for the
+/// space, if it did.
+fn newly_due(owed: Option<&BTreeSet<(i64, bool)>>, due: &BTreeSet<(i64, bool)>) -> bool {
+    (due.iter()).any(|receipt| owed.is_none_or(|owed| !owed.contains(receipt)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A receipt an intake left due, as one whose channel takes none yet, brings no further intake
+    /// at the looks after it; one that became due since, or any after a failed intake, does.
+    #[test]
+    fn only_a_receipt_due_since_the_last_intake_brings_one() {
+        let left = BTreeSet::from([(4, true), (4, false)]);
+        assert!(newly_due(None, &left), "after a failed intake, or none");
+        for _ in 0..3 {
+            assert!(!newly_due(Some(&left), &left), "still due after the intake");
+        }
+        for owed in [None, Some(&left)] {
+            assert!(!newly_due(owed, &BTreeSet::new()), "none due");
+        }
+        let more = BTreeSet::from([(4, false), (7, false)]);
+        assert!(newly_due(Some(&left), &more), "a new receipt");
+    }
 
     /// The signal's output on each event is one JSON object within the limit, holding the signal
     /// where Codex takes it: `Stop`'s `reason`, which continues the turn; another event's

@@ -3827,14 +3827,17 @@ impl State {
         Ok(())
     }
 
-    /// Whether the device owes a receipt of a message in the space `space` ([`State::reads_due`]).
-    pub fn receipts_due_in(&self, space: SpaceId) -> Result<bool, Error> {
-        Ok(self.db.query_row(
-            "SELECT EXISTS (SELECT 1 FROM read_receipt
-                 WHERE space = ?1 AND (due = 1 OR held_due = 1))",
-            params![space.to_string()],
-            |row| row.get(0),
-        )?)
+    /// The receipts the device owes of messages in the space `space` ([`State::reads_due`]): the
+    /// `seq` of each, and whether it is its `held`.
+    pub fn receipts_due_in(&self, space: SpaceId) -> Result<BTreeSet<(i64, bool)>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT seq, 0 FROM read_receipt WHERE space = ?1 AND due = 1
+             UNION ALL SELECT seq, 1 FROM read_receipt WHERE space = ?1 AND held_due = 1",
+        )?;
+        let due = query.query_map(params![space.to_string()], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        Ok(due.collect::<Result<_, _>>()?)
     }
 
     /// The receipts the device owes, in `seq` order, a message's `held` before its `read` or

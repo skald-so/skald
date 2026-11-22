@@ -126,7 +126,8 @@ pub fn confirm(
 }
 
 /// Reads the whole rollout `file` of a session of `agent` in `space` and hands over what it
-/// confirms ([`confirm`]), if a message waits for the agent there. Gives how many it handed over.
+/// confirms ([`confirm`]), if a message waits for the agent's confirmation there
+/// ([`State::confirming`]). Gives how many it handed over.
 pub fn confirm_file(
     state: &State,
     (space, agent): (SpaceId, &str),
