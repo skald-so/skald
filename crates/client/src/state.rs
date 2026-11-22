@@ -390,6 +390,18 @@ pub struct CodexSession {
     pub hooked: u64,
 }
 
+/// How a kept message that waits for an agent went into its Codex session so far
+/// ([`crate::codex_confirm`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Resend {
+    /// Whether its signal went.
+    pub signalled: bool,
+    /// The last path its signal went by, of [`crate::codex_confirm`]'s; 0 for none.
+    pub went_by: u64,
+    /// When its signal or `inbox` last gave it, in Unix milliseconds.
+    pub since: Option<u64>,
+}
+
 /// A kept message that waits for the person's decision for the agent `agent`, by its entry's
 /// `seq`, with its space, when the device took it in, in Unix seconds, and its sealed line.
 #[derive(Debug, Clone, PartialEq)]
@@ -2699,7 +2711,7 @@ impl State {
 
     /// The kept messages that wait for the agent `agent` in the space `space`, by `seq`, each with
     /// its sealed line, once those whose wait ended by `now`, in Unix seconds, are dropped for
-    /// every agent; but those a session's socket took that wait for its confirmation.
+    /// every agent; but those a session's socket or `inbox` gave that wait for its confirmation.
     pub fn for_agent(
         &self,
         space: SpaceId,
@@ -2718,6 +2730,7 @@ impl State {
             "SELECT kept.seq, kept.line FROM kept JOIN handover ON handover.seq = kept.seq
              WHERE kept.space = ?1 AND handover.agent = ?2
                  AND (handover.written IS NULL OR handover.failed = 1)
+                 AND handover.confirming = 0
              ORDER BY kept.seq",
             params![space.to_string(), agent],
         )
@@ -3087,6 +3100,112 @@ impl State {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// How each kept message that waits for the agent `agent` went into its Codex session so far,
+    /// by `seq`.
+    pub fn resends(&self, agent: &str) -> Result<BTreeMap<u64, Resend>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT seq, signalled, went_by, since FROM handover WHERE agent = ?1 ORDER BY seq",
+        )?;
+        let rows = query.query_map(params![agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, bool>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, signalled, went_by, since) = row?;
+            let malformed = || Error::Malformed(format!("the handover of {seq}"));
+            let resend = Resend {
+                signalled,
+                went_by: u64::try_from(went_by).map_err(|_| malformed())?,
+                since: since
+                    .map(|since| u64::try_from(since).map_err(|_| malformed()))
+                    .transpose()?,
+            };
+            Ok((u64::try_from(seq).map_err(|_| malformed())?, resend))
+        })
+        .collect()
+    }
+
+    /// Records that the signal of each of the kept messages `went`, by `seq`, for the agent
+    /// `agent` went by its path, of [`crate::codex_confirm`]'s, at `now`, in Unix milliseconds.
+    pub fn signals_went(&self, went: &[(u64, u64)], agent: &str, now: u64) -> Result<(), Error> {
+        let tx = self.write()?;
+        for (seq, path) in went {
+            tx.execute(
+                "UPDATE handover SET signalled = 1, went_by = ?3, since = ?4
+                 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, sql_u64(*path)?, sql_u64(now)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that `inbox` gave each of the kept messages `seqs` to the agent `agent` at `now`, in
+    /// Unix milliseconds, in a session whose file confirms what it got: until the confirmation or
+    /// [`State::end_confirmation_waits`], no other call gives it. With `waits` false, records that
+    /// the result that gave them was not written: they wait as before.
+    pub fn await_confirmation(
+        &self,
+        seqs: &[u64],
+        agent: &str,
+        (waits, now): (bool, u64),
+    ) -> Result<(), Error> {
+        let tx = self.write()?;
+        for seq in seqs {
+            match waits {
+                true => tx.execute(
+                    "UPDATE handover SET confirming = 1, since = ?3 WHERE seq = ?1 AND agent = ?2",
+                    params![sql_seq(*seq)?, agent, sql_u64(now)?],
+                )?,
+                false => tx.execute(
+                    "UPDATE handover SET confirming = 0 WHERE seq = ?1 AND agent = ?2",
+                    params![sql_seq(*seq)?, agent],
+                )?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Ends the wait for its confirmation of each kept message `inbox` gave before `before`, in
+    /// Unix milliseconds: it waits again for every path.
+    pub fn end_confirmation_waits(&self, before: u64) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE handover SET confirming = 0 WHERE confirming = 1 AND since < ?1",
+            params![sql_u64(before)?],
+        )?;
+        Ok(())
+    }
+
+    /// The earliest time, in Unix milliseconds, at or after `after` at which a signal or `inbox`
+    /// last gave a kept message that waits for an agent, if any.
+    pub fn next_given(&self, after: u64) -> Result<Option<u64>, Error> {
+        let next: Option<i64> = self.db.query_row(
+            "SELECT MIN(since) FROM handover WHERE since >= ?1",
+            params![sql_u64(after)?],
+            |row| row.get(0),
+        )?;
+        next.map(|next| {
+            u64::try_from(next).map_err(|_| Error::Malformed(format!("the time {next}")))
+        })
+        .transpose()
+    }
+
+    /// The `seq` and `msg_id` of each kept message that waits for the agent `agent` in the space
+    /// `space`.
+    pub fn waiting_ids(&self, space: SpaceId, agent: &str) -> Result<Vec<(u64, String)>, Error> {
+        self.lines(
+            "SELECT kept.seq, kept.msg_id FROM kept JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2 AND kept.msg_id IS NOT NULL
+             ORDER BY kept.seq",
+            params![space.to_string(), agent],
+        )
     }
 
     /// The `seq` of each kept message that waits for the agent `agent` that a session's socket

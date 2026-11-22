@@ -23,6 +23,9 @@
 //!   signal for its thread, by the session's Codex process's executable, on its config home
 //!   ([`Served::wake`]). A session has one queued signal until its next hook; messages a
 //!   `codex queue` failed for wait for the hooks and `inbox`.
+//! - What `inbox` gives waits for the session's rollout to confirm it, which the helper reads while
+//!   the session runs and `Stop` as the fallback; unconfirmed, its signal goes again by the next
+//!   path ([`codex_confirm`]).
 //! - A hook answers from the local state and never waits on the network: it runs without the
 //!   lock, which a run on the network may hold; the helper takes in what comes for the sessions'
 //!   spaces ([`Served`]). A hook that has not finished within [`PATIENCE`] prints nothing more.
@@ -38,8 +41,9 @@ use skald_proto::{Name, SpaceId};
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
+use crate::session_file::{Reader, opened};
 use crate::state::{CodexSession, State};
-use crate::{claude_socket, hook, recv};
+use crate::{claude_socket, codex_confirm, hook, recv};
 
 /// How long a hook waits for its run before it prints nothing.
 pub const PATIENCE: Duration = Duration::from_secs(3);
@@ -87,18 +91,69 @@ pub fn hook(
         queued: false,
         hooked: 0,
     };
-    // What waits goes to a session before this one counts as the one whose hook ran last.
-    let mut signalled = signals(&state, &this)?;
-    if event == hook::Event::SessionStart {
-        signalled.clear();
+    let clock = clock();
+    // A `Stop` hook reads the session's rollout as the fallback of the helper's reading.
+    if let hook::Event::Stop { .. } = event
+        && let Some(file) = rollout_of(&state, &this)?
+    {
+        codex_confirm::confirm_file(&state, (space, agent.as_str()), &file).map_err(text)?;
     }
+    (state.end_confirmation_waits(clock.0.saturating_sub(clock.1))).map_err(text)?;
+    // What waits goes to a session before this one counts as the one whose hook ran last.
+    let signalled = signals(&state, &this, event, clock)?;
     if !signalled.is_empty() {
         output::write(Stream::Out, output_of(event).as_bytes())
             .map_err(|err| format!("cannot write the signal to the output: {err}"))?;
-        (state.signals_given(&signalled, agent.as_str())).map_err(text)?;
+        (state.signals_went(&signalled, agent.as_str(), clock.0)).map_err(text)?;
     }
     this.busy = busy_after(event, !signalled.is_empty());
     state.register_codex(&this).map_err(text)
+}
+
+/// Whether what `inbox` gives `agent` in `space` waits for a confirmation: the rollout of its live
+/// session whose hook ran last is one the client reads ([`codex_confirm::readable`]).
+pub fn confirms(state: &State, space: SpaceId, agent: &str) -> Result<bool, String> {
+    let sessions = state.codex_sessions().map_err(text)?;
+    let latest = (sessions.into_iter())
+        .find(|session| session.space == space && session.agent == agent && runs(session.process));
+    Ok(
+        (latest.and_then(|session| session.file))
+            .is_some_and(|file| codex_confirm::readable(&file)),
+    )
+}
+
+/// Now and the resend timeout ([`codex_confirm::resend_after`]), in milliseconds.
+pub fn clock() -> (u64, u64) {
+    let timeout = codex_confirm::resend_after().as_millis();
+    (
+        crate::state::unix_millis(),
+        u64::try_from(timeout).unwrap_or(u64::MAX),
+    )
+}
+
+/// The rollout of `this`, a session whose hook runs: the one its input names, or else the one
+/// registered.
+fn rollout_of(state: &State, this: &CodexSession) -> Result<Option<PathBuf>, String> {
+    if let Some(file) = &this.file {
+        return Ok(Some(file.clone()));
+    }
+    let sessions = state.codex_sessions().map_err(text)?;
+    Ok((sessions.into_iter())
+        .find(|session| session.thread == this.thread)
+        .and_then(|session| session.file))
+}
+
+/// The paths a hook on `event` gives a signal by ([`codex_confirm::path`]): of a message whose
+/// signal did not go, and of one whose signal went; none for an event that gives none.
+fn ways(event: hook::Event) -> Option<(u64, Option<u64>)> {
+    match event {
+        hook::Event::PostToolUse => Some((codex_confirm::CONTEXT, None)),
+        hook::Event::UserPromptSubmit => {
+            Some((codex_confirm::CONTEXT, Some(codex_confirm::PROMPT)))
+        }
+        hook::Event::Stop { .. } => Some((codex_confirm::STOP, Some(codex_confirm::STOP))),
+        _ => None,
+    }
 }
 
 /// Whether a session is busy after its hook on `event`, which gave the signal if `signalled`: a
@@ -116,30 +171,55 @@ fn busy_after(event: hook::Event, signalled: bool) -> bool {
     }
 }
 
-/// The `seq` of each kept message that waits for the agent of `this`, a session whose hook runs,
-/// whose signal goes to it and did not go yet ([`route`]).
-fn signals(state: &State, this: &CodexSession) -> Result<Vec<u64>, String> {
+/// The `seq` of each kept message that waits for the agent of `this`, a session whose hook on
+/// `event` runs, whose signal goes to it ([`route`]) by a path of the hook's ([`ways`]) at `clock`,
+/// now and the resend timeout ([`codex_confirm::path`]), with that path.
+fn signals(
+    state: &State,
+    this: &CodexSession,
+    event: hook::Event,
+    clock: (u64, u64),
+) -> Result<Vec<(u64, u64)>, String> {
     let mut routed = route(state, this.space, &this.agent, Some(&this.thread))?;
-    Ok(routed.remove(&this.thread).unwrap_or_default())
+    let Some((first, again)) = ways(event) else {
+        return Ok(Vec::new());
+    };
+    let seqs = routed.remove(&this.thread).unwrap_or_default();
+    paths(state, &this.agent, &seqs, (first, again, clock))
 }
 
-/// The `seq` of each kept message that waits for `agent` in `space` and whose signal did not go
-/// yet, by the thread of the session its signal goes to: the live session it went to, or else the
-/// live session of the agent whose hook ran last. `this`, a session whose hook runs, counts as
-/// live, and as the one whose hook ran last when no other lives. Sessions whose Codex process ended
-/// end.
+/// Of `seqs`, kept messages that wait for `agent`, each that goes by a path of a way that takes
+/// `first` and `again` at `clock` ([`codex_confirm::path`]), with that path.
+fn paths(
+    state: &State,
+    agent: &str,
+    seqs: &[u64],
+    (first, again, clock): (u64, Option<u64>, (u64, u64)),
+) -> Result<Vec<(u64, u64)>, String> {
+    let resends = state.resends(agent).map_err(text)?;
+    Ok((seqs.iter())
+        .filter_map(|seq| {
+            let resend = resends.get(seq).copied().unwrap_or_default();
+            codex_confirm::path(first, again, &resend, clock).map(|path| (*seq, path))
+        })
+        .collect())
+}
+
+/// The `seq` of each kept message that waits for `agent` in `space`, but those that wait for a
+/// confirmation, by the thread of the session its signal goes to: the live session it went to, or
+/// else the live session of the agent whose hook ran last. `this`, a session whose hook runs,
+/// counts as live, and as the one whose hook ran last when no other lives. Sessions whose Codex
+/// process ended end.
 fn route(
     state: &State,
     space: SpaceId,
     agent: &str,
     this: Option<&str>,
 ) -> Result<BTreeMap<String, Vec<u64>>, String> {
-    let signalled: BTreeSet<u64> = state.signalled(agent).map_err(text)?.into_iter().collect();
     let waiting: Vec<u64> = (state.for_agent(space, agent, crate::state::unix_now()))
         .map_err(text)?
         .into_iter()
         .map(|(seq, _)| seq)
-        .filter(|seq| !signalled.contains(seq))
         .collect();
     let mut routed: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     if waiting.is_empty() {
@@ -441,6 +521,9 @@ pub struct Served {
     queuing: BTreeMap<String, Queuing>,
     /// Of each session, the messages a `codex queue` failed for: they wake it no more.
     unqueued: BTreeMap<String, BTreeSet<u64>>,
+    /// When the resend timeout of a message a signal or `inbox` gave next passes, if one does: a
+    /// look then wakes the idle sessions.
+    resend_at: Option<Instant>,
 }
 
 /// A `codex queue` the helper runs: its process, the agent and the messages whose signal it
@@ -452,12 +535,13 @@ struct Queuing {
     started: Instant,
 }
 
-/// A registered session the helper serves: when its process was last seen running, and whether
-/// the helper took in for it yet.
+/// A registered session the helper serves: when its process was last seen running, whether the
+/// helper took in for it yet, and its rollout's reading ([`codex_confirm::Scan`]).
 struct Live {
     session: CodexSession,
     seen: Option<Instant>,
     taken: bool,
+    scan: codex_confirm::Scan,
 }
 
 impl Live {
@@ -483,6 +567,7 @@ impl Served {
             due: true,
             queuing: BTreeMap::new(),
             unqueued: BTreeMap::new(),
+            resend_at: None,
         }
     }
 
@@ -507,10 +592,11 @@ impl Served {
     }
 
     /// Serves the sessions registered in the state in `dir` ([`Served::looks`]), `came` what came
-    /// on the connection: ends those whose Codex process ended; takes in once for each space of a
-    /// session it has not taken in for, or that `came` may bring messages of, as statuses alone
-    /// give its hooks nothing and wake nothing; then wakes the idle ones ([`Served::wake`]). Gives
-    /// whether it took in; `None` once a run panicked.
+    /// on the connection: ends those whose Codex process ended; hands over what their rollouts
+    /// confirm ([`codex_confirm::confirm`]); takes in once for each space of a session it has not
+    /// taken in for, that `came` may bring messages of, as statuses alone give its hooks nothing
+    /// and wake nothing, or whose rollout confirmed a message, so its `read` goes; then wakes the
+    /// idle ones ([`Served::wake`]). Gives whether it took in; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         self.looks(dir);
         let gone: Vec<String> = (self.live.iter_mut())
@@ -528,15 +614,24 @@ impl Served {
         }
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut runs: BTreeMap<SpaceId, (String, PathBuf)> = BTreeMap::new();
+        let mut state = None;
         for live in self.live.values_mut() {
             let session = &live.session;
+            let refs = (session.file.as_deref()).map_or_else(Vec::new, |file| live.scan.read(file));
+            let confirmed = !refs.is_empty()
+                && opened(&mut state, dir).is_some_and(|state| {
+                    let agent = (session.space, session.agent.as_str());
+                    codex_confirm::confirm(state, agent, &refs).is_ok_and(|count| count > 0)
+                });
             if !std::mem::replace(&mut live.taken, true)
                 || (retry && came.brings_messages(session.space))
+                || confirmed
             {
                 (runs.entry(session.space))
                     .or_insert_with(|| (session.agent.clone(), session.folder.clone()));
             }
         }
+        drop(state);
         for (agent, folder) in runs.values() {
             match self.run(dir, folder, agent)? {
                 true => self.failed = None,
@@ -544,20 +639,37 @@ impl Served {
             }
         }
         self.queued(dir);
-        if std::mem::take(&mut self.due) || !runs.is_empty() {
+        let resend = (self.resend_at).is_some_and(|at| at <= Instant::now());
+        if std::mem::take(&mut self.due) || !runs.is_empty() || resend {
             self.wake(dir);
         }
         Some(!runs.is_empty())
     }
 
     /// Wakes each idle session in the state in `dir` that has no signal queued and whose agent has
-    /// messages whose signal goes to it ([`route`]) and did not go yet: runs `codex queue` with
-    /// the signal for its thread ([`queue`]). Messages a `codex queue` failed for wake it no more;
-    /// they wait for its hooks and `inbox`.
+    /// messages whose signal goes to it ([`route`]) by `codex queue` ([`codex_confirm::path`]):
+    /// runs `codex queue` with the signal for its thread ([`queue`]). Messages a `codex queue`
+    /// failed for wake it no more; they wait for its hooks and `inbox`. Then notes when the next
+    /// resend timeout passes.
     fn wake(&mut self, dir: &Path) {
         let Ok(state) = State::open(dir) else {
             return;
         };
+        let (now, timeout) = clock();
+        let _ = state.end_confirmation_waits(now.saturating_sub(timeout));
+        self.waking(&state, (now, timeout));
+        self.resend_at = (state
+            .next_given((now + 1).saturating_sub(timeout))
+            .ok()
+            .flatten())
+        .map(|given| {
+            let wait = given.saturating_add(timeout).saturating_sub(now);
+            Instant::now() + Duration::from_millis(wait)
+        });
+    }
+
+    /// As [`Served::wake`], by `state` at `clock`, now and the resend timeout.
+    fn waking(&mut self, state: &State, clock: (u64, u64)) {
         let Ok(sessions) = state.codex_sessions() else {
             return;
         };
@@ -565,17 +677,21 @@ impl Served {
             .map(|session| (session.space, session.agent.as_str()))
             .collect();
         for (space, agent) in agents {
-            let Ok(routed) = route(&state, space, agent, None) else {
+            let Ok(routed) = route(state, space, agent, None) else {
                 continue;
             };
             for (thread, seqs) in routed {
                 let Some(session) = sessions.iter().find(|session| session.thread == thread) else {
                     continue;
                 };
+                let queuing = (codex_confirm::QUEUE, Some(codex_confirm::QUEUE), clock);
+                let Ok(going) = paths(state, agent, &seqs, queuing) else {
+                    continue;
+                };
                 let failed = self.unqueued.get(&thread);
-                let new = seqs
+                let new = going
                     .iter()
-                    .any(|seq| failed.is_none_or(|failed| !failed.contains(seq)));
+                    .any(|(seq, _)| failed.is_none_or(|failed| !failed.contains(seq)));
                 if session.busy || session.queued || self.queuing.contains_key(&thread) || !new {
                     continue;
                 }
@@ -587,7 +703,8 @@ impl Served {
                     continue;
                 }
                 // Before it runs, so no hook of the turn it starts gives the signal again.
-                let _ = state.signals_given(&seqs, agent);
+                let _ = state.signals_went(&going, agent, clock.0);
+                let seqs: Vec<u64> = going.into_iter().map(|(seq, _)| seq).collect();
                 match queue(codex, &thread, session.home.as_deref()).spawn() {
                     Ok(child) => {
                         let started = Instant::now();
@@ -600,7 +717,7 @@ impl Served {
                         };
                         self.queuing.insert(thread, queuing);
                     }
-                    Err(_) => self.failed_queue(&state, thread, agent, seqs),
+                    Err(_) => self.failed_queue(state, thread, agent, seqs),
                 }
             }
         }
@@ -659,7 +776,15 @@ impl Served {
             let served = match live.remove(&thread) {
                 Some(kept) => {
                     self.due |= kept.session.hooked != session.hooked;
-                    Live { session, ..kept }
+                    let scan = match kept.session.file == session.file {
+                        true => kept.scan,
+                        false => codex_confirm::Scan::default(),
+                    };
+                    Live {
+                        session,
+                        scan,
+                        ..kept
+                    }
                 }
                 None => {
                     self.due = true;
@@ -667,6 +792,7 @@ impl Served {
                         session,
                         seen: None,
                         taken: false,
+                        scan: codex_confirm::Scan::default(),
                     }
                 }
             };

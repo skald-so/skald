@@ -67,6 +67,7 @@ use skald_proto::{
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
+use crate::codex;
 use crate::connection::printable;
 use crate::delivery;
 use crate::devices::text;
@@ -1087,20 +1088,29 @@ pub fn hand_over(
 }
 
 /// As [`hand_over`], gathering the lines and writing them in one write, after which it marks
-/// each status and message handed over; a failed write marks none.
+/// each status and message handed over; a failed write marks none. Where the agent's Codex session
+/// confirms what it gets ([`codex::confirms`]), each message it shows waits for its confirmation
+/// instead, from before the write ([`crate::codex_confirm`]).
 fn hand_over_whole(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
     form: Form,
 ) -> Result<usize, String> {
     let state = &follower.state;
+    let (now, timeout) = codex::clock();
+    (state.end_confirmation_waits(now.saturating_sub(timeout))).map_err(text)?;
+    let confirms = codex::confirms(state, space, agent.as_str())?;
     let mut lines = String::new();
-    let (mut statuses, mut messages) = (Vec::new(), Vec::new());
+    let (mut statuses, mut messages, mut unopened) = (Vec::new(), Vec::new(), Vec::new());
+    // Whether a message's line was put since the last message was marked: one that does not open
+    // has none.
+    let put = std::cell::Cell::new(false);
     let shown = handing_over(
         follower,
         (space, agent),
         form,
-        |_, line| {
+        |what, line| {
+            put.set(what == "a message");
             lines.push_str(&line);
             Ok(())
         },
@@ -1110,20 +1120,35 @@ fn hand_over_whole(
                 Ok(())
             },
             &mut |seq| {
-                messages.push(seq);
+                match put.replace(false) || !confirms {
+                    true => messages.push(seq),
+                    false => unopened.push(seq),
+                }
                 Ok(())
             },
         ),
     )?;
-    if !lines.is_empty() {
-        output::write(Stream::Out, lines.as_bytes())
-            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+    let waits = |waits| state.await_confirmation(&messages, agent.as_str(), (waits, now));
+    if confirms {
+        waits(true).map_err(text)?;
+    }
+    if !lines.is_empty()
+        && let Err(err) = output::write(Stream::Out, lines.as_bytes())
+    {
+        if confirms {
+            waits(false).map_err(text)?;
+        }
+        return Err(format!("cannot write the messages to the output: {err}"));
     }
     for seq in statuses {
         state.status_taken_by_agent(seq).map_err(text)?;
     }
-    for seq in messages {
-        state.handed_over(seq, agent.as_str()).map_err(text)?;
+    let handed = match confirms {
+        true => &unopened,
+        false => &messages,
+    };
+    for seq in handed {
+        state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(shown)
 }

@@ -27,8 +27,8 @@
 //!   if the line went through it.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom, Write};
+use std::fs;
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::Shutdown;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -45,6 +45,7 @@ use uds_windows::{UnixListener, UnixStream};
 
 use crate::devices::text;
 use crate::mailbox::Came;
+use crate::session_file::{Reader, opened};
 use crate::state::{ClaudeSession, State};
 use crate::{hook, output, recv, secrets};
 
@@ -226,37 +227,12 @@ struct Origin {
     msg_id: Option<String>,
 }
 
-impl Scan {
-    /// Reads the whole lines `file` got since; gives the `msg_id` of each message the model got:
-    /// one an entry that went to the model holds, a user entry or, for a line queued during a
-    /// turn, its attachment, once a later entry is the model's own, a reply, a tool call or
-    /// reasoning, not an API error. A file that is gone or shorter is read again
-    /// from its start.
-    pub fn read(&mut self, file: &Path) -> Vec<String> {
-        let mut confirmed = Vec::new();
-        let Ok(mut opened) = File::open(file) else {
-            return confirmed;
-        };
-        let length = opened.metadata().map_or(0, |metadata| metadata.len());
-        if length < self.offset {
-            *self = Scan::default();
-        }
-        if length == self.offset || opened.seek(SeekFrom::Start(self.offset)).is_err() {
-            return confirmed;
-        }
-        let mut reader = BufReader::new(opened);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            match reader.read_until(b'\n', &mut line) {
-                Ok(read) if read > 0 && line.ends_with(b"\n") => {}
-                // The end, or a line still being written.
-                _ => break,
-            }
-            self.offset += line.len() as u64;
-            self.entry(&line, &mut confirmed);
-        }
-        confirmed
+/// What it reads confirms the `msg_id` of each message the model got: one an entry that went to the
+/// model holds, a user entry or, for a line queued during a turn, its attachment, once a later
+/// entry is the model's own, a reply, a tool call or reasoning, not an API error.
+impl Reader for Scan {
+    fn offset(&mut self) -> &mut u64 {
+        &mut self.offset
     }
 
     fn entry(&mut self, line: &[u8], confirmed: &mut Vec<String>) {
@@ -535,14 +511,6 @@ pub fn run_as(
     ran.ok().map(|ran| ran.is_ok())
 }
 
-/// The state in `dir`, opened once into `state`; `None` if it does not open.
-fn opened<'s>(state: &'s mut Option<State>, dir: &Path) -> Option<&'s State> {
-    if state.is_none() {
-        *state = State::open(dir).ok();
-    }
-    state.as_ref()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,23 +533,16 @@ mod tests {
 
     /// A session file of `entries`, read in one scan, then in another after `more`.
     fn scanned(entries: &[&str], more: &[&str]) -> (Vec<String>, Vec<String>) {
-        // `cargo test` runs the tests in threads of one process: each scan has a directory of its
-        // own.
-        static SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let scan = SCANS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let dir = crate::test_dir::TestDir::new(&format!("claude-scan-{scan}"));
-        let file = dir.join("session.jsonl");
         let lines = |entries: &[&str]| {
             (entries.iter())
                 .map(|entry| format!("{}\n", entry.trim()))
                 .collect::<String>()
         };
-        fs::write(&file, lines(entries)).unwrap();
         let mut scan = Scan::default();
-        let first = scan.read(&file);
-        let mut opened = fs::OpenOptions::new().append(true).open(&file).unwrap();
-        opened.write_all(lines(more).as_bytes()).unwrap();
-        (first, scan.read(&file))
+        let contents = (lines(entries), lines(more));
+        crate::session_file::read_twice("claude", (&contents.0, &contents.1), |file| {
+            scan.read(file)
+        })
     }
 
     /// A message counts once the model's reply, tool call or reasoning follows it, once.
