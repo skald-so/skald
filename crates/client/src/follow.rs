@@ -178,11 +178,7 @@ pub fn device_changes(
             continue;
         };
         let checked = devices::check(&master, devices);
-        let whose = format!(
-            "the member {} in the space {}",
-            member.handle.as_str(),
-            body.name.as_str()
-        );
+        let whose = format!("{} in {}", member.handle.as_str(), body.name.as_str());
         warnings.extend(devices::statuses(
             state,
             &checked,
