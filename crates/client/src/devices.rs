@@ -181,8 +181,8 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
 /// it gives with those `state` holds, and the accounts it reports deleted; a certificate,
-/// revocation or account ID that does not decode counts as none. Prints the warning of each device given with a certificate other than the one `state`
-/// keeps ([`kept_certs`]).
+/// revocation or account ID that does not decode counts as none. Prints the warning of each device
+/// given with a certificate other than the one `state` keeps ([`kept_certs`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,

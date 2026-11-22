@@ -15,8 +15,8 @@
 //!   those another device's Commit carries, it keeps the ones that count, and warns of the devices
 //!   they revoke, before it judges the new epoch.
 //! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
-//!   once its signer and members are admitted or revoked devices of the channel's member accounts,
-//!   whose Remove it then commits, unless it lists the device and a Welcome comes. A device whose
+//!   once its signer and members are admitted, or revoked devices or devices of accounts the server
+//!   reports deleted among the channel's member accounts, whose Remove it then commits, unless it lists the device and a Welcome comes. A device whose
 //!   Welcome it refused joins by itself from that GroupInfo also if it lists the device, and one
 //!   whose Commit it could not process rejoins from a GroupInfo of a later epoch than its own;
 //!   either removes the leaf of its own the GroupInfo lists. One a Commit removed while admitted
@@ -892,64 +892,72 @@ pub fn observe(channel: ChannelId, group_info: &[u8]) -> Result<ChannelView, Str
 }
 
 /// Of `signer` and `members`, a GroupInfo's, those that are not of `others`, the other admitted
-/// devices, nor of `revoked`, as [`revoked_members`] gives them, nor this device, `this`, with its
+/// devices, nor of `leaving`, as [`leaving_members`] gives them, nor this device, `this`, with its
 /// own key `signing`.
 fn not_admitted(
     (this, signing): (DeviceId, &[u8; 32]),
-    (others, revoked): (&BTreeMap<DeviceId, Cert>, &BTreeMap<DeviceId, [u8; 32]>),
+    (others, leaving): (&BTreeMap<DeviceId, Cert>, &BTreeMap<DeviceId, [u8; 32]>),
     (signer, members): (&MemberDevice, &[MemberDevice]),
 ) -> BTreeSet<DeviceId> {
     let own = |member: &&MemberDevice| member.device == this && member.signing == *signing;
     let listed = members.iter().chain([signer]).filter(|member| !own(member));
-    let revoked = |member: &&MemberDevice| revoked.get(&member.device) == Some(&member.signing);
-    unadmitted(others, listed.filter(|member| !revoked(member)))
+    let leaving = |member: &&MemberDevice| leaving.get(&member.device) == Some(&member.signing);
+    unadmitted(others, listed.filter(|member| !leaving(member)))
         .into_iter()
         .collect()
 }
 
-/// The revoked devices of the accounts in `channel`'s `channel-member` entries in `roster`, by
-/// `devices`, each with its signing key: their certificates pass checks 1 and 2 against the master
-/// key [`follow::master_of`] gives, and check 3 or 4 fails ("Group changes").
-fn revoked_members(
+/// The devices of the accounts in `channel`'s `channel-member` entries in `roster`, by `devices`,
+/// that are revoked or of an account `devices` reports deleted, each with its signing key: their
+/// certificates pass checks 1 and 2 against the master key [`follow::master_of`] gives, and, unless
+/// the account is reported deleted, check 3 or 4 fails ("Group changes").
+fn leaving_members(
     follower: &Follower,
     roster: &Roster,
     devices: &SpaceDevices,
     channel: ChannelId,
 ) -> BTreeMap<DeviceId, [u8; 32]> {
     let body = roster.body();
-    let mut revoked = BTreeMap::new();
+    let mut leaving = BTreeMap::new();
     let Some(channel) = body.channels.iter().find(|listed| listed.id == channel) else {
-        return revoked;
+        return leaving;
     };
     let SpaceDevices {
-        certs, revocations, ..
+        certs,
+        revocations,
+        deleted,
+        ..
     } = devices;
     for entry in &channel.members {
         let Some(master) = follow::master_of(roster, &follower.own, entry.account) else {
             continue;
         };
+        let gone = deleted.contains(&entry.account);
         for cert in certs
             .iter()
             .filter(|cert| cert.body().account == entry.account)
         {
             let device = cert.body().device;
             if let Ok(valid) = check_device(&master, certs, device)
-                && let Err(DeviceCheckError::Revoked { .. }) =
-                    check_valid_device(&master, certs, revocations, device)
+                && (gone
+                    || matches!(
+                        check_valid_device(&master, certs, revocations, device),
+                        Err(DeviceCheckError::Revoked { .. })
+                    ))
             {
-                revoked.insert(device, valid.body().signing);
+                leaving.insert(device, valid.body().signing);
             }
         }
     }
-    revoked
+    leaving
 }
 
 /// Joins `channel` of `space` by itself from `group_info`, seen as `view`, if its signer and every
 /// member it lists are admitted, with `others`, the other admitted devices by `roster` and
-/// `devices`, or revoked devices of the channel's member accounts ([`revoked_members`]), once the
-/// device accepted the space's latest revisions if one is not; warns naming the others. The
-/// external Commit goes through the outbox as the device's other Commits do. Once the server
-/// stored it, the device commits the Remove of the revoked devices the group holds.
+/// `devices`, or revoked devices or devices of deleted accounts among the channel's member accounts
+/// ([`leaving_members`]), once the device accepted the space's latest revisions if one is not;
+/// warns naming the others. The external Commit goes through the outbox as the device's other
+/// Commits do. Once the server stored it, the device commits the Remove of those the group holds.
 fn join_by_itself(
     follower: &mut Follower,
     link: &mut Link,
@@ -971,8 +979,8 @@ fn join_by_itself(
             admitted.remove(&follower.this);
         }
     }
-    let revoked = revoked_members(follower, &roster, &devices, channel);
-    let strangers = not_admitted(own, (&admitted, &revoked), listed);
+    let leaving = leaving_members(follower, &roster, &devices, channel);
+    let strangers = not_admitted(own, (&admitted, &leaving), listed);
     if !strangers.is_empty() {
         let strangers: Vec<String> = strangers.iter().map(ToString::to_string).collect();
         return Err(format!(
@@ -989,7 +997,7 @@ fn join_by_itself(
         device.join_by_itself(channel, group_info, now(), |joining| {
             let listed = (&joining.signer, joining.members.as_slice());
             joining.channel == channel
-                && not_admitted(own, (&admitted, &revoked), listed).is_empty()
+                && not_admitted(own, (&admitted, &leaving), listed).is_empty()
         })
     })?;
     let waiting = follower.state.mls_outbox().map_err(text)?;

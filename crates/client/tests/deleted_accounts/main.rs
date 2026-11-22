@@ -44,6 +44,7 @@
 mod admins;
 mod agent;
 mod copy;
+mod joining;
 mod removal;
 mod report;
 mod scene;
@@ -52,16 +53,24 @@ mod uploads;
 // The modules the tests of the channel history share (`history_common/mod.rs`), the entries of the
 // tests of history entries, the runs through a helper of the tests of the helper, the new device of
 // the tests of link codes, the role commands of the tests of admin rights, the terminal and the
-// grants of the tests of the recovery key, and the wraps of the tests of history wraps.
+// grants of the tests of the recovery key, the wraps of the tests of history wraps, the second
+// machines of the tests of the history on new devices, the helpers of the tests of reading the
+// history, and the revocations with `keep` of the tests of revoking linked devices.
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
+#[path = "../history_devices/devices.rs"]
+mod devices;
 #[path = "../history_entries/entries.rs"]
 mod entries;
 #[path = "../helper/helped.rs"]
 mod helped;
+#[path = "../linked_revocation/linked.rs"]
+mod linked;
 #[path = "../link_codes/linking.rs"]
 mod linking;
+#[path = "../history_reading/reading.rs"]
+mod reading;
 #[path = "../admin_rights/roles.rs"]
 mod roles;
 #[path = "../recovery_key/terminal.rs"]
