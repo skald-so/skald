@@ -314,6 +314,8 @@ The task's sending device MUST drop a result unless:
 2. `task` is a task this device enqueued in the channel, `to` is that task's `from`, and `from` is that task's `to` if it has one;
 3. for `done`, the server gives the task as `done` with this `claim_id` and `generation`, claimed by the sending device.
 
+A `service` device that keeps no state between runs ([service agents](../service-agents.md#running-without-a-disk)) keeps no tasks, so its check 2 is the server's: the task is in a queue of the channel, `to` is its agent, and the device in the task's `sched`, if any, sent the result.
+
 It takes the first result with `done` that passes as the task's result, unless that result is invalid as above. For an invalid one, the device shows the task as done with an invalid result and triggers the [notification](../dev/architecture.md#notifications) of the enqueuing agent's [person](agents.md#person), giving the server only the event class.
 
 ## Templates
