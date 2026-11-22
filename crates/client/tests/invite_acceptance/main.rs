@@ -194,7 +194,7 @@ impl Scene {
     /// The hash of the revision of `acme` that the anchors object the server holds of Bob's device
     /// names, if one names `acme`.
     pub fn bob_anchors(&self) -> Option<[u8; 32]> {
-        anchored(self.cloud(), &self.bob, self.space.id)
+        anchors::anchored(self.cloud(), &self.bob, self.space.id)
     }
 
     /// The revision after the last one of `acme`, signed by Ada's device and stored through the
@@ -222,6 +222,17 @@ impl Scene {
         });
         world::store(self.cloud(), &self.ada.token, &admitting);
         admitting
+    }
+
+    /// Makes an invite, which Bob accepts at a terminal, confirming, with his username; fails
+    /// unless the run succeeds and the server holds his acceptance. Gives the invite.
+    #[track_caller]
+    pub fn bob_accepts(&self) -> Made {
+        let made = self.invite();
+        let accepted = accept_at_terminal(&self.bob.machine, &made.link, &[], (YES, &[]));
+        assert!(accepted.shown.success, "{}", accepted.text());
+        self.assert_bob_accepted(&made, self.bob.handle.as_str());
+        made
     }
 
     /// Fails unless the server holds one waiting acceptance of `acme`: Bob's of `made`, naming his
@@ -261,10 +272,7 @@ impl Scene {
     /// Fails unless Bob's machine sent no request at all from `since` on.
     #[track_caller]
     pub fn assert_nothing_sent(&self, since: Instant) {
-        let heads: Vec<String> = (self.cloud().relay.sent_since(since).into_iter())
-            .map(|sent| sent.head)
-            .collect();
-        assert_eq!(heads, Vec::<String>::new(), "requests sent");
+        world::assert_nothing_sent(self.cloud(), since);
     }
 }
 
@@ -359,26 +367,8 @@ pub fn store_invite(cloud: &Cloud, token: &str, invite: &Invite) {
     let body = invite.body();
     let path = format!("/spaces/{}/invites/{}", body.space, body.invite);
     let request = json!({ "invite": b64(&invite.to_cbor()) });
-    let (status, answer) = put_as(cloud, token, &path, &request);
+    let (status, answer) = world::put_as(cloud, token, &path, &request);
     assert_eq!(status, 201, "the server did not store the invite: {answer}");
-}
-
-/// Sends `PUT <path>` with the JSON `request` as the session `token`, through the API: the status
-/// and the body.
-pub fn put_as(cloud: &Cloud, token: &str, path: &str, request: &Value) -> (u16, Value) {
-    let mut response = cloud::agent()
-        .put(format!("{}{path}", cloud.url))
-        .header(
-            skald_proto::VERSION_HEADER,
-            skald_proto::PROTOCOL_VERSION.to_string(),
-        )
-        .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .send(request.to_string().as_bytes())
-        .unwrap_or_else(|err| panic!("PUT {path}: {err}"));
-    let status = response.status().as_u16();
-    let body = response.body_mut().read_to_string().unwrap_or_default();
-    (status, serde_json::from_str(&body).unwrap_or(Value::Null))
 }
 
 /// The waiting acceptances of `space` the server gives the session `token`, straight from the
@@ -396,14 +386,6 @@ pub fn waiting(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Acceptance> {
             Acceptance::from_cbor(&bytes).expect("an acceptance that decodes")
         })
         .collect()
-}
-
-/// The hash of the revision of `space` that the anchors object the server holds of `person`'s
-/// device names, if the server holds one that names `space`.
-pub fn anchored(cloud: &Cloud, person: &Person, space: SpaceId) -> Option<[u8; 32]> {
-    (anchors::held(cloud, &person.token).into_iter())
-        .find(|object| object.device == person.device)
-        .and_then(|object| object.anchors.get(&space).copied())
 }
 
 /// Whether `listed`, what `skald spaces` showed, lists the space `name`.

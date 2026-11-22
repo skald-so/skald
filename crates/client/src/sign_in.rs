@@ -669,6 +669,7 @@ fn authorize(
     let body = connection.post_form("/auth/device", &[("client_id", CLIENT_ID)])?;
     let grant: Authorization = serde_json::from_slice(&body)
         .map_err(|_| Error::Unexpected("a device authorization without its codes".to_owned()))?;
+    remember_web(dir, connection.server(), &grant.verification_uri);
     let link = grant
         .verification_uri_complete
         .as_deref()
@@ -676,6 +677,18 @@ fn authorize(
     let opened = open.then(|| page::open_url(dir, link)).flatten();
     println!("{}", fallback(&grant, opened.is_some()));
     Ok((grant, opened))
+}
+
+/// Records the origin of `page`, the device flow's verification page of the server at `server`, as
+/// the server's web address in the state in `dir`, which invite links start with
+/// ([`crate::acceptances`]); warns if it cannot.
+fn remember_web(dir: &Path, server: &str, page: &str) {
+    let Some(web) = crate::acceptances::origin(page) else {
+        return;
+    };
+    if let Err(err) = State::open(dir).and_then(|state| state.set_web(server, &web)) {
+        eprintln!("skald: warning: the server's web address is not recorded: {err}");
+    }
 }
 
 /// Polls the token endpoint for `grant` until its person approves it; gives the session token,

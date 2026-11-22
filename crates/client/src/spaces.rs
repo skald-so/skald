@@ -230,7 +230,11 @@ fn creator_handle(first: &Roster) -> &str {
 
 /// The handle of `account`, the account of the session `token`: its username, as the server gives
 /// it.
-fn handle(connection: &mut Connection, token: &str, account: AccountId) -> Result<Name, String> {
+pub fn handle(
+    connection: &mut Connection,
+    token: &str,
+    account: AccountId,
+) -> Result<Name, String> {
     let body = connection.get_as("/session", token).map_err(text)?;
     let session: sign_in::Account = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a session without its account")?;

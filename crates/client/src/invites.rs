@@ -179,21 +179,32 @@ fn sent(
     follower: &mut Follower,
     send: impl Fn(&mut Connection, &str) -> Result<Vec<u8>, connection::Error>,
 ) -> Result<Vec<u8>, String> {
-    let mut failed = String::new();
-    for _ in 0..SENDS {
+    resent(follower, send).map_err(|err| match err {
+        err if err.reached() => text(err),
+        err => format!(
+            "{}; an invite the server took without answering admits no one, as its link was \
+             never shown, and ends when it expires",
+            text(err)
+        ),
+    })
+}
+
+/// As [`sent`], giving the error of the last send: the server's answer, or none after the last of
+/// [`SENDS`] sends.
+pub fn resent(
+    follower: &mut Follower,
+    send: impl Fn(&mut Connection, &str) -> Result<Vec<u8>, connection::Error>,
+) -> Result<Vec<u8>, connection::Error> {
+    let mut sends = 1;
+    loop {
         match send(&mut follower.connection, &follower.token) {
-            Ok(answer) => return Ok(answer),
-            Err(err) if err.reached() => return Err(text(err)),
-            Err(err) => {
-                failed = text(err);
-                follower.connection = follower.connection.again().map_err(text)?;
+            Err(err) if !err.reached() && sends < SENDS => {
+                sends += 1;
+                follower.connection = follower.connection.again()?;
             }
+            answer => return answer,
         }
     }
-    Err(format!(
-        "{failed}; an invite the server took without answering admits no one, as its link was \
-         never shown, and ends when it expires"
-    ))
 }
 
 #[cfg(test)]

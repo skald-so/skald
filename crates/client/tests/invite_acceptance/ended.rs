@@ -3,7 +3,7 @@
 
 use crate::kit::received;
 use crate::world::{ACME, run, spaces};
-use crate::{Scene, YES, accept_at_terminal, follows};
+use crate::{Scene, follows};
 
 /// Bob accepts the invite at a terminal; then the invite is deleted from the server's database,
 /// and with it his acceptance, before any revision admits him. Bob's next `skald recv` says the
@@ -15,10 +15,7 @@ fn invite_deleted_before_a_revision_admits_the_newcomer_ends_the_following() {
         (7_305_407_001, "ada-whose-invite-is-deleted"),
         (7_305_407_002, "bob-left-waiting"),
     );
-    let made = scene.invite();
-    let accepted = accept_at_terminal(&scene.bob.machine, &made.link, &[], (YES, &[]));
-    assert!(accepted.shown.success, "{}", accepted.text());
-    scene.assert_bob_accepted(&made, scene.bob.handle.as_str());
+    let made = scene.bob_accepts();
     let cloud = scene.cloud();
     cloud.execute(&format!("DELETE FROM invites WHERE id = '{}'", made.id()));
 

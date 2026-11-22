@@ -5,14 +5,35 @@
 //! already a member, and an invite the server no longer holds.
 
 use skald_crypto::InviteSecret;
-use skald_proto::Role;
+use skald_proto::{Role, Roster};
 
 use crate::fixtures::{Issuer, add_device};
 use crate::world::{next_by, next_with, now, store};
 use crate::{
-    Scene, assert_refused_saying, give_invite, give_revisions, link_of, refused_at_terminal,
+    Made, Scene, assert_refused_saying, give_invite, give_revisions, link_of, refused_at_terminal,
     resigned,
 };
+
+/// The revisions of `acme` the server holds, the two the scene made; fails if it holds others.
+#[track_caller]
+fn two_revisions(scene: &Scene) -> Vec<Roster> {
+    let held = crate::kit::rosters(scene.cloud(), &scene.ada.token, scene.space.id);
+    assert_eq!(held.len(), 2, "{held:?}");
+    held
+}
+
+/// The relay gives `revisions` with `made`; `skald accept-invite`, given its link, fails saying
+/// `revision`, and Bob's machine accepts nothing.
+#[track_caller]
+fn assert_revisions_refused(scene: &Scene, made: &Made, revisions: &[&Roster]) {
+    give_revisions(scene.cloud(), made.id(), revisions);
+    let since = scene.cloud().relay.mark();
+
+    let refused = refused_at_terminal(&scene.bob.machine, &made.link);
+
+    assert_refused_saying(&refused, &["revision"]);
+    scene.assert_nothing_accepted(made, since);
+}
 
 /// The relay gives, among `acme`'s revisions with the invite, a revision 2 that Ada's device
 /// signed after revision 1 in place of the revision 2 the link names. `skald accept-invite`, given
@@ -24,17 +45,11 @@ fn revision_a_proxy_swaps_for_the_link_s_is_refused() {
         (7_305_402_002, "bob-sees-a-swapped-revision"),
     );
     let made = scene.invite();
-    let held = crate::kit::rosters(scene.cloud(), &scene.ada.token, scene.space.id);
-    assert_eq!(held.len(), 2, "{held:?}");
+    let held = two_revisions(&scene);
     let swapped = next_with(&held[0], (scene.ada.device, &scene.ada.key), |_| {});
     assert_ne!(swapped.hash(), made.revision.hash());
-    give_revisions(scene.cloud(), made.id(), &[&held[0], &swapped]);
-    let since = scene.cloud().relay.mark();
 
-    let refused = refused_at_terminal(&scene.bob.machine, &made.link);
-
-    assert_refused_saying(&refused, &["revision"]);
-    scene.assert_nothing_accepted(&made, since);
+    assert_revisions_refused(&scene, &made, &[&held[0], &swapped]);
 }
 
 /// The relay gives, after `acme`'s revisions 1 and 2, the one the link names, a revision 3 signed
@@ -48,19 +63,13 @@ fn revisions_off_the_link_revision_s_chain_are_refused() {
         (7_305_402_102, "bob-sees-a-fork"),
     );
     let made = scene.invite();
-    let held = crate::kit::rosters(scene.cloud(), &scene.ada.token, scene.space.id);
-    assert_eq!(held.len(), 2, "{held:?}");
+    let held = two_revisions(&scene);
     let first = held[0].hash();
     let off = next_with(&held[1], (scene.ada.device, &scene.ada.key), |body| {
         body.prev = Some(first);
     });
-    give_revisions(scene.cloud(), made.id(), &[&held[0], &held[1], &off]);
-    let since = scene.cloud().relay.mark();
 
-    let refused = refused_at_terminal(&scene.bob.machine, &made.link);
-
-    assert_refused_saying(&refused, &["revision"]);
-    scene.assert_nothing_accepted(&made, since);
+    assert_revisions_refused(&scene, &made, &[&held[0], &held[1], &off]);
 }
 
 /// Revision 3 of `acme`, signed by Ada's device, adds Carol as a member; the invite's link names

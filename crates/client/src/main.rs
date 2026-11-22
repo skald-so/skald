@@ -27,6 +27,7 @@ macro_rules! eprintln {
     };
 }
 
+mod acceptances;
 mod admin;
 mod agents;
 mod anchors;
@@ -439,6 +440,23 @@ enum Command {
         #[arg(long, value_name = "DAYS", default_value_t = invites::DEFAULT_DAYS, value_parser = invite_days)]
         days: u64,
     },
+    /// Accepts an invite link to a space of another account, as its person at a terminal: asks for
+    /// the link, checks the invite against the roster revision the link names, shows it and asks
+    /// to confirm, then stores the acceptance with the account's username or another handle. The
+    /// device then follows the space, and skald recv joins its channels once an admin's device
+    /// admits the account.
+    AcceptInvite {
+        /// The handle to ask for in the space, by default the account's username.
+        #[arg(long, value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: Option<String>,
+        /// Never taken: the link goes only into the terminal, when asked.
+        #[arg(hide = true, value_name = "LINK")]
+        given: Vec<String>,
+    },
+    /// The step of skald accept-invite after its person's answers, which skald accept-invite hands
+    /// to the helper.
+    #[command(skip)]
+    AcceptInviteStep { step: acceptances::Step },
     /// Creates a service agent of a space this device follows, on a device of an admin of it: a
     /// device of the admin's account that runs without a person, such as in CI, at the address
     /// OWNER/AGENT. Its keys are made here; it is registered and certified, and the space's next
@@ -1201,6 +1219,9 @@ impl Command {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::Invite { .. } => Some("invite"),
+            Command::AcceptInvite { .. } | Command::AcceptInviteStep { .. } => {
+                Some("accept-invite")
+            }
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
             Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
@@ -1508,6 +1529,10 @@ fn main() -> ExitCode {
     }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
+    }
+    if let Command::AcceptInvite { given, handle } = &operation.command {
+        let (given, handle) = (given.clone(), handle.clone());
+        return accept_invite(operation, !one_shot, &given, handle.as_deref());
     }
     if let Command::Fingerprint {
         space: Some(space),
@@ -1826,6 +1851,31 @@ fn fingerprint(operation: Operation, starts: bool, space: &str, handle: &str) ->
     })
 }
 
+/// `skald accept-invite` as `operation` says ([`acceptances::run`]): its step goes through the
+/// helper that runs, or one it starts if `starts`; otherwise it runs here, holding the lock.
+fn accept_invite(
+    operation: Operation,
+    starts: bool,
+    given: &[String],
+    handle: Option<&str>,
+) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let settings = (operation.speaks, operation.timeout);
+    acceptances::run(
+        (&dir, operation.key_storage),
+        settings,
+        (given, handle),
+        |step| {
+            let operation = operation.step(Command::AcceptInviteStep { step });
+            let route = helper::route(&dir, &operation, false, starts);
+            routed(route, operation)
+        },
+    )
+}
+
 /// Runs `operation` in this process, then closes the connection it kept.
 fn here(operation: Operation) -> Result<(), String> {
     let result = perform(operation);
@@ -2085,6 +2135,12 @@ fn performed(operation: Operation) -> Result<(), String> {
         .and_then(|synced| fingerprints::show(&synced, handle.as_deref().unwrap_or_default())),
         Command::FingerprintStep { step } => state::dir(state_dir)
             .and_then(|dir| fingerprints::step(&dir, key_storage, (speaks, timeout), step)),
+        // It runs through `accept_invite`.
+        Command::AcceptInvite { .. } => {
+            Err("skald accept-invite runs only through its own process".to_owned())
+        }
+        Command::AcceptInviteStep { step } => state::dir(state_dir)
+            .and_then(|dir| acceptances::step(&dir, key_storage, (speaks, timeout), step)),
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,

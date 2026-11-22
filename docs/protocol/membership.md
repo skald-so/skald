@@ -495,10 +495,12 @@ acceptance-body = {
 - The server stores the invite and the acceptance. An invite admits one account: the server keeps its first acceptance and refuses others. `expires` is at most 30 days after the server stores the invite.
 - An invite ends when it expires, is revoked or a stored revision lists a member with it; the server then deletes it with its acceptance.
 
-The newcomer's device MUST, from the link:
+The newcomer's device takes a link only from its person. It MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
 2. check the invite's signature with `signer`, an [admin's device](#roster) per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
+
+It then follows the space from the anchor. When the invite ends before a revision lists its account, it stops following the space.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
 1. checks the invite: its signature with the certificate of `signer`, an [admin's device](#roster) in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;

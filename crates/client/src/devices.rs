@@ -197,14 +197,30 @@ pub fn fetch(
     state: &State,
 ) -> Result<SpaceDevices, String> {
     let body = connection.get_as(path, token).map_err(text)?;
-    let devices: Devices = serde_json::from_slice(&body)
+    let given = decode(&body)?;
+    let (certs, swapped) = kept_certs::settle(state, given.certs)?;
+    for warning in swapped {
+        eprintln!("skald: warning: {warning}");
+    }
+    let revocations = revocations::with_held(state, given.revocations)?;
+    Ok(SpaceDevices {
+        certs,
+        revocations,
+        ..given
+    })
+}
+
+/// The device list `body`, a `Devices` answer or one with its fields, as it gives it: the IDs of
+/// its devices, the certificates, revocations and account records that decode.
+pub fn decode(body: &[u8]) -> Result<SpaceDevices, String> {
+    let devices: Devices = serde_json::from_slice(body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
     let ids = devices
         .devices
         .iter()
         .filter_map(|entry| entry.device.parse().ok())
         .collect();
-    let given = devices
+    let certs = devices
         .devices
         .iter()
         .filter_map(|entry| {
@@ -212,20 +228,16 @@ pub fn fetch(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
-    let (certs, swapped) = kept_certs::settle(state, given)?;
-    for warning in swapped {
-        eprintln!("skald: warning: {warning}");
-    }
-    let given = devices.revocations.iter().filter_map(|text| {
-        let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-        Revocation::from_cbor(&bytes).ok()
-    });
-    let revocations = revocations::with_held(state, given)?;
-    let records = (devices.records.iter())
-        .filter_map(|text| {
-            let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-            AccountRecord::from_cbor(&bytes).ok()
-        })
+    let decoded = |list: &[String]| -> Vec<Vec<u8>> {
+        (list.iter())
+            .filter_map(|text| URL_SAFE_NO_PAD.decode(text).ok())
+            .collect()
+    };
+    let revocations = (decoded(&devices.revocations).iter())
+        .filter_map(|bytes| Revocation::from_cbor(bytes).ok())
+        .collect();
+    let records = (decoded(&devices.records).iter())
+        .filter_map(|bytes| AccountRecord::from_cbor(bytes).ok())
         .collect();
     Ok(SpaceDevices {
         ids,
