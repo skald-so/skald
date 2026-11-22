@@ -2,13 +2,16 @@
 //! an executor starts from, and waiting for a run within a limit.
 
 use std::env;
-use std::ffi::OsString;
-use std::fs;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, OpenOptions};
+use std::io::{self, IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
+use serde_json::{Value, json};
 use skald_adapters::executor::Outcome;
 
 use crate::fixtures::{Scratch, plain, token};
@@ -49,7 +52,9 @@ pub enum Script {
     Lingers,
 }
 
-/// A stand-in `codex` in a scratch directory.
+/// A stand-in `codex` in a scratch directory: a copy of this test binary named `codex`, which runs
+/// its [`Script`] when started, and a setup file beside it that names the script and where to
+/// record.
 pub struct StandIn {
     pub path: PathBuf,
     records: PathBuf,
@@ -59,11 +64,17 @@ impl StandIn {
     pub fn new(scratch: &Scratch, script: Script) -> Self {
         let records = scratch.dir("stand-in-records");
         let dir = scratch.dir("stand-in");
-        let path = if cfg!(windows) {
-            write_windows(&dir, &records, &script)
-        } else {
-            write_unix(&dir, &records, &script)
+        let path = dir.join(format!("{NAME}{}", env::consts::EXE_SUFFIX));
+        let this = env::current_exe().expect("this test binary");
+        fs::copy(this, &path).expect("copy the stand-in codex");
+        let (kind, text) = match &script {
+            Script::Answer(text) => ("answer", text.as_str()),
+            Script::TurnFails(text) => ("turn-fails", text.as_str()),
+            Script::Exits(text) => ("exits", text.as_str()),
+            Script::Lingers => ("lingers", ""),
         };
+        let setup = json!({ "records": records, "script": kind, "text": text });
+        fs::write(dir.join(SETUP), setup.to_string()).expect("write the stand-in's setup");
         StandIn { path, records }
     }
 
@@ -89,8 +100,7 @@ impl StandIn {
         text.split('\0').map(str::to_owned).collect()
     }
 
-    /// Its arguments with each `--flag=value` split in two and quotes dropped, as Windows' batch
-    /// files may keep or drop them.
+    /// Its arguments with each `--flag=value` split in two and quotes dropped.
     pub fn flags(&self) -> Vec<String> {
         let mut flags = Vec::new();
         for arg in self.args() {
@@ -162,151 +172,143 @@ pub fn values_of(flags: &[String], flag: &str) -> Vec<String> {
     follows.map(|pair| pair[1].clone()).collect()
 }
 
-/// The stand-in as a POSIX shell script that uses only the shell's builtins to record, so it
-/// records whatever `PATH` it gets.
-fn write_unix(dir: &Path, records: &Path, script: &Script) -> PathBuf {
-    let rec = records.to_string_lossy().into_owned();
-    let mut sh = String::from("#!/bin/sh\n");
-    sh += &format!("rec='{rec}'\n");
-    sh += "printf 'run\\n' >> \"$rec/invocations\"\n";
-    sh += "for arg in \"$@\"; do printf '%s\\0' \"$arg\"; done > \"$rec/args\"\n";
-    sh += "pwd -P > \"$rec/cwd\"\n";
-    for name in WATCHED {
-        sh += &format!("[ -n \"${{{name}+set}}\" ] && : > \"$rec/got-{name}\"\n");
+/// The stand-in's file name.
+const NAME: &str = "codex";
+
+/// The file beside the stand-in that names its records directory and its script.
+const SETUP: &str = "stand-in.json";
+
+/// The argument that starts the stand-in as the child of [`Script::Lingers`].
+const CHILD: &str = "--skald-stand-in-child";
+
+/// What this run of the test binary does, if it is the stand-in: records its run and plays its
+/// script. `None` for a run as the tests' binary.
+pub fn acts() -> Option<ExitCode> {
+    let exe = env::current_exe().ok()?;
+    if exe.file_stem() != Some(OsStr::new(NAME)) {
+        return None;
     }
-    sh += "printf '%s' \"${CODEX_HOME-}\" > \"$rec/codex-home\"\n";
-    sh += "if [ -n \"${CODEX_HOME-}\" ] && [ -d \"$CODEX_HOME\" ]; then\n";
-    sh += "  for entry in \"$CODEX_HOME\"/* \"$CODEX_HOME\"/.*; do\n";
-    sh += "    [ -e \"$entry\" ] || [ -L \"$entry\" ] || continue\n";
-    sh += "    printf '%s\\n' \"${entry##*/}\"\n";
-    sh += "  done > \"$rec/codex-home-entries\"\n";
-    sh += "  if [ -f \"$CODEX_HOME/auth.json\" ]; then\n";
-    sh += "    while IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; done \\\n";
-    sh += "      < \"$CODEX_HOME/auth.json\" > \"$rec/codex-home-auth\"\n";
-    sh += "  fi\n";
-    sh += "fi\n";
-    sh += "if [ ! -t 0 ]; then\n";
-    sh += "  while IFS= read -r line || [ -n \"$line\" ]; do printf '%s\\n' \"$line\"; done > \"$rec/stdin\"\n";
-    sh += "fi\n";
-    sh += "out=''\nprev=''\n";
-    sh += "for arg in \"$@\"; do\n";
-    sh += "  case \"$prev\" in -o|--output-last-message) out=$arg;; esac\n";
-    sh += "  case \"$arg\" in --output-last-message=*) out=${arg#*=};; esac\n";
-    sh += "  prev=$arg\n";
-    sh += "done\n";
-    sh += "printf '%s\\n' '{\"type\":\"thread.started\",\"thread_id\":\"019a0000-0000-7000-8000-000000000000\"}'\n";
-    sh += "printf '%s\\n' '{\"type\":\"turn.started\"}'\n";
-    match script {
-        Script::Answer(answer) => {
-            let item = agent_message(answer);
-            sh += &format!("printf '%s\\n' '{item}'\n");
-            sh += &format!("printf '%s\\n' '{TURN_COMPLETED}'\n");
-            sh += &format!("[ -n \"$out\" ] && printf '%s' '{answer}' > \"$out\"\n");
-            sh += "exit 0\n";
+    let setup = fs::read(exe.with_file_name(SETUP)).expect("the stand-in's setup");
+    let setup: Value = serde_json::from_slice(&setup).expect("the stand-in's setup as JSON");
+    let field = |name: &str| setup[name].as_str().expect("a setup field").to_owned();
+    let records = PathBuf::from(field("records"));
+    let args: Vec<String> = (env::args_os().skip(1))
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    if args == [CHILD] {
+        beat(&records, "child-beat");
+        return Some(ExitCode::SUCCESS);
+    }
+    record(&records, &args);
+    let (kind, text) = (field("script"), field("text"));
+    let mut stdout = io::stdout().lock();
+    let mut say = |line: &str| writeln!(stdout, "{line}").expect("write the stand-in's output");
+    say(r#"{"type":"thread.started","thread_id":"019a0000-0000-7000-8000-000000000000"}"#);
+    say(r#"{"type":"turn.started"}"#);
+    match kind.as_str() {
+        "answer" => {
+            say(&agent_message(&text));
+            say(TURN_COMPLETED);
+            if let Some(out) = last_message_file(&args) {
+                fs::write(out, &text).expect("write the last message");
+            }
+            Some(ExitCode::SUCCESS)
         }
-        Script::TurnFails(message) => {
-            let (error, failed) = turn_failed(message);
-            sh += &format!("printf '%s\\n' '{error}' '{failed}'\n");
-            sh += &format!("printf 'Error: %s\\n' '{message}' >&2\n");
-            sh += "exit 1\n";
+        "turn-fails" => {
+            let (error, failed) = turn_failed(&text);
+            say(&error);
+            say(&failed);
+            eprintln!("Error: {text}");
+            Some(ExitCode::from(1))
         }
-        Script::Exits(message) => {
-            sh += &format!("printf 'error: %s\\n' '{message}' >&2\n");
-            sh += "exit 2\n";
+        "exits" => {
+            eprintln!("error: {text}");
+            Some(ExitCode::from(2))
         }
-        Script::Lingers => {
-            sh += "( while [ -d \"$rec\" ]; do printf x >> \"$rec/child-beat\"; sleep 0.1; done ) \\\n";
-            sh += "  < /dev/null > /dev/null 2>&1 &\n";
-            sh += "while [ -d \"$rec\" ]; do printf x >> \"$rec/beat\"; sleep 0.1; done\n";
+        _ => {
+            #[expect(
+                clippy::zombie_processes,
+                reason = "stopping the run ends the child with the stand-in"
+            )]
+            let _child = Command::new(&exe)
+                .arg(CHILD)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("start the stand-in's child");
+            beat(&records, "beat");
+            Some(ExitCode::SUCCESS)
         }
     }
-    let path = dir.join("codex");
-    write_executable(&path, &sh);
-    path
 }
 
-/// What the Windows stand-in's batch file passes for a last argument `-`.
-const DASH: &str = "--skald-stand-in-dash";
-
-/// The stand-in as a batch file that runs a PowerShell script. PowerShell's `-File` takes a lone
-/// `-`, the last argument of a session, for a parameter with no name and refuses it: the batch
-/// file passes [`DASH`] for it, and the script turns that back into `-`.
-fn write_windows(dir: &Path, records: &Path, script: &Script) -> PathBuf {
-    let rec = records.to_string_lossy().replace('\'', "''");
-    let mut ps = String::from("$ErrorActionPreference = 'Continue'\r\n");
-    ps += &format!(
-        "$argv = @($args | ForEach-Object {{ if (\"$_\" -eq '{DASH}') {{ '-' }} else {{ \"$_\" }} }})\r\n"
-    );
-    ps += &format!("$rec = '{rec}'\r\n");
-    ps += "Add-Content -LiteralPath \"$rec\\invocations\" -Value 'run'\r\n";
-    ps += "[IO.File]::WriteAllText(\"$rec\\args\", ($argv -join [char]0))\r\n";
-    ps += "[IO.File]::WriteAllText(\"$rec\\cwd\", (Get-Location).Path)\r\n";
-    for name in WATCHED {
-        ps += &format!(
-            "if (Test-Path 'env:{name}') {{ [IO.File]::WriteAllText(\"$rec\\got-{name}\", '') }}\r\n"
-        );
-    }
-    ps += "[IO.File]::WriteAllText(\"$rec\\codex-home\", [string]$env:CODEX_HOME)\r\n";
-    ps += "if ($env:CODEX_HOME -and (Test-Path -LiteralPath $env:CODEX_HOME -PathType Container)) {\r\n";
-    ps += "  $names = @(Get-ChildItem -Force -LiteralPath $env:CODEX_HOME | ForEach-Object { $_.Name })\r\n";
-    ps += "  [IO.File]::WriteAllText(\"$rec\\codex-home-entries\", ($names -join \"`n\"))\r\n";
-    ps += "  $auth = Join-Path $env:CODEX_HOME 'auth.json'\r\n";
-    ps += "  if (Test-Path -LiteralPath $auth -PathType Leaf) {\r\n";
-    ps +=
-        "    [IO.File]::WriteAllText(\"$rec\\codex-home-auth\", [IO.File]::ReadAllText($auth))\r\n";
-    ps += "  }\r\n";
-    ps += "}\r\n";
-    ps += "if ([Console]::IsInputRedirected) {\r\n";
-    ps += "  [IO.File]::WriteAllText(\"$rec\\stdin\", [Console]::In.ReadToEnd())\r\n";
-    ps += "}\r\n";
-    ps += "$out = $null\r\n";
-    ps += "for ($i = 0; $i -lt $argv.Count; $i++) {\r\n";
-    ps += "  if (($argv[$i] -eq '-o' -or $argv[$i] -eq '--output-last-message') -and $i + 1 -lt $argv.Count) { $out = $argv[$i + 1] }\r\n";
-    ps += "  if ($argv[$i] -like '--output-last-message=*') { $out = $argv[$i].Substring(24) }\r\n";
-    ps += "}\r\n";
-    let line = |text: &str| {
-        format!(
-            "[Console]::Out.WriteLine('{}')\r\n",
-            text.replace('\'', "''")
-        )
+/// Records a run with `args` in `records`: that it ran, its arguments, which of the [`WATCHED`]
+/// variables it got, its `CODEX_HOME` with the names of the entries in it and its `auth.json`, and
+/// its stdin unless that is a terminal.
+fn record(records: &Path, args: &[String]) {
+    let write = |name: &str, contents: &[u8]| {
+        fs::write(records.join(name), contents).expect("record the run");
     };
-    ps += &line(r#"{"type":"thread.started","thread_id":"019a0000-0000-7000-8000-000000000000"}"#);
-    ps += &line(r#"{"type":"turn.started"}"#);
-    match script {
-        Script::Answer(answer) => {
-            ps += &line(&agent_message(answer));
-            ps += &line(TURN_COMPLETED);
-            ps += &format!("if ($out) {{ [IO.File]::WriteAllText($out, '{answer}') }}\r\n");
-            ps += "exit 0\r\n";
-        }
-        Script::TurnFails(message) => {
-            let (error, failed) = turn_failed(message);
-            ps += &line(&error);
-            ps += &line(&failed);
-            ps += &format!("[Console]::Error.WriteLine('Error: {message}')\r\n");
-            ps += "exit 1\r\n";
-        }
-        Script::Exits(message) => {
-            ps += &format!("[Console]::Error.WriteLine('error: {message}')\r\n");
-            ps += "exit 2\r\n";
-        }
-        Script::Lingers => {
-            ps += "$child = \"while (Test-Path -LiteralPath '$rec') { Add-Content -LiteralPath '$rec\\child-beat' -Value x -NoNewline; Start-Sleep -Milliseconds 100 }\"\r\n";
-            ps += "Start-Process -NoNewWindow -FilePath powershell -ArgumentList '-NoProfile', '-NonInteractive', '-Command', $child\r\n";
-            ps += "while (Test-Path -LiteralPath $rec) { Add-Content -LiteralPath \"$rec\\beat\" -Value x -NoNewline; Start-Sleep -Milliseconds 100 }\r\n";
+    let mut invocations = (OpenOptions::new().create(true).append(true))
+        .open(records.join("invocations"))
+        .expect("record the run");
+    invocations.write_all(b"run\n").expect("record the run");
+    let joined: String = args.iter().map(|arg| format!("{arg}\0")).collect();
+    write("args", joined.as_bytes());
+    for name in WATCHED {
+        if env::var_os(name).is_some() {
+            write(&format!("got-{name}"), b"");
         }
     }
-    fs::write(dir.join("codex.ps1"), ps).expect("write the stand-in's script");
-    let script = dir.join("codex.ps1").to_string_lossy().into_owned();
-    let cmd = format!(
-        "@echo off\r\nsetlocal\r\nset \"args=%*\"\r\n\
-         if \"%args:~-2%\"==\" -\" set \"args=%args:~0,-2% {DASH}\"\r\n\
-         powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" %args%\r\n\
-         exit /b %ERRORLEVEL%\r\n"
-    );
-    let path = dir.join("codex.cmd");
-    write_executable(&path, &cmd);
-    path
+    let codex_home = env::var_os("CODEX_HOME").unwrap_or_default();
+    write("codex-home", codex_home.to_string_lossy().as_bytes());
+    let codex_home = Path::new(&codex_home);
+    if !codex_home.as_os_str().is_empty() && codex_home.is_dir() {
+        let names: Vec<String> = (fs::read_dir(codex_home).expect("list CODEX_HOME"))
+            .map(|entry| {
+                entry
+                    .expect("an entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        write("codex-home-entries", names.join("\n").as_bytes());
+        if let Ok(auth) = fs::read(codex_home.join("auth.json")) {
+            write("codex-home-auth", &auth);
+        }
+    }
+    if !io::stdin().is_terminal() {
+        let mut stdin = Vec::new();
+        io::stdin()
+            .read_to_end(&mut stdin)
+            .expect("read the stand-in's stdin");
+        write("stdin", &stdin);
+    }
+}
+
+/// The file `--output-last-message` or `-o` in `args` names, if any.
+fn last_message_file(args: &[String]) -> Option<&str> {
+    let mut out = None;
+    for (at, arg) in args.iter().enumerate() {
+        if arg == "-o" || arg == "--output-last-message" {
+            out = args.get(at + 1).map(String::as_str).or(out);
+        }
+        if let Some(file) = arg.strip_prefix("--output-last-message=") {
+            out = Some(file);
+        }
+    }
+    out
+}
+
+/// Appends to the file `name` in `records` every 100 ms while `records` is there.
+fn beat(records: &Path, name: &str) {
+    while records.is_dir() {
+        let beat = (OpenOptions::new().create(true).append(true)).open(records.join(name));
+        let _ = beat.and_then(|mut file| file.write_all(b"x"));
+        thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// The event of `codex exec --json` that gives the agent's message `text`.
@@ -325,18 +327,6 @@ fn turn_failed(message: &str) -> (String, String) {
         format!(r#"{{"type":"error","message":"{message}"}}"#),
         format!(r#"{{"type":"turn.failed","error":{{"message":"{message}"}}}}"#),
     )
-}
-
-/// Writes the script `text` to `path`, which anyone may run on Unix.
-fn write_executable(path: &Path, text: &str) {
-    fs::write(path, text).expect("write the stand-in");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mut permissions = fs::metadata(path).expect("the stand-in").permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(path, permissions).expect("let the stand-in run");
-    }
 }
 
 /// The user's Codex config home, planted in `home`: the sign-in in `auth.json`, and an MCP server,

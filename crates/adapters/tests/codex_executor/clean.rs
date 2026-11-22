@@ -81,8 +81,7 @@ fn run_on(scratch: &Scratch, config: &ConfigHome, codex_home: bool) -> StandIn {
 
 /// A run gets none of the device's variables that Codex needs neither to run nor to sign in, and
 /// keeps `PATH`, which it needs to run.
-#[test]
-fn a_run_gets_none_of_the_device_s_other_variables() {
+pub fn a_run_gets_none_of_the_device_s_other_variables() {
     let scratch = Scratch::new();
     let stand_in = run_on(&scratch, &plant(&scratch, true), true);
 
@@ -95,8 +94,7 @@ fn a_run_gets_none_of_the_device_s_other_variables() {
 /// A run gets a `CODEX_HOME` of its own that holds only a copy of the user's `auth.json`, so none of
 /// the user's MCP servers, hooks, plugins, rules, skills and instruction files load, while the
 /// sign-in works; the user's config home stays as it was.
-#[test]
-fn a_run_gets_a_config_home_of_its_own_with_only_the_user_s_sign_in() {
+pub fn a_run_gets_a_config_home_of_its_own_with_only_the_user_s_sign_in() {
     for codex_home in [true, false] {
         let scratch = Scratch::new();
         let config = plant(&scratch, codex_home);
@@ -132,8 +130,7 @@ fn a_run_gets_a_config_home_of_its_own_with_only_the_user_s_sign_in() {
 
 /// A run gets the flags that the live checks found leave out the user's config with its MCP
 /// servers, the rules, the plugins, the hooks and the skills' instructions, and save no session.
-#[test]
-fn a_run_gets_the_flags_that_leave_out_the_user_s_config() {
+pub fn a_run_gets_the_flags_that_leave_out_the_user_s_config() {
     let scratch = Scratch::new();
     let stand_in = run_on(&scratch, &plant(&scratch, true), true);
     let flags = stand_in.flags();

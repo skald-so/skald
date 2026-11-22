@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Its binary also stands in for the `codex` command, whose arguments libtest would refuse, so it
+# runs a harness of its own (tests/codex_executor/main.rs).
+[[test]]
+name = "codex_executor"
+path = "tests/codex_executor/main.rs"
+harness = false
+
 [dependencies]
 # The agents' JSON output; the tests' model stub and the config they give Claude Code.
 serde_json = "1.0"

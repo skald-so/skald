@@ -36,8 +36,7 @@ fn wait_beating(stand_in: &StandIn) {
 
 /// A run stopped while Codex and a child it started run ends both, and gives the run as
 /// unfinished.
-#[test]
-fn stopping_a_run_ends_codex_and_a_child_it_started() {
+pub fn stopping_a_run_ends_codex_and_a_child_it_started() {
     let scratch = Scratch::new();
     let stand_in = StandIn::new(&scratch, Script::Lingers);
     let config = ConfigHome::plant(&scratch.path().join("codex-home"));
