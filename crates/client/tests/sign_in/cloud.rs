@@ -92,7 +92,8 @@ pub fn unb64(text: &str) -> Vec<u8> {
 
 /// What the clouds of a test target share and a test that times the client takes alone
 /// ([`alone`]). Under `cargo test`, the tests of a target are threads of one process: no cloud of
-/// another test then runs beside the timed one. Under nextest, each test is a process of its own.
+/// another test then runs beside the timed one. Under nextest, each test is a process of its own:
+/// `.config/nextest.toml` runs such a test alone.
 static BESIDE: RwLock<()> = RwLock::new(());
 
 thread_local! {
