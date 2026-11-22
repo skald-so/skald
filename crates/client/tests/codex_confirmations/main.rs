@@ -19,7 +19,8 @@
 //!
 //! As the tests of waking an idle Codex session (`codex_wakes/main.rs`): Ada's machine, alone in
 //! `clienta`, her agents web and api in `~/work/clientA`; api sends web messages with `skald send
-//! --to`, and the person's `skald recv` shows their `read`. Each session runs in a Codex process,
+//! --to`, and the person's `skald recv` shows their `read`; or her second machine's agent review
+//! sends them, and that machine's `skald recv` shows it. Each session runs in a Codex process,
 //! the stand-in `codex` of an app of its own, which records each `codex queue` the helper runs; its
 //! hooks run on inputs recorded from Codex 0.162.1, through a copy of `skald` without the one-shot
 //! setting. Its `skald mcp` runs as Codex starts it, with Codex's client name. Its rollout grows as
@@ -38,6 +39,7 @@
 mod ada;
 mod confirms;
 mod fallbacks;
+mod laptop;
 mod privacy;
 mod resending;
 mod rollout;
@@ -62,7 +64,7 @@ use std::panic::catch_unwind;
 use std::process::ExitCode;
 
 /// The tests, each with the name nextest and cargo give it.
-const TESTS: [(&str, fn()); 9] = [
+const TESTS: [(&str, fn()); 11] = [
     (
         "confirms::read_follows_once_the_model_s_own_entry_follows_inbox_s_result_in_the_rollout",
         confirms::read_follows_once_the_model_s_own_entry_follows_inbox_s_result_in_the_rollout,
@@ -90,6 +92,14 @@ const TESTS: [(&str, fn()); 9] = [
     (
         "fallbacks::a_restarted_helper_confirms_it_from_the_rollout_while_the_session_runs",
         fallbacks::a_restarted_helper_confirms_it_from_the_rollout_while_the_session_runs,
+    ),
+    (
+        "laptop::the_helper_s_confirmation_sends_read_to_the_second_machine_with_no_hook_run",
+        laptop::the_helper_s_confirmation_sends_read_to_the_second_machine_with_no_hook_run,
+    ),
+    (
+        "laptop::a_confirmation_by_stop_sends_read_to_the_second_machine_once_the_helper_runs_on",
+        laptop::a_confirmation_by_stop_sends_read_to_the_second_machine_once_the_helper_runs_on,
     ),
     (
         "privacy::the_state_directory_keeps_nothing_of_the_rollout",

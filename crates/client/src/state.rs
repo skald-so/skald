@@ -3234,15 +3234,34 @@ impl State {
         .transpose()
     }
 
-    /// The `seq` and `msg_id` of each kept message that waits for the agent `agent` in the space
-    /// `space`.
-    pub fn waiting_ids(&self, space: SpaceId, agent: &str) -> Result<Vec<(u64, String)>, Error> {
-        self.lines(
-            "SELECT kept.seq, kept.msg_id FROM kept JOIN handover ON handover.seq = kept.seq
-             WHERE kept.space = ?1 AND handover.agent = ?2 AND kept.msg_id IS NOT NULL
-             ORDER BY kept.seq",
-            params![space.to_string(), agent],
-        )
+    /// The `seq` and `msg_id` of each kept message that waits for the confirmation of the agent
+    /// `agent` in the space `space` ([`State::await_confirmation`]), and when `inbox` gave it, in
+    /// Unix milliseconds.
+    pub fn confirming(
+        &self,
+        space: SpaceId,
+        agent: &str,
+    ) -> Result<Vec<(u64, String, u64)>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT kept.seq, kept.msg_id, handover.since FROM kept
+             JOIN handover ON handover.seq = kept.seq
+             WHERE kept.space = ?1 AND handover.agent = ?2 AND handover.confirming = 1
+             AND kept.msg_id IS NOT NULL AND handover.since IS NOT NULL ORDER BY kept.seq",
+        )?;
+        let rows = query.query_map(params![space.to_string(), agent], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (seq, msg_id, since) = row?;
+            let malformed = || Error::Malformed(format!("the handover of {seq}"));
+            let seq = u64::try_from(seq).map_err(|_| malformed())?;
+            Ok((seq, msg_id, u64::try_from(since).map_err(|_| malformed())?))
+        })
+        .collect()
     }
 
     /// The `seq` of each kept message that waits for the agent `agent` that a session's socket
@@ -3806,6 +3825,16 @@ impl State {
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Whether the device owes a receipt of a message in the space `space` ([`State::reads_due`]).
+    pub fn receipts_due_in(&self, space: SpaceId) -> Result<bool, Error> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM read_receipt
+                 WHERE space = ?1 AND (due = 1 OR held_due = 1))",
+            params![space.to_string()],
+            |row| row.get(0),
+        )?)
     }
 
     /// The receipts the device owes, in `seq` order, a message's `held` before its `read` or
@@ -5932,6 +5961,39 @@ pub(crate) mod tests {
         state.register_codex(&session).unwrap();
         assert!(!queued(), "still queued after a hook");
         assert!(!state.queue_codex("other").unwrap());
+    }
+
+    /// A rollout confirms only a message `inbox` gave, that waits for its confirmation, and only
+    /// by an `inbox` result written once `inbox` gave it ([`crate::codex_confirm::confirm`]): a
+    /// reference that comes back from an older result, or names a message `inbox` did not give,
+    /// hands nothing over.
+    #[test]
+    fn a_rollout_confirms_only_what_inbox_gave_by_a_result_written_since() {
+        let dir = TestDir::new("state-codex-confirm");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[5; 32]), "laptop", "0193")
+            .unwrap();
+        let space = space_of_kept();
+        state.add_agent(space, "codex").unwrap();
+        state.write_entries(&[(1, vec![1]), (2, vec![2])]).unwrap();
+        let sender = DeviceId::from_signing_key(&[6; 32]);
+        let (given, waiting) = (kept(&["codex"]), kept(&["codex"]));
+        for (seq, kept) in [(1, &given), (2, &waiting)] {
+            state.keep(seq, (sender, kept.msg_id), kept).unwrap();
+        }
+        let at = 1_795_361_120_308;
+        state.await_confirmation(&[1], "codex", (true, at)).unwrap();
+        let named =
+            |kept: &Kept, written: u64| (written, crate::forms::whole_reference(kept.msg_id));
+        let confirm = |refs: &[(u64, String)]| {
+            crate::codex_confirm::confirm(&state, (space, "codex"), refs).unwrap()
+        };
+        assert_eq!(confirm(&[named(&waiting, at)]), 0, "not given by inbox");
+        assert_eq!(confirm(&[named(&given, at - 1)]), 0, "from an older result");
+        assert_eq!(confirm(&[named(&given, at)]), 1);
+        let left = state.for_agent(space, "codex", unix_now()).unwrap();
+        assert_eq!(left.iter().map(|(seq, _)| *seq).collect::<Vec<_>>(), [2]);
     }
 
     /// The state keeps each agent's status: what it set, what the device last gave it and its

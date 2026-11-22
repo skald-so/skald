@@ -231,6 +231,8 @@ struct Origin {
 /// model holds, a user entry or, for a line queued during a turn, its attachment, once a later
 /// entry is the model's own, a reply, a tool call or reasoning, not an API error.
 impl Reader for Scan {
+    type Confirmed = String;
+
     fn offset(&mut self) -> &mut u64 {
         &mut self.offset
     }

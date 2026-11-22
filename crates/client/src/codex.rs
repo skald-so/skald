@@ -17,12 +17,14 @@
 //!   ran last before the first hook of the agent, or the helper's wake, that saw the message, or,
 //!   once that one ended, the one whose hook ran last then ([`route`]). Its signal,
 //!   [`hook::SIGNAL`], is the only thing of it that goes into a session: `PostToolUse` and
-//!   `UserPromptSubmit` add it as context, `Stop` continues the turn with it, once for the
-//!   messages whose signal did not go. Otherwise every hook prints nothing.
-//! - The helper wakes an idle session that has such messages: it runs `codex queue` with the
-//!   signal for its thread, by the session's Codex process's executable, on its config home
-//!   ([`Served::wake`]). A session has one queued signal until its next hook; messages a
-//!   `codex queue` failed for wait for the hooks and `inbox`.
+//!   `UserPromptSubmit` add it as context, `Stop` continues the turn with it, for the messages
+//!   whose signal goes by that hook: one whose signal did not go, or, unconfirmed within the
+//!   resend timeout, one whose signal went by an earlier path ([`codex_confirm::path`]).
+//!   Otherwise every hook prints nothing.
+//! - The helper wakes an idle session that has messages whose signal goes by `codex queue`: it runs
+//!   `codex queue` with the signal for its thread, by the session's Codex process's executable, on
+//!   its config home ([`Served::wake`]). A session has one queued signal until its next hook;
+//!   messages a `codex queue` failed for wait for the hooks and `inbox`.
 //! - What `inbox` gives waits for the session's rollout to confirm it, which the helper reads while
 //!   the session runs and `Stop` as the fallback; unconfirmed, its signal goes again by the next
 //!   path ([`codex_confirm`]).
@@ -70,8 +72,9 @@ const AFTER_FAILURE: Duration = Duration::from_secs(5);
 const QUEUE_PATIENCE: Duration = Duration::from_secs(30);
 
 /// The run of `agent`'s hook on `event` of `session`, its folder the working directory: registers
-/// the session; on a hook of a turn, gives the signal if a message waits whose signal goes to this
-/// session and did not go yet. In a folder in no space, or without a thread, nothing.
+/// the session; on `Stop`, hands over what its rollout confirms; on a hook of a turn, gives the
+/// signal if a message waits whose signal goes to this session by this hook
+/// ([`codex_confirm::path`]). In a folder in no space, or without a thread, nothing.
 pub fn hook(
     dir: &Path,
     agent: &Name,
@@ -524,6 +527,8 @@ pub struct Served {
     reload: bool,
     /// When it last read the registrations.
     loaded: Option<Instant>,
+    /// Whether it read them since its last look ([`Served::look`]).
+    reloaded: bool,
     live: BTreeMap<String, Live>,
     /// When the last intake failed, if it did.
     failed: Option<Instant>,
@@ -578,6 +583,7 @@ impl Served {
             settings,
             reload: true,
             loaded: None,
+            reloaded: false,
             live: BTreeMap::new(),
             failed: None,
             #[cfg(unix)]
@@ -613,10 +619,13 @@ impl Served {
     /// on the connection: ends those whose Codex process ended; hands over what their rollouts
     /// confirm ([`codex_confirm::confirm`]); takes in once for each space of a session it has not
     /// taken in for, that `came` may bring messages of, as statuses alone give its hooks nothing
-    /// and wake nothing, or whose rollout confirmed a message, so its `read` goes; then wakes the
-    /// idle ones ([`Served::wake`]). Gives whether it took in; `None` once a run panicked.
+    /// and wake nothing, or in which the device owes a receipt, so a `read` that its own reading or
+    /// a `Stop` hook's confirmation made due goes, checked when it reloads the sessions or confirms
+    /// a message; then wakes the idle ones ([`Served::wake`]). Gives whether it took in; `None`
+    /// once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         self.looks(dir);
+        let reloaded = std::mem::take(&mut self.reloaded);
         let gone: Vec<String> = (self.live.iter_mut())
             .filter_map(|(thread, live)| (!live.runs()).then(|| thread.clone()))
             .collect();
@@ -644,9 +653,13 @@ impl Served {
                     let agent = (session.space, session.agent.as_str());
                     codex_confirm::confirm(state, agent, &refs).is_ok_and(|count| count > 0)
                 });
+            let owes = retry
+                && (reloaded || confirmed)
+                && opened(&mut state, dir)
+                    .is_some_and(|state| state.receipts_due_in(session.space).unwrap_or(false));
             if !std::mem::replace(&mut live.taken, true)
                 || (retry && came.brings_messages(session.space))
-                || confirmed
+                || owes
             {
                 (runs.entry(session.space))
                     .or_insert_with(|| (session.agent.clone(), session.folder.clone()));
@@ -788,6 +801,7 @@ impl Served {
     /// Takes the registrations from the state in `dir`, keeping what it has of each it served.
     fn load(&mut self, dir: &Path) {
         self.loaded = Some(Instant::now());
+        self.reloaded = true;
         let Ok(registered) = State::open(dir).and_then(|state| state.codex_sessions()) else {
             return;
         };

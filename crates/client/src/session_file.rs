@@ -9,16 +9,19 @@ use crate::state::State;
 
 /// A reader of a session file, which goes on from where it stopped.
 pub trait Reader: Default {
+    /// What its lines confirm.
+    type Confirmed;
+
     /// How far into the file it read.
     fn offset(&mut self) -> &mut u64;
 
     /// Reads `line`, a whole one, adding what it confirms to `confirmed`.
-    fn entry(&mut self, line: &[u8], confirmed: &mut Vec<String>);
+    fn entry(&mut self, line: &[u8], confirmed: &mut Vec<Self::Confirmed>);
 
     /// Reads the whole lines `file` got since, but a line still being written; gives what they
     /// confirm. A file shorter than the offset is read from its start, by a new reader; one that
     /// is gone gives nothing.
-    fn read(&mut self, file: &Path) -> Vec<String> {
+    fn read(&mut self, file: &Path) -> Vec<Self::Confirmed> {
         let mut confirmed = Vec::new();
         let Ok(mut opened) = File::open(file) else {
             return confirmed;
@@ -58,11 +61,11 @@ pub fn opened<'s>(state: &'s mut Option<State>, dir: &Path) -> Option<&'s State>
 /// For a reader's tests: what `read` gives on a session file of `first`, then on it after `more`,
 /// in a directory of `name`'s.
 #[cfg(test)]
-pub fn read_twice(
+pub fn read_twice<T>(
     name: &str,
     (first, more): (&str, &str),
-    mut read: impl FnMut(&Path) -> Vec<String>,
-) -> (Vec<String>, Vec<String>) {
+    mut read: impl FnMut(&Path) -> Vec<T>,
+) -> (Vec<T>, Vec<T>) {
     use std::io::Write;
     // `cargo test` runs the tests in threads of one process: each file has a directory of its own.
     static FILES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

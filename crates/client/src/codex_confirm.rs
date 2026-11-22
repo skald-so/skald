@@ -89,29 +89,33 @@ pub fn readable(file: &Path) -> bool {
     serde_json::from_slice::<Value>(&line).is_ok_and(|entry| entry["type"].is_string())
 }
 
-/// Hands over each kept message that waits for `agent` in `space` that one of `refs`, references
-/// a rollout confirms ([`Scan`]), names alone among them. Gives how many it handed over.
+/// Hands over each kept message that waits for the confirmation of `agent` in `space` that one of
+/// `refs`, references a rollout confirms with when their `inbox` result was written ([`Scan`]),
+/// names alone among them, from a result written once `inbox` gave it. Gives how many it handed
+/// over.
 pub fn confirm(
     state: &State,
     (space, agent): (SpaceId, &str),
-    refs: &[String],
+    refs: &[Confirmed],
 ) -> Result<usize, Error> {
     if refs.is_empty() {
         return Ok(0);
     }
-    let waiting: Vec<(u64, String)> = (state.waiting_ids(space, agent)?.into_iter())
-        .filter_map(|(seq, msg_id)| {
+    let waiting: Vec<(u64, String, u64)> = (state.confirming(space, agent)?.into_iter())
+        .filter_map(|(seq, msg_id, given)| {
             let msg_id = msg_id.parse::<MessageId>().ok()?;
-            Some((seq, whole_reference(msg_id)))
+            Some((seq, whole_reference(msg_id), given))
         })
         .collect();
     let mut confirmed = BTreeSet::new();
-    for reference in refs {
-        let named: Vec<u64> = (waiting.iter())
-            .filter(|(_, whole)| whole.starts_with(reference.as_str()))
-            .map(|(seq, _)| *seq)
+    for (written, reference) in refs {
+        let named: Vec<(u64, u64)> = (waiting.iter())
+            .filter(|(_, whole, _)| whole.starts_with(reference.as_str()))
+            .map(|(seq, _, given)| (*seq, *given))
             .collect();
-        if let [seq] = named.as_slice() {
+        if let [(seq, given)] = named.as_slice()
+            && written >= given
+        {
             confirmed.insert(*seq);
         }
     }
@@ -128,12 +132,16 @@ pub fn confirm_file(
     (space, agent): (SpaceId, &str),
     file: &Path,
 ) -> Result<usize, Error> {
-    if state.waiting_ids(space, agent)?.is_empty() {
+    if state.confirming(space, agent)?.is_empty() {
         return Ok(0);
     }
     let refs = Scan::default().read(file);
     confirm(state, (space, agent), &refs)
 }
+
+/// A reference a rollout confirms, with when the `inbox` result that holds it was written, in Unix
+/// milliseconds.
+pub type Confirmed = (u64, String);
 
 /// A reading of a rollout, from where the last one ended: the calls of Skald's `inbox` whose
 /// result has not come yet, and the references in the results that came whose model's own entry
@@ -142,12 +150,14 @@ pub fn confirm_file(
 pub struct Scan {
     offset: u64,
     calls: BTreeSet<String>,
-    seen: BTreeSet<String>,
+    seen: BTreeSet<Confirmed>,
 }
 
 /// A rollout's entry, as far as a confirmation needs.
 #[derive(Deserialize)]
 struct Entry {
+    #[serde(default)]
+    timestamp: Option<String>,
     #[serde(rename = "type", default)]
     kind: String,
     #[serde(default)]
@@ -195,10 +205,14 @@ impl Payload {
 }
 
 /// What it reads confirms the references each in the result of a call of Skald's `inbox` that a
-/// later entry of the model's own follows.
+/// later entry of the model's own follows, with when the result was written; a result without its
+/// time confirms nothing.
 impl Reader for Scan {
-    fn entry(&mut self, line: &[u8], confirmed: &mut Vec<String>) {
+    type Confirmed = Confirmed;
+
+    fn entry(&mut self, line: &[u8], confirmed: &mut Vec<Confirmed>) {
         let Ok(Entry {
+            timestamp,
             kind,
             payload: Some(payload),
         }) = serde_json::from_slice::<Entry>(line)
@@ -216,10 +230,18 @@ impl Reader for Scan {
             return;
         }
         let answers = (payload.call_id.as_ref()).is_some_and(|call| self.calls.remove(call));
-        if answers && payload.kind.ends_with("_output") {
+        let written = (timestamp.and_then(|at| at.parse::<jiff::Timestamp>().ok()))
+            .and_then(|at| u64::try_from(at.as_millisecond()).ok());
+        if let Some(written) = written
+            && answers
+            && payload.kind.ends_with("_output")
+        {
             let texts = payload.output.as_ref().map(texts).unwrap_or_default();
-            self.seen
-                .extend(texts.iter().flat_map(|text| references(text)));
+            (self.seen).extend(
+                (texts.iter())
+                    .flat_map(|text| references(text))
+                    .map(|reference| (written, reference)),
+            );
         }
     }
 
@@ -274,16 +296,38 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
 
-    /// A rollout of `entries`, read in one scan, then in another after `more`.
+    /// A rollout recorded from Codex 0.162.1 on the model stub, paths shortened and the model's
+    /// instructions left out: the model calls Skald's `inbox`, whose result names `k3qa` and
+    /// `m7b2x`, then replies.
+    const RECORDED: &str = include_str!("../tests/codex_confirmations/recorded/inbox.jsonl");
+
+    /// When the recorded `inbox` result was written, in Unix ms: 2026-11-22T15:25:20.308Z.
+    const RECORDED_RESULT: u64 = 1_795_361_120_308;
+
+    /// The references of `confirmed`.
+    fn refs(confirmed: Vec<Confirmed>) -> Vec<String> {
+        confirmed
+            .into_iter()
+            .map(|(_, reference)| reference)
+            .collect()
+    }
+
+    /// A rollout of `entries`, read in one scan, then in another after `more`; gives what each
+    /// confirms.
+    fn read_twice(entries: &str, more: &str) -> (Vec<Confirmed>, Vec<Confirmed>) {
+        let mut scan = Scan::default();
+        crate::session_file::read_twice("codex", (entries, more), |file| scan.read(file))
+    }
+
+    /// As [`read_twice`], of entries as JSON; gives the references each confirms.
     fn scanned(entries: &[Value], more: &[Value]) -> (Vec<String>, Vec<String>) {
         let lines = |entries: &[Value]| {
             (entries.iter())
                 .map(|entry| format!("{entry}\n"))
                 .collect::<String>()
         };
-        let mut scan = Scan::default();
-        let contents = (lines(entries), lines(more));
-        crate::session_file::read_twice("codex", (&contents.0, &contents.1), |file| scan.read(file))
+        let (first, then) = read_twice(&lines(entries), &lines(more));
+        (refs(first), refs(then))
     }
 
     fn item(payload: Value) -> Value {
@@ -301,12 +345,13 @@ mod tests {
         item(json!({ "type": "function_call_output", "call_id": call, "output": output }))
     }
 
-    /// `inbox`'s result as Codex writes it: its content as a JSON string.
+    /// `inbox`'s result as Codex writes it ([`RECORDED`]): the call's wall time, then its text.
     fn inbox_result(call: &str, text: &str) -> Value {
-        output(
-            call,
-            json!(json!([{ "type": "text", "text": text }]).to_string()),
-        )
+        let wall = "Wall time: 0.0059 seconds\nOutput:";
+        let items = json!([
+            { "type": "input_text", "text": wall }, { "type": "input_text", "text": text },
+        ]);
+        output(call, items)
     }
 
     fn reply() -> Value {
@@ -324,6 +369,30 @@ mod tests {
         assert_eq!(references(LINES), ["k3qa", "m7b2x"]);
         assert!(references("No messages wait.\n#abcd\n[x] abcd").is_empty());
         assert!(references("[ada/api · laptop · own] #ab: short").is_empty());
+    }
+
+    /// In the recorded rollout, the model's reply after `inbox`'s result confirms its references,
+    /// with when the result was written.
+    #[test]
+    fn the_recorded_reply_after_inbox_s_result_confirms_it() {
+        let at = RECORDED.find("\"type\":\"function_call_output\"").unwrap();
+        let (entries, more) = RECORDED.split_at(at + RECORDED[at..].find('\n').unwrap() + 1);
+        let (first, then) = read_twice(entries, more);
+        assert!(first.is_empty(), "{first:?}");
+        let confirmed = [(RECORDED_RESULT, "k3qa"), (RECORDED_RESULT, "m7b2x")];
+        assert_eq!(
+            then,
+            confirmed.map(|(at, reference)| (at, reference.to_owned()))
+        );
+    }
+
+    /// A result without the time it was written confirms nothing.
+    #[test]
+    fn a_result_without_its_time_confirms_nothing() {
+        let mut result = inbox_result("c1", LINES);
+        result.as_object_mut().unwrap().remove("timestamp");
+        let (first, then) = scanned(&[inbox_call("c1"), result], &[reply()]);
+        assert!(first.is_empty() && then.is_empty(), "{first:?} {then:?}");
     }
 
     /// The model's reply, reasoning or call after `inbox`'s result confirms its references, once.
@@ -381,14 +450,18 @@ mod tests {
         assert!(first.is_empty() && then.is_empty(), "{first:?} {then:?}");
     }
 
-    /// A call named `mcp__skald__inbox`, and a result given as text or as content items, count.
+    /// A call named `mcp__skald__inbox`, and a result given as text, as content as a JSON string or
+    /// as content, count.
     #[test]
     fn other_shapes_of_inbox_s_call_and_result_count() {
         let call =
             item(json!({ "type": "function_call", "call_id": "c1", "name": "mcp__skald__inbox" }));
         for result in [
             output("c1", json!(LINES)),
-            output("c1", json!([{ "type": "input_text", "text": LINES }])),
+            output(
+                "c1",
+                json!(json!([{ "type": "text", "text": LINES }]).to_string()),
+            ),
             output(
                 "c1",
                 json!({ "content": [{ "type": "text", "text": LINES }] }),
@@ -417,7 +490,7 @@ mod tests {
         opened
             .write_all(format!("{}\n", &whole[10..]).as_bytes())
             .unwrap();
-        assert_eq!(scan.read(&file), ["k3qa", "m7b2x"]);
+        assert_eq!(refs(scan.read(&file)), ["k3qa", "m7b2x"]);
     }
 
     /// A rollout is read when its first line is an entry; not when it is missing, empty, or no

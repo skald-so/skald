@@ -1,11 +1,13 @@
 //! A Codex session's rollout, the session file its `SessionStart` names, grown entry by entry as
 //! Codex writes it: one JSON object a line, each written whole and at once. The entries have the
 //! shapes of Codex 0.162.1's, as the live checks of the delivery prototypes recorded them
-//! (`prototypes/agents/live/tests/codex_permission/session-*.jsonl`, `transcript/src/lib.rs`): a
-//! model's call of an MCP tool is a `function_call` whose `namespace` is `mcp__<server>`, its result
-//! a `function_call_output` whose `output` is the tool result's content as a JSON string; the
-//! model's own entries are an assistant `message`, `reasoning` or a call; a failed call to the model
-//! writes no `response_item`, only the turn's end with its error.
+//! (`prototypes/agents/live/tests/codex_permission/session-*.jsonl`, `transcript/src/lib.rs`) and
+//! as a call of Skald's `inbox` on the model stub did (`recorded/inbox.jsonl`): a model's call of an
+//! MCP tool is a `function_call` whose `namespace` is `mcp__<server>`, its result a
+//! `function_call_output` whose `output` is an array of `input_text` items, the call's wall time,
+//! then each text of the tool result's content; the model's own entries are an assistant
+//! `message`, `reasoning` or a call; a failed call to the model writes no `response_item`, only the
+//! turn's end with its error.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -157,7 +159,10 @@ impl Rollout {
 
     /// The MCP tool of `call` gave `text`: its result goes to the model.
     pub fn mcp_result(&mut self, call: &Call, text: &str) {
-        let content = json!([{ "type": "text", "text": text }]).to_string();
+        let content = json!([
+            { "type": "input_text", "text": "Wall time: 0.0059 seconds\nOutput:" },
+            { "type": "input_text", "text": text },
+        ]);
         self.append(
             "response_item",
             json!({

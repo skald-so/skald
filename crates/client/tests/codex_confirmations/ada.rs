@@ -3,6 +3,7 @@
 //! its config home, its rollout and its `skald mcp`, started as Codex starts it; the resend timeout
 //! that the session's hooks, the helper they start and its `skald mcp` take.
 
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,15 @@ use crate::machine::{Machine, Run};
 use crate::receipts::read_lines;
 use crate::rollout::{Call, Rollout};
 use crate::standin::{StandIn, session_of};
-use crate::world::AGENT;
+use crate::{
+    devices::second_machine,
+    fixtures::{SEND, TO},
+    hooks::REVIEW,
+    senders::LAPTOP,
+    solo::WEB,
+    talk::one_message_sent,
+    world::{ADD_RULE, AGENT, CLIENT_A, Person, dir_of, path, run},
+};
 
 /// The setting of how long a message a path gave waits for its confirmation, in seconds, before it
 /// goes by the next path.
@@ -162,12 +171,93 @@ impl Ada {
         run
     }
 
+    /// Pauses the one helper that runs until what it gives drops; fails unless one runs. Only on
+    /// Unix: elsewhere the helper runs on.
+    #[track_caller]
+    pub fn pause_helper(&self) -> Paused {
+        let pid = self.codex.helped.one_helper();
+        signal(pid, Pause::Stop);
+        Paused(pid)
+    }
+
+    /// Ada's second machine, linked by hand, joins `clienta`'s channels, its `~/work/clientA`
+    /// bound to `clienta`.
+    #[track_caller]
+    pub fn laptop(&self) -> Laptop {
+        let talk = &self.codex.web.solo.talk;
+        let person = second_machine(&talk.world, &talk.ada, LAPTOP);
+        let folder = dir_of(&person.machine, "work/clientA");
+        for machine in [self.machine(), &person.machine] {
+            received(machine);
+        }
+        let bound = run(&person.machine, &[ADD_RULE, path(&folder), CLIENT_A]);
+        assert!(bound.success, "the laptop's folder not bound: {bound:?}");
+        Laptop { person, folder }
+    }
+
     /// Kills the one helper that runs; fails unless one does.
     #[track_caller]
     pub fn kill_helper(&self) {
         let helped = &self.codex.helped;
         helped.kill(helped.one_helper());
         helped.assert_none();
+    }
+}
+
+/// A helper paused by [`Ada::pause_helper`]; it runs on once this drops.
+pub struct Paused(u32);
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        signal(self.0, Pause::Continue);
+    }
+}
+
+enum Pause {
+    Stop,
+    Continue,
+}
+
+#[cfg(unix)]
+fn signal(pid: u32, pause: Pause) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return;
+    };
+    let signal = match pause {
+        Pause::Stop => libc::SIGSTOP,
+        Pause::Continue => libc::SIGCONT,
+    };
+    // SAFETY: a signal to the helper of the copy, which the test started.
+    unsafe {
+        libc::kill(pid, signal);
+    }
+}
+
+#[cfg(not(unix))]
+fn signal(_: u32, _: Pause) {}
+
+/// Ada's second machine and its folder bound to `clienta`.
+pub struct Laptop {
+    pub person: Person,
+    folder: PathBuf,
+}
+
+impl Laptop {
+    pub fn machine(&self) -> &Machine {
+        &self.person.machine
+    }
+
+    /// Its agent review sends web `text`, at the level `own` from another device; gives its
+    /// `msg_id`.
+    #[track_caller]
+    pub fn sends_web(&self, ada: &Ada, text: &str) -> MessageId {
+        let solo = &ada.codex.web.solo;
+        let mark = solo.mark();
+        let to = solo.short(WEB);
+        let args = [AGENT, REVIEW, SEND, TO, &to, text];
+        let sent = self.machine().start_in(&self.folder, &args).finish();
+        assert!(sent.success, "the laptop's send: {sent:?}");
+        one_message_sent(&solo.talk.front, solo.default_channel(), mark)
     }
 }
 
