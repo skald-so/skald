@@ -287,7 +287,7 @@ fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_
 /// What a run says when it could not set up the account's personal space.
 const NOT_SET_UP: &str = "the account's personal space is not set up yet";
 
-/// The first machine's sign-in says it signed revision 1 of the account's personal space, with the
+/// The first machine's sign-in says it signed the account's personal space as its admin, with the
 /// space's name and ID and the machine's handle.
 #[test]
 fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
@@ -301,8 +301,7 @@ fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str(), false);
 
     let said = format!(
-        "This device signed revision 1 of the account's personal space {} ({space}) as its admin, \
-         with the handle {}.",
+        "Signed the personal space {} ({space}) as its admin {}.",
         ada.handle.as_str(),
         ada.handle.as_str()
     );

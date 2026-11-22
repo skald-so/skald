@@ -8,8 +8,9 @@
 //!
 //! - With a session, the hello names a device registered on its account, and the run is the
 //!   account's.
-//! - Without one, the new device reaches its run by the run's token, and the run is no account's
-//!   until a session enters its pairing; the first account to enter it pairs it, unless the device
+//! - Without one, the device opens its run first and gets its pairing, then sends its hello by the
+//!   run's token, by which it reaches its run; the run is no account's until a session enters its
+//!   pairing; the first account to enter it pairs it, unless the device
 //!   registered on another account. The run is given as waiting only once its device registers on
 //!   an account.
 
@@ -69,6 +70,13 @@ const WRONG_PAIRING_WINDOW: Duration = Duration::from_secs(900);
 struct HelloRequest {
     device: String,
     hello: String,
+}
+
+/// `SessionlessLinkRunRequest` in the spec.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionlessRunRequest {
+    device: String,
 }
 
 /// `LinkMessageRequest` in the spec.
@@ -148,16 +156,13 @@ fn hello_request(body: &[u8], later: &str) -> Result<(DeviceId, Vec<u8>, [u8; 16
     Ok((device, hello, session))
 }
 
-/// The device, the hello and its `session` of a `LinkHelloRequest` in `body`, whose later messages
-/// go to `later`, and the transaction that opens its run. The transaction makes the hellos of the
-/// device wait for each other, whether it is registered or not, and deletes its open run, which
-/// the new one replaces once it commits.
+/// The transaction that opens a run of `device`. It makes the device's runs wait for each other,
+/// whether it is registered or not, and deletes its open run, which the new one replaces once it
+/// commits.
 async fn start_run(
     state: &AppState,
-    body: &[u8],
-    later: &str,
-) -> Result<(Transaction<'static, Postgres>, DeviceId, Vec<u8>, [u8; 16]), Refusal> {
-    let (device, hello, session) = hello_request(body, later)?;
+    device: DeviceId,
+) -> Result<Transaction<'static, Postgres>, Refusal> {
     let failed = |err| Refusal::Database("open a link run", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -170,7 +175,7 @@ async fn start_run(
         .execute(&mut *tx)
         .await
         .map_err(failed)?;
-    Ok((tx, device, hello, session))
+    Ok(tx)
 }
 
 /// `POST /account/links`: a hello naming a device of the session's account without a certificate
@@ -180,8 +185,8 @@ pub(crate) async fn open(
     SignedIn(account): SignedIn,
     body: Bytes,
 ) -> Answer {
-    let (mut tx, device, hello, session) =
-        start_run(&state, &body, "/account/links/messages").await?;
+    let (device, hello, session) = hello_request(&body, "/account/links/messages")?;
+    let mut tx = start_run(&state, device).await?;
     let failed = |err| Refusal::Database("open a link run", err);
     let (certified,): (bool,) = sqlx::query_as(
         "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid AND account_id = $2::uuid
@@ -223,10 +228,14 @@ pub(crate) async fn open(
     Ok(StatusCode::CREATED.into_response())
 }
 
-/// `POST /links`: a hello without a session, naming a device without a certificate, opens the
-/// device's run, which replaces its open one, and gives the run's pairing and token.
+/// `POST /links`: without a session, a device without a certificate opens its run, which replaces
+/// its open one: the server picks the run's pairing, unique among the runs that hold one, and gives
+/// it with the run's token. The run's hello comes as its first message, [`run_relay`].
 pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes) -> Answer {
-    let (mut tx, device, hello, session) = start_run(&state, &body, "/links/messages").await?;
+    let request: SessionlessRunRequest = parse(&body)?;
+    let device: DeviceId =
+        (request.device.parse()).map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
+    let mut tx = start_run(&state, device).await?;
     let failed = |err| Refusal::Database("open a link run", err);
     let certified: Option<(bool,)> = sqlx::query_as(
         "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
@@ -243,13 +252,11 @@ pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes)
     let pairing = loop {
         let pairing = LinkPairing::generate().to_string();
         let opened = sqlx::query(
-            "INSERT INTO link_runs (device_id, session, hello, expires_at, pairing, token_hash)
-             VALUES ($1::uuid, $2, $3, now() + make_interval(secs => $4), $5, $6)
+            "INSERT INTO link_runs (device_id, expires_at, pairing, token_hash)
+             VALUES ($1::uuid, now() + make_interval(secs => $2), $3, $4)
              ON CONFLICT (pairing) DO NOTHING",
         )
         .bind(device.to_string())
-        .bind(session.as_slice())
-        .bind(&hello)
         .bind(state.link_code_lifetime.as_secs_f64())
         .bind(&pairing)
         .bind(digest(&token))
@@ -300,7 +307,7 @@ pub(crate) async fn pair(
     let found: Option<Found> = sqlx::query_as(concat!(
         "SELECT r.id, r.account_id::text, r.session, r.hello, w.account_id::text
              FROM link_runs r LEFT JOIN devices w ON w.id = r.device_id
-             WHERE r.pairing = $1 AND ",
+             WHERE r.pairing = $1 AND r.hello IS NOT NULL AND ",
         open!(),
         " FOR NO KEY UPDATE OF r"
     ))
@@ -355,15 +362,15 @@ pub(crate) async fn pair(
 }
 
 /// The open run without a session whose token is the request's bearer token, locked against its
-/// end until the transaction ends: its ID and `session`.
+/// end until the transaction ends: its ID and `session`, once its hello came.
 async fn token_run(
     db: impl PgExecutor<'_>,
     headers: &HeaderMap,
-) -> Result<(i64, Vec<u8>), Refusal> {
+) -> Result<(i64, Option<Vec<u8>>), Refusal> {
     let Some(Some(token)) = bearer(headers) else {
         return Err(Refusal::NotSignedIn);
     };
-    let run: Option<(i64, Vec<u8>)> = sqlx::query_as(concat!(
+    let run: Option<(i64, Option<Vec<u8>>)> = sqlx::query_as(concat!(
         "SELECT r.id, r.session FROM link_runs r WHERE r.token_hash = $1 AND ",
         open!(),
         " FOR NO KEY UPDATE OF r"
@@ -382,9 +389,10 @@ pub(crate) async fn run_messages(State(state): State<AppState>, headers: HeaderM
     stored_messages(&state.db, run).await
 }
 
-/// `POST /links/messages`: a later message of the open run of the request's run token, from its new
-/// device; a `link-abort` ends the run. The token sends at most [`RUN_MESSAGES`] later messages of
-/// at most [`RUN_MESSAGE_MAX`] bytes each.
+/// `POST /links/messages`: a message of the open run of the request's run token, from its new
+/// device: first its hello, which the run keeps as its `session` and hello, then later messages; a
+/// `link-abort` ends the run. The token sends at most [`RUN_MESSAGES`] later messages, and each
+/// message holds at most [`RUN_MESSAGE_MAX`] bytes.
 pub(crate) async fn run_relay(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -400,11 +408,30 @@ pub(crate) async fn run_relay(
             "message: more than {RUN_MESSAGE_MAX} bytes"
         )));
     }
-    if let LinkMessage::Hello { .. } = message {
-        return Err(Refusal::LinkMessage(
-            "message: a `link-hello` opens a run at /links".to_owned(),
-        ));
-    }
+    let session = match (session, &message) {
+        (None, LinkMessage::Hello { session, .. }) => {
+            sqlx::query("UPDATE link_runs SET session = $2, hello = $3 WHERE id = $1")
+                .bind(run)
+                .bind(session.as_slice())
+                .bind(&sent)
+                .execute(&mut *tx)
+                .await
+                .map_err(failed)?;
+            tx.commit().await.map_err(failed)?;
+            return Ok(StatusCode::CREATED.into_response());
+        }
+        (None, _) => {
+            return Err(Refusal::LinkMessage(
+                "message: the run's first message is its `link-hello`".to_owned(),
+            ));
+        }
+        (Some(_), LinkMessage::Hello { .. }) => {
+            return Err(Refusal::LinkMessage(
+                "message: the run has its `link-hello` already".to_owned(),
+            ));
+        }
+        (Some(session), _) => session,
+    };
     if message.session().as_slice() != session {
         return Err(Refusal::NoLinkRun);
     }
