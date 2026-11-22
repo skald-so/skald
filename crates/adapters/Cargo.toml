@@ -6,9 +6,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Claude Code's JSON result; the tests' model stub and the config they give Claude Code.
+# The agents' JSON output; the tests' model stub and the config they give Claude Code.
 serde_json = "1.0"
-
-[dev-dependencies]
-# The tests' requests: their sender's address and trust level.
+# A request's sender address and trust level.
 skald-proto = { path = "../proto" }
+
+[target.'cfg(unix)'.dependencies]
+# Ends an executor's process group, and waits for its agent to exit without reaping it.
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+# The job object that holds an executor's agent and every process it starts.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

@@ -105,9 +105,11 @@ fn a_run_gets_a_config_home_of_its_own_with_only_the_user_s_sign_in() {
 
         let given = (stand_in.codex_home())
             .unwrap_or_else(|| panic!("the run got no CODEX_HOME (CODEX_HOME set: {codex_home})"));
+        // The run removes its config home once it ends: only its parent still resolves.
+        let parent = plain(given.parent().expect("the run's config home has a parent"));
+        let given = parent.join(given.file_name().expect("the run's config home has a name"));
         assert_ne!(
-            plain(&given),
-            config.path,
+            given, config.path,
             "the run got the user's config home (CODEX_HOME set: {codex_home})"
         );
         assert_eq!(
