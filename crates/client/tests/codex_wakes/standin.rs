@@ -416,3 +416,16 @@ pub fn web_in_app(codex: &Codex) -> (StandIn, Thread, CodexApp) {
     app.starts(codex, &web);
     (stand_in, web, app)
 }
+
+/// web's session starts in a Codex app of its own whose `codex` fails ([`web_in_app`]), and api
+/// sends web `text`: fails unless the app's `codex` runs once, and fails. Gives the app's stand-in
+/// `codex`, the session, the app, the message's `msg_id` and the run.
+#[track_caller]
+pub fn fails_for(codex: &Codex, text: &str) -> (StandIn, Thread, CodexApp, MessageId, Ran) {
+    let (stand_in, web, app) = web_in_app(codex);
+    stand_in.fail();
+    let msg_id = codex.web.own(text);
+    let ran = stand_in.await_runs(1).remove(0);
+    assert!(ran.failed(), "the stand-in did not fail: {ran:#?}");
+    (stand_in, web, app, msg_id, ran)
+}

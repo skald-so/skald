@@ -3,7 +3,7 @@
 
 use crate::codex::{Codex, Event, assert_bare};
 use crate::delivery::{assert_wakes, wakes};
-use crate::standin::{assert_queued, assert_quiet, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, fails_for};
 
 /// What api says to web; it is nowhere else.
 const UNQUEUED: &str = "codex modes test: api asks web, whose codex queue fails, to rotate logs";
@@ -15,13 +15,8 @@ const UNQUEUED: &str = "codex modes test: api asks web, whose codex queue fails,
 pub fn a_failed_codex_queue_counts_no_wake_and_the_next_hook_counts_one() {
     let codex = Codex::new(4_929_006_001, "ada-codex-modes-failed");
     let default = codex.web.solo.default_channel();
-    let (app, web, mut process) = web_in_app(&codex);
-    app.fail();
-
-    let unqueued = codex.web.own(UNQUEUED);
-    let ran = app.await_runs(1);
-    assert!(ran[0].failed(), "the stand-in did not fail: {ran:#?}");
-    assert_queued(&ran[0], (&web, &app), &[UNQUEUED], &[unqueued], &[]);
+    let (app, web, mut process, unqueued, ran) = fails_for(&codex, UNQUEUED);
+    assert_queued(&ran, (&web, &app), &[UNQUEUED], &[unqueued], &[]);
     assert_quiet(&[(&app, 1, "codex queue again for the same message")]);
     assert_eq!(
         wakes(&codex.web.solo, default),
