@@ -5954,7 +5954,7 @@
       "get": {
         "operationId": "getWaitingAcceptances",
         "summary": "The space's waiting acceptances",
-        "description": "The acceptances of the space's invites that have not ended, for an admin's session, each with its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, \"Invite\").",
+        "description": "The acceptances of the space's invites that have not ended, for an admin's session, each with its invite and its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, \"Invite\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -12991,11 +12991,16 @@
       "WaitingAcceptance": {
         "type": "object",
         "required": [
+          "invite",
           "acceptance",
           "devices",
           "revocations"
         ],
         "properties": {
+          "invite": {
+            "description": "The invite the acceptance is of, as the server got it.",
+            "$ref": "#/components/schemas/Invite"
+          },
           "acceptance": {
             "description": "The acceptance as the server got it.",
             "$ref": "#/components/schemas/Acceptance"

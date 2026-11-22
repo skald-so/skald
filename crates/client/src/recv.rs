@@ -64,6 +64,7 @@ use skald_proto::{
     ServerStatus, ServiceAgent, SpaceId, TrustLevel, VersionRange,
 };
 
+use crate::admission;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
@@ -494,7 +495,9 @@ fn receive(
         .map(|space| space.id)
         .collect();
     while !due.is_empty() {
+        let admitting = due.clone();
         sync_due(follower, scope, &mut due, synced)?;
+        admission::admit(follower, &admitting, synced, |space| scope.excludes(space));
         due.extend(mailbox.waiting_notices(follower, &keys));
         if scope == Scope::All && joined::names_unfollowed(follower, &due) {
             joined::follow(follower);

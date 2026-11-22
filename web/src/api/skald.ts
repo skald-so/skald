@@ -2871,7 +2871,7 @@ export const getGetWaitingAcceptancesUrl = (space: string) => {
 };
 
 /**
- * The acceptances of the space's invites that have not ended, for an admin's session, each with its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, "Invite").
+ * The acceptances of the space's invites that have not ended, for an admin's session, each with its invite and its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, "Invite").
  * @summary The space's waiting acceptances
  */
 export const getWaitingAcceptances = async (

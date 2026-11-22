@@ -59,6 +59,7 @@ struct WithSpace {
 /// `WaitingAcceptance` in the spec.
 #[derive(Serialize)]
 struct Waiting {
+    invite: String,
     acceptance: String,
     #[serde(flatten)]
     devices: Devices,
@@ -436,7 +437,7 @@ pub(crate) async fn accept(
 }
 
 /// `GET /spaces/<space>/acceptances`: the space's waiting acceptances, oldest first, each with its
-/// account's devices and revocations, for an admin's session.
+/// invite and its account's devices and revocations, for an admin's session.
 pub(crate) async fn waiting(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -444,8 +445,8 @@ pub(crate) async fn waiting(
 ) -> Answer {
     let db = &state.db;
     let found = as_admin(db, &space, &account, "gets the waiting acceptances").await?;
-    let stored: Vec<(Vec<u8>, String)> = sqlx::query_as(
-        "SELECT a.acceptance, a.account_id::text
+    let stored: Vec<(Vec<u8>, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT i.invite, a.acceptance, a.account_id::text
          FROM acceptances a JOIN invites i ON i.id = a.invite_id
          WHERE i.space_id = $1::uuid AND i.expires_at > now()
          ORDER BY a.stored_at, a.invite_id",
@@ -455,7 +456,7 @@ pub(crate) async fn waiting(
     .await
     .map_err(|err| Refusal::Database("read the waiting acceptances", err))?;
     let mut acceptances = Vec::with_capacity(stored.len());
-    for (acceptance, account) in stored {
+    for (invite, acceptance, account) in stored {
         let devices = sqlx::query_as(
             "SELECT id::text, cert FROM devices WHERE account_id = $1::uuid
              ORDER BY registered_at, id",
@@ -466,6 +467,7 @@ pub(crate) async fn waiting(
         .map_err(|err| Refusal::Database("read the devices", err))?;
         let revocations = revocations::of_account(db, &account).await?;
         acceptances.push(Waiting {
+            invite: base64(&invite),
             acceptance: base64(&acceptance),
             devices: Devices::of(devices, &revocations),
         });

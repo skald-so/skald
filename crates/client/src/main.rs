@@ -28,6 +28,7 @@ macro_rules! eprintln {
 }
 
 mod admin;
+mod admission;
 mod agents;
 mod anchors;
 mod channels;

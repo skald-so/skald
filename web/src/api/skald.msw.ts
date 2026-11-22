@@ -3018,6 +3018,7 @@ export const getGetWaitingAcceptancesResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     devices: Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
@@ -3046,6 +3047,7 @@ export const getGetWaitingAcceptancesResponseMock200 = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     devices: Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
