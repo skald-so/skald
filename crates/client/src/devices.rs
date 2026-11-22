@@ -144,18 +144,9 @@ pub fn statuses(
         .collect();
     let changed = state.device_statuses(&seen).map_err(text)?;
     let changed = changed.into_iter().map(|(device, change)| match change {
-        StatusChange::Revoked => format!(
-            "the device {device} of {whose} is revoked: this device no longer sends to it, \
-             accepts content from it or admits it to a channel"
-        ),
-        StatusChange::Valid => format!(
-            "the device {device} of {whose} is valid again: a revocation by its account's \
-             master key voided the revocation of it"
-        ),
-        StatusChange::Added => format!(
-            "the device {device} of {whose} is new: it was linked since this device last \
-             checked"
-        ),
+        StatusChange::Revoked => format!("device {device} of {whose} is revoked"),
+        StatusChange::Valid => format!("device {device} of {whose} is valid again"),
+        StatusChange::Added => format!("device {device} of {whose} is new"),
     });
     Ok(key_changes.into_iter().chain(changed).collect())
 }

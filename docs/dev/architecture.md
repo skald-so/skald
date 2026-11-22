@@ -104,7 +104,7 @@
   - credentials in the proxy's URL go as `Proxy-Authorization: Basic`; no other scheme;
   - a proxy that fails fails the command, named by its host and port only; the client never connects directly instead.
 - The client speaks plain HTTP only to its own machine: `localhost`, `127.0.0.0/8`, `[::1]`; to any other server, HTTPS only.
-- The client takes the login and public SSH keys of each GitHub user a certificate names from GitHub's API, unauthenticated, as it reaches its server, to check the certificate's SSH signature ([Device certificate](../protocol/membership.md#device-certificate)). It checks each certificate once and keeps the result; one it cannot check, as with GitHub unreachable or at its rate limit, waits for a later run, and fails no command.
+- The client takes the login and public SSH keys of each GitHub user a certificate names from GitHub's API, unauthenticated, as it reaches its server, to check the certificate's SSH signature ([Device certificate](../protocol/membership.md#device-certificate)). It checks each certificate once and keeps the result; one it cannot check, as with GitHub unreachable or at its rate limit, waits for a later run, and fails no command. A device that signs its own certificate takes its GitHub user's ID and keys there the same way.
 - The client looks up the records of a space's [domain](../protocol/membership.md#domain) with DNS over HTTPS at the resolver the setting `SKALD_DNS_RESOLVER` names, Cloudflare's `https://cloudflare-dns.com/dns-query` by default, as it reaches its server. It keeps them by resolver, so a run with another one, as an agent could make, changes nothing later runs show; a resolver that fails fails no command.
 - `localhost` is always 127.0.0.1 and ::1: the client asks no resolver for it.
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
@@ -190,6 +190,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
 - The person's device triggers the events that come from content or its agents' sessions: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a session waiting on its agent CLI's own permission prompt, an invalid task result ([protocol spec](../protocol/queues.md#results)), a key changed. The server only relays them, so they need a running device of the person.
 - A Claude Code session waiting on its own permission prompt is detected by its `PermissionRequest` and `Notification` hooks ([agent-delivery.md, "Permission prompts"](agent-delivery.md#permission-prompts)).
+- A Codex session waiting on its own permission prompt is detected by its `PermissionRequest` hook and by the `item/commandExecution/requestApproval` of the background app-server in its config home, to which the helper keeps a client that answers nothing ([agent-delivery.md, "Codex permission prompts"](agent-delivery.md#codex-permission-prompts)).
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security

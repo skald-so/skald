@@ -37,6 +37,8 @@ mod claude_relay;
 mod claude_socket;
 mod clock;
 mod codex;
+#[cfg(unix)]
+mod codex_app_server;
 mod connection;
 mod copies;
 mod delivery;
@@ -95,6 +97,7 @@ mod sign_in;
 mod sign_out;
 mod spaces;
 mod ssh_checks;
+mod ssh_signing;
 mod state;
 mod stateless;
 mod tasks;
@@ -274,6 +277,12 @@ enum Command {
     /// A device that holds its certificate keeps its KeyPackages, with which others add it to
     /// channels, on the server, here and on each skald send and skald recv.
     ///
+    /// A device that issues its own certificate, as the account's first or with the recovery key,
+    /// first signs its key with an SSH key GitHub lists for the GitHub user, through OpenSSH's
+    /// ssh-keygen 8.1 or later, so that other devices check it there and show the GitHub login.
+    /// Unless run by its person at a terminal, only a key ssh-agent holds signs, so nothing asks for
+    /// a passphrase. Without a key, ssh-keygen or GitHub, it says why and goes on without one.
+    ///
     /// With --browser, as its person or as an agent, it shows its person a local page it opens in
     /// the browser instead: the sign-in link, the link codes or the recovery key. Its output holds
     /// neither code nor key.
@@ -322,6 +331,17 @@ enum Command {
             requires = "with_recovery_key"
         )]
         keep_revoked: Vec<String>,
+        /// The private key file of the SSH key that signs the device's key, one GitHub lists for
+        /// the GitHub user [default: a listed key ssh-agent holds or that is in ~/.ssh].
+        #[arg(long, value_name = "FILE", conflicts_with = "no_ssh")]
+        ssh_key: Option<PathBuf>,
+        /// Signs the device's key with no SSH key.
+        #[arg(long)]
+        no_ssh: bool,
+        /// The GitHub user whose SSH keys may sign the device's key [default: the login of the
+        /// account's GitHub sign-in method].
+        #[arg(long, value_name = "LOGIN", conflicts_with = "no_ssh")]
+        github: Option<String>,
     },
     /// Lists the devices of the account this machine signed in to, from the server of its session.
     ///
@@ -1170,7 +1190,7 @@ enum Command {
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
     /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification; Codex's
-    /// SessionStart, PostToolUse, UserPromptSubmit and Stop. It reads the hook input on standard
+    /// SessionStart, PostToolUse, UserPromptSubmit, Stop and PermissionRequest. It reads the hook input on standard
     /// input and runs in its folder, as the agent --agent names or, without it, the agent the session's skald mcp
     /// registers by default. SessionStart registers the session with the helper, starting one if
     /// none runs. On Claude Code, the helper writes the agent's messages into the session's
@@ -1184,9 +1204,11 @@ enum Command {
     /// Codex, every message goes in only as that line, once for the new ones, to the session whose
     /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
     /// and a Notification of a permission prompt record that the session waits on its permission
-    /// prompt, once per prompt, which the person's skald recv shows once, without the prompt's
-    /// content. It prints nothing while nothing waits, on PermissionRequest and Notification, and
-    /// on a failure, which exits with 1.
+    /// prompt, once per prompt; on Codex, PermissionRequest does, as does the session's background
+    /// app-server, which the helper watches, until its next hook or the app-server says the prompt
+    /// ended. The person's skald recv shows each prompt once, without its content. It prints nothing
+    /// while nothing waits, on PermissionRequest and Notification, and on a failure, which exits
+    /// with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -2109,6 +2131,9 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
             keep,
             keep_revoked,
             browser,
+            ssh_key,
+            no_ssh,
+            github,
         } => {
             // Without a browser, nothing is sent and nothing listens.
             let opener = browser.then(page::Opener::find).transpose()?;
@@ -2139,6 +2164,12 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                     host_name,
                     person,
                     recovery,
+                    ssh: ssh_signing::Options {
+                        key: ssh_key,
+                        off: no_ssh,
+                        github,
+                        may_ask: agent.is_none() && link_code::at_terminal(),
+                    },
                 };
                 let signed_in = || {
                     let mut connection =

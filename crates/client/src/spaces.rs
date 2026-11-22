@@ -177,9 +177,8 @@ fn personal_warning(err: &str) {
 /// What the device says when it signed `first`, revision 1 of the account's personal space.
 fn personal_taken(first: &Roster) -> String {
     let body = first.body();
-    let handle = creator_handle(first);
     format!(
-        "Signed the personal space {} ({}) as its admin {handle}.",
+        "Signed the personal space {} ({}) as its admin.",
         body.name.as_str(),
         body.space
     )
