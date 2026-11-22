@@ -4,13 +4,17 @@
 //!
 //! - The new device, waiting for linking, shows a code and runs it through the server's relay: a
 //!   hello per run, at most 3 runs that take a reply, until the code expires or its person asks for
-//!   a fresh one. From a grant that passes its checks it keeps the master key, its certificate and
-//!   the link object in the local state, then has the server store the certificate; a later run
-//!   stores one the server did not take. Stored, it pins the master key, starts each space from the
-//!   revision the link object names and pins the personal space.
+//!   a fresh one. Its requests carry its SSH signature and GitHub user once it made them
+//!   ([`crate::ssh_signing`]). From a grant that passes its checks, its certificate holding them as
+//!   sent or neither, it keeps the master key, its certificate and the link object in the local
+//!   state, then has the server store the certificate; a later run stores one the server did not
+//!   take. Stored, it pins the master key, starts each space from the revision the link object
+//!   names and pins the personal space.
 //! - `skald link`, on a device with a valid certificate, takes a code its person types, answers the
-//!   account's latest hello, shows the new device's `name` and kind and, once its person confirms,
-//!   issues the certificate and a link object of the revisions it accepted. After 3 failed runs in
+//!   account's latest hello, checks the new device's SSH signature against GitHub
+//!   ([`crate::ssh_checks`]), failing on a key change, shows its `name`, kind and GitHub login or
+//!   that the signature is not checked and, once its person confirms, issues the certificate,
+//!   carrying the signature, and a link object of the revisions it accepted. After 3 failed runs in
 //!   a row it runs no code until its person confirms the new device shows a new one. It takes the
 //!   person's answers in its own process and hands each step after them to the helper ([`Step`]);
 //!   once the new device has KeyPackages, it adds it to the device's channels.
@@ -47,6 +51,8 @@ use crate::revocations;
 use crate::secrets;
 use crate::sign_in;
 use crate::spaces::{self, Scope, now};
+use crate::ssh_checks::{self, Seen};
+use crate::ssh_signing;
 use crate::state::{self, Link as Linked, State};
 
 /// The setting of how long a code lives, in seconds, for tests.
@@ -181,6 +187,8 @@ pub struct NewDevice<'a> {
     pub device: &'a state::Device,
     pub keys: &'a Keys,
     pub sessionless: bool,
+    /// The SSH signature and GitHub user its requests carry, once made ([`NewDevice::sign`]).
+    pub signed: Option<(Vec<u8>, u64)>,
 }
 
 /// How a run of a code ended at the new device.
@@ -351,6 +359,17 @@ fn failed_line(failed: u32) -> String {
 }
 
 impl NewDevice<'_> {
+    /// Once it has a session and its account, makes the SSH signature and GitHub user its requests
+    /// carry, as a device that issues its own certificate does ([`ssh_signing`]).
+    pub fn sign(&mut self, ssh: &ssh_signing::Options) {
+        let (Some(token), Some(account)) = (self.token.clone(), self.account) else {
+            return;
+        };
+        let mut body = (self.keys).master_cert_body(account, self.device.name.clone());
+        ssh.sign(self.connection, &token, &mut body);
+        self.signed = body.ssh.zip(body.github);
+    }
+
     /// Opens a run of `code` with a fresh `session`: with a session, by its hello as its account's;
     /// without one, by asking the server for the run, whose pairing it then sends its hello with.
     fn open(&mut self, code: &LinkCode) -> Result<OpenRun, sign_in::Error> {
@@ -458,6 +477,8 @@ impl NewDevice<'_> {
                     signing: self.keys.signing().public_key(),
                     hpke: self.keys.hpke().public_key(),
                     name: self.device.name.clone(),
+                    ssh: self.signed.as_ref().map(|(ssh, _)| ssh.clone()),
+                    github: self.signed.as_ref().map(|(_, github)| *github),
                     unknown: Unknown::default(),
                 };
                 let sealed = taken.request_key().seal(&body.to_cbor());
@@ -500,7 +521,8 @@ impl NewDevice<'_> {
     }
 
     /// The grant `sealed` of the run keyed by `isk`, if it opens and `cert` holds this device's
-    /// account, ID, kind, keys and `name`; with a session, also if `signature` verifies with the
+    /// account, ID, kind, keys and `name`, and its SSH signature and GitHub user as its request
+    /// carried them, or neither; with a session, also if `signature` verifies with the
     /// certificate of its `issuer`, which passes checks 1 and 2 with its `master`, and the link
     /// object passes its check ("Link code", the new device's step 3): the master key, the
     /// device's complete certificate, with its `proof`, and the link object, in CBOR.
@@ -518,6 +540,12 @@ impl NewDevice<'_> {
             && body.issuer.is_some();
         if !ours {
             return Err("the certificate is not this device's".to_owned());
+        }
+        let signed = body.ssh.clone().zip(body.github);
+        if signed.is_some() && signed != self.signed {
+            return Err(
+                "the certificate's SSH signature is not the one this device sent".to_owned(),
+            );
         }
         let proof = keys.signing().sign(PROOF_LABEL, &[&grant.cert]);
         let cert = Cert::from_parts(grant.cert.clone(), grant.signature, proof).map_err(text)?;
@@ -1000,12 +1028,31 @@ impl Issuer {
         let (isk, request) = self
             .request(entry, session, &share)
             .map_err(|ended| self.ended(session, ended))?;
+        let device = DeviceId::from_signing_key(&request.signing);
+        let github = ssh_checks::check_body(&self.body(device, &request));
+        if github == Some(Seen::Failed) {
+            let why = format!(
+                "the new device's SSH signature verifies with no SSH key GitHub lists for the \
+                 GitHub user {} it names: a key change; nothing is linked",
+                request.github.unwrap_or_default()
+            );
+            return Err(self.ended(session, Ended::Declined(why)));
+        }
         println!(
-            "Link {} ({} device, {})?",
+            "Link {} ({} device, {device})?",
             printable(&request.name),
             devices::kind_name(request.kind),
-            DeviceId::from_signing_key(&request.signing)
         );
+        match github {
+            Some(Seen::Passed(login)) => {
+                println!("  Signed by an SSH key of the GitHub user {login}.");
+            }
+            Some(Seen::NotChecked) => println!(
+                "  Its SSH signature, by a key of the GitHub user {}, is not checked.",
+                request.github.unwrap_or_default()
+            ),
+            Some(Seen::Failed) | None => {}
+        }
         let waiting = Waiting {
             session,
             isk,
@@ -1158,20 +1205,7 @@ impl Issuer {
     ) -> Result<(), Ended> {
         let failed = |why: String| Ended::Failed(why);
         let this = self.cert.body().device;
-        let body = CertBody {
-            account: self.cert.body().account,
-            device,
-            kind: request.kind,
-            signing: request.signing,
-            hpke: request.hpke,
-            issuer: Some(this),
-            issued: now(),
-            ssh: None,
-            github: None,
-            name: request.name.clone(),
-            unknown: Unknown::default(),
-        };
-        let cert = body.to_cbor();
+        let cert = self.body(device, request).to_cbor();
         let signature = self.keys.signing().sign(CERT_LABEL, &[&cert]);
         let (anchors, personal) = crate::anchors::held(&self.state).map_err(failed)?;
         let link = sign_link(
@@ -1202,6 +1236,25 @@ impl Issuer {
             connection::Error::Refused { status: 404, .. } => failed(RUN_FAILED.to_owned()),
             err => failed(err.to_string()),
         })
+    }
+
+    /// The certificate body of `device` for `request`, issued now by this device: with the
+    /// request's SSH signature and GitHub user if it is a `client` device's.
+    fn body(&self, device: DeviceId, request: &LinkRequestBody) -> CertBody {
+        let client = request.kind == DeviceKind::Client;
+        CertBody {
+            account: self.cert.body().account,
+            device,
+            kind: request.kind,
+            signing: request.signing,
+            hpke: request.hpke,
+            issuer: Some(self.cert.body().device),
+            issued: now(),
+            ssh: request.ssh.clone().filter(|_| client),
+            github: request.github.filter(|_| client),
+            name: request.name.clone(),
+            unknown: Unknown::default(),
+        }
     }
 
     /// Waits, within the timeout, for the run `session` to end, then for the server to hold the
@@ -1282,7 +1335,7 @@ impl Issuer {
 }
 
 /// How a step of `skald link` failed: `Failed` counts among the failed runs in a row; `Declined`,
-/// by its person or for want of an answer from the new device, does not.
+/// by its person, for want of an answer from the new device or for a key change, does not.
 enum Ended {
     Failed(String),
     Declined(String),

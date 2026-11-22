@@ -15,7 +15,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use skald_crypto::{SshCheck, check_ssh_signature};
-use skald_proto::{Cert, DeviceId, DeviceKind};
+use skald_proto::{Cert, CertBody, DeviceId, DeviceKind};
 
 use crate::connection;
 use crate::devices::text;
@@ -78,6 +78,22 @@ pub fn check(state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), S
     let run =
         run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
     run.check(state, certs)
+}
+
+/// What the SSH signature of `body`, a certificate body not issued yet, shows against GitHub's API
+/// as the operation running reaches it ([`set`]), keeping nothing; `None` if it carries none or is
+/// no `client` device's.
+pub fn check_body(body: &CertBody) -> Option<Seen> {
+    let (Some(_), Some(user), DeviceKind::Client) = (&body.ssh, body.github, body.kind) else {
+        return None;
+    };
+    let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
+    let run =
+        run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
+    let mut github = Github::new(&run.api, run.timeout, run.unavailable);
+    let seen = seen(&mut github, body, user);
+    run.unavailable = github.gone();
+    Some(seen)
 }
 
 /// A GitHub user GitHub's API gives by login: its ID, its login as GitHub spells it and its SSH
@@ -192,18 +208,7 @@ fn checked(
             results.insert(body.device, kept.map_or(Seen::Failed, Seen::Passed));
             continue;
         }
-        let seen = match github.keys(user) {
-            Some(Listed::User { login, keys }) => {
-                let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-                match check_ssh_signature(body, &keys) {
-                    SshCheck::Passed { .. } => Seen::Passed(login.clone()),
-                    SshCheck::Failed => Seen::Failed,
-                    _ => Seen::NotChecked,
-                }
-            }
-            Some(Listed::NoUser) => Seen::Failed,
-            None => Seen::NotChecked,
-        };
+        let seen = seen(github, body, user);
         let login = match &seen {
             Seen::Passed(login) => Some(login.as_str()),
             Seen::Failed => None,
@@ -225,6 +230,23 @@ fn checked(
         results.insert(body.device, seen);
     }
     Ok((results, warnings))
+}
+
+/// What the SSH signature of `body`, by a key of the GitHub user `user`, shows against what
+/// `github` lists for that user.
+fn seen(github: &mut Github, body: &CertBody, user: u64) -> Seen {
+    match github.keys(user) {
+        Some(Listed::User { login, keys }) => {
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            match check_ssh_signature(body, &keys) {
+                SshCheck::Passed { .. } => Seen::Passed(login.clone()),
+                SshCheck::Failed => Seen::Failed,
+                _ => Seen::NotChecked,
+            }
+        }
+        Some(Listed::NoUser) => Seen::Failed,
+        None => Seen::NotChecked,
+    }
 }
 
 /// What GitHub's API lists for a user ID.

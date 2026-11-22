@@ -113,7 +113,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - `github`: GitHub's user ID of that user.
   - A certificate carries both or neither; one with only one of them is malformed.
   - Only a `client` device's certificate carries them; a client ignores them on other kinds.
-  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither.
+  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither. A `client` device linked with a link code makes them the same way and sends them in its request: [Link code](#link-code).
   - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
     - it passes when its key is on the list and it verifies with that key;
     - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;
@@ -181,6 +181,8 @@ link-request-body = {
   2 => bstr .size 32,      ; signing
   3 => bstr .size 32,      ; hpke
   4 => tstr .size (1..64), ; name
+  ? 5 => bstr,             ; ssh: as a certificate's
+  ? 6 => uint,             ; github: as a certificate's
   * int => any,            ; fields of later versions
 }
 
@@ -203,14 +205,15 @@ link-grant-body = {
 
 The new device:
 1. sends a hello and takes the first reply with its `session`;
-2. sends the request: its kind, keys and `name`;
-3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check. Without a session it cannot list the issuer's certificate, so it keeps the grant as unchecked and checks `signature` and the link object once its device key session gives it one. If that check fails, it drops the grant, ends the session and pins nothing;
+2. sends the request: its kind, keys and `name`, and, when it has them, `ssh` and `github`, made as [Device certificate](#device-certificate) says, both or neither;
+3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, and either `ssh` and `github` as its request carried them or neither, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check. Without a session it cannot list the issuer's certificate, so it keeps the grant as unchecked and checks `signature` and the link object once its device key session gives it one. If that check fails, it drops the grant, ends the session and pins nothing;
 4. then signs `proof` and stores the complete certificate on the server: with its session, or without one in the request for its [device key session](#device-key-session). It pins `master` only once step 3 passed.
 
 The issuing device:
 1. tells its user to enter only a code shown on their own device, takes the account's latest hello, or for 12 characters the hello of their pairing, and sends a reply;
-2. MUST fail the run unless the request opens, and takes the new device's kind, keys and `name` only from it, never from the server;
-3. shows its user that `name` and kind, and once its user confirms, issues the certificate for them and sends the grant.
+2. MUST fail the run unless the request opens, and takes the new device's kind, keys, `name`, `ssh` and `github` only from it, never from the server;
+3. checks `ssh` against GitHub as [Device certificate](#device-certificate) says, over the new device's account, ID and `signing`. A key change fails the run, and it tells its user so;
+4. shows its user that `name` and kind, with the GitHub login of an `ssh` that passed or that `ssh` is not checked, and once its user confirms, issues the certificate for them, with `ssh` and `github` for a `client` device, and sends the grant.
 
 - A side whose run fails sends a `link-abort` and tells its user. A `link-abort` is not authenticated: it only ends the run, and the new device spent the attempt when it took the reply.
 
