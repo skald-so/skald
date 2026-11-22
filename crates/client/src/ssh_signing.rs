@@ -22,6 +22,7 @@ use skald_crypto::{SshCheck, check_ssh_signature};
 use skald_proto::{CertBody, SSH_LABEL, SSH_NAMESPACE, signed_data};
 
 use crate::connection::{Connection, printable};
+use crate::person;
 use crate::ssh_checks::{self, ByLogin};
 
 /// The armor of an SSH signature `ssh-keygen -Y sign` writes.
@@ -173,6 +174,9 @@ impl Signer {
                 .env_remove("SSH_ASKPASS")
                 .env_remove("SSH_ASKPASS_REQUIRE");
         }
+        // At the person's terminal, it reads the passphrase there, not the thread reading its
+        // person's lines.
+        let _held_off = self.may_ask.then(person::hold_off);
         let mut child = command.spawn().ok()?;
         let written = (child.stdin.take()).map(|mut stdin| stdin.write_all(&self.data));
         let output = child.wait_with_output().ok()?;

@@ -89,7 +89,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-# setsid, which detaches the helper from the terminal of the command that starts it.
+# setsid, which detaches the helper from the terminal of the command that starts it; poll, with
+# which the thread reading the person's lines reads only input that waits.
 libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
