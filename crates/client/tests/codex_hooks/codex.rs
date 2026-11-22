@@ -287,20 +287,27 @@ impl Codex {
     /// to [`WAIT`]; each run before that must print nothing. Gives what it gave.
     #[track_caller]
     pub fn gives(&self, of: &Thread, event: Event) -> String {
-        let deadline = Instant::now() + WAIT;
-        let mut hooked = self.hook(of, event);
-        while hooked.stdout.is_empty() {
-            hooked.assert_silent(&format!("{} with nothing to give", event.name()));
-            assert!(
-                Instant::now() < deadline,
-                "{} gave nothing within {WAIT:?}",
-                event.name()
-            );
-            thread::sleep(Duration::from_millis(500));
-            hooked = self.hook(of, event);
-        }
-        given(&hooked, event)
+        gives_by(event, || self.hook(of, event))
     }
+}
+
+/// Runs `hook`, a run of a session's hook of `event`, every half second until it gives the session
+/// something, for up to [`WAIT`]; each run before that must print nothing. Gives what it gave.
+#[track_caller]
+pub fn gives_by(event: Event, mut hook: impl FnMut() -> Hooked) -> String {
+    let deadline = Instant::now() + WAIT;
+    let mut hooked = hook();
+    while hooked.stdout.is_empty() {
+        hooked.assert_silent(&format!("{} with nothing to give", event.name()));
+        assert!(
+            Instant::now() < deadline,
+            "{} gave nothing within {WAIT:?}",
+            event.name()
+        );
+        thread::sleep(Duration::from_millis(500));
+        hooked = hook();
+    }
+    given(&hooked, event)
 }
 
 /// The setting that makes a run of this test binary play a Codex process.
@@ -323,7 +330,12 @@ pub struct CodexProcess {
 
 impl CodexProcess {
     pub fn start() -> Self {
-        let mut child = Command::new(env::current_exe().expect("this test binary"))
+        CodexProcess::start_as(&env::current_exe().expect("this test binary"))
+    }
+
+    /// As [`CodexProcess::start`], run from `exe`, a copy of this test binary.
+    pub fn start_as(exe: &Path) -> Self {
+        let mut child = Command::new(exe)
             .args([PLAYER, "--exact", "--ignored", "--nocapture"])
             .env(PLAY, "1")
             .stdin(Stdio::piped())
@@ -394,14 +406,23 @@ impl Drop for CodexProcess {
     }
 }
 
-/// The Codex process [`CodexProcess`] runs: acts only in a run with [`PLAY`] set. Each line of
-/// its standard input asks it to run a command; it runs it as its child and prints how it went.
+/// The Codex process [`CodexProcess`] runs: acts only in a run with [`PLAY`] set.
 #[test]
 #[ignore = "the Codex process the tests of a session's lifetime run; it acts only in their runs"]
 fn codex_process() {
-    if env::var_os(PLAY).is_none() {
-        return;
+    if plays() {
+        play();
     }
+}
+
+/// Whether this run of the test binary is one [`CodexProcess`] started.
+pub fn plays() -> bool {
+    env::var_os(PLAY).is_some()
+}
+
+/// Plays a Codex process: each line of its standard input asks it to run a command; it runs it as
+/// its child and prints how it went.
+pub fn play() {
     for line in io::stdin().lock().lines().map_while(Result::ok) {
         let asked: Value = serde_json::from_str(&line).expect("a command to run");
         let strings = |field: &str| -> Vec<String> {
