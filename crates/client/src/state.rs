@@ -352,6 +352,20 @@ pub struct ClaudeSession {
     pub file: PathBuf,
 }
 
+/// A permission prompt a Claude Code session waits on, as the device recorded it
+/// ([`crate::permission_prompts`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionPrompt {
+    /// Its place in the order of recording.
+    pub position: u64,
+    pub space: SpaceId,
+    pub agent: String,
+    /// Claude Code's session ID.
+    pub session: String,
+    /// When the device recorded it, in Unix seconds.
+    pub at: u64,
+}
+
 /// A Codex session a hook registered ([`crate::codex`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodexSession {
@@ -2743,6 +2757,62 @@ impl State {
         Ok(())
     }
 
+    /// Records `prompt`, which a hook of its session told in `turn`, unless it is told again: by a
+    /// `Notification`, not `by_request`, while a prompt of the session and turn is open. A
+    /// `PermissionRequest` always tells a new one. Each other open prompt of the session ends, and
+    /// each prompt recorded before `kept_since` goes. Gives whether it recorded `prompt`.
+    pub fn prompt_told(
+        &self,
+        prompt: &PermissionPrompt,
+        turn: Option<&str>,
+        by_request: bool,
+        kept_since: u64,
+    ) -> Result<bool, Error> {
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM permission_prompt WHERE at < ?1",
+            params![sql_seq(kept_since)?],
+        )?;
+        let again = !by_request
+            && tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM permission_prompt
+                 WHERE session = ?1 AND turn IS ?2 AND open = 1)",
+                params![prompt.session, turn],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if again {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE permission_prompt SET open = 0 WHERE session = ?1",
+            params![prompt.session],
+        )?;
+        tx.execute(
+            "INSERT INTO permission_prompt (space, agent, session, turn, at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                prompt.space.to_string(),
+                prompt.agent,
+                prompt.session,
+                turn,
+                sql_seq(prompt.at)?,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Records that a hook of the Claude Code session `session` told that its open permission
+    /// prompt, if any, ended.
+    pub fn prompts_ended(&self, session: &str) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE permission_prompt SET open = 0 WHERE session = ?1 AND open = 1",
+            params![session],
+        )?;
+        Ok(())
+    }
+
     /// Registers the Codex session `session`, or updates its registration, as the one whose hook
     /// ran last: a session file or config home it does not give stays as registered.
     pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
@@ -2770,6 +2840,30 @@ impl State {
             ],
         )?;
         Ok(())
+    }
+
+    /// The recorded permission prompts the person's run has yet to show, in order.
+    pub fn prompts_for_person(&self) -> Result<Vec<PermissionPrompt>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT position, space, agent, session, at FROM permission_prompt
+             WHERE shown = 0 ORDER BY position",
+        )?;
+        let rows = query.query_map([], |row| {
+            let (int, text) = (|at| row.get::<_, i64>(at), |at| row.get::<_, String>(at));
+            Ok(([int(0)?, int(4)?], [text(1)?, text(2)?, text(3)?]))
+        })?;
+        rows.map(|row| {
+            let ([position, at], [space, agent, session]) = row?;
+            let malformed = || Error::Malformed(format!("the permission prompt {position}"));
+            Ok(PermissionPrompt {
+                position: u64::try_from(position).map_err(|_| malformed())?,
+                space: space.parse().map_err(|_| malformed())?,
+                agent,
+                session,
+                at: u64::try_from(at).map_err(|_| malformed())?,
+            })
+        })
+        .collect()
     }
 
     /// The registered Codex sessions, the one whose hook ran last first.
@@ -2805,6 +2899,15 @@ impl State {
             })
         })
         .collect()
+    }
+
+    /// Records that the person's run showed the permission prompt at `position`.
+    pub fn prompt_shown(&self, position: u64) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE permission_prompt SET shown = 1 WHERE position = ?1",
+            params![sql_seq(position)?],
+        )?;
+        Ok(())
     }
 
     /// Ends the registration of the Codex session `thread`: the signals that went to it go to
