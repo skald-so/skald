@@ -21,7 +21,13 @@ pub const HOOKS: &str = "hooks.json";
 pub const SERVER: &str = "skald";
 
 /// The events whose hooks Skald's handler for Codex serves.
-pub const EVENTS: [&str; 4] = ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"];
+pub const EVENTS: [&str; 5] = [
+    "SessionStart",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Stop",
+    "PermissionRequest",
+];
 
 /// The fields of a hook that hold a command.
 const COMMANDS: [&str; 3] = ["command", "commandWindows", "command_windows"];

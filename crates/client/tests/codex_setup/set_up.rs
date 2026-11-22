@@ -66,7 +66,8 @@ impl Home {
 }
 
 /// Fails unless `read` holds Skald's entries, as the setup adds them: the MCP server `skald`, run
-/// as `skald mcp`, whose tools Codex calls without asking, and exactly one hook of Skald's handler
+/// as `skald mcp`, whose tools Codex calls without asking and to which it gives Skald's state
+/// directory and key storage settings, and exactly one hook of Skald's handler
 /// for each of its events, in a group that takes every tool.
 #[track_caller]
 fn assert_set_up(read: &Read, what: &str) {
@@ -77,6 +78,13 @@ fn assert_set_up(read: &Read, what: &str) {
         Some(APPROVE),
         "{what}: Codex would ask to approve Skald's tools: {server}"
     );
+    let named = (server["env_vars"].as_array().map(Vec::as_slice)).unwrap_or_default();
+    for variable in ["SKALD_STATE_DIR", "SKALD_KEY_STORAGE"] {
+        assert!(
+            named.iter().any(|name| name == variable),
+            "{what}: Codex would not give the server {variable}: {server}"
+        );
+    }
     let (program, args) = read.server_command();
     let file = Path::new(&program)
         .file_stem()

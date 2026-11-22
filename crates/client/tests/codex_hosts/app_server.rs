@@ -137,11 +137,11 @@ fn trusting_takes_the_hooks_not_trusted_yet() {
     let listed: Value =
         serde_json::from_str(include_str!("recorded/hooks-list.json")).expect("JSON");
     let (state, commands) = untrusted(&listed);
-    assert_eq!((state.len(), commands.len()), (9, 9));
+    assert_eq!((state.len(), commands.len()), (10, 10));
     let skald = "/home/ada/.codex/config.toml:session_start:0:0";
     assert_eq!(
         state[skald]["trusted_hash"],
-        "sha256:d60b2cc12f01512b5163791eb2c0074f953ccdc5fb8fcd4c83ddbeed324be847"
+        "sha256:39d18d370d655414aa0c31ee82d62e608d819a57d8c5e15f71e0a8f09ee6e405"
     );
     assert!(
         commands

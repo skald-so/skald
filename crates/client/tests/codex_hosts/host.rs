@@ -237,17 +237,6 @@ impl Live {
              {written}"
         );
         fs::write(&config, added).expect("write config.toml");
-        // Codex gives an MCP server only the variables its entry names. The machine keeps Skald's
-        // state and keys where its variables say, so the folder's own config layer names them:
-        // Codex merges it into Skald's entry, which the setup keeps whole.
-        let names: Vec<String> = (settings.iter())
-            .filter(|(name, _)| name.starts_with("SKALD_") && name != STUB_KEY)
-            .map(|(name, _)| format!("{name:?}"))
-            .collect();
-        let layer = self.dir().join(".codex");
-        fs::create_dir_all(&layer).expect("make the folder's config layer");
-        let named = format!("mcp_servers.skald.env_vars = [{}]\n", names.join(", "));
-        fs::write(layer.join("config.toml"), named).expect("write the folder's config layer");
         let mut app_server = AppServer::start(self.command(&self.program, settings));
         let (listed, trusted) = app_server.trust_hooks(self.dir());
         record(

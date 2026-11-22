@@ -1134,8 +1134,10 @@ enum Command {
     Update,
     /// Sets Skald up in an agent CLI's config. For Codex, in the config home it uses, CODEX_HOME
     /// or ~/.codex, in config.toml: this skald as the MCP server skald, run as skald mcp, whose
-    /// tools Codex calls without asking, and skald hook codex as its SessionStart, PostToolUse,
-    /// UserPromptSubmit and Stop hooks, after the other hooks of each. Every other entry and comment
+    /// tools Codex calls without asking and which gets Skald's settings, such as SKALD_STATE_DIR
+    /// and SKALD_KEY_STORAGE; and skald hook codex as its SessionStart, PostToolUse,
+    /// UserPromptSubmit, Stop and PermissionRequest hooks, after the other hooks of each. Every
+    /// other entry and comment
     /// stays; run again, it changes nothing; it replaces Skald's entries that differ, as an older
     /// skald wrote them. Codex then asks to trust the new hooks: /hooks in the terminal, Review
     /// hooks in the app and VS Code. A config it cannot read stays as it is, and the run says why.

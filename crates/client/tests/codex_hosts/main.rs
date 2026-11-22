@@ -4,9 +4,7 @@
 //! alone in `clienta` as the tests of Codex's hooks have it (`codex_hooks/main.rs`), with the model
 //! stub (`claude_code_e2e/stub.rs`) as the model provider: no sign-in, a placeholder key, no
 //! tokens. Its home and Codex's config home are the machine's, never the user's; each host writes
-//! its hooks there before the setup adds Skald's (`host.rs`). The machine keeps Skald's state and
-//! keys where its variables say, so the session's folder names them for Skald's MCP server in its
-//! own config layer.
+//! its hooks there before the setup adds Skald's (`host.rs`).
 //!
 //! - Skald's MCP server and CLI work: the stub calls `inbox` and runs `skald devices`.
 //! - An idle session wakes as `codex queue` wakes one: once its turn ends, a message to its agent

@@ -40,7 +40,25 @@ const HOOKS: &str = "hooks.json";
 const SERVER: &str = "skald";
 
 /// The events whose hooks run Skald's handler for Codex ([`crate::hook::Cli::handles`]).
-pub const EVENTS: [&str; 4] = ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"];
+pub const EVENTS: [&str; 5] = [
+    "SessionStart",
+    "PostToolUse",
+    "UserPromptSubmit",
+    "Stop",
+    "PermissionRequest",
+];
+
+/// The variables Codex gives Skald's MCP server besides its own defaults, such as `HOME` and
+/// `PATH`: those `skald mcp` reads, for its state directory and key storage, the Secret Service's
+/// session bus on Linux, and one-shot mode.
+pub const SERVER_VARIABLES: [&str; 6] = [
+    "SKALD_STATE_DIR",
+    "SKALD_KEY_STORAGE",
+    "SKALD_ONE_SHOT",
+    "XDG_STATE_HOME",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+];
 
 /// How long Codex lets Skald's hook run, in seconds: the handler gives up after
 /// [`crate::codex::PATIENCE`].
@@ -181,6 +199,7 @@ impl Entries {
             server: json!({
                 "command": exe,
                 "args": ["mcp"],
+                "env_vars": SERVER_VARIABLES,
                 "default_tools_approval_mode": APPROVE,
             }),
             group: json!({
@@ -309,7 +328,7 @@ fn edit(files: &Files, wanted: Option<&Entries>, paths: (&Path, &Path)) -> Resul
 
 /// For each event of [`EVENTS`], the groups of `config`, `config.toml` as JSON, that hold a hook
 /// of Skald's.
-fn skald_groups(config: &Value) -> [(&'static str, Vec<&Value>); 4] {
+fn skald_groups(config: &Value) -> [(&'static str, Vec<&Value>); EVENTS.len()] {
     EVENTS.map(|event| {
         let groups = (config.get("hooks").and_then(|hooks| hooks.get(event)))
             .and_then(Value::as_array)
@@ -475,10 +494,11 @@ fn dotted() -> Item {
 }
 
 /// The order of the keys of Skald's entries.
-const KEYS: [&str; 6] = [
+const KEYS: [&str; 7] = [
     "type",
     "command",
     "args",
+    "env_vars",
     "default_tools_approval_mode",
     "timeout",
     "hooks",
@@ -646,8 +666,11 @@ mod tests {
         assert_eq!(changes.hooks, Change::Keep);
         let text = written(changes.config);
         let expected = format!(
-            "mcp_servers.skald = {{ command = \"{EXE}\", args = [\"mcp\"], \
-             default_tools_approval_mode = \"approve\" }}\n"
+            "mcp_servers.skald = {{ command = \"{EXE}\", args = [\"mcp\"], env_vars = [{}], \
+             default_tools_approval_mode = \"approve\" }}\n",
+            SERVER_VARIABLES
+                .map(|name| format!("\"{name}\""))
+                .join(", ")
         );
         assert!(text.starts_with(&expected), "{text}");
         for event in EVENTS {
