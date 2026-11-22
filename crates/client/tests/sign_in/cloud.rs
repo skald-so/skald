@@ -455,6 +455,14 @@ impl Cloud {
         }
     }
 
+    /// The devices of the account of the session the server gave last, which fails unless the
+    /// account has a master key.
+    pub fn devices_under_a_master_key(&self) -> Vec<Device> {
+        let token = self.last_token();
+        assert!(self.master(&token).is_some(), "no master key");
+        self.devices(&token)
+    }
+
     /// The account's devices, from the server, for a session with `token`, each with its
     /// certificate as the device sent it.
     pub fn devices(&self, token: &str) -> Vec<Device> {

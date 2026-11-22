@@ -1,12 +1,13 @@
-//! What the server refuses of runs without a session: a hello that does not decode, one of a device
-//! that holds a certificate, a pairing it does not hold, a hello as a later message; and a run's
-//! token is no session.
+//! What the server refuses of runs without a session: a hello that does not decode or has no
+//! pairing of the alphabet, one with a pairing another run holds, one of a device that holds a
+//! certificate, a pairing it does not hold, a hello as a later message; and a run's token is no
+//! session.
 
 use serde_json::json;
 
 use crate::api::assert_refused;
 use crate::common::cbor::{array_of, byte_item, uint};
-use crate::common::device_flow::text;
+use crate::common::device_flow::{json as json_of, text};
 use crate::common::devices::{Device, b64};
 use crate::kit::{Fresh, OPEN, pair, send_pairing};
 use crate::relay::{assert_refused_link, fresh_session, hello};
@@ -31,13 +32,27 @@ fn a_hello_that_is_not_a_link_hello_opens_no_run() {
         assert_refused(&response, what);
         assert_ne!(response.status, 401, "{what}: {}", text(&response));
     }
+    let (device, hello) = (tablet.id.to_string(), b64(&hello(&session)));
     for (body, what) in [
-        (json!({ "hello": b64(&hello(&session)) }), "no device"),
+        (json!({ "hello": hello, "pairing": "PQRSTU" }), "no device"),
         (
-            json!({ "device": "not-an-id", "hello": b64(&hello(&session)) }),
+            json!({ "device": "not-an-id", "hello": hello, "pairing": "PQRSTU" }),
             "a device that is no ID",
         ),
-        (json!({ "device": tablet.id.to_string() }), "no hello"),
+        (json!({ "device": device, "pairing": "PQRSTU" }), "no hello"),
+        (json!({ "device": device, "hello": hello }), "no pairing"),
+        (
+            json!({ "device": device, "hello": hello, "pairing": "pqrstu" }),
+            "a pairing in lowercase",
+        ),
+        (
+            json!({ "device": device, "hello": hello, "pairing": "PQRST1" }),
+            "a pairing outside the alphabet",
+        ),
+        (
+            json!({ "device": device, "hello": hello, "pairing": "PQRSTUV" }),
+            "a pairing of 7 characters",
+        ),
     ] {
         let response = f.nobody().call("post", OPEN, Some(&body));
         assert_refused(&response, what);
@@ -45,6 +60,24 @@ fn a_hello_that_is_not_a_link_hello_opens_no_run() {
     }
     // None of them left a run behind: the device's first run opens as any.
     let run = f.open(&tablet);
+    assert_eq!(pair(&f.alice.session, &run.pairing), run.hello);
+}
+
+/// A hello with a pairing that another device's open run holds opens no run and leaves that run
+/// as it was.
+#[test]
+fn a_hello_with_a_pairing_another_run_holds_opens_no_run() {
+    let f = Fresh::start(3_175_300_316);
+    let tablet = Device::new("Tablet");
+    let run = f.open(&tablet);
+
+    let phone = Device::new("Phone");
+    let taken = f.send_open_paired(&phone, &hello(&fresh_session()), &run.pairing);
+    assert_eq!(taken.status, 409, "{}", text(&taken));
+    assert_eq!(
+        json_of(&taken)["type"],
+        "https://skald.so/problems/pairing-taken"
+    );
     assert_eq!(pair(&f.alice.session, &run.pairing), run.hello);
 }
 

@@ -9,12 +9,13 @@ use std::time::{Duration, Instant};
 
 use crate::agents::{ACME_DIR, Agents, CLAUDE, CODEX, run_as_in};
 use crate::cloud::{Cloud, WAIT};
+use crate::fixtures::fronted_with;
 use crate::kit::{assert_members, group, received};
 use crate::linking::{YES, link_with, typed};
 use crate::machine::{DEVICES, Finished, Machine, NOT_LINKED};
 use crate::prompt::assert_not_prompted;
 use crate::terminal::Shown;
-use crate::world::{ACME, ADD_RULE, AGENT, Person, World, dir_of, path, run};
+use crate::world::{ACME, ADD_RULE, AGENT, Person, dir_of, path, run};
 use crate::{
     Fresh, assert_key_session, certified_named, issuer_of, secret_forms, until_no_run_open,
 };
@@ -74,7 +75,7 @@ pub fn linked_by_code(
 /// no run of the code is left open, and the new machine's `skald devices` shows it linked.
 #[test]
 fn a_new_machine_linked_by_its_code_gets_its_certificate_and_session_with_no_sign_in() {
-    let world = World::start();
+    let (world, _front) = fronted_with(|_| {});
     let cloud = &world.cloud;
     let ada = world.sign_up(4_193_101_001, "ada-links-by-code-only", "ada-workstation");
 
@@ -112,7 +113,7 @@ fn a_new_machine_linked_by_its_code_gets_its_certificate_and_session_with_no_sig
 /// in any case, with or without `-` and spaces.
 #[test]
 fn no_request_and_no_row_holds_the_code() {
-    let world = World::start();
+    let (world, _front) = fronted_with(|_| {});
     let cloud = &world.cloud;
     let ada = world.sign_up(4_193_102_001, "ada-keeps-her-code", "ada-workstation");
 

@@ -6,8 +6,7 @@ use crate::at_terminal::as_agent;
 use crate::linking::{LINK, says};
 use crate::machine::{Machine, SERVER, SIGN_IN};
 use crate::pages::{
-    NO_BROWSER, NOT_OPENED, NOT_SAID_ONCE_RUN, PAGE, approve_next_as, failing_program,
-    missing_program, start_with,
+    NO_BROWSER, NOT_OPENED, NOT_SAID_ONCE_RUN, PAGE, failing_program, missing_program, start_with,
 };
 use crate::world::World;
 
@@ -39,7 +38,7 @@ fn without_a_browser_to_open_the_command_says_so() {
 }
 
 /// With `BROWSER` naming a program that exits failing, as an agent, `skald sign-in --browser` on
-/// Ada's new machine, once she approves its code, and `skald link --browser` on her first machine
+/// Ada's new machine, which then asks for no code, and `skald link --browser` on her first machine
 /// each say on one line that the browser did not open and to run the command at a terminal, and
 /// exit failing; neither says that `BROWSER` names no program or that nothing is sent.
 #[test]
@@ -54,9 +53,8 @@ fn with_a_browser_that_does_not_open_the_command_says_so() {
     let failing = failing_program(&new);
     let args = as_agent(&[SIGN_IN, SERVER, &cloud.url, PAGE]);
     let grants = cloud.grants().len();
-    let mut run = start_with(&new, &failing, &args);
-    approve_next_as(&world, &ada.user, grants, &mut run);
-    let signing_in = run.finish();
+    let signing_in = start_with(&new, &failing, &args).finish();
+    assert_eq!(cloud.grants().len(), grants, "a code asked for");
 
     for (what, finished) in [("skald link", linking), ("skald sign-in", signing_in)] {
         let shown = finished.shown();

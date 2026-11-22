@@ -71,6 +71,8 @@ pub(crate) enum Refusal {
     DeviceCertified,
     /// A hello whose `session` another device's run of the account holds.
     LinkSessionTaken,
+    /// A hello without a session whose pairing another run holds.
+    PairingTaken,
     /// No such open run of the session's account, or of the run's token.
     NoLinkRun,
     /// No open run without a session that the session's account may pair has the pairing.
@@ -244,6 +246,12 @@ impl IntoResponse for Refusal {
                 "link-session-taken",
                 "Session taken",
                 "A run of another device of the account has this session.",
+            ),
+            Refusal::PairingTaken => problem(
+                conflict,
+                "pairing-taken",
+                "Pairing taken",
+                "Another run holds this pairing: draw another.",
             ),
             Refusal::NoLinkRun => problem(
                 StatusCode::NOT_FOUND,

@@ -5,6 +5,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::json;
+use skald_crypto::LinkPairing;
 use skald_github_stand_in::User;
 
 use crate::api::{Person, Session, assert_refused};
@@ -53,9 +54,15 @@ impl Fresh {
         Session::none(&self.flow)
     }
 
-    /// `POST /links` of `hello`'s bytes naming `device`, without a session.
+    /// `POST /links` of `hello`'s bytes naming `device`, with a fresh pairing, without a session.
     pub fn send_open(&self, device: &Device, hello: &[u8]) -> Response {
-        let body = json!({ "device": device.id.to_string(), "hello": b64(hello) });
+        self.send_open_paired(device, hello, &LinkPairing::generate().to_string())
+    }
+
+    /// `POST /links` of `hello`'s bytes naming `device`, with `pairing`, without a session.
+    pub fn send_open_paired(&self, device: &Device, hello: &[u8], pairing: &str) -> Response {
+        let body =
+            json!({ "device": device.id.to_string(), "hello": b64(hello), "pairing": pairing });
         self.nobody().call("post", OPEN, Some(&body))
     }
 

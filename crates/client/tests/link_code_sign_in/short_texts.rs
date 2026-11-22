@@ -4,15 +4,15 @@
 
 use crate::agents::{Agents, CLAUDE};
 use crate::at_terminal::AGENT as AGENT_NAME;
-use crate::browser_first::shown_recovery_keys;
+use crate::browser_first::{recovered, shown_recovery_keys};
 use crate::code_first::linked_by_code;
 use crate::devices::second_machine;
+use crate::fixtures::fronted_with;
 use crate::linking::{OWN_DEVICE, YES, link_with, typed};
 use crate::machine::{DEVICES, Machine};
 use crate::mcp_client::{CLIENT, MCP, Session};
 use crate::pages::{Opener, confirm_on_page, link_on_page};
 use crate::prompt::UNVERIFIED;
-use crate::recovering::{LOST, WITH_RECOVERY_KEY, play, sign_up};
 use crate::world::{AGENT, World, run};
 use crate::{Fresh, assert_short_lines, until};
 
@@ -47,7 +47,7 @@ fn signing_up_says_each_text_in_one_short_line() {
 /// `skald recv` on the desktop, which learns of the new device.
 #[test]
 fn linking_by_code_says_each_text_in_one_short_line() {
-    let world = World::start();
+    let (world, _front) = fronted_with(|_| {});
     let cloud = &world.cloud;
     let ada = world.sign_up(4_193_502_001, "ada-links-in-short-lines", WORKSTATION);
     let desktop = second_machine(&world, &ada, DESKTOP);
@@ -67,24 +67,7 @@ fn linking_by_code_says_each_text_in_one_short_line() {
 #[test]
 fn recovery_says_each_text_in_one_short_line() {
     let world = World::start();
-    let cloud = &world.cloud;
-    let ada = sign_up(
-        &world,
-        (4_193_503_001, "ada-recovers-in-short-lines"),
-        WORKSTATION,
-    );
-    let first = ada.person.device.to_string();
-    let mut fresh = Fresh::start(cloud, LAPTOP, &[WITH_RECOVERY_KEY, LOST, &first]);
-    let grants = fresh.grants;
-
-    play(
-        &world,
-        ada.user(),
-        fresh.run(),
-        (grants, Some(ada.key.as_str())),
-        || false,
-    );
-    let shown = fresh.finish();
+    let shown = recovered(&world, (4_193_503_001, "ada-recovers-in-short-lines"));
 
     assert!(shown.success, "{}", shown.text);
     assert_short_lines("skald sign-in --with-recovery-key", &shown.text);
@@ -133,7 +116,7 @@ fn the_waiting_device_is_said_in_one_short_line() {
 /// is short.
 #[test]
 fn the_pages_say_each_text_in_one_short_line() {
-    let world = World::start();
+    let (world, _front) = fronted_with(|_| {});
     let ada = world.sign_up(4_193_505_001, "ada-pages-in-short-lines", WORKSTATION);
     let machine = Machine::new().with_host_name(LAPTOP);
     let (run, _opener, paged, code) =

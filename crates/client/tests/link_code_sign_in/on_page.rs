@@ -3,15 +3,15 @@
 //! terminal; the command's output holds no code, as its person's run or an agent's.
 
 use std::fs;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 
 use crate::at_terminal::as_agent;
+use crate::fixtures::fronted_with;
 use crate::linking::{OWN_DEVICE, YES, link_with, typed};
-use crate::machine::{Finished, Machine, RUN_LIMIT, Run, SERVER, SIGN_IN};
-use crate::pages::{Opener, PAGE, Paged, confirm_on_page, link_on_page, start_with};
+use crate::machine::{Finished, Machine, Run, SERVER, SIGN_IN};
+use crate::pages::{Opener, PAGE, Paged, confirm_on_page, link_on_page, start_with, until_opened};
 use crate::world::{Person, World};
 use crate::{
     assert_key_session, assert_no_code, certified_named, complete_uri, issuer_of, key_sessions,
@@ -28,32 +28,18 @@ fn local(text: &str) -> bool {
         .any(|start| text.contains(start))
 }
 
-/// Waits until the opener has been given the command's own page, for up to [`RUN_LIMIT`], while
-/// `run` goes on; gives how many runs of the opener came before it.
+/// Waits until the opener has been given the command's own page, for up to
+/// [`RUN_LIMIT`](crate::machine::RUN_LIMIT), while `run` goes on; gives how many runs of the opener
+/// came before it.
 #[track_caller]
 pub fn local_page_at(opener: &Opener, run: &mut Run) -> usize {
-    let deadline = Instant::now() + RUN_LIMIT;
-    loop {
-        let found = (opener.openings().iter()).position(|args| {
+    until_opened(opener, run, |openings| {
+        openings.iter().position(|args| {
             args.first()
                 .and_then(|arg| fs::read_to_string(named_file(arg)).ok())
                 .is_some_and(|text| local(&text))
-        });
-        if let Some(at) = found {
-            return at;
-        }
-        assert!(
-            !run.exited(),
-            "skald exited opening no page: {}",
-            run.shown()
-        );
-        assert!(
-            Instant::now() < deadline,
-            "skald opened no page: {}",
-            run.shown()
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
+        })
+    })
 }
 
 /// Whether the page `paged` shows links to `link`, as its text or a link's target.
@@ -91,18 +77,36 @@ pub fn on_its_page<'b>(
     (run, opener, paged, code)
 }
 
+/// GitHub user `login`, of the ID `id`, signs up in `world` on her first machine; gives her, her
+/// new machine [`LAPTOP`], and the relay's mark and how many sessions the server gave then.
+fn ada_and_her_laptop(
+    world: &World,
+    (id, login): (u64, &str),
+) -> (Person, Machine, (Instant, usize)) {
+    let cloud = &world.cloud;
+    let ada = world.sign_up(id, login, "ada-workstation");
+    let machine = Machine::new().with_host_name(LAPTOP);
+    (ada, machine, (cloud.relay.mark(), cloud.tokens().len()))
+}
+
 /// Fails unless the new machine `host`, whose run printed `finished`, exited with success, holds a
 /// certificate `ada`'s first device issued and a device session of her account by its key, which
-/// no device flow gave, and its output holds no form of `code`.
+/// no device flow gave, the server having given no session since it gave `tokens`, and its output
+/// holds no form of `code`.
 #[track_caller]
 fn assert_linked_by_code(
     world: &World,
     ada: &Person,
     finished: &Finished,
     code: &str,
-    since: Instant,
+    (since, tokens): (Instant, usize),
 ) {
     let cloud = &world.cloud;
+    assert_eq!(
+        cloud.tokens().len(),
+        tokens,
+        "the device flow gave a session"
+    );
     assert!(finished.success, "{finished:?}");
     assert_no_code("skald sign-in", &finished.shown(), code);
     let device = certified_named(cloud, &ada.token, LAPTOP);
@@ -120,24 +124,16 @@ fn assert_linked_by_code(
 /// code, and the new machine holds its certificate and a device session of her account.
 #[test]
 fn the_page_shows_both_ways_and_its_code_links_the_machine() {
-    let world = World::start();
-    let cloud = &world.cloud;
-    let ada = world.sign_up(4_193_301_001, "ada-links-a-page-by-code", "ada-workstation");
-    let machine = Machine::new().with_host_name(LAPTOP);
-    let since = cloud.relay.mark();
-    let tokens = cloud.tokens().len();
+    let (world, _front) = fronted_with(|_| {});
+    let (ada, machine, marks) =
+        ada_and_her_laptop(&world, (4_193_301_001, "ada-links-a-page-by-code"));
     let (run, _opener, _paged, code) = on_its_page(&world, &machine, &[]);
 
     let linked = link_with(&ada, &typed(&code), LAPTOP, YES);
     assert!(linked.success, "skald link failed: {}", linked.text);
     let finished = run.finish();
 
-    assert_eq!(
-        cloud.tokens().len(),
-        tokens,
-        "the device flow gave a session"
-    );
-    assert_linked_by_code(&world, &ada, &finished, &code, since);
+    assert_linked_by_code(&world, &ada, &finished, &code, marks);
 }
 
 /// As an agent, Ada's new machine runs `skald sign-in --browser`: its page shows a link code and
@@ -147,12 +143,9 @@ fn the_page_shows_both_ways_and_its_code_links_the_machine() {
 /// of her account.
 #[test]
 fn as_an_agent_the_code_shows_only_on_the_page_and_links_the_machine() {
-    let world = World::start();
-    let cloud = &world.cloud;
-    let ada = world.sign_up(4_193_302_001, "ada-agent-links-a-page", "ada-workstation");
-    let machine = Machine::new().with_host_name(LAPTOP);
-    let since = cloud.relay.mark();
-    let tokens = cloud.tokens().len();
+    let (world, _front) = fronted_with(|_| {});
+    let (ada, machine, marks) =
+        ada_and_her_laptop(&world, (4_193_302_001, "ada-agent-links-a-page"));
     let (run, _opener, _paged, code) = on_its_page(&world, &machine, &as_agent(&[]));
 
     let at_first = Opener::on(&ada.machine);
@@ -162,10 +155,5 @@ fn as_an_agent_the_code_shows_only_on_the_page_and_links_the_machine() {
     assert_no_code("skald link", &linked.shown(), &code);
     let finished = run.finish();
 
-    assert_eq!(
-        cloud.tokens().len(),
-        tokens,
-        "the device flow gave a session"
-    );
-    assert_linked_by_code(&world, &ada, &finished, &code, since);
+    assert_linked_by_code(&world, &ada, &finished, &code, marks);
 }

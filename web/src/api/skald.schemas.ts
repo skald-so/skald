@@ -180,7 +180,7 @@ export interface ListedDevices {
 export type LinkMessage = string;
 
 export interface LinkHelloRequest {
-  /** The new device: registered without a certificate on the session's account; at `POST /links`, with no certificate, registered on any account or none. */
+  /** The new device: registered without a certificate on the session's account. */
   device: DeviceId;
   /** Its `link-hello`. */
   hello: LinkMessage;

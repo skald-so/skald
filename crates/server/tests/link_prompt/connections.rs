@@ -90,6 +90,7 @@ fn a_connection_learns_of_a_device_without_a_session_once_it_registers_on_the_ac
     let body = json!({
         "device": tablet.id.to_string(),
         "hello": b64(&hello(&fresh_session())),
+        "pairing": skald_crypto::LinkPairing::generate().to_string(),
     });
     let opened = Session::none(&l.flow).call("post", "/links", Some(&body));
     assert_eq!(opened.status, 201, "{}", text(&opened));

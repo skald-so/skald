@@ -71,6 +71,15 @@ struct HelloRequest {
     hello: String,
 }
 
+/// `SessionlessLinkHelloRequest` in the spec.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionlessHelloRequest {
+    device: String,
+    hello: String,
+    pairing: String,
+}
+
 /// `LinkMessageRequest` in the spec.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,11 +145,20 @@ fn message(text: &str, field: &str) -> Result<(Vec<u8>, LinkMessage), Refusal> {
 /// go to `later`.
 fn hello_request(body: &[u8], later: &str) -> Result<(DeviceId, Vec<u8>, [u8; 16]), Refusal> {
     let request: HelloRequest = parse(body)?;
-    let device: DeviceId = request
-        .device
+    hello_of(&request.device, &request.hello, later)
+}
+
+/// The device `device` names, and the hello `hello` holds with its `session`, whose later messages
+/// go to `later`.
+fn hello_of(
+    device: &str,
+    hello: &str,
+    later: &str,
+) -> Result<(DeviceId, Vec<u8>, [u8; 16]), Refusal> {
+    let device: DeviceId = device
         .parse()
         .map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
-    let (hello, LinkMessage::Hello { session, .. }) = message(&request.hello, "hello")? else {
+    let (hello, LinkMessage::Hello { session, .. }) = message(hello, "hello")? else {
         return Err(Refusal::LinkMessage(format!(
             "hello: not a `link-hello`; a run's later messages go to {later}"
         )));
@@ -148,16 +166,13 @@ fn hello_request(body: &[u8], later: &str) -> Result<(DeviceId, Vec<u8>, [u8; 16
     Ok((device, hello, session))
 }
 
-/// The device, the hello and its `session` of a `LinkHelloRequest` in `body`, whose later messages
-/// go to `later`, and the transaction that opens its run. The transaction makes the hellos of the
-/// device wait for each other, whether it is registered or not, and deletes its open run, which
-/// the new one replaces once it commits.
+/// The device, the hello and its `session` of a request, and the transaction that opens its run.
+/// The transaction makes the hellos of the device wait for each other, whether it is registered or
+/// not, and deletes its open run, which the new one replaces once it commits.
 async fn start_run(
     state: &AppState,
-    body: &[u8],
-    later: &str,
+    (device, hello, session): (DeviceId, Vec<u8>, [u8; 16]),
 ) -> Result<(Transaction<'static, Postgres>, DeviceId, Vec<u8>, [u8; 16]), Refusal> {
-    let (device, hello, session) = hello_request(body, later)?;
     let failed = |err| Refusal::Database("open a link run", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
@@ -180,8 +195,8 @@ pub(crate) async fn open(
     SignedIn(account): SignedIn,
     body: Bytes,
 ) -> Answer {
-    let (mut tx, device, hello, session) =
-        start_run(&state, &body, "/account/links/messages").await?;
+    let request = hello_request(&body, "/account/links/messages")?;
+    let (mut tx, device, hello, session) = start_run(&state, request).await?;
     let failed = |err| Refusal::Database("open a link run", err);
     let (certified,): (bool,) = sqlx::query_as(
         "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid AND account_id = $2::uuid
@@ -224,9 +239,18 @@ pub(crate) async fn open(
 }
 
 /// `POST /links`: a hello without a session, naming a device without a certificate, opens the
-/// device's run, which replaces its open one, and gives the run's pairing and token.
+/// device's run with the pairing it drew, which replaces its open one, and gives the run's pairing
+/// and token; refused if another run holds the pairing.
 pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes) -> Answer {
-    let (mut tx, device, hello, session) = start_run(&state, &body, "/links/messages").await?;
+    let request: SessionlessHelloRequest = parse(&body)?;
+    let pairing = (LinkPairing::from_entry(&request.pairing).ok())
+        .map(|pairing| pairing.to_string())
+        .filter(|pairing| *pairing == request.pairing)
+        .ok_or_else(|| {
+            Refusal::Invalid("pairing: not 6 characters of A to Z and 2 to 7".to_owned())
+        })?;
+    let hello = hello_of(&request.device, &request.hello, "/links/messages")?;
+    let (mut tx, device, hello, session) = start_run(&state, hello).await?;
     let failed = |err| Refusal::Database("open a link run", err);
     let certified: Option<(bool,)> = sqlx::query_as(
         "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
@@ -239,27 +263,24 @@ pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes)
         return Err(Refusal::DeviceCertified);
     }
     let token = random_token();
-    // A pairing an open or ended run holds is drawn again.
-    let pairing = loop {
-        let pairing = LinkPairing::generate().to_string();
-        let opened = sqlx::query(
-            "INSERT INTO link_runs (device_id, session, hello, expires_at, pairing, token_hash)
-             VALUES ($1::uuid, $2, $3, now() + make_interval(secs => $4), $5, $6)
-             ON CONFLICT (pairing) DO NOTHING",
-        )
-        .bind(device.to_string())
-        .bind(session.as_slice())
-        .bind(&hello)
-        .bind(state.link_code_lifetime.as_secs_f64())
-        .bind(&pairing)
-        .bind(digest(&token))
-        .execute(&mut *tx)
-        .await
-        .map_err(failed)?;
-        if opened.rows_affected() == 1 {
-            break pairing;
-        }
-    };
+    // A pairing an open or ended run holds is refused.
+    let opened = sqlx::query(
+        "INSERT INTO link_runs (device_id, session, hello, expires_at, pairing, token_hash)
+         VALUES ($1::uuid, $2, $3, now() + make_interval(secs => $4), $5, $6)
+         ON CONFLICT (pairing) DO NOTHING",
+    )
+    .bind(device.to_string())
+    .bind(session.as_slice())
+    .bind(&hello)
+    .bind(state.link_code_lifetime.as_secs_f64())
+    .bind(&pairing)
+    .bind(digest(&token))
+    .execute(&mut *tx)
+    .await
+    .map_err(failed)?;
+    if opened.rows_affected() == 0 {
+        return Err(Refusal::PairingTaken);
+    }
     tx.commit().await.map_err(failed)?;
     Ok((StatusCode::CREATED, Json(SessionlessRun { pairing, token })).into_response())
 }

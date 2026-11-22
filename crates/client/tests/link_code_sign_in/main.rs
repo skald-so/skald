@@ -225,15 +225,7 @@ pub fn until_no_run_open(cloud: &Cloud) {
     }
 }
 
-/// Waits for up to [`WAIT`] until `done` holds.
-#[track_caller]
-pub fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !done() {
-        assert!(Instant::now() < deadline, "{what} after {WAIT:?}");
-        thread::sleep(Duration::from_millis(50));
-    }
-}
+pub use crate::linking::until;
 
 /// Fails unless `token` is a session of `account` without a sign-in method, which the server
 /// takes for the account's devices.

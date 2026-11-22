@@ -13,7 +13,7 @@ use crate::machine::{SERVER, SIGN_IN};
 use crate::relay::strings_named;
 use crate::revocations::revoked_by_cli;
 use crate::terminal::{Shown, Terminal};
-use crate::world::{Person, World};
+use crate::world::Person;
 use crate::{
     Fresh, assert_key_session, certified_named, issuer_of, key_sessions, until, until_no_run_open,
 };
@@ -79,7 +79,7 @@ fn assert_linked(cloud: &Cloud, ada: &Person, fresh: &Fresh) {
 /// by her first device, and it holds a device session of her account.
 #[test]
 fn killed_after_the_grant_the_next_run_stores_the_certificate_and_gets_the_session() {
-    let world = World::start();
+    let (world, _front) = fronted_with(|_| {});
     let cloud = &world.cloud;
     let ada = world.sign_up(4_193_401_001, "ada-kills-the-laptop-run", WORKSTATION);
     let mut fresh = Fresh::start(cloud, LAPTOP, &[]);

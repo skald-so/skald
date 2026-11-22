@@ -12,7 +12,7 @@ use crate::linking::{YES, link_with, typed};
 use crate::machine::DEVICES;
 use crate::prompt::{UNVERIFIED, assert_not_prompted, assert_prompted};
 use crate::recovering::{LOST, WITH_RECOVERY_KEY, play, sign_up};
-use crate::terminal::Terminal;
+use crate::terminal::{Shown, Terminal};
 use crate::world::{World, run};
 use crate::{Fresh, certified_named, issuer_of, link_codes_in, until, until_no_run_open};
 
@@ -121,6 +121,25 @@ fn on_an_account_with_a_master_key_the_browser_sign_in_keeps_the_machine_waiting
     until_no_run_open(cloud);
 }
 
+/// GitHub user `login`, of the ID `id`, signs up at a terminal on her first machine, which shows
+/// its recovery key. Her new machine runs `skald sign-in --with-recovery-key`, naming her first
+/// device lost, at a terminal; she approves its device authorization and types the key once asked.
+/// Gives what the run showed once it exited.
+pub fn recovered(world: &World, (id, login): (u64, &str)) -> Shown {
+    let ada = sign_up(world, (id, login), WORKSTATION);
+    let first = ada.person.device.to_string();
+    let mut fresh = Fresh::start(&world.cloud, LAPTOP, &[WITH_RECOVERY_KEY, LOST, &first]);
+    let grants = fresh.grants;
+    play(
+        world,
+        ada.user(),
+        fresh.run(),
+        (grants, Some(ada.key.as_str())),
+        || false,
+    );
+    fresh.finish()
+}
+
 /// Ada's account was made by her first machine at a terminal, which showed its recovery key. Her
 /// new machine runs `skald sign-in --with-recovery-key`, naming her first device lost, at a
 /// terminal: it shows the sign-in's line and a link code. She approves its device authorization and
@@ -130,23 +149,7 @@ fn on_an_account_with_a_master_key_the_browser_sign_in_keeps_the_machine_waiting
 fn with_the_recovery_key_the_browser_sign_in_and_the_key_link_the_machine() {
     let world = World::start();
     let cloud = &world.cloud;
-    let ada = sign_up(
-        &world,
-        (4_193_203_001, "ada-recovers-by-browser"),
-        WORKSTATION,
-    );
-    let first = ada.person.device.to_string();
-    let mut fresh = Fresh::start(cloud, LAPTOP, &[WITH_RECOVERY_KEY, LOST, &first]);
-    let grants = fresh.grants;
-
-    play(
-        &world,
-        ada.user(),
-        fresh.run(),
-        (grants, Some(ada.key.as_str())),
-        || false,
-    );
-    let shown = fresh.finish();
+    let shown = recovered(&world, (4_193_203_001, "ada-recovers-by-browser"));
 
     assert!(shown.success, "{}", shown.text);
     let token = cloud.last_token();

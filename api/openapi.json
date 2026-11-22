@@ -4196,7 +4196,7 @@
       "post": {
         "operationId": "openSessionlessLinkRun",
         "summary": "Open a run without a session",
-        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The hello names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server gives the run's pairing, which the person enters on the issuing device with the code, and the run's token for its later messages. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
+        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The hello names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The device draws the run's pairing, which its hello's share binds and the person enters on the issuing device with the code; the server gives it back with the run's token for its later messages. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4207,7 +4207,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/LinkHelloRequest"
+                "$ref": "#/components/schemas/SessionlessLinkHelloRequest"
               }
             }
           }
@@ -4251,7 +4251,7 @@
             }
           },
           "409": {
-            "description": "The problem `https://skald.so/problems/device-certified`: the device has a certificate. No run opens.",
+            "description": "The problem `https://skald.so/problems/device-certified`: the device has a certificate; or `https://skald.so/problems/pairing-taken`: another run holds the pairing, so the device draws another. No run opens.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -10661,7 +10661,7 @@
         "required": ["device", "hello"],
         "properties": {
           "device": {
-            "description": "The new device: registered without a certificate on the session's account; at `POST /links`, with no certificate, registered on any account or none.",
+            "description": "The new device: registered without a certificate on the session's account.",
             "$ref": "#/components/schemas/DeviceId"
           },
           "hello": {
@@ -10700,7 +10700,7 @@
         "additionalProperties": false
       },
       "LinkPairing": {
-        "description": "A run's pairing: 6 characters of the base32 alphabet (RFC 4648, §6) in uppercase, which the server picks for a run without a session (docs/protocol/membership.md, \"Link code\").",
+        "description": "A run's pairing: 6 characters of the base32 alphabet (RFC 4648, §6) in uppercase, which the new device draws for a run without a session (docs/protocol/membership.md, \"Link code\").",
         "type": "string",
         "pattern": "^[A-Z2-7]{6}$"
       },
@@ -11594,6 +11594,24 @@
             "items": {
               "$ref": "#/components/schemas/ServiceToken"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionlessLinkHelloRequest": {
+        "type": "object",
+        "required": ["device", "hello", "pairing"],
+        "properties": {
+          "device": {
+            "description": "The new device: with no certificate, registered on any account or none.",
+            "$ref": "#/components/schemas/DeviceId"
+          },
+          "hello": {
+            "description": "Its `link-hello`, whose share binds `pairing`.",
+            "$ref": "#/components/schemas/LinkMessage"
+          },
+          "pairing": {
+            "$ref": "#/components/schemas/LinkPairing"
           }
         },
         "additionalProperties": false

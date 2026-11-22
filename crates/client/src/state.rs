@@ -765,6 +765,16 @@ impl State {
         Ok(())
     }
 
+    /// Records the machine's own device, new and not registered yet, of no account so far: it
+    /// learns its account from the session it gets.
+    pub fn add_device_of_no_account(&self, id: DeviceId, name: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO device (id, device, name) VALUES (1, ?1, ?2)",
+            params![id.to_string(), name],
+        )?;
+        Ok(())
+    }
+
     /// Records the account of a device that has none recorded.
     pub fn set_device_account(&self, account: &str) -> Result<(), Error> {
         self.db.execute(
