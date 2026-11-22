@@ -249,7 +249,11 @@ async fn erase(
     let mut noticed = Vec::new();
     for (space, deletions) in counted {
         let space: SpaceId = space.parse().expect("a stored space ID");
-        noticed.push((space, deletions, latest_members(&mut *conn, space).await?));
+        noticed.push((
+            space,
+            deletions,
+            latest_members(&mut *conn, space, false).await?,
+        ));
     }
     let devices: Vec<(String,)> =
         sqlx::query_as("SELECT id::text FROM devices WHERE account_id = $1::uuid")

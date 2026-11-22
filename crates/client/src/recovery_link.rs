@@ -136,7 +136,11 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
     println!("The account's devices:");
     print!(
         "{}",
-        devices::listing(&devices::check(&master, &devices), new.device.id)
+        devices::listing(
+            &devices::check(&master, &devices),
+            new.device.id,
+            &Default::default()
+        )
     );
     let named = if named.given() {
         named.clone()

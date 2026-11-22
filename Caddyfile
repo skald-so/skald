@@ -13,7 +13,7 @@
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
 		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
 		path /devices/*/cert /devices/*/challenge /devices/*/key-packages /devices/*/session /health
-		path /key-packages /links /links/messages /mailbox/ack
+		path /invites/* /invites/*/acceptance /key-packages /links /links/messages /mailbox/ack
 		path /mailbox/events /mailbox/poll /mailbox/send /openapi.json /protocol /server
 		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
@@ -22,7 +22,7 @@
 		path /spaces/*/channels/*/queues /spaces/*/channels/*/queues/*
 		path /spaces/*/channels/*/queues/*/claims /spaces/*/channels/*/queues/*/tasks
 		path /spaces/*/channels/*/queues/*/tasks/* /spaces/*/channels/*/queues/*/tasks/*/*
-		path /spaces/*/members
+		path /spaces/*/acceptances /spaces/*/invites /spaces/*/invites/* /spaces/*/members
 		path /spaces/*/revisions /spaces/*/service-grants /spaces/*/service-tokens
 		path /spaces/*/service-tokens/* /spaces/*/usage
 		path /ws
