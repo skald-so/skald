@@ -41,8 +41,21 @@ use crate::spaces::{Follower, now};
 /// The token's own record, `GET`.
 const OWN_RECORD: &str = "/service-token";
 
+/// Whether this process runs as a service agent ([`set_running`]).
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
 /// Whether this process's service agent's run is stateless ([`set_stateless`]).
 static STATELESS: AtomicBool = AtomicBool::new(false);
+
+/// Makes this process run as a service agent.
+pub fn set_running() {
+    RUNNING.store(true, Ordering::Relaxed);
+}
+
+/// Whether this process runs as a service agent.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::Relaxed)
+}
 
 /// Makes this process's service agent's run stateless: it has no state directory.
 pub fn set_stateless() {

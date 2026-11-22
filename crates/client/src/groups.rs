@@ -51,6 +51,7 @@ use std::num::NonZeroU64;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
+use sha2::Digest as _;
 use skald_crypto::{
     ChannelView, DeviceCheckError, Joining, MemberDevice, MlsContent, MlsDevice, MlsError,
     MlsFraming, Processed, SealedState, StateKey, check_device, check_key_package,
@@ -69,6 +70,7 @@ use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
 use crate::history;
 use crate::key_chain;
+use crate::key_changes;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
 use crate::message_status;
@@ -712,10 +714,16 @@ fn key_packages(
             Ok(_) => {
                 taken.entry(device).or_insert(package);
             }
-            Err(err) => eprintln!(
-                "skald: warning: the server handed out a KeyPackage of the device {device} that \
-                 fails its checks: {err}; this device does not add it"
-            ),
+            Err(err) => {
+                let warning = format!(
+                    "the server handed out a KeyPackage of the device {device} that fails its \
+                     checks: {err}; this device does not add it"
+                );
+                let hash: [u8; 32] = sha2::Sha256::digest(&package).into();
+                let key: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+                key_changes::keep_once(&follower.state, &format!("key package {key}"), &warning)?;
+                eprintln!("skald: warning: {warning}");
+            }
         }
     }
     Ok(taken.into_values().collect())

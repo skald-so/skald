@@ -462,6 +462,7 @@ impl Settings {
                 call: Some(call),
             },
             said: crate::link_prompt::Said::default(),
+            said_key_changes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 

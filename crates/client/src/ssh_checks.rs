@@ -19,6 +19,7 @@ use skald_proto::{Cert, DeviceId, DeviceKind};
 
 use crate::connection;
 use crate::devices::text;
+use crate::key_changes;
 use crate::state::State;
 
 /// The largest answer of GitHub's API the client reads.
@@ -98,7 +99,7 @@ impl Run {
 
     /// Checks the SSH signature of each of `certs`, those of `client` devices that carry one,
     /// unless `state` holds its result; keeps each result. Gives the results, and the warning of
-    /// each key change found now.
+    /// each key change found now, kept by the API's address ([`key_changes::keep_from`]).
     fn check(&mut self, state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), String> {
         let mut github = Github::new(&self.api, self.timeout, self.unavailable);
         let checked = checked(state, &mut github, certs);
@@ -148,11 +149,13 @@ fn checked(
         };
         state.keep_ssh_check(api, &hash, login).map_err(text)?;
         if seen == Seen::Failed {
-            warnings.push(format!(
+            let warning = format!(
                 "the SSH signature of device {} verifies with no SSH key GitHub lists for the \
                  GitHub user {user} its certificate names: its key may have been swapped",
                 body.device
-            ));
+            );
+            key_changes::keep_from(state, &key_changes::github(api), &warning)?;
+            warnings.push(warning);
         }
         results.insert(body.device, seen);
     }

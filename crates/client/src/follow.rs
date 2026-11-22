@@ -31,6 +31,7 @@ use skald_proto::{
 
 use crate::connection::Connection;
 use crate::devices::{self, text};
+use crate::key_changes;
 use crate::records;
 use crate::revocations;
 use crate::state::{self, State};
@@ -247,7 +248,8 @@ pub fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, S
 /// `name` when the run read it, with `devices`, its accounts', and `own`, and records them. While
 /// another run accepted revisions of the space first, it accepts again from what `state` then
 /// holds. Gives the space's last accepted revision, the warnings and the role changes of the
-/// revisions it recorded ([`changed_roles`]).
+/// revisions it recorded ([`changed_roles`]); keeps the master keys they change and the accounts
+/// no longer verified as key changes ([`key_changes::keep`]).
 fn settle(
     state: &State,
     (id, name): (SpaceId, &str),
@@ -263,6 +265,10 @@ fn settle(
             warnings,
         } = follow_trusting(&last, &held.hashes, (given, trusted), devices, own);
         let changes = master_changes(&last, &accepted);
+        let changed: Vec<String> = (std::iter::once(&last).chain(&accepted))
+            .zip(&accepted)
+            .flat_map(|(previous, next)| changed_masters(previous, next))
+            .collect();
         let mut recorded = earlier;
         let notices: Vec<String> = (std::iter::once(&last).chain(&accepted))
             .zip(&accepted)
@@ -286,8 +292,12 @@ fn settle(
             .accept(id, &held.last, &recorded, &newest.to_cbor())
             .map_err(text)?
         {
+            let unverified = unverify(state, name, &changes)?;
+            for line in changed.iter().chain(&unverified) {
+                key_changes::keep(state, line)?;
+            }
             let mut warnings = warnings;
-            warnings.extend(unverify(state, name, &changes)?);
+            warnings.extend(unverified);
             return Ok((newest, warnings, notices));
         }
         held = read(state, id, name)?;
@@ -679,7 +689,7 @@ struct Masters {
 
 /// The warning of each account that the last accepted revisions of the device's spaces in `state`,
 /// of each or only of `only`, give different master keys, the one `own` pinned for its own account
-/// among them ("Device checks"); each set of keys of an account once.
+/// among them ("Device checks"); each set of keys of an account once, kept as a key change.
 pub fn master_warnings(
     state: &State,
     own: &Own,
@@ -745,7 +755,7 @@ pub fn master_warnings(
                 names => format!("the spaces {} give", names.join(", ")),
             }
         };
-        warnings.push(if account == own.account {
+        let warning = if account == own.account {
             format!(
                 "{} this account a master key other than the one this device pinned: the server \
                  may have swapped it",
@@ -756,7 +766,9 @@ pub fn master_warnings(
                 "{} the account {handle} different master keys: the server may have swapped one",
                 spaces(true)
             )
-        });
+        };
+        key_changes::keep(state, &warning)?;
+        warnings.push(warning);
     }
     Ok(warnings)
 }

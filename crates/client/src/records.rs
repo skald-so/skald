@@ -5,15 +5,20 @@
 //!   devices and the one it took before, with that account's `master`: the one it pinned for its
 //!   own, the roster's for others. Of the valid ones it takes the one with the highest `revision`.
 //! - It keeps the record it takes in its local state, and warns when the record changes the
-//!   account's `recovery`.
+//!   account's `recovery`. It warns once of each record of a member account the server gives that
+//!   names the account's `master` and whose signature does not verify with it. Both are key changes
+//!   ([`key_changes`]). One naming another master key is not: a change of the member's `master`
+//!   leaves its earlier records so, and that change warns itself.
 //! - The recovery key of the record it takes is the one it wraps each clean epoch's key to
 //!   ([`crate::wraps`]); an account without a valid record gets no wrap.
 
-use skald_crypto::check_account;
+use sha2::{Digest as _, Sha256};
+use skald_crypto::{AccountError, check_account};
 use skald_proto::{AccountId, AccountRecord, Cbor as _, Member, Roster};
 
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices, master_of};
+use crate::key_changes;
 use crate::state::State;
 
 /// The valid record of `account` with the highest `revision` among `records`, checked with
@@ -56,16 +61,59 @@ pub fn of(
 }
 
 /// Takes the record of each member of `roster`, a space's last accepted revision, by `roster` and
-/// `devices`, the space's, as [`of`] says, and keeps it in `state`; gives the warning of each that
-/// changes its account's `recovery`.
+/// `devices`, the space's, as [`of`] says, and keeps it in `state`; gives the warning of each
+/// record that fails its check the first time ([`failed`]) and of each taken one that changes its
+/// account's `recovery`, keeping both as key changes.
 pub fn settle(
     state: &State,
     synced: (&Roster, &SpaceDevices),
     own: &Own,
 ) -> Result<Vec<String>, String> {
-    (synced.0.body().members.iter())
-        .filter_map(|member| take(state, synced, own, member).transpose())
-        .collect()
+    let mut warnings = Vec::new();
+    for member in synced.0.body().members.iter() {
+        warnings.extend(failed(state, synced, own, member)?);
+        if let Some(warning) = take(state, synced, own, member)? {
+            key_changes::keep(state, &warning)?;
+            warnings.push(warning);
+        }
+    }
+    Ok(warnings)
+}
+
+/// The warning of each record of `member` of `roster` that `devices`, the space's, give and that
+/// fails its check as the module says, the first time `state` keeps it as a key change.
+fn failed(
+    state: &State,
+    (roster, devices): (&Roster, &SpaceDevices),
+    own: &Own,
+    member: &Member,
+) -> Result<Vec<String>, String> {
+    let account = member.account;
+    let Some(master) = master_of(roster, own, account) else {
+        return Ok(Vec::new());
+    };
+    let mut warnings = Vec::new();
+    for record in devices.records.iter() {
+        if record.body().account != account {
+            continue;
+        }
+        if check_account(record, &master) != Err(AccountError::Signature) {
+            continue;
+        }
+        let hash: [u8; 32] = Sha256::digest(record.to_cbor()).into();
+        let key: String = hash.iter().map(|byte| format!("{byte:02x}")).collect();
+        let warning = format!(
+            "the server gives an account record of the member {} ({account}) in the space {} that \
+             fails its check with the account's master key: it may be forged; this device ignores \
+             it",
+            member.handle.as_str(),
+            roster.body().name.as_str()
+        );
+        if key_changes::keep_once(state, &format!("account record {key}"), &warning)? {
+            warnings.push(warning);
+        }
+    }
+    Ok(warnings)
 }
 
 /// Takes the record of `member` of `roster` as [`settle`] says; gives the warning if it changes

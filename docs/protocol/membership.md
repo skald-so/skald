@@ -327,13 +327,19 @@ The master key is the one the client pinned: its own account's on linking or, fo
 
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
-- an account record's `recovery` changes;
+- an account record's `recovery` changes, or a record the server gives names the account's `master` and its signature does not verify with it;
+- a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
-- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
+- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate)), or a device with certificates of two bodies ([Device certificate](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
+
+All but the first and the last are **key changes**. A client keeps each in its local state until its person sees it:
+- Until then, each command, as the person or as an agent, and each tool call of its MCP server says on one line how many wait and which command shows them; with JSON output, as a field. The line names no space, account or device.
+- One an `ssh` signature or a domain shows counts only in runs with the GitHub API or resolver that showed it, as their results do.
+- The command shows them only to the person at a terminal, never as an agent or through a pipe, and counts them seen once the person confirms.
 
 ## Account fingerprint
 Two people check that their devices see the same master key for each other's accounts by comparing fingerprints.
