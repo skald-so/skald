@@ -8,7 +8,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::claiming::{CANCELLED, COMPLETE, Claims, Craft, DONE, LOST, QUEUE_FLAG, says, tampers};
-use crate::queuing::{creates_queue, proved, tasks_path};
+use crate::queuing::creates_queue;
 
 /// What the tests enqueue and answer; no text is anywhere else.
 const CANCELLED_TASK: &str = "lost test: claude asks for a rollback ada cancels";
@@ -33,12 +33,7 @@ fn complete_after_a_cancel_says_the_claim_is_lost_and_sends_no_result() {
     );
     let task = claims.claude_enqueues(CANCELLED_TASK).task;
     claims.codex_claimed(&[]);
-    let path = format!("{}/{task}/cancel", tasks_path(claims.at, claims.queue));
-    let (status, body) = proved(claims.cloud(), claims.ada(), ("POST", &path), None);
-    assert!(
-        (200..300).contains(&status),
-        "not cancelled: {status} {body}"
-    );
+    claims.ada_cancels(task);
 
     let ran = claims.codex_runs(COMPLETE, &[&task.to_string(), CANCELLED_DONE]);
 

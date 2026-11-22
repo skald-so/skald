@@ -23,7 +23,9 @@
 //!   ([`helper::relay`]).
 //! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
 //!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
-//!   helper knows the agent runs and does not exit idle under it ([`crate::uploads`]).
+//!   helper knows the agent runs, extends its claims and does not exit idle under it
+//!   ([`crate::uploads`], [`crate::heartbeat`]). In one-shot mode, the server extends its agent's
+//!   claims itself, as an operation each [`heartbeat::TICK`] ([`beat`]).
 //! - It declares Claude Code's channel capability, [`CHANNEL_CAPABILITY`]. For Claude Code, the
 //!   session it holds is a path of resending ([`crate::resend`]): what the helper gives it goes to
 //!   the client as channel events, [`CHANNEL_EVENT`], each with its text as `content`, once the
@@ -63,8 +65,8 @@ use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
 use crate::{
-    Command, Operation, folders, forms, mailbox, message_status, presence, recovery, recv, reply,
-    secrets, send, uploads,
+    Command, Operation, folders, forms, heartbeat, mailbox, message_status, presence, recovery,
+    recv, reply, secrets, send, uploads,
 };
 
 /// The tool that returns the agent's messages.
@@ -158,6 +160,8 @@ pub enum Call {
     },
     /// The session the server holds of the helper, its agent CLI `runtime` ([`hold`]).
     Hold { runtime: Option<String> },
+    /// A one-shot server's heartbeat of its agent's claims ([`beat`]).
+    Beat,
     /// The `message_status` tool: `skald message-status` of the message `message` names.
     Status { message: String },
     /// The `agents` tool.
@@ -182,7 +186,7 @@ pub fn perform(
         Ok(_) => sends(),
         Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
     };
-    if call != Call::Register {
+    if !matches!(call, Call::Register | Call::Beat) {
         presence::notices(dir, agent);
     }
     match call {
@@ -224,6 +228,7 @@ pub fn perform(
             uploads::set_status(dir, agent, state, note.as_deref())
         }),
         Call::Hold { .. } => Err("skald mcp holds a session only of the helper".to_owned()),
+        Call::Beat => heartbeat::beat_agent(dir, storage, settings, agent),
         Call::Status { message } => message_status::run(dir, storage, &message, Some(agent), false),
     }
 }
@@ -582,6 +587,19 @@ fn hold(settings: &Settings, agent: &Name, runtime: Option<String>, channel: Opt
     }
 }
 
+/// A one-shot server's heartbeat for its whole run, as `agent`: each [`heartbeat::TICK`], extends
+/// what is due of the agent's claims, as an operation with `settings`. What its run says goes to
+/// the server's standard error.
+fn beat(settings: &Settings, agent: &Name) {
+    let said = || |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    loop {
+        thread::sleep(heartbeat::TICK);
+        if let Err(err) = settings.run(Call::Beat, agent, said) {
+            let _ = writeln!(io::stderr().lock(), "skald: {err}");
+        }
+    }
+}
+
 /// The name of the client of the request of `context`: from the request's `_meta`, or from the
 /// session's `initialize`; empty with neither.
 fn client_of(context: &RequestContext<RoleServer>) -> String {
@@ -606,7 +624,7 @@ struct Server {
     /// The session's agent, once named: as `--agent` names it, or by default.
     agent: Mutex<Option<Name>>,
     pending: Pending,
-    /// Whether it holds a session of the helper ([`hold`]).
+    /// Whether it holds a session of the helper ([`hold`]), or, in one-shot mode, beats ([`beat`]).
     holding: AtomicBool,
     /// The client, for the channel events ([`Channel`]).
     client: Client,
@@ -639,7 +657,7 @@ impl Server {
         if let Ok((false, why)) = registered {
             let _ = io::stderr().write_all(why.as_bytes());
         }
-        if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
+        if !self.holding.swap(true, AtomicOrdering::SeqCst) {
             let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
             let channel = claude_code(client).then(|| Channel {
                 client: self.client.clone(),
@@ -647,7 +665,10 @@ impl Server {
             });
             let agent = self.agent(client);
             if let Some(agent) = agent {
-                thread::spawn(move || hold(&settings, &agent, runtime, channel));
+                match settings.one_shot {
+                    true => thread::spawn(move || beat(&settings, &agent)),
+                    false => thread::spawn(move || hold(&settings, &agent, runtime, channel)),
+                };
             }
         }
     }

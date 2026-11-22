@@ -3,7 +3,9 @@
 //! space, and `skald --agent <name> set-status` sets an agent's state and note ([`set_status`]).
 //!
 //! - An agent is `available` while a session of it runs through the helper, an MCP server's or a
-//!   `skald recv --wait`, or `busy` once it set itself so; otherwise `offline`. A `skald recv
+//!   `skald recv --wait`, or `busy` once it set itself so; while it holds a claim, `busy` with
+//!   `started` and `waiting` with `awaiting-approval` ([`crate::heartbeat`]); otherwise
+//!   `offline`. A `skald recv
 //!   --wait` that ended counts as running for [`crate::wait::LINGER`] more, as an agent runs the
 //!   next once it has handled what it got. `since` is when it entered that state; its note shows
 //!   while a session of it runs. A new MCP session of an agent starts it `available`, with no
@@ -32,10 +34,11 @@ use skald_proto::{
     PresenceBody, SpaceId, Unknown, VersionRange,
 };
 
+use crate::claims::Progress;
 use crate::devices::text;
 use crate::spaces::Follower;
 use crate::state::{self, State, Uploaded};
-use crate::{agents, folders, follow, groups, presence, revocations, secrets, service};
+use crate::{agents, folders, follow, groups, heartbeat, presence, revocations, secrets, service};
 
 /// The setting of how far after an upload its value expires, in seconds; a helper takes it from
 /// the command that starts it.
@@ -238,11 +241,12 @@ fn checked(dir: &Path, settings: Settings, live: &Live, now: u64) -> Result<Opti
     }
     let span = expires_in();
     let early = (span / 3).max(1);
+    let claimed = heartbeat::progress_of_agents(&follower);
     let mut spaces = BTreeMap::new();
     let mut channels = Vec::new();
     for space in follower.state.spaces().map_err(text)? {
         let roster = follow::decode(&space.accepted, &space.name)?;
-        let shown = shown(&follower.state, space.id, live, now)?;
+        let shown = shown(&follower.state, space.id, (live, &claimed), now)?;
         channels.extend(
             roster
                 .body()
@@ -361,14 +365,19 @@ fn checked(dir: &Path, settings: Settings, live: &Live, now: u64) -> Result<Opti
 }
 
 /// The earlier of `due` and `at`.
-fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
+pub(crate) fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
     Some(due.map_or(at, |due| due.min(at)))
 }
 
-/// The status of each agent of the device in `space`, by name, as the sessions of `live` make it
-/// at `now`, recording each one's new state with its `since`: `now`, or for an `offline`, when its
-/// last session ended, if `live` has it.
-fn shown(held: &State, space: SpaceId, live: &Live, now: u64) -> Result<Vec<Shown>, String> {
+/// The status of each agent of the device in `space`, by name, as the sessions of `live` and the
+/// progress of the claims each holds, `claimed`, make it at `now`, recording each one's new state
+/// with its `since`: `now`, or for an `offline`, when its last session ended, if `live` has it.
+fn shown(
+    held: &State,
+    space: SpaceId,
+    (live, claimed): (&Live, &BTreeMap<Running, Progress>),
+    now: u64,
+) -> Result<Vec<Shown>, String> {
     let mut shown = Vec::new();
     for record in held.agent_statuses(space).map_err(text)? {
         let this = Running {
@@ -376,10 +385,11 @@ fn shown(held: &State, space: SpaceId, live: &Live, now: u64) -> Result<Vec<Show
             agent: record.name.clone(),
         };
         let runs = live.running.contains(&this);
-        let state = match (runs, record.busy) {
-            (false, _) => AgentState::Offline,
-            (true, true) => AgentState::Busy,
-            (true, false) => AgentState::Available,
+        let state = match (runs, claimed.get(&this), record.busy) {
+            (false, _, _) => AgentState::Offline,
+            (true, Some(Progress::AwaitingApproval), _) => AgentState::Waiting,
+            (true, Some(Progress::Started), _) | (true, None, true) => AgentState::Busy,
+            (true, None, false) => AgentState::Available,
         };
         let code = state.code();
         let since = match record.shown {

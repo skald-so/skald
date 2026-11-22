@@ -10,8 +10,9 @@
 //!   `code_verifier`; a refusal is a `200` with `error`;
 //! - `GET /user`: the user of a token, `Authorization: Bearer <token>` or `token <token>`, to a
 //!   request with a `User-Agent`;
-//! - `GET /user/{id}`: a user by ID, and `GET /users/{login}/keys` and
-//!   `GET /users/{login}/ssh_signing_keys`: a user's public SSH authentication and signing keys,
+//! - `GET /user/{id}` and `GET /users/{login}`: a user by ID or by login, in any case, and
+//!   `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys`: a user's public SSH
+//!   authentication and signing keys,
 //!   unauthenticated, to a request with a `User-Agent`, by pages: `per_page`, 30 by default and 100
 //!   at most, and `page`, from 1.
 //!
@@ -96,9 +97,10 @@ pub enum Fault {
     TokenStatus { status: u16 },
     /// The user endpoint answers with this status and no user.
     UserStatus { status: u16 },
-    /// The endpoints of users by ID and of their SSH keys answer with this status.
+    /// The endpoints of users by ID or login and of their SSH keys answer with this status.
     ApiStatus { status: u16 },
-    /// The endpoints of users by ID and of their SSH keys answer as GitHub at its rate limit:
+    /// The endpoints of users by ID or login and of their SSH keys answer as GitHub at its rate
+    /// limit:
     /// `403` with `x-ratelimit-remaining: 0`.
     RateLimited,
 }
@@ -112,6 +114,8 @@ pub enum Endpoint {
     User,
     /// `GET /user/{id}`.
     UserById,
+    /// `GET /users/{login}`.
+    UserByLogin,
     /// `GET /users/{login}/keys`.
     Keys,
     /// `GET /users/{login}/ssh_signing_keys`.
@@ -311,6 +315,7 @@ fn router(shared: Shared) -> Router {
         .route("/login/oauth/access_token", post(access_token))
         .route("/user", get(user))
         .route("/user/{id}", get(user_by_id))
+        .route("/users/{login}", get(user_by_login))
         .route("/users/{login}/{list}", get(keys))
         .route("/_stand-in/sign-in", get(sign_in))
         .route("/_stand-in/users", put(put_user))
@@ -711,7 +716,7 @@ fn api_refusal(shared: &Shared, headers: &HeaderMap) -> Option<Response> {
     }
 }
 
-/// The JSON of `user`, as `GET /user` and `GET /user/{id}` give it.
+/// The JSON of `user`, as `GET /user`, `GET /user/{id}` and `GET /users/{login}` give it.
 fn public_user(user: &User) -> Value {
     json!({
         "login": user.login,
@@ -743,6 +748,28 @@ async fn user_by_id(
         Some(user) => Json(public_user(user)).into_response(),
         None => status_response(404, "Not Found"),
     }
+}
+
+async fn user_by_login(
+    State(shared): State<Shared>,
+    headers: HeaderMap,
+    Path(login): Path<String>,
+) -> Response {
+    let params = BTreeMap::from([("login".to_owned(), login.clone())]);
+    shared.record(Endpoint::UserByLogin, &params, &headers);
+    if let Some(refusal) = api_refusal(&shared, &headers) {
+        return refusal;
+    }
+    let data = shared.data();
+    match by_login(&data, &login) {
+        Some(user) => Json(public_user(user)).into_response(),
+        None => status_response(404, "Not Found"),
+    }
+}
+
+/// The user of `login`, in any case.
+fn by_login<'d>(data: &'d Data, login: &str) -> Option<&'d User> {
+    (data.users.values()).find(|user| user.login.eq_ignore_ascii_case(login))
 }
 
 /// Which of a user's SSH keys an endpoint lists.
@@ -795,8 +822,7 @@ fn listed_keys(
         return refusal;
     }
     let data = shared.data();
-    let Some(user) = (data.users.values()).find(|user| user.login.eq_ignore_ascii_case(login))
-    else {
+    let Some(user) = by_login(&data, login) else {
         return status_response(404, "Not Found");
     };
     let keys = data.ssh_keys.get(&user.id).cloned().unwrap_or_default();

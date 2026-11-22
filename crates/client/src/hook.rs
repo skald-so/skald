@@ -45,10 +45,7 @@ impl Cli {
     pub fn handles(self, event: Event) -> bool {
         match self {
             Cli::Claude => event != Event::UserPromptSubmit,
-            Cli::Codex => !matches!(
-                event,
-                Event::SessionEnd | Event::PermissionRequest | Event::PermissionPrompt
-            ),
+            Cli::Codex => !matches!(event, Event::SessionEnd | Event::PermissionPrompt),
         }
     }
 }
