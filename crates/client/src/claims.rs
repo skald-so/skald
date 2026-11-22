@@ -18,6 +18,9 @@
 //!   `#<ref>` or ID: an agent's only its own in its folder's space. On `claim-lost`, or once the
 //!   lease passed on the device's clock without an answered extend, the command says the claim is
 //!   lost, the device drops it and sends no result.
+//! - While a session of the claiming agent runs, the device extends the claim itself, stating the
+//!   progress of its last answered extend ([`crate::heartbeat`]); a claim the heartbeat found lost,
+//!   the next command on it says so.
 //! - A complete or fail waits in the local state before its request, so a run killed after it
 //!   repeats it. Once the server takes it, the device sends the `task-result` ([`groups`]): from
 //!   the claiming agent, to the task's `from`, `hops` the task's plus one, under `mls` when the
@@ -66,7 +69,7 @@ pub enum Progress {
 
 impl Progress {
     /// Its name, as the server and the CLI write it.
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Progress::Started => "started",
             Progress::AwaitingApproval => "awaiting-approval",
@@ -85,23 +88,29 @@ pub enum Ending {
 /// What the device keeps of a claim besides its task, place, agent and time, sealed under the
 /// state key: each ID in its text form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Record {
+pub(crate) struct Record {
     claim_id: String,
     generation: u64,
     /// In seconds.
-    lease: u64,
+    pub(crate) lease: u64,
     /// The task's sending device, its `from` and its `hops`.
     sender: String,
     from: String,
     hops: u64,
     /// Its complete or fail, once given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    end: Option<End>,
+    pub(crate) end: Option<End>,
+    /// The progress its last answered extend stated, which the heartbeat states again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) progress: Option<Progress>,
+    /// Why the heartbeat found it lost, once it did: the next command on it says so.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) lost: Option<String>,
 }
 
 /// A complete or fail of a claim, with its text, and whether the server took it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct End {
+pub(crate) struct End {
     done: bool,
     retry: bool,
     text: String,
@@ -116,9 +125,9 @@ impl End {
 }
 
 /// A claim the device holds, opened.
-struct Held {
-    row: TaskClaim,
-    record: Record,
+pub(crate) struct Held {
+    pub(crate) row: TaskClaim,
+    pub(crate) record: Record,
 }
 
 /// What the claim checks make of a claimed task.
@@ -147,7 +156,7 @@ struct Passed {
 
 /// What the server answered to an extend, complete, fail or release.
 #[derive(Debug, PartialEq)]
-enum Fenced {
+pub(crate) enum Fenced {
     Taken,
     /// `claim-lost`.
     Lost,
@@ -314,6 +323,8 @@ fn claimed(run: &Run, queue: &str, agent: Option<&Name>, json: bool) -> Result<(
         from: passed.from.to_string(),
         hops: passed.hops,
         end: None,
+        progress: Some(Progress::Started),
+        lost: None,
     };
     let mut held = Held {
         row: TaskClaim {
@@ -639,12 +650,14 @@ pub fn extend(
                  recv repeats it, and nothing extends its claim"
             ));
         }
+        found_lost(&follower.state, &held, &reference)?;
         lapsed(&follower.state, &held, &reference)?;
         let sent = state::unix_now();
         let body = json!({ "progress": progress.name() });
         match fence(&mut follower, &held.fencing(), "extend", body) {
             Fenced::Taken => {
                 held.row.since = sent;
+                held.record.progress = Some(progress);
                 keep(&follower, &mut held, None)?;
                 match agent {
                     Some(_) => println!("extended #{reference} ({})", progress.name()),
@@ -697,6 +710,7 @@ pub fn end(
         let reference = reference(&follower.state, task);
         let earlier = held.record.end.is_some();
         if !earlier {
+            found_lost(&follower.state, &held, &reference)?;
             lapsed(&follower.state, &held, &reference)?;
             held.record.end = Some(End {
                 done: ending == Ending::Complete,
@@ -1017,7 +1031,7 @@ fn located(run: &Run, given: &str, agent: Option<&Name>) -> Result<(Held, Synced
 }
 
 /// Each of `rows` with what the device sealed of it opened.
-fn opened_all(follower: &Follower, rows: Vec<TaskClaim>) -> Result<Vec<Held>, String> {
+pub(crate) fn opened_all(follower: &Follower, rows: Vec<TaskClaim>) -> Result<Vec<Held>, String> {
     let key = key_packages::local_state_key(&follower.state, &follower.secrets)?;
     rows.into_iter()
         .map(|row| {
@@ -1041,7 +1055,11 @@ fn open(key: &StateKey, this: DeviceId, row: &TaskClaim) -> Result<Record, Strin
 
 /// Keeps `held`, sealing its record, with the task's `hops` for the agent `hops` names, if any
 /// ([`State::keep_claim`]).
-fn keep(follower: &Follower, held: &mut Held, hops: Option<(&str, u64)>) -> Result<(), String> {
+pub(crate) fn keep(
+    follower: &Follower,
+    held: &mut Held,
+    hops: Option<(&str, u64)>,
+) -> Result<(), String> {
     let key = key_packages::local_state_key(&follower.state, &follower.secrets)?;
     let record = serde_json::to_vec(&held.record).expect("a claim encodes");
     held.row.sealed = key.seal(follower.this, &item(held.row.task), &record);
@@ -1071,8 +1089,19 @@ fn lapsed(state: &State, held: &Held, reference: &str) -> Result<(), String> {
     ))
 }
 
+/// Fails, dropping it, if the heartbeat found `held` lost ([`crate::heartbeat`]).
+fn found_lost(state: &State, held: &Held, reference: &str) -> Result<(), String> {
+    match &held.record.lost {
+        Some(why) => {
+            drop_claim(state, held.row.task);
+            Err(lost(reference, why))
+        }
+        None => Ok(()),
+    }
+}
+
 /// What a command says of the claim of the task `reference` names, lost as `why` says.
-fn lost(reference: &str, why: &str) -> String {
+pub(crate) fn lost(reference: &str, why: &str) -> String {
     format!(
         "the claim of the task #{reference} is lost: {why}; another device may hold the task, so \
          stop its work: no result is sent"
@@ -1081,7 +1110,7 @@ fn lost(reference: &str, why: &str) -> String {
 
 /// What an extend, complete, fail or release names: the task, its queue in the channel `at`, and
 /// its claim.
-struct Fencing<'a> {
+pub(crate) struct Fencing<'a> {
     at: (SpaceId, ChannelId),
     queue: QueueId,
     task: TaskId,
@@ -1091,7 +1120,7 @@ struct Fencing<'a> {
 
 impl Held {
     /// What its requests name.
-    fn fencing(&self) -> Fencing<'_> {
+    pub(crate) fn fencing(&self) -> Fencing<'_> {
         Fencing {
             at: (self.row.space, self.row.channel),
             queue: self.row.queue,
@@ -1104,7 +1133,7 @@ impl Held {
 
 /// The `act` request, such as `extend`, that `fencing` names, with the fields of `extra` besides
 /// its claim.
-fn fence(
+pub(crate) fn fence(
     follower: &mut Follower,
     fencing: &Fencing,
     act: &str,
@@ -1182,7 +1211,7 @@ fn references_of(state: &State) -> Vec<MessageId> {
 }
 
 /// The reference, `#<ref>` without its `#`, of the task `task` by the device of `state`.
-fn reference(state: &State, task: TaskId) -> String {
+pub(crate) fn reference(state: &State, task: TaskId) -> String {
     let task = as_message(task);
     References::new(references_of(state).into_iter().chain([task])).of(task)
 }
@@ -1260,6 +1289,8 @@ mod tests {
                 from: String::new(),
                 hops: 0,
                 end: None,
+                progress: None,
+                lost: None,
             },
         };
         let live = held(now - 29);

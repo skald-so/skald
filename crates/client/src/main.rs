@@ -48,6 +48,7 @@ mod follow;
 mod forms;
 mod gaps;
 mod groups;
+mod heartbeat;
 mod held;
 mod helper;
 mod history;
@@ -1228,7 +1229,11 @@ impl Command {
                     | Command::RevokeServiceToken { .. }
                     | Command::SignOut
             )
-            || matches!(self, Command::Mcp { call: Some(call), .. } if *call != mcp::Call::Register)
+            || matches!(
+                self,
+                Command::Mcp { call: Some(call), .. }
+                    if !matches!(call, mcp::Call::Register | mcp::Call::Beat)
+            )
     }
 
     /// Whether it is a `skald recv --wait` that shows when the helper's steps ran ([`wait`]).
@@ -1690,11 +1695,17 @@ impl Operation {
 
 /// Runs `operation`; a run whose command changes the local state holds its lock already, or a
 /// helper does. Out of the helper, a run as an agent then checks the device's presence
-/// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
+/// ([`uploads::keep`]), but an MCP server's own and its heartbeat: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
-        && !matches!(operation.command, Command::Mcp { call: None, .. });
+        && !matches!(
+            operation.command,
+            Command::Mcp {
+                call: None | Some(mcp::Call::Beat),
+                ..
+            }
+        );
     let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
