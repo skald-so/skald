@@ -25,7 +25,7 @@ fn a_link_object_from_a_browser_device_fails_the_run() {
     let mut new = NewDevice::start(&world, &ada, "ada-laptop");
 
     let run = answer(cloud, &ada, &mut new);
-    let mut granted = Granted::honest(cloud, &ada, &new, &run);
+    let mut granted = Granted::honest(cloud, &ada, &run);
     granted.link.issuer = browser.id;
     granted.link_signer = browser.signing;
     granted.send(cloud, &ada, &run);

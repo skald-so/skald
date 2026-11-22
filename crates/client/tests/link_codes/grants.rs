@@ -9,7 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use skald_crypto::{LinkCode, SigningKey, sign_link};
+use skald_crypto::{LinkCode, LinkEntry, SigningKey, sign_link};
 use skald_proto::{
     CERT_LABEL, Cbor as _, CertBody, DeviceId, DeviceKind, LinkBody, LinkGrantBody, LinkMessage,
     LinkRequestBody, Unknown,
@@ -27,6 +27,8 @@ const LAPTOP: &str = "ada-laptop";
 /// The account's latest hello, its path, and the path of a run's later messages.
 const HELLO_PATH: &str = "/account/links/hello";
 const MESSAGES_PATH: &str = "/account/links/messages";
+/// Where the issuing device takes the hello of a run without a session by its pairing.
+const PAIRING_PATH: &str = "/account/links/pairing";
 
 /// A run with the new device as the issuing device plays it, up to the grant: the code, and the
 /// run's keys and what the new device asked for.
@@ -40,18 +42,51 @@ pub struct Run {
 /// hello, sends a reply keyed by `new`'s code, and opens its request.
 pub fn answer(cloud: &Cloud, first: &Person, new: &mut NewDevice) -> Run {
     new.open_run(cloud, first);
-    let (status, body) = cloud.get_as(HELLO_PATH, &first.token);
-    assert_eq!(status, 200, "GET {HELLO_PATH}: {body}");
+    let (session, share) = hello_in(cloud.get_as(HELLO_PATH, &first.token), HELLO_PATH);
+    let code = LinkCode::from_entry(&new.code()).expect("a code");
+    let (reply, isk) = code
+        .respond(first.account, &session, &share)
+        .expect("the hello's share");
+    replied(cloud, first, session, (reply, isk))
+}
+
+/// Plays the issuing device on `first`'s session for the run of a new device without a session
+/// that shows `shown`, a code of 12 characters: pairs the run by its pairing, sends a reply keyed by
+/// the code, and opens its request.
+pub fn answer_paired(cloud: &Cloud, first: &Person, shown: &str) -> Run {
+    let Ok(LinkEntry::Paired { pairing, code }) = LinkEntry::from_entry(shown) else {
+        panic!("not a code of 12 characters: {shown}");
+    };
+    let request = json!({ "pairing": pairing.as_str() });
+    let answer = post_as(cloud, &first.token, PAIRING_PATH, Some(&request));
+    let (session, share) = hello_in(answer, PAIRING_PATH);
+    let replied_with = code
+        .respond_paired(&pairing, &session, &share)
+        .expect("the hello's share");
+    replied(cloud, first, session, replied_with)
+}
+
+/// The `session` and share of the hello in `answer`, the status and body `path` answered with.
+#[track_caller]
+fn hello_in((status, body): (u16, Value), path: &str) -> ([u8; 16], [u8; 32]) {
+    assert_eq!(status, 200, "{path}: {body}");
     let hello = unb64(body["hello"].as_str().expect("a hello"));
     let LinkMessage::Hello { session, share } =
         LinkMessage::from_cbor(&hello).expect("a link message")
     else {
         panic!("not a hello: {hello:?}");
     };
-    let code = LinkCode::from_entry(&new.code()).expect("a code");
-    let (reply, isk) = code
-        .respond(first.account, &session, &share)
-        .expect("the hello's share");
+    (session, share)
+}
+
+/// Sends the run `session` the `reply` of the side keyed by `isk` as `first`'s session, and opens
+/// the new device's request.
+fn replied(
+    cloud: &Cloud,
+    first: &Person,
+    session: [u8; 16],
+    (reply, isk): ([u8; 32], skald_crypto::Isk),
+) -> Run {
     send(
         cloud,
         first,
@@ -113,13 +148,15 @@ pub struct Granted {
 }
 
 impl Granted {
-    /// The honest grant of `first`'s device for `run`.
-    pub fn honest(cloud: &Cloud, first: &Person, new: &NewDevice, run: &Run) -> Self {
+    /// The honest grant of `first`'s device for `run`, to the device its request's signing key
+    /// names.
+    pub fn honest(cloud: &Cloud, first: &Person, run: &Run) -> Self {
         let request = &run.request;
+        let device = DeviceId::from_signing_key(&request.signing);
         Granted {
             cert: CertBody {
                 account: first.account,
-                device: new.device,
+                device,
                 kind: request.kind,
                 signing: request.signing,
                 hpke: request.hpke,
@@ -133,7 +170,7 @@ impl Granted {
             cert_signer: copy(&first.key),
             master: first.master,
             link: LinkBody {
-                device: new.device,
+                device,
                 issuer: first.device,
                 anchors: latest(cloud, first).into_iter().collect(),
                 personal: Some(personal_space(cloud, first)),
@@ -225,7 +262,7 @@ fn the_new_device_refuses_a_grant_that_fails_its_checks() {
             new.fresh_code();
         }
         let run = answer(cloud, &ada, &mut new);
-        let mut granted = Granted::honest(cloud, &ada, &new, &run);
+        let mut granted = Granted::honest(cloud, &ada, &run);
         change(&mut granted);
         granted.send(cloud, &ada, &run);
         new.wait_for_failures(failed + 1);
@@ -246,7 +283,7 @@ fn the_new_device_refuses_a_grant_that_fails_its_checks() {
 
     new.fresh_code();
     let run = answer(cloud, &ada, &mut new);
-    Granted::honest(cloud, &ada, &new, &run).send(cloud, &ada, &run);
+    Granted::honest(cloud, &ada, &run).send(cloud, &ada, &run);
     let shown = new.finish();
     assert!(shown.success, "the honest grant failed: {}", shown.text);
     assert!(certified(cloud), "the server holds no certificate");

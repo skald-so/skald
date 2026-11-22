@@ -117,6 +117,14 @@ pub enum Link {
         cert: Vec<u8>,
         link: Vec<u8>,
     },
+    /// Waiting without a session, it took a grant as [`Link::Granted`] holds one, whose issuer and
+    /// link object it checks only once it has a session: until they pass, it neither stores nor
+    /// pins it.
+    Unchecked {
+        master: [u8; 32],
+        cert: Vec<u8>,
+        link: Vec<u8>,
+    },
     /// Waiting, it links with the recovery key: it pinned the master public key `master` and
     /// issued its certificate `cert` with the master key, in CBOR; it has not finished linking.
     Recovering { master: [u8; 32], cert: Vec<u8> },
@@ -360,6 +368,20 @@ pub struct ClaudeSession {
     pub token: Option<String>,
     /// Its session file.
     pub file: PathBuf,
+}
+
+/// A permission prompt a Claude Code session waits on, as the device recorded it
+/// ([`crate::permission_prompts`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PermissionPrompt {
+    /// Its place in the order of recording.
+    pub position: u64,
+    pub space: SpaceId,
+    pub agent: String,
+    /// Claude Code's session ID.
+    pub session: String,
+    /// When the device recorded it, in Unix seconds.
+    pub at: u64,
 }
 
 /// A Codex session a hook registered ([`crate::codex`]).
@@ -810,6 +832,16 @@ impl State {
         Ok(())
     }
 
+    /// Records the machine's own device, new and not registered yet, of no account so far: it
+    /// learns its account from the session it gets.
+    pub fn add_device_of_no_account(&self, id: DeviceId, name: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO device (id, device, name) VALUES (1, ?1, ?2)",
+            params![id.to_string(), name],
+        )?;
+        Ok(())
+    }
+
     /// Records the account of a device that has none recorded.
     pub fn set_device_account(&self, account: &str) -> Result<(), Error> {
         self.db.execute(
@@ -829,19 +861,28 @@ impl State {
     fn granted(&self) -> Result<Option<Link>, Error> {
         let row = self
             .db
-            .query_row("SELECT master, cert, link FROM link_grant", [], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
+            .query_row(
+                "SELECT master, cert, link, checked FROM link_grant",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
+            )
             .optional()?;
-        row.map(|(master, cert, link)| {
+        row.map(|(master, cert, link, checked)| {
             let master = master
                 .try_into()
                 .map_err(|_| Error::Malformed("the granted master key".to_owned()))?;
-            Ok(Link::Granted { master, cert, link })
+            Ok(if checked {
+                Link::Granted { master, cert, link }
+            } else {
+                Link::Unchecked { master, cert, link }
+            })
         })
         .transpose()
     }
@@ -875,19 +916,26 @@ impl State {
                 backup,
             } => ("sent", Some((master, cert)), Some((record, backup))),
             Link::Certified { master, cert } => ("certified", Some((master, cert)), None),
-            Link::Waiting | Link::Granted { .. } | Link::Recovering { .. } => {
-                ("waiting", None, None)
-            }
+            Link::Waiting
+            | Link::Granted { .. }
+            | Link::Unchecked { .. }
+            | Link::Recovering { .. } => ("waiting", None, None),
         };
         let (master, cert) = pinned.unzip();
         let (record, backup) = sealed.unzip();
         let tx = self.write()?;
-        match link {
-            Link::Granted { master, cert, link } => tx.execute(
-                "INSERT OR REPLACE INTO link_grant (id, master, cert, link) VALUES (1, ?1, ?2, ?3)",
-                params![master.as_slice(), cert, link],
+        let grant = match link {
+            Link::Granted { master, cert, link } => Some((master, cert, link, true)),
+            Link::Unchecked { master, cert, link } => Some((master, cert, link, false)),
+            _ => None,
+        };
+        match grant {
+            Some((master, cert, link, checked)) => tx.execute(
+                "INSERT OR REPLACE INTO link_grant (id, master, cert, link, checked) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![master.as_slice(), cert, link, checked],
             )?,
-            _ => tx.execute("DELETE FROM link_grant", [])?,
+            None => tx.execute("DELETE FROM link_grant", [])?,
         };
         match link {
             Link::Recovering { master, cert } => tx.execute(
@@ -2916,6 +2964,62 @@ impl State {
         Ok(())
     }
 
+    /// Records `prompt`, which a hook of its session told in `turn`, unless it is told again: by a
+    /// `Notification`, not `by_request`, while a prompt of the session and turn is open. A
+    /// `PermissionRequest` always tells a new one. Each other open prompt of the session ends, and
+    /// each prompt recorded before `kept_since` goes. Gives whether it recorded `prompt`.
+    pub fn prompt_told(
+        &self,
+        prompt: &PermissionPrompt,
+        turn: Option<&str>,
+        by_request: bool,
+        kept_since: u64,
+    ) -> Result<bool, Error> {
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM permission_prompt WHERE at < ?1",
+            params![sql_seq(kept_since)?],
+        )?;
+        let again = !by_request
+            && tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM permission_prompt
+                 WHERE session = ?1 AND turn IS ?2 AND open = 1)",
+                params![prompt.session, turn],
+                |row| row.get::<_, bool>(0),
+            )?;
+        if again {
+            tx.commit()?;
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE permission_prompt SET open = 0 WHERE session = ?1",
+            params![prompt.session],
+        )?;
+        tx.execute(
+            "INSERT INTO permission_prompt (space, agent, session, turn, at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![
+                prompt.space.to_string(),
+                prompt.agent,
+                prompt.session,
+                turn,
+                sql_seq(prompt.at)?,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Records that a hook of the Claude Code session `session` told that its open permission
+    /// prompt, if any, ended.
+    pub fn prompts_ended(&self, session: &str) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE permission_prompt SET open = 0 WHERE session = ?1 AND open = 1",
+            params![session],
+        )?;
+        Ok(())
+    }
+
     /// Registers the Codex session `session`, or updates its registration, as the one whose hook
     /// ran last: a session file or config home it does not give stays as registered.
     pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
@@ -2943,6 +3047,30 @@ impl State {
             ],
         )?;
         Ok(())
+    }
+
+    /// The recorded permission prompts the person's run has yet to show, in order.
+    pub fn prompts_for_person(&self) -> Result<Vec<PermissionPrompt>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT position, space, agent, session, at FROM permission_prompt
+             WHERE shown = 0 ORDER BY position",
+        )?;
+        let rows = query.query_map([], |row| {
+            let (int, text) = (|at| row.get::<_, i64>(at), |at| row.get::<_, String>(at));
+            Ok(([int(0)?, int(4)?], [text(1)?, text(2)?, text(3)?]))
+        })?;
+        rows.map(|row| {
+            let ([position, at], [space, agent, session]) = row?;
+            let malformed = || Error::Malformed(format!("the permission prompt {position}"));
+            Ok(PermissionPrompt {
+                position: u64::try_from(position).map_err(|_| malformed())?,
+                space: space.parse().map_err(|_| malformed())?,
+                agent,
+                session,
+                at: u64::try_from(at).map_err(|_| malformed())?,
+            })
+        })
+        .collect()
     }
 
     /// The registered Codex sessions, the one whose hook ran last first.
@@ -2978,6 +3106,15 @@ impl State {
             })
         })
         .collect()
+    }
+
+    /// Records that the person's run showed the permission prompt at `position`.
+    pub fn prompt_shown(&self, position: u64) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE permission_prompt SET shown = 1 WHERE position = ?1",
+            params![sql_seq(position)?],
+        )?;
+        Ok(())
     }
 
     /// Ends the registration of the Codex session `thread`: the signals that went to it go to
@@ -4770,6 +4907,11 @@ pub(crate) mod tests {
                 cert: cert.clone(),
             },
             Link::Waiting,
+            Link::Unchecked {
+                master,
+                cert: cert.clone(),
+                link: vec![4, 5],
+            },
             Link::Granted {
                 master,
                 cert: cert.clone(),

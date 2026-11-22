@@ -3,14 +3,14 @@
 //! the person's terminal or on its local page, never in an agent's output; meanwhile every other
 //! command says that it waits.
 
-use std::io::{self, BufRead};
+use std::io::BufRead as _;
 use std::path::Path;
 
 use skald_crypto::RecoveryKey;
 use zeroize::Zeroizing;
 
 use crate::output::{self, Stream};
-use crate::person::Person;
+use crate::person::{self, Person};
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::state::{self, Link, State};
@@ -46,14 +46,13 @@ fn kept(stored: &secrets::Map) -> Option<RecoveryKey> {
 /// notice, not an error: no `skald:` before it.
 fn waits(server: &str) -> String {
     format!(
-        "A recovery key waits to be shown: run skald sign-in --server {server} at a terminal, or \
-         add --browser to see it on a local page."
+        "A recovery key waits: run skald sign-in --server {server} at a terminal or with --browser."
     )
 }
 
 /// What the person reads under the recovery key.
-const KEEP_IT: &str = "Write it down and keep it apart from your devices: it is the only way back \
-                       to the account and its history when no linked device is left.";
+const KEEP_IT: &str =
+    "Keep it apart from your devices: it recovers the account and its history if all are lost.";
 
 /// At the end of `skald sign-in` on `server`, the device in `state` holding its certificate: a
 /// recovery key that waits in `secrets` is shown to `person`, if the run has one, and deleted once
@@ -90,10 +89,7 @@ pub fn show(
     };
     page.show(Some(key.shown().as_str()))
         .map_err(sign_in::Error::Io)?;
-    let question = format!(
-        "The account's recovery key, shown only this once, is above. {KEEP_IT} Once it is written \
-         down, press the button: this device then deletes it."
-    );
+    let question = format!("The recovery key above shows only once. {KEEP_IT}");
     let answered = page.ask(&question, &["Written down"], None, true);
     let answered = answered.map_err(sign_in::Error::Io)?.recv().is_ok();
     page.show(None).map_err(sign_in::Error::Io)?;
@@ -113,17 +109,17 @@ fn at_terminal(
 ) -> Result<(), sign_in::Error> {
     let shown = key.shown();
     let mut text = Zeroizing::new(String::from(
-        "\nThe account's recovery key, shown only this once:\n\n    ",
+        "\nThe account's recovery key, shown only once:\n\n    ",
     ));
     text.push_str(&shown);
     text.push_str("\n\n");
     text.push_str(KEEP_IT);
-    text.push_str(" Press Enter once it is written down: ");
+    text.push_str("\nPress Enter once it is written down: ");
     output::write(Stream::Out, text.as_bytes())
         .map_err(|err| sign_in::Error::Io(format!("cannot show the recovery key: {err}")))?;
+    person::forget_entered();
     let mut line = String::new();
-    let read = io::stdin()
-        .lock()
+    let read = person::input()
         .read_line(&mut line)
         .map_err(|err| sign_in::Error::Io(format!("cannot read the terminal: {err}")))?;
     if read == 0 {

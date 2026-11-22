@@ -48,10 +48,13 @@
 - **Account master key:** a new device creates it when the server reports none for the account; the device asks its user nothing. It is the account's root of trust and is stored on the server encrypted under the recovery key.
 - Every device certificate chains to the master key: a new device is signed by an already linked device or by the recovery key. A server signature alone never admits a device.
 - **Link code:** a new device shows a short code; its user enters it on an already linked `client` device. A PAKE keyed by the code carries the keys and the certificate, so the server never sees the code and cannot link a device itself.
+- **A further machine needs only a link code.** `skald sign-in` on a machine without a device shows the device flow and a 12-character link code at once, asking nothing; the first to finish wins:
+  - the code: the device stores its certificate and gets a session by its key ([protocol spec](../protocol/membership.md#device-key-session)); the device flow is dropped;
+  - the browser: on an account without a master key, the device is its first, and its code's run ends; with `--with-recovery-key`, it links with the recovery key; otherwise it keeps waiting for the code, and linked devices say it waits.
 - Formats and checks: [protocol spec](../protocol/membership.md#account).
 - The device key can also be signed with the user's SSH key from GitHub: [protocol spec](../protocol/membership.md#device-certificate).
 - The recovery key is 12 characters, shown as 3 groups of 4. It is typed or pasted only in the CLI, never in a web page.
-- **Local page:** `skald sign-in --browser` and `skald link --browser` take the link code's steps on a page `skald` opens in the browser, as their person or an agent runs them: the code and a fresh one, the reminder and the new device's confirmation; the sign-in page also shows a waiting recovery key. The commands' output holds no code, confirmation or recovery key; the page takes no recovery key.
+- **Local page:** `skald sign-in --browser` and `skald link --browser` take the link code's steps on a page `skald` opens in the browser, as their person or an agent runs them: the code and a fresh one, the reminder and the new device's confirmation; the sign-in page also shows the browser sign-in's link and a waiting recovery key. The commands' output holds no code, confirmation or recovery key; the page takes no recovery key.
   - It listens only on 127.0.0.1, on a port the system picks, while its command runs.
   - It answers only requests whose query holds its one-time secret, with its own Host and its own Origin or none; every answer carries `Cache-Control: no-store`.
   - `skald` never prints the secret: the browser opens a file in the state directory, readable only by its user, that takes it to the page, as Jupyter does; the file is deleted when the command ends.
@@ -185,6 +188,7 @@ Adapters are separate modules with e2e tests against real CLIs.
 - To Telegram, Slack or a webhook.
 - The server sends the events it sees in metadata: an agent is gone, DLQ is growing, a token is expiring.
 - The person's device triggers the events that come from content or its agents' sessions: a task waiting for the person's yes in `skald approve`, a `hold` or `ask_user` waiting for the person, a session waiting on its agent CLI's own permission prompt, an invalid task result ([protocol spec](../protocol/queues.md#results)), a key changed. The server only relays them, so they need a running device of the person.
+- A Claude Code session waiting on its own permission prompt is detected by its `PermissionRequest` and `Notification` hooks ([agent-delivery.md, "Permission prompts"](agent-delivery.md#permission-prompts)).
 - A notification carries no content. What the server sees of it: [threat model](../threat-model.md#the-server-sees).
 
 ## Security

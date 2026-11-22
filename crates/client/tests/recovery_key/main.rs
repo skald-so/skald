@@ -58,8 +58,8 @@ use serde_json::Value;
 use skald_proto::AccountId;
 use terminal::{Shown, Terminal};
 
-/// What a machine that waits for linking says, at a terminal, before it shows its link code.
-pub const LINK_CODE: &str = "type this code there";
+/// What a machine that waits for linking says at a terminal once signed in, with its link code.
+pub const LINK_CODE: &str = "Not linked yet";
 
 /// Lets `run`, of a machine that waits for linking, go on until it shows its link code, then ends
 /// it, its person linking nothing now; gives what it printed.

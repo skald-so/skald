@@ -26,6 +26,9 @@
 //! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
 //! an idle session to wake run on Unix only, where the client writes into the socket.
 //!
+//! The session of `permission_prompts.rs` stops on its own permission prompt, which its
+//! `PermissionRequest` and `Notification` hooks tell the person's device.
+//!
 //! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
 //! marketplace of this checkout, and nothing else of Skald's.
 
@@ -37,6 +40,7 @@ mod delivery;
 mod inline;
 #[cfg(unix)]
 mod modes;
+mod permission_prompts;
 mod plugin;
 mod sessions;
 mod socket_claude;
@@ -50,6 +54,10 @@ mod wake_fallbacks;
 // The processes of a copy of `skald`, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]
 mod helped;
+
+// The person's lines of recorded prompts, as the tests of detecting permission prompts have them.
+#[path = "../claude_code_permission/prompt_lines.rs"]
+mod prompt_lines;
 
 // The hook handler's command, its runs and Ada's and Bob's agents, as the tests of the hook handler
 // have them.
