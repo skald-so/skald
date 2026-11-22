@@ -431,6 +431,7 @@ struct Settings {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     github_api: String,
+    dns_resolver: String,
     one_shot: bool,
     /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
     installed: Option<PathBuf>,
@@ -447,6 +448,7 @@ impl Settings {
             state_dir: operation.state_dir.clone(),
             key_storage: operation.key_storage,
             github_api: operation.github_api.clone(),
+            dns_resolver: operation.dns_resolver.clone(),
             one_shot,
             installed,
         }
@@ -462,11 +464,13 @@ impl Settings {
             key_storage: self.key_storage,
             agent: Some(agent.to_string()),
             github_api: self.github_api.clone(),
+            dns_resolver: self.dns_resolver.clone(),
             command: Command::Mcp {
                 relayed: false,
                 call: Some(call),
             },
             said: crate::link_prompt::Said::default(),
+            said_key_changes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -1123,6 +1127,7 @@ mod tests {
                 state_dir: None,
                 key_storage: secrets::Storage::File,
                 github_api: String::new(),
+                dns_resolver: String::new(),
                 one_shot: true,
                 installed: None,
             },
