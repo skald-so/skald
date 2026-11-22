@@ -113,12 +113,15 @@ pub enum HistoryItem {
     Wrap(Vec<u8>),
     /// An encoded `history-entry` of the message `msg_id`, which the server cannot read in it.
     Entry { msg_id: MessageId, entry: Vec<u8> },
+    /// An encoded `queue-key`: the channel's queue key object of an epoch.
+    QueueKey(Vec<u8>),
 }
 
 // The kinds of a history item.
 const LINK: u64 = 1;
 const WRAP: u64 = 2;
 const ENTRY: u64 = 3;
+const QUEUE_KEY: u64 = 4;
 
 impl Codec for HistoryItem {
     fn encode(&self) -> Vec<u8> {
@@ -128,6 +131,7 @@ impl Codec for HistoryItem {
             Self::Entry { msg_id, entry } => {
                 cbor::array([cbor::uint(ENTRY), cbor::id(msg_id), cbor::bytes(entry)])
             }
+            Self::QueueKey(object) => cbor::array([cbor::uint(QUEUE_KEY), cbor::bytes(object)]),
         }
     }
 
@@ -147,6 +151,10 @@ impl Codec for HistoryItem {
                     msg_id: msg_id.id("history.item.msg_id")?,
                     entry: entry.bytes("history.item.entry")?.to_vec(),
                 }
+            }
+            QUEUE_KEY => {
+                let [_, object] = item.tuple("history.item")?;
+                Self::QueueKey(object.bytes("history.item.queue_key")?.to_vec())
             }
             other => {
                 return Err(field_error("history.item.kind", FieldProblem::Value(other)));

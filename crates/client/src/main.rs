@@ -75,6 +75,7 @@ mod person;
 mod plain_path;
 mod presence;
 mod proxy;
+mod queue_keys;
 mod queues;
 mod receipts;
 mod records;
@@ -711,7 +712,9 @@ enum Command {
     /// channel's presence. Without --deadline, a task a device of another account may claim gets
     /// one 7 days after enqueue. Says the task's ID and #<ref>; as an agent, only enqueued
     /// #<ref>. A task the server has not answered waits in the local state, and the next skald
-    /// enqueue or skald recv uploads it first, with the same bytes.
+    /// enqueue or skald recv uploads it first, with the same bytes. A stateless service agent's
+    /// run encrypts it to the queue key the channel's member devices publish, and fails unless the
+    /// server stores it within the run.
     Enqueue {
         /// The channel's ID, as skald channels shows it [default: the default channel of the
         /// working directory's space].
@@ -1506,11 +1509,13 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
     }
 }
 
-/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
-/// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
-/// holding the lock of the state directory, which it creates if it is missing. Without a state
-/// directory the run is stateless: it takes no lock and does not wait.
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv`, the
+/// commands of tasks a member runs ([`claims`]) and `skald enqueue` without a state directory, as no
+/// agent, in this process, without a helper, holding the lock of the state directory, which it
+/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
+/// does not wait.
 fn as_service(operation: Operation) -> ExitCode {
+    let stateless = operation.state_dir.is_none();
     if !matches!(
         operation.command,
         Command::Send { .. }
@@ -1519,17 +1524,19 @@ fn as_service(operation: Operation) -> ExitCode {
             | Command::Extend { .. }
             | Command::Complete { .. }
             | Command::Fail { .. }
-    ) || operation.agent.is_some()
+    ) && !(stateless && matches!(operation.command, Command::Enqueue { .. }))
+        || operation.agent.is_some()
     {
         return exit(Err(format!(
             "with {} and {} set, skald runs as the service agent of the key secret, which only \
              sends and receives, and as a member runs tasks: skald send, skald recv, skald claim, \
-             skald extend, skald complete and skald fail, without --agent",
+             skald extend, skald complete and skald fail, without --agent; without \
+             SKALD_STATE_DIR it also enqueues: skald enqueue",
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
     }
-    if operation.state_dir.is_none() {
+    if stateless {
         if operation.command.waits() {
             return exit(Err(
                 "a service agent's skald recv --wait needs a state directory: \

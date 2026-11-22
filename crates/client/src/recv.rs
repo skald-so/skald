@@ -85,6 +85,7 @@ use crate::mailbox::Mailbox;
 use crate::message_status;
 use crate::output::{self, Stream};
 use crate::permission_prompts;
+use crate::queue_keys;
 use crate::queues;
 use crate::receipts;
 use crate::reply;
@@ -450,8 +451,9 @@ fn ack_shown(follower: &mut Follower) -> Result<(), String> {
 
 /// Goes through the Welcomes, Commits and application messages the state holds within `scope`,
 /// then brings the groups of the channels of each space the run accepted the revisions of in line
-/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]) and the
-/// wraps of their current epochs ([`crate::wraps`]) the server lacks.
+/// ([`crate::groups`]) and uploads the links of their key chains ([`crate::key_chain`]), the
+/// wraps of their current epochs ([`crate::wraps`]) and their queue key objects
+/// ([`crate::queue_keys`]) the server lacks.
 pub fn align(
     follower: &mut Follower,
     link: &mut Link,
@@ -462,6 +464,7 @@ pub fn align(
     groups::align_with(follower, link);
     key_chain::upload_missing(follower, link, scope);
     wraps::upload_missing(follower, link, scope);
+    queue_keys::upload_missing(follower, link, scope);
     Ok(())
 }
 
