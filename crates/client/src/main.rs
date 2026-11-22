@@ -2678,6 +2678,21 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 mod tests {
     use super::*;
 
+    /// `skald setup` changes the person's agent CLI config, so an agent cannot run it, and it needs
+    /// no state: it takes no lock and starts no helper.
+    #[test]
+    fn setup_is_the_persons_and_needs_no_state() {
+        for remove in [false, true] {
+            let command = Command::Setup {
+                cli: setup::Cli::Codex,
+                remove,
+            };
+            assert_eq!(command.person_only(), Some("setup"));
+            assert_eq!(command.locks(), None);
+            assert!(!command.starts_helper() && !command.connects());
+        }
+    }
+
     /// An invite expires in whole days from 1 to 30; anything else is refused.
     #[test]
     fn invite_days_are_whole_days_from_1_to_30() {

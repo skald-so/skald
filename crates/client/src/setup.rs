@@ -272,29 +272,18 @@ fn edit(files: &Files, wanted: Option<&Entries>, paths: (&Path, &Path)) -> Resul
             == Some(&wanted.server)
             && skald_groups(&config) == EVENTS.map(|event| (event, vec![&wanted.group]))
     });
-    let none = config
-        .get("mcp_servers")
-        .and_then(|servers| servers.get(SERVER))
-        .is_none()
-        && skald_groups(&config)
-            .iter()
-            .all(|(_, groups)| groups.is_empty())
-        && !toml_has_other_skalds(&config);
     let config_change = match wanted {
         Some(_) if set_up && !toml_has_other_skalds(&config) => Change::Keep,
-        None if none => Change::Keep,
         _ => {
             remove_from_toml(&mut doc).map_err(|why| refused(config_path, &why))?;
             if let Some(wanted) = wanted {
                 add_to_toml(&mut doc, wanted).map_err(|why| refused(config_path, &why))?;
             }
             let edited = doc.to_string();
-            if edited.trim().is_empty() {
-                if files.config.is_some() {
-                    Change::Delete
-                } else {
-                    Change::Keep
-                }
+            if edited == text {
+                Change::Keep
+            } else if edited.trim().is_empty() {
+                Change::Delete
             } else {
                 Change::Write(edited)
             }
@@ -369,29 +358,24 @@ fn retain_tables(
     match item {
         Item::ArrayOfTables(tables) => {
             let had = tables.len();
-            let mut index = 0;
-            while index < tables.len() {
+            for index in (0..had).rev() {
                 if tables.get_mut(index).is_some_and(|table| !keep(table)) {
                     tables.remove(index);
-                } else {
-                    index += 1;
                 }
             }
             (had, tables.len())
         }
         Item::Value(toml_edit::Value::Array(values)) => {
             let (mut had, mut kept) = (0, 0);
-            let mut index = 0;
-            while index < values.len() {
+            for index in (0..values.len()).rev() {
                 if let Some(toml_edit::Value::InlineTable(table)) = values.get_mut(index) {
                     had += 1;
-                    if !keep(table) {
+                    if keep(table) {
+                        kept += 1;
+                    } else {
                         values.remove(index);
-                        continue;
                     }
-                    kept += 1;
                 }
-                index += 1;
             }
             (had, kept)
         }
@@ -399,9 +383,10 @@ fn retain_tables(
     }
 }
 
-/// Whether `item` is a table the person wrote a header for, which stays even when empty.
-fn has_header(item: &Item) -> bool {
-    matches!(item, Item::Table(table) if !table.is_implicit() && !table.is_dotted())
+/// Whether `item`, once empty, goes: an inline table does; a table stays, as one the person wrote a
+/// header for keeps it, and one of dotted keys or with no header of its own shows nothing.
+fn goes_when_empty(item: &Item) -> bool {
+    matches!(item, Item::Value(_))
 }
 
 /// Takes Skald's entries out of `doc`, `config.toml`, and each table and list that held only them.
@@ -410,7 +395,7 @@ fn remove_from_toml(doc: &mut DocumentMut) -> Result<(), String> {
         && let Some(table) = servers.as_table_like_mut()
     {
         table.remove(SERVER);
-        if table.is_empty() && !has_header(servers) {
+        if table.is_empty() && goes_when_empty(servers) {
             doc.remove("mcp_servers");
         }
     }
@@ -436,7 +421,7 @@ fn remove_from_toml(doc: &mut DocumentMut) -> Result<(), String> {
     for event in emptied {
         events.remove(&event);
     }
-    if events.is_empty() && !has_header(hooks) {
+    if events.is_empty() && goes_when_empty(hooks) {
         doc.remove("hooks");
     }
     Ok(())
@@ -644,6 +629,7 @@ mod tests {
             "skald --agent bob hook codex",
             "skald hook codex --json",
             "env A=1 skald hook codex",
+            "env /opt/skald hook codex",
             "/opt/skaldx hook codex",
             "/opt/skald/run hook codex",
             "'' hook codex",
@@ -742,8 +728,7 @@ mod tests {
         let set = written(set_up(&files(None, None)).config);
         let text = written(set_up(&files(Some(&format!("{set}{other}")), None)).config);
         assert!(parsed(&text)["hooks"].get("Notify").is_none(), "{text}");
-        let text = written(removed(&files(Some(other), None)).config);
-        assert!(parsed(&text).get("hooks").is_none(), "{text}");
+        assert_eq!(removed(&files(Some(other), None)).config, Change::Delete);
     }
 
     #[test]
@@ -758,6 +743,44 @@ mod tests {
         let older = set.replace("[\"mcp\"]", "[\"mcp\", \"--old\"]");
         let text = written(set_up(&files(Some(&older), None)).config);
         assert!(!text.contains("--old"), "{text}");
+    }
+
+    #[test]
+    fn an_inline_table_that_held_only_skalds_entries_goes() {
+        let config = "model = \"m\"\nmcp_servers = { skald = { command = \"skald\" } }\n\
+                      hooks = { Stop = [{ hooks = [{ command = \"skald hook codex\" }] }] }\n";
+        let text = written(removed(&files(Some(config), None)).config);
+        assert_eq!(text, "model = \"m\"\n");
+    }
+
+    #[test]
+    fn changes_are_empty_only_when_both_files_are_kept() {
+        let changes = |config, hooks| Changes { config, hooks }.is_empty();
+        assert!(changes(Change::Keep, Change::Keep));
+        assert!(!changes(Change::Delete, Change::Keep));
+        assert!(!changes(Change::Keep, Change::Write(String::new())));
+    }
+
+    #[test]
+    fn a_file_it_cannot_read_is_named() {
+        let dir = crate::test_dir::TestDir::new("setup-read");
+        assert_eq!(read(&dir.join(CONFIG)), Ok(None));
+        let err = read(&dir).expect_err("a directory is no file");
+        assert!(err.contains(&dir.display().to_string()), "{err}");
+        let file = dir.join(HOOKS);
+        fs::write(&file, b"\xff").expect("write");
+        let err = read(&file).expect_err("not UTF-8");
+        assert!(err.contains(HOOKS), "{err}");
+    }
+
+    #[test]
+    fn its_entries_set_up_anywhere_change_nothing() {
+        let config = "[[hooks.Stop]]\nhooks = [{ type = \"command\", command = \"say done\" }]\n";
+        let set = written(set_up(&files(Some(config), None)).config);
+        let moved = format!(
+            "{set}\n[[hooks.Stop]]\nhooks = [{{ type = \"command\", command = \"say again\" }}]\n"
+        );
+        assert_eq!(set_up(&files(Some(&moved), None)).config, Change::Keep);
     }
 
     #[test]
@@ -787,12 +810,17 @@ mod tests {
     fn hooks_json_loses_only_skalds_hooks() {
         let hooks = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"skald hook codex"}]},
             {"hooks":[{"type":"command","command":"say done"}]}],
-            "SessionStart":[{"hooks":[{"type":"command","command":"skald hook codex"}]}]}}"#;
+            "SessionStart":[{"hooks":[{"type":"command","command":"skald hook codex"}]}],
+            "PreToolUse":[], "PostToolUse":[{"hooks":[]}]}}"#;
         let text = written(removed(&files(None, Some(hooks))).hooks);
         let value: Value = serde_json::from_str(&text).expect("JSON");
         assert_eq!(
             value,
-            json!({"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "say done"}]}]}})
+            json!({"hooks": {
+                "Stop": [{"hooks": [{"type": "command", "command": "say done"}]}],
+                "PreToolUse": [],
+                "PostToolUse": [{"hooks": []}],
+            }})
         );
         let only = r#"{"hooks":{"Stop":[{"hooks":[{"command":"skald hook codex"}]}]}}"#;
         assert_eq!(removed(&files(None, Some(only))).hooks, Change::Delete);
