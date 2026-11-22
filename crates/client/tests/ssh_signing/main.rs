@@ -26,8 +26,9 @@
 //! OpenSSH's `ssh-keygen` of the machine running the tests there. The tests make SSH keys with that
 //! `ssh-keygen` in the machine's home, `<home>/.ssh` being the person's SSH directory, and, on
 //! Unix, run an ssh-agent of their own (`agent.rs`) whose socket only the machine's runs get through
-//! `SSH_AUTH_SOCK`. Nothing touches the real home, SSH directory or ssh-agent of the person running
-//! the tests.
+//! `SSH_AUTH_SOCK`; on Windows, the machine's runs reach none: `SSH_AUTH_SOCK` names a pipe nothing
+//! serves (`sign_in/machine.rs`). Nothing touches the real home, SSH directory or ssh-agent of the
+//! person running the tests.
 //!
 //! The CLI, as these tests use it, beside `skald sign-in` (`device_keys/main.rs`,
 //! `recovery_linking/main.rs`) and `skald members <space>` (`github_checks/main.rs`):
