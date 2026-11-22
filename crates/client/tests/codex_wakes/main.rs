@@ -33,6 +33,7 @@ mod once;
 mod queued;
 mod routing;
 mod standin;
+mod woken;
 
 // Codex sessions and the runs of their hooks, as the tests of Codex's hooks have them; the runs of a
 // copy of `skald` through a helper, as the tests of the helper have them; Ada's and Bob's agents,
@@ -77,6 +78,14 @@ const TESTS: &[(&str, fn())] = &[
     (
         "failing::with_codex_queue_failing_the_next_hook_gives_the_signal_and_inbox_every_message",
         failing::with_codex_queue_failing_the_next_hook_gives_the_signal_and_inbox_every_message,
+    ),
+    (
+        "woken::the_turn_a_queued_signal_starts_gets_no_second_signal_from_its_hooks",
+        woken::the_turn_a_queued_signal_starts_gets_no_second_signal_from_its_hooks,
+    ),
+    (
+        "woken::a_failed_codex_queue_runs_no_more_for_the_same_messages",
+        woken::a_failed_codex_queue_runs_no_more_for_the_same_messages,
     ),
 ];
 

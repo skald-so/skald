@@ -305,6 +305,7 @@ An OS account on the device's machine other than the one that runs the client.
 **Defenses:**
 - The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
+- `codex queue` keeps what it queues in the Codex session's config home, where other local accounts can read it until its turn runs, so the client queues only the signal, never a message's text ([architecture.md, "Components"](dev/architecture.md#components)).
 - The local page of `--browser` listens on loopback, which other accounts reach, but answers only its secret, handed to the browser only through a file in the state directory ([architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 
 ## The server sees
