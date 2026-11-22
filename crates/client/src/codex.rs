@@ -2,7 +2,7 @@
 //! `docs/dev/agent-delivery.md`, "Codex hooks"; `docs/protocol/delivery.md`, "Device to agent"):
 //!
 //! - `skald hook codex` is the handler of Codex's `SessionStart`, `PostToolUse`,
-//!   `UserPromptSubmit` and `Stop`, as the agent the session's `skald mcp` registers: the one
+//!   `UserPromptSubmit`, `Stop` and `PermissionRequest`, as the agent the session's `skald mcp` registers: the one
 //!   `--agent` names, or the default name of [`hook::CODEX`]. Codex runs each hook as its own
 //!   child, so the hook's parent, past the npm package's launcher and Windows' shells, is the
 //!   process that runs the session ([`parent`]).
@@ -23,6 +23,9 @@
 //!   signal for its thread, by the session's Codex process's executable, on its config home
 //!   ([`Served::wake`]). A session has one queued signal until its next hook; messages a
 //!   `codex queue` failed for wait for the hooks and `inbox`.
+//! - `PermissionRequest` records that the session waits on its permission prompt, and its next
+//!   hook that the prompt ended ([`crate::permission_prompts`]); so does the session's app-server,
+//!   to which the helper keeps a client ([`crate::codex_app_server`]), and the end of the session.
 //! - A hook answers from the local state and never waits on the network: it runs without the
 //!   lock, which a run on the network may hold; the helper takes in what comes for the sessions'
 //!   spaces ([`Served`]). A hook that has not finished within [`PATIENCE`] prints nothing more.
@@ -35,11 +38,13 @@ use std::time::{Duration, Instant};
 use serde_json::json;
 use skald_proto::{Name, SpaceId};
 
+#[cfg(unix)]
+use crate::codex_app_server;
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
 use crate::state::{CodexSession, State};
-use crate::{claude_socket, hook, recv};
+use crate::{claude_socket, hook, permission_prompts, recv};
 
 /// How long a hook waits for its run before it prints nothing.
 pub const PATIENCE: Duration = Duration::from_secs(3);
@@ -87,6 +92,14 @@ pub fn hook(
         queued: false,
         hooked: 0,
     };
+    // The hook that tells a prompt prints nothing, so it decides nothing of the prompt.
+    if event == hook::Event::PermissionRequest {
+        this.busy = true;
+        state.register_codex(&this).map_err(text)?;
+        return permission_prompts::codex_told(&state, &this);
+    }
+    // Any other hook of the session comes after its prompt ended.
+    (state.prompts_ended(thread, crate::state::unix_now())).map_err(text)?;
     // What waits goes to a session before this one counts as the one whose hook ran last.
     let mut signalled = signals(&state, &this)?;
     if event == hook::Event::SessionStart {
@@ -108,7 +121,7 @@ fn busy_after(event: hook::Event, signalled: bool) -> bool {
     match event {
         hook::Event::SessionStart | hook::Event::SessionEnd => false,
         hook::Event::Stop { .. } => signalled,
-        // A prompt comes within a turn; Codex's hooks do not run the handler on it.
+        // A prompt comes within a turn.
         hook::Event::PostToolUse
         | hook::Event::UserPromptSubmit
         | hook::Event::PermissionRequest
@@ -434,6 +447,9 @@ pub struct Served {
     live: BTreeMap<String, Live>,
     /// When the last intake failed, if it did.
     failed: Option<Instant>,
+    /// The clients on the sessions' app-servers.
+    #[cfg(unix)]
+    watchers: codex_app_server::Watchers,
     /// Whether an idle session may have a message to wake it for: a command, an intake or a hook
     /// ran.
     due: bool,
@@ -480,6 +496,8 @@ impl Served {
             loaded: None,
             live: BTreeMap::new(),
             failed: None,
+            #[cfg(unix)]
+            watchers: codex_app_server::Watchers::default(),
             due: true,
             queuing: BTreeMap::new(),
             unqueued: BTreeMap::new(),
@@ -523,8 +541,11 @@ impl Served {
                 let _ = state.end_codex(thread);
             }
         }
-        for thread in gone {
-            self.live.remove(&thread);
+        if !gone.is_empty() {
+            for thread in gone {
+                self.live.remove(&thread);
+            }
+            self.watch(dir);
         }
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut runs: BTreeMap<SpaceId, (String, PathBuf)> = BTreeMap::new();
@@ -674,6 +695,16 @@ impl Served {
         }
         let live = &self.live;
         self.unqueued.retain(|thread, _| live.contains_key(thread));
+        self.watch(dir);
+    }
+
+    /// Keeps a client on the app-server of each live session's config home, by the state in
+    /// `dir` ([`codex_app_server`]).
+    fn watch(&mut self, dir: &Path) {
+        #[cfg(unix)]
+        (self.watchers).keep(dir, self.live.values().map(|live| &live.session));
+        #[cfg(windows)]
+        let _ = dir;
     }
 
     /// Takes in as `agent` in its `folder`, handing nothing over ([`claude_socket::run_as`]).

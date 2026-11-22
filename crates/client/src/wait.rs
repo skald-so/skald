@@ -9,7 +9,8 @@
 //!   goes to its command, so a message is marked handed over only once the command has written it
 //!   out; the command exits after.
 //! - In one-shot mode it holds its own connection and takes the local state's lock only for each
-//!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]). Once a helper
+//!   run of `skald recv`, so a run beside it waits for none of its waits ([`here`]), and for each
+//!   look of its agent's heartbeat ([`heartbeat::beat_here`]). Once a helper
 //!   runs, it goes on through it, as any command does ([`helper::route`]): it ends when the helper
 //!   is newer.
 //! - Between runs it watches the connection kept: a WebSocket or an event stream; with none, a
@@ -36,8 +37,8 @@ use crate::lock::Lock;
 use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
-use crate::state::State;
-use crate::{Command, Operation, claude_socket, codex, connection, folders, uploads};
+use crate::state::{self, State};
+use crate::{Command, Operation, claude_socket, codex, connection, folders, heartbeat, uploads};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -88,6 +89,7 @@ pub fn here(
         // Before the run, so that one kept while it runs counts as come.
         let state = State::open(dir).map_err(|err| err.to_string())?;
         let own = last_own_kept(&state, operation)?;
+        let prompt = last_prompt(&state, operation)?;
         let shown = crate::received(operation);
         if operation.agent.is_some() {
             uploads::keep(
@@ -101,15 +103,26 @@ pub fn here(
             return Ok(None);
         }
         watch.start();
+        let mut beat_at = Instant::now() + heartbeat::TICK;
         loop {
             thread::sleep(TICK);
+            if Instant::now() >= beat_at {
+                beat_at = Instant::now() + heartbeat::TICK;
+                if let Ok(Some(agent)) = operation.agent() {
+                    let settings = (operation.speaks, operation.timeout);
+                    heartbeat::beat_here(dir, operation.key_storage, settings, &agent);
+                }
+            }
             if helper::running(dir) {
                 // It goes on through the helper, on the helper's connection.
                 watch.stop_poll();
                 mailbox::close_kept();
                 break;
             }
-            if watch.came() != Came::Nothing || last_own_kept(&state, operation)? > own {
+            if watch.came() != Came::Nothing
+                || last_own_kept(&state, operation)? > own
+                || last_prompt(&state, operation)? > prompt
+            {
                 break;
             }
         }
@@ -122,6 +135,15 @@ pub fn here(
 fn last_own_kept(state: &State, operation: &Operation) -> Result<u64, String> {
     let last = state.last_own_kept(operation.agent.as_deref());
     last.map_err(|err| err.to_string())
+}
+
+/// The last permission prompt `state` records that the person's run has yet to show, for the
+/// person's run of `operation`; 0 for an agent's, which shows none ([`crate::permission_prompts`]).
+fn last_prompt(state: &State, operation: &Operation) -> Result<u64, String> {
+    match operation.agent {
+        Some(_) => Ok(0),
+        None => state.last_prompt().map_err(|err| err.to_string()),
+    }
 }
 
 /// How a run that waits watches for what comes between its runs of `skald recv`.
@@ -274,6 +296,10 @@ pub struct Sessions {
     ends: BTreeMap<uploads::Running, (Instant, u64)>,
     /// What the presence was last checked with.
     kept: uploads::Kept,
+    /// The heartbeat of the claims of the sessions' agents.
+    beats: heartbeat::Beats,
+    /// The last permission prompt the person's run has yet to show, when it was last read.
+    prompts: Option<(u64, Instant)>,
 }
 
 /// How long an agent whose `skald recv --wait` ended counts as running: it runs the next once it
@@ -292,6 +318,9 @@ struct Waiting {
 
 /// How long a held session whose run failed to take in is left be.
 const REST: Duration = Duration::from_secs(30);
+
+/// How often the helper reads the last permission prompt while the person's session waits.
+const PROMPTS_EVERY: Duration = Duration::from_millis(100);
 
 thread_local! {
     /// Whether the last run of a held session on this thread failed to take in.
@@ -393,6 +422,17 @@ impl Sessions {
         self.kept.check(dir, &live, anyway);
     }
 
+    /// Extends the claims of the agents whose sessions run, by the state in `dir`, as they are due
+    /// ([`heartbeat::Beats`]); once it found one lost, runs each session again, so its agent's
+    /// next output says so, and checks the presence.
+    pub fn beat(&mut self, dir: &Path) {
+        let running = self.live().running;
+        if self.beats.check(dir, &running) {
+            self.ran();
+            self.keep_presence(dir, true);
+        }
+    }
+
     /// Ends the sessions, as the helper exits, and checks the presence by the state in `dir` with
     /// their agents `offline`.
     pub fn end(mut self, dir: &Path) {
@@ -408,6 +448,7 @@ impl Sessions {
 
     /// Notes that a command ran.
     pub fn ran(&mut self) {
+        self.beats.ran();
         for waiting in &mut self.waiting {
             waiting.due = true;
         }
@@ -453,6 +494,7 @@ impl Sessions {
         if mailbox::linking_came() {
             self.ran();
         }
+        self.prompts_came(dir);
         if let Some(claude) = &mut self.claude
             && claude.look(dir, &came)?
         {
@@ -497,6 +539,31 @@ impl Sessions {
         self.watch.start();
         // The next look counts the sessions left.
         Some(true)
+    }
+
+    /// Has the person's sessions run again once a permission prompt is recorded in the state in
+    /// `dir`, which a Codex hook or the helper's client of an app-server records without a command
+    /// ([`crate::permission_prompts`]); reads the state at most every [`PROMPTS_EVERY`].
+    fn prompts_came(&mut self, dir: &Path) {
+        let person = (self.waiting.iter()).any(|waiting| waiting.session.operation.agent.is_none());
+        if !person {
+            self.prompts = None;
+            return;
+        }
+        if (self.prompts).is_some_and(|(_, read)| read.elapsed() < PROMPTS_EVERY) {
+            return;
+        }
+        let Some(last) = state::last_prompt(dir) else {
+            return;
+        };
+        let before = self.prompts.replace((last, Instant::now()));
+        if last > before.map_or(0, |(before, _)| before) {
+            for waiting in &mut self.waiting {
+                if waiting.session.operation.agent.is_none() {
+                    waiting.due = true;
+                }
+            }
+        }
     }
 
     /// Takes in once what came for `handed`, sessions with the state in `dir`, with the spaces of

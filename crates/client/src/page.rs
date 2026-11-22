@@ -114,7 +114,7 @@ impl Opener {
 }
 
 /// The program `named` names: a path to it, or a name to look up on `PATH`.
-fn program(named: &Path) -> Option<PathBuf> {
+pub fn program(named: &Path) -> Option<PathBuf> {
     if named.components().count() > 1 {
         return named.is_file().then(|| named.to_owned());
     }
@@ -481,14 +481,18 @@ fn escaped(text: &str) -> String {
     escaped
 }
 
+/// A random name for a file of the command's own: 16 hexadecimal digits.
+pub fn random_name() -> io::Result<String> {
+    let mut name = [0; 8];
+    getrandom::fill(&mut name).map_err(io::Error::other)?;
+    Ok(name.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 /// Writes the file that takes the browser to `url` into `dir`, readable only by its user; gives
 /// its path.
 fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
     let url = escaped(url);
-    let mut name = [0; 8];
-    getrandom::fill(&mut name).map_err(io::Error::other)?;
-    let name: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
-    let file = std::path::absolute(dir.join(format!("page-{name}.html")))?;
+    let file = std::path::absolute(dir.join(format!("page-{}.html", random_name()?)))?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
