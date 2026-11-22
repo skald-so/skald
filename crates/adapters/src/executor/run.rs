@@ -278,10 +278,13 @@ mod tests {
     }
 
     /// A shell command that starts, in a session of its own, as Codex starts its commands, a
-    /// process that appends to `beat` every 100 ms, and leaves it.
+    /// process that appends to `beat` every 100 ms, and leaves it. The process ends by itself once
+    /// `beat`'s folder is gone or after 600 beats, well past the tests' waits.
     fn beating_in_its_own_session(beat: &Path) -> String {
+        let folder = beat.parent().expect("the beat's folder").display();
         let beating = format!(
-            "while :; do printf x >> '{}'; sleep 0.1; done",
+            "i=0; while [ -d '{folder}' ] && [ \\$i -lt 600 ]; do printf x >> '{}'; \
+             i=\\$((i + 1)); sleep 0.1; done",
             beat.display()
         );
         format!(
@@ -354,7 +357,7 @@ mod tests {
         let scratch = Scratch::new("skald-run-test").unwrap();
         let beat = scratch.path().join("beat");
         let script = format!(
-            "{}\nwhile [ ! -s '{}' ]; do sleep 0.05; done",
+            "{}\ni=0; while [ ! -s '{}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i + 1)); done",
             beating_in_its_own_session(&beat),
             beat.display()
         );
