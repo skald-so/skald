@@ -1,15 +1,20 @@
-//! Claude Code sessions waiting on their own permission prompt (`docs/dev/architecture.md`,
-//! "Notifications"; `docs/dev/agent-delivery.md`, "Permission prompts"), for the person's
-//! notification:
+//! Claude Code and Codex sessions waiting on their own permission prompt
+//! (`docs/dev/architecture.md`, "Notifications"; `docs/dev/agent-delivery.md`, "Permission
+//! prompts" and "Codex permission prompts"), for the person's notification:
 //!
 //! - `skald hook claude` records that a session of an agent in a space waits on its permission
 //!   prompt ([`told`]): on `PermissionRequest`, at once, and on `Notification` of type
-//!   `permission_prompt`, about 6 s later. The record names the agent, its space, the session and
-//!   the time, nothing of the prompt.
+//!   `permission_prompt`, about 6 s later. The record names the agent, its space, the session, its
+//!   folder and the time, nothing of the prompt.
 //! - Each prompt is recorded once: a `Notification` while the session's prompt of the same turn is
 //!   open records nothing. Its `PostToolUse`, `Stop` and `SessionEnd` end it ([`ended`]).
-//! - The person's `skald recv` shows each record once, as one line, or with `--json` an object of
-//!   every field ([`show_to_person`]); an agent's output never does. Records go after [`KEPT`].
+//! - A registered Codex session's prompt is recorded once, whichever path tells it first
+//!   ([`codex_told`]): its `PermissionRequest` hook (`crate::codex`) or its app-server
+//!   (`crate::codex_app_server`). Its next hook of a turn, the app-server's resolution of the
+//!   request or the end of its Codex process ends it.
+//! - The person's `skald recv` and `skald recv --wait` show each record once, as one line, or with
+//!   `--json` an object with its session and times ([`show_to_person`]); an agent's output never
+//!   does. Records go after [`KEPT`].
 //! - These hooks print nothing.
 
 use std::path::Path;
@@ -21,7 +26,7 @@ use skald_proto::Name;
 use crate::devices::text;
 use crate::forms::{self, Form};
 use crate::output::{self, Stream};
-use crate::state::{self, PermissionPrompt, State};
+use crate::state::{self, CodexSession, PermissionPrompt, State};
 use crate::{folders, hook};
 
 /// How long the device keeps a record.
@@ -51,7 +56,9 @@ pub fn told(dir: &Path, agent: &Name, input: &hook::Input) -> Result<(), String>
         space: space.id,
         agent: agent.as_str().to_owned(),
         session: session.clone(),
+        folder: Some(input.cwd.clone()),
         at: now,
+        ended: None,
     };
     let state = State::open(dir).map_err(text)?;
     (state.prompt_told(&prompt, input.turn.as_deref(), by_request, kept_since(now)))
@@ -64,11 +71,32 @@ fn kept_since(now: u64) -> u64 {
     now.saturating_sub(KEPT.as_secs())
 }
 
+/// Records that the registered Codex session `session` waits on its permission prompt, unless its
+/// prompt is recorded and open: Codex asks one at a time, which both its hook and its app-server
+/// tell.
+pub fn codex_told(state: &State, session: &CodexSession) -> Result<(), String> {
+    let now = state::unix_now();
+    let prompt = PermissionPrompt {
+        position: 0,
+        space: session.space,
+        agent: session.agent.clone(),
+        session: session.thread.clone(),
+        folder: Some(session.folder.clone()),
+        at: now,
+        ended: None,
+    };
+    // Without a turn, as told again: an open prompt of the session holds it.
+    (state.prompt_told(&prompt, None, false, kept_since(now)))
+        .map(drop)
+        .map_err(text)
+}
+
 /// Records that the session of the ID `session`, if given, no longer waits on a prompt it was
 /// recorded waiting on.
 pub fn ended(dir: &Path, session: Option<&str>) -> Result<(), String> {
+    let now = state::unix_now();
     match session {
-        Some(id) => (State::open(dir).and_then(|state| state.prompts_ended(id))).map_err(text),
+        Some(id) => (State::open(dir).and_then(|state| state.prompts_ended(id, now))).map_err(text),
         None => Ok(()),
     }
 }
@@ -103,12 +131,19 @@ fn shown(prompt: &PermissionPrompt, space: &str, form: Form) -> String {
                 "space": space,
                 "session": prompt.session,
                 "timestamp": prompt.at,
+                "ended": prompt.ended,
             }),
         ),
-        Form::Full | Form::Short => format!(
-            "The agent {} in the space {space} waits on its permission prompt",
-            prompt.agent
-        ),
+        Form::Full | Form::Short => {
+            let line = format!(
+                "The agent {} in the space {space} waits on its permission prompt",
+                prompt.agent
+            );
+            match &prompt.folder {
+                Some(folder) => format!("{line} in {}", folders::shown(folder)),
+                None => line,
+            }
+        }
     }
 }
 
@@ -116,6 +151,7 @@ fn shown(prompt: &PermissionPrompt, space: &str, form: Form) -> String {
 mod tests {
     use super::*;
     use skald_proto::SpaceId;
+    use std::path::PathBuf;
 
     fn prompt(session: &str, at: u64) -> PermissionPrompt {
         PermissionPrompt {
@@ -125,7 +161,9 @@ mod tests {
                 .unwrap(),
             agent: "web".to_owned(),
             session: session.to_owned(),
+            folder: None,
             at,
+            ended: None,
         }
     }
 
@@ -147,7 +185,7 @@ mod tests {
         assert!(told("b", Some("t1"), false), "another session's");
         assert!(told("a", Some("t2"), false), "another turn's");
         assert!(!told("a", Some("t2"), false));
-        state.prompts_ended("a").unwrap();
+        state.prompts_ended("a", 150).unwrap();
         assert!(told("a", Some("t2"), false), "after it ended");
         assert!(told("c", None, false));
         assert!(!told("c", None, false), "without a turn");
@@ -190,14 +228,55 @@ mod tests {
         assert_eq!(sessions(&state), ["b", "c"]);
     }
 
-    /// The person's line names the agent and its space; the JSON object holds every field.
+    /// A prompt told without a turn and not by request, as a Codex session's is, records once
+    /// while it is open; it ends when the session's prompts end, when a new one is told, or not
+    /// at all: each record keeps its folder and when it ended.
+    #[test]
+    fn a_prompt_ends_with_its_time() {
+        let state = State::in_memory().unwrap();
+        let mut codex = prompt("thread", 100);
+        codex.folder = Some("/w/frontend".into());
+        assert!(state.prompt_told(&codex, None, false, 0).unwrap());
+        assert!(!state.prompt_told(&codex, None, false, 0).unwrap(), "again");
+        state.prompts_ended("thread", 130).unwrap();
+        state.prompts_ended("thread", 140).unwrap();
+        assert!(
+            state
+                .prompt_told(&prompt("thread", 150), None, false, 0)
+                .unwrap()
+        );
+        state
+            .prompt_told(&prompt("thread", 160), None, true, 0)
+            .unwrap();
+        let ends: Vec<(u64, Option<u64>, Option<PathBuf>)> = (state.prompts_for_person())
+            .unwrap()
+            .into_iter()
+            .map(|prompt| (prompt.at, prompt.ended, prompt.folder))
+            .collect();
+        assert_eq!(
+            ends,
+            [
+                (100, Some(130), Some("/w/frontend".into())),
+                (150, Some(160), None),
+                (160, None, None),
+            ]
+        );
+    }
+
+    /// The person's line names the agent, its space and, if known, its folder; the JSON object
+    /// holds the agent, space, session and times.
     #[test]
     fn a_record_shows_its_agent_space_session_and_time() {
-        let record = prompt("9428", 1_700);
+        let mut record = prompt("9428", 1_700);
         let line = shown(&record, "clienta", Form::Full);
         assert_eq!(
             line,
             "The agent web in the space clienta waits on its permission prompt"
+        );
+        record.folder = Some("/w/frontend".into());
+        assert_eq!(
+            shown(&record, "clienta", Form::Full),
+            "The agent web in the space clienta waits on its permission prompt in /w/frontend"
         );
         let object: serde_json::Value =
             serde_json::from_str(&shown(&record, "clienta", Form::Json)).unwrap();
@@ -209,7 +288,12 @@ mod tests {
                 "space": "clienta",
                 "session": "9428",
                 "timestamp": 1_700,
+                "ended": null,
             })
         );
+        record.ended = Some(1_710);
+        let object: serde_json::Value =
+            serde_json::from_str(&shown(&record, "clienta", Form::Json)).unwrap();
+        assert_eq!(object["ended"], 1_710);
     }
 }

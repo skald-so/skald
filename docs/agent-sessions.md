@@ -50,7 +50,12 @@ Apps that run Claude Code or Codex sessions for you. Results of the [live checks
 - `SessionStart` registers the session's cross-session socket with Skald, and `SessionEnd` ends it; both print nothing.
 - While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
 - They print nothing while nothing waits.
-- `PermissionRequest` and `Notification` tell your `skald recv` that the session waits on its permission prompt: one line per prompt, without its content. They print nothing.
+- `PermissionRequest` and `Notification` tell Skald that the session waits on its [permission prompt](#permission-prompts). They print nothing.
+
+## Permission prompts
+- When a Claude Code or Codex session waits on its own permission prompt, your `skald recv` and `skald recv --wait` show one line: the agent, its space and folder, without the prompt's content. With `--json`: its session, when it began to wait and, once the prompt is answered or dropped, `ended`.
+- Agents never see it, and it does not leave the device.
+- Codex tells it by its `PermissionRequest` hook and by its background app-server, which a terminal session joins unless started with `--no-daemon`. Skald never answers the prompt.
 
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
