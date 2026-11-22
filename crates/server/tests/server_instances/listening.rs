@@ -14,13 +14,12 @@ use crate::common::device_flow::text;
 use crate::common::devices::assert_taken;
 use crate::common::{Closed, Server, delete_url};
 use crate::fixture::Fixture;
-use crate::instances::{CLOSE, RELISTEN, Role, WAKE, sender, store, watch};
+use crate::instances::{CLOSE, RELISTEN, Role, WAKE, relisten_quietly, sender, store, watch};
 use crate::link::{Entry, messages};
 use crate::link_kit::{fresh_session, hello};
 use crate::proxy::Proxy;
 use crate::rosters::{member, next};
 use crate::watch::Watch;
-use crate::wire::Socket;
 
 #[test]
 fn entries_stored_while_an_instance_did_not_listen_reach_its_connections_once_it_listens_again() {
@@ -171,24 +170,6 @@ fn delete_account(server: &Server, person: &Person) {
     ];
     let deleted = delete_url(&url, &headers);
     assert_eq!(deleted.status, 204, "{}", text(&deleted));
-}
-
-/// `role`'s instance stops listening, alice's `sender` stores an envelope to bob's laptop, and the
-/// instance listens again: `bob` gets it, the `seq`th, and then nothing, no notice again.
-#[track_caller]
-fn relisten_quietly(
-    role: &Role,
-    fixture: &Fixture,
-    sender: &mut Socket,
-    bob: &mut Watch,
-    seq: u64,
-) {
-    role.set_login(false);
-    role.end_listening();
-    let (_, missed) = store(sender, fixture, fixture.team.bob.laptop.id);
-    role.set_login(true);
-    assert_eq!(bob.entry_within(RELISTEN), Entry::Message(seq, missed));
-    bob.assert_quiet();
 }
 
 /// How long a proved connection waits for its instance to listen.
