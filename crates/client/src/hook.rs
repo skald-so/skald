@@ -152,9 +152,12 @@ pub struct Session {
     /// Codex's config home, from [`CODEX_HOME`].
     #[serde(default)]
     pub home: Option<PathBuf>,
-    /// The ID of the process that ran the hook: Codex's own, which runs the session.
+    /// The ID of the process that ran the hook: Codex's own, which runs the session; and its
+    /// executable, that session's `codex`.
     #[serde(default)]
     pub process: Option<u32>,
+    #[serde(default)]
+    pub codex: Option<PathBuf>,
 }
 
 /// The hook input on `from`, its first JSON object, with the cap `cap` sets, if any; fails on input
@@ -208,6 +211,7 @@ pub fn input(from: impl Read, cap: Option<&str>) -> Result<Input, String> {
             token: None,
             home: None,
             process: None,
+            codex: None,
         },
         turn: given.prompt_id.filter(|turn| !turn.is_empty()),
     })

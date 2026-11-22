@@ -42,6 +42,7 @@ mod copies;
 mod delivery;
 mod device;
 mod devices;
+mod domains;
 mod events;
 mod fingerprints;
 mod folders;
@@ -56,6 +57,7 @@ mod history_reading;
 mod hook;
 mod inbound;
 mod intake;
+mod invites;
 mod joined;
 mod kept_certs;
 mod key_chain;
@@ -73,6 +75,7 @@ mod person;
 mod plain_path;
 mod presence;
 mod proxy;
+mod queue_keys;
 mod queues;
 mod receipts;
 mod records;
@@ -105,6 +108,7 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::io::IsTerminal as _;
 use std::io::Write as _;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
@@ -378,6 +382,15 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
+        #[arg(
+            long,
+            env = "SKALD_DNS_RESOLVER",
+            value_name = "URL",
+            hide = true,
+            default_value = domains::RESOLVER
+        )]
+        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -404,6 +417,29 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+    },
+    /// Creates an invite to a space this device follows, on a device of an admin of it, as its
+    /// person at a terminal: the device signs it, the server stores it, and the run shows its
+    /// link, which admits one person. Send the link only to them, over a channel you trust. The
+    /// invite names the space's default channel first, whose earlier history the newcomer reads;
+    /// its secret is only in the link, which nothing keeps.
+    Invite {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// Invites an admin, not a member.
+        #[arg(long)]
+        admin: bool,
+        /// A channel's ID, as skald channels shows it, whose earlier history the newcomer reads;
+        /// once per channel.
+        #[arg(long = "channel", value_name = "CHANNEL")]
+        channels: Vec<String>,
+        /// A channel's ID whose earlier history the newcomer does not read; once per channel.
+        #[arg(long = "channel-without-history", value_name = "CHANNEL")]
+        without_history: Vec<String>,
+        /// The days until the invite expires, 30 at most.
+        #[arg(long, value_name = "DAYS", default_value_t = invites::DEFAULT_DAYS, value_parser = invite_days)]
+        days: u64,
     },
     /// Creates a service agent of a space this device follows, on a device of an admin of it: a
     /// device of the admin's account that runs without a person, such as in CI, at the address
@@ -540,6 +576,26 @@ enum Command {
         /// Whole days, such as 7d, or whole hours, such as 36h; at least a day.
         #[arg(value_name = "PERIOD", value_parser = history_period)]
         period: u64,
+    },
+    /// Names an organization's domain in the policy of a space this device follows, on a device of
+    /// an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then check the members against the fingerprints the
+    /// domain's DNS lists in TXT records at _skald.<domain>, each "<account ID> <fingerprint>", as
+    /// skald members shows.
+    SetDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The domain in lowercase, such as example.com.
+        #[arg(value_name = "DOMAIN", value_parser = domains::name)]
+        domain: String,
+    },
+    /// Clears the domain of a space this device follows, on a device of an admin of it, by the
+    /// space's next roster revision, which the device signs as skald create-channel does.
+    ClearDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
     },
     /// Makes a member of a space this device follows an admin, on a device of an admin of it, by the
     /// space's next roster revision, which the device signs as skald create-channel does.
@@ -682,7 +738,9 @@ enum Command {
     /// channel's presence. Without --deadline, a task a device of another account may claim gets
     /// one 7 days after enqueue. Says the task's ID and #<ref>; as an agent, only enqueued
     /// #<ref>. A task the server has not answered waits in the local state, and the next skald
-    /// enqueue or skald recv uploads it first, with the same bytes.
+    /// enqueue or skald recv uploads it first, with the same bytes. A stateless service agent's
+    /// run encrypts it to the queue key the channel's member devices publish, and fails unless the
+    /// server stores it within the run.
     Enqueue {
         /// The channel's ID, as skald channels shows it [default: the default channel of the
         /// working directory's space].
@@ -1162,6 +1220,7 @@ impl Command {
         match self {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
+            Command::Invite { .. } => Some("invite"),
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
             Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
@@ -1178,6 +1237,8 @@ impl Command {
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::SetHistoryPeriod { .. } => Some("set-history-period"),
+            Command::SetDomain { .. } => Some("set-domain"),
+            Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
             Command::AddRule { .. } => Some("add-rule"),
@@ -1226,11 +1287,14 @@ impl Command {
                 | Command::Channels { .. }
                 | Command::CreateSpace { .. }
                 | Command::CreateChannel { .. }
+                | Command::Invite { .. }
                 | Command::RemoveMember { .. }
                 | Command::ExcludeDevice { .. }
                 | Command::AddToChannel { .. }
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
+                | Command::SetDomain { .. }
+                | Command::ClearDomain { .. }
                 | Command::MakeAdmin { .. }
                 | Command::HandOverAdmin { .. }
                 | Command::Address
@@ -1389,6 +1453,15 @@ fn history_period(given: &str) -> Result<u64, String> {
     Ok(seconds)
 }
 
+/// The days until an invite expires: at least 1, at most [`invites::MOST_DAYS`].
+fn invite_days(given: &str) -> Result<u64, String> {
+    given
+        .parse::<u64>()
+        .ok()
+        .filter(|days| (1..=invites::MOST_DAYS).contains(days))
+        .ok_or_else(|| format!("give whole days from 1 to {}", invites::MOST_DAYS))
+}
+
 /// The setting of the host name the client reads, for tests; empty, the host name is empty.
 const HOST_NAME: &str = "SKALD_HOST_NAME";
 
@@ -1418,6 +1491,11 @@ fn main() -> ExitCode {
         Ok(Some(_)) => return as_service(operation),
         Ok(None) => {}
         Err(err) => return exit(Err(err)),
+    }
+    // The link holds the invite's secret: it goes only to a terminal, checked before anything is
+    // sent.
+    if matches!(operation.command, Command::Invite { .. }) && !std::io::stdout().is_terminal() {
+        return exit(Err(invites::NOT_AT_TERMINAL.to_owned()));
     }
     if let Command::Mcp {
         relayed,
@@ -1488,11 +1566,13 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
     }
 }
 
-/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
-/// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
-/// holding the lock of the state directory, which it creates if it is missing. Without a state
-/// directory the run is stateless: it takes no lock and does not wait.
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv`, the
+/// commands of tasks a member runs ([`claims`]) and `skald enqueue` without a state directory, as no
+/// agent, in this process, without a helper, holding the lock of the state directory, which it
+/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
+/// does not wait.
 fn as_service(operation: Operation) -> ExitCode {
+    let stateless = operation.state_dir.is_none();
     if !matches!(
         operation.command,
         Command::Send { .. }
@@ -1501,17 +1581,19 @@ fn as_service(operation: Operation) -> ExitCode {
             | Command::Extend { .. }
             | Command::Complete { .. }
             | Command::Fail { .. }
-    ) || operation.agent.is_some()
+    ) && !(stateless && matches!(operation.command, Command::Enqueue { .. }))
+        || operation.agent.is_some()
     {
         return exit(Err(format!(
             "with {} and {} set, skald runs as the service agent of the key secret, which only \
              sends and receives, and as a member runs tasks: skald send, skald recv, skald claim, \
-             skald extend, skald complete and skald fail, without --agent",
+             skald extend, skald complete and skald fail, without --agent; without \
+             SKALD_STATE_DIR it also enqueues: skald enqueue",
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
     }
-    if operation.state_dir.is_none() {
+    if stateless {
         if operation.command.waits() {
             return exit(Err(
                 "a service agent's skald recv --wait needs a state directory: \
@@ -1622,6 +1704,7 @@ fn run_hook(
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         input.session.process = codex::parent();
+        input.session.codex = input.session.process.and_then(codex::exe_of);
     } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
@@ -2087,7 +2170,10 @@ fn performed(operation: Operation) -> Result<(), String> {
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members { space } => synced(
+        Command::Members {
+            space,
+            dns_resolver,
+        } => synced(
             state_dir,
             key_storage,
             speaks,
@@ -2095,7 +2181,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(spaces::members),
+        .and_then(|synced| spaces::members(synced, (&dns_resolver, timeout))),
         Command::Fingerprint { space: None, .. } => {
             state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
         }
@@ -2122,6 +2208,21 @@ fn performed(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(channels::create),
+        Command::Invite {
+            space,
+            admin,
+            channels,
+            without_history,
+            days,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false).and_then(|synced| {
+            let asked = invites::Asked {
+                admin,
+                with_history: &channels,
+                without_history: &without_history,
+                days,
+            };
+            invites::create(synced, &asked)
+        }),
         Command::CreateServiceAgent {
             space,
             address,
@@ -2181,6 +2282,16 @@ fn performed(operation: Operation) -> Result<(), String> {
             (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
+        ),
+        Command::SetDomain { space, domain } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(Some(domain)),
+        ),
+        Command::ClearDomain { space } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(None),
         ),
         Command::MakeAdmin { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),
@@ -2669,6 +2780,17 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An invite expires in whole days from 1 to 30; anything else is refused.
+    #[test]
+    fn invite_days_are_whole_days_from_1_to_30() {
+        for days in [1, 7, 30] {
+            assert_eq!(invite_days(&days.to_string()), Ok(days), "{days}");
+        }
+        for given in ["0", "31", "", "7d", "1.5", "-1", "99999999999999999999"] {
+            assert!(invite_days(given).is_err(), "{given:?}");
+        }
+    }
 
     /// A period is whole days or hours from a day on; under a day, or of another form, it is
     /// refused.

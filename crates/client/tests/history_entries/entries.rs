@@ -2,23 +2,32 @@
 //! uploads, and opening them with the history keys of Bob's device.
 
 use skald_proto::{
-    Cbor as _, ChannelId, Content, HistoryBody, HistoryEntry, HistoryItem, MessageId, SpaceId,
+    Cbor as _, ChannelId, Content, HistoryBody, HistoryEntry, HistoryItem, MessageId, Roster,
+    SpaceId,
 };
 
 use crate::chain::{adds_to_channel, key_of, listed, uploads_in};
 use crate::cloud::Cloud;
 use crate::fixtures::{cert_of, kill_once};
 use crate::front::Front;
-use crate::kit::RECV;
+use crate::kit::{RECV, rosters};
 use crate::played::Played;
 use crate::talk::{Talk, commit_sent, one_message_sent};
-use crate::world::{now, revisions_request};
+use crate::world::{now, revisions_request, serve_revisions};
 
 /// What the CLI says of a message of its device that is not in the channel's history.
 pub const NOT_IN_HISTORY: &str = "not in the history";
 
 /// How far an entry's `timestamp` may be from the test's clock, in seconds.
 const CLOCK_SLACK: u64 = 600;
+
+/// From now on, the relay gives Ada's machine the revisions of the talk's space the server holds
+/// now, and no later one.
+pub fn hide_later_revisions(talk: &Talk) {
+    let space = talk.space.id;
+    let now: Vec<Roster> = rosters(talk.cloud(), &talk.ada.token, space);
+    serve_revisions(talk.cloud(), space, &now.iter().collect::<Vec<&Roster>>());
+}
 
 /// While the relay hides the later revisions of the talk's space from Ada's machine, a revision
 /// Bob's device, an admin's, signs adds Carol to the channel, and Bob's device adds `carol`'s:
