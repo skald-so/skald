@@ -113,6 +113,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - `github`: GitHub's user ID of that user.
   - A certificate carries both or neither; one with only one of them is malformed.
   - Only a `client` device's certificate carries them; a client ignores them on other kinds.
+  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither.
   - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
     - it passes when its key is on the list and it verifies with that key;
     - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;
@@ -327,13 +328,19 @@ The master key is the one the client pinned: its own account's on linking or, fo
 
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
-- an account record's `recovery` changes;
+- an account record's `recovery` changes, or a record the server gives fails the check of [Account](#account), once per record; one that names the master key of the record the client holds and verifies with it does not count, as an account's records stay so after its `master` changes;
+- a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
-- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
+- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate)), or a device with certificates of two bodies ([Device certificate](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
+
+All but the first and the last are **key changes**. A client keeps each in its local state until its person sees it:
+- Until then, each command, as the person or as an agent, and each tool call of its MCP server says on one line how many wait and which command shows them; with JSON output, as a field. The line names no space, account or device. A [service device](#service-device)'s runs do not say it: no person sees them at a terminal.
+- One an `ssh` signature or a domain shows counts only in runs with the GitHub API or resolver that showed it, as their results do.
+- The command shows them only to the person at a terminal, never as an agent or through a pipe, and counts them seen once the person confirms.
 
 ## Account fingerprint
 Two people check that their devices see the same master key for each other's accounts by comparing fingerprints.

@@ -38,6 +38,8 @@ semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = { version = "0.11", default-features = false }
+# What agents get of text from others, shared with the executors.
+skald-adapters = { path = "../adapters" }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
@@ -96,7 +98,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-# setsid, which detaches the helper from the terminal of the command that starts it.
+# setsid, which detaches the helper from the terminal of the command that starts it; poll, with
+# which the thread reading the person's lines reads only input that waits.
 libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]

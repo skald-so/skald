@@ -23,7 +23,9 @@
 //!   ([`helper::relay`]).
 //! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
 //!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
-//!   helper knows the agent runs and does not exit idle under it ([`crate::uploads`]).
+//!   helper knows the agent runs, extends its claims and does not exit idle under it
+//!   ([`crate::uploads`], [`crate::heartbeat`]). In one-shot mode, the server extends its agent's
+//!   claims itself, as an operation each [`heartbeat::TICK`] ([`beat`]).
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -54,8 +56,8 @@ use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
 use crate::{
-    Command, Operation, folders, forms, mailbox, message_status, presence, recovery, recv, reply,
-    secrets, send, uploads,
+    Command, Operation, folders, forms, heartbeat, mailbox, message_status, presence, recovery,
+    recv, reply, secrets, send, uploads,
 };
 
 /// The tool that returns the agent's messages.
@@ -149,6 +151,8 @@ pub enum Call {
     },
     /// The session the server holds of the helper, its agent CLI `runtime` ([`hold`]).
     Hold { runtime: Option<String> },
+    /// A one-shot server's heartbeat of its agent's claims ([`beat`]).
+    Beat,
     /// The `message_status` tool: `skald message-status` of the message `message` names.
     Status { message: String },
     /// The `agents` tool.
@@ -173,7 +177,7 @@ pub fn perform(
         Ok(_) => sends(),
         Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
     };
-    if call != Call::Register {
+    if !matches!(call, Call::Register | Call::Beat) {
         presence::notices(dir, agent);
     }
     match call {
@@ -215,6 +219,7 @@ pub fn perform(
             uploads::set_status(dir, agent, state, note.as_deref())
         }),
         Call::Hold { .. } => Err("skald mcp holds a session only of the helper".to_owned()),
+        Call::Beat => heartbeat::beat_agent(dir, storage, settings, agent),
         Call::Status { message } => message_status::run(dir, storage, &message, Some(agent), false),
     }
 }
@@ -426,6 +431,7 @@ struct Settings {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     github_api: String,
+    dns_resolver: String,
     one_shot: bool,
     /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
     installed: Option<PathBuf>,
@@ -442,6 +448,7 @@ impl Settings {
             state_dir: operation.state_dir.clone(),
             key_storage: operation.key_storage,
             github_api: operation.github_api.clone(),
+            dns_resolver: operation.dns_resolver.clone(),
             one_shot,
             installed,
         }
@@ -457,11 +464,13 @@ impl Settings {
             key_storage: self.key_storage,
             agent: Some(agent.to_string()),
             github_api: self.github_api.clone(),
+            dns_resolver: self.dns_resolver.clone(),
             command: Command::Mcp {
                 relayed: false,
                 call: Some(call),
             },
             said: crate::link_prompt::Said::default(),
+            said_key_changes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -518,6 +527,19 @@ fn hold(settings: &Settings, agent: &Name, runtime: Option<String>) {
     }
 }
 
+/// A one-shot server's heartbeat for its whole run, as `agent`: each [`heartbeat::TICK`], extends
+/// what is due of the agent's claims, as an operation with `settings`. What its run says goes to
+/// the server's standard error.
+fn beat(settings: &Settings, agent: &Name) {
+    let said = || |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    loop {
+        thread::sleep(heartbeat::TICK);
+        if let Err(err) = settings.run(Call::Beat, agent, said) {
+            let _ = writeln!(io::stderr().lock(), "skald: {err}");
+        }
+    }
+}
+
 /// The name of the client of the request of `context`: from the request's `_meta`, or from the
 /// session's `initialize`; empty with neither.
 fn client_of(context: &RequestContext<RoleServer>) -> String {
@@ -537,7 +559,7 @@ struct Server {
     /// The session's agent, once named: as `--agent` names it, or by default.
     agent: Mutex<Option<Name>>,
     pending: Pending,
-    /// Whether it holds a session of the helper ([`hold`]).
+    /// Whether it holds a session of the helper ([`hold`]), or, in one-shot mode, beats ([`beat`]).
     holding: AtomicBool,
 }
 
@@ -568,11 +590,14 @@ impl Server {
         if let Ok((false, why)) = registered {
             let _ = io::stderr().write_all(why.as_bytes());
         }
-        if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
+        if !self.holding.swap(true, AtomicOrdering::SeqCst) {
             let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
             let agent = self.agent(client);
             if let Some(agent) = agent {
-                thread::spawn(move || hold(&settings, &agent, runtime));
+                match settings.one_shot {
+                    true => thread::spawn(move || beat(&settings, &agent)),
+                    false => thread::spawn(move || hold(&settings, &agent, runtime)),
+                };
             }
         }
     }
@@ -1102,6 +1127,7 @@ mod tests {
                 state_dir: None,
                 key_storage: secrets::Storage::File,
                 github_api: String::new(),
+                dns_resolver: String::new(),
                 one_shot: true,
                 installed: None,
             },

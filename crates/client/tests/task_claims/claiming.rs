@@ -22,7 +22,7 @@ use crate::fixtures::{CHANNEL, hex};
 use crate::machine::{Finished, Machine};
 use crate::played::Played;
 use crate::queuing::{
-    default_queue, enqueued, proved_with, queues_path, refers_to_task, run_in, tasks_path,
+    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks_path,
     the_one_task,
 };
 use crate::senders::{LAPTOP_AGENT, Senders};
@@ -211,6 +211,18 @@ impl Claims {
         let record = sealed_by(bob, self.at, (&bob.person.key, bob.device()), craft);
         uploads(&talk.world.cloud, &bob.person, self.at, &record);
         record
+    }
+
+    /// Cancels `task` of the queue `default` through the API as Ada's first device; fails unless
+    /// the server takes it.
+    #[track_caller]
+    pub fn ada_cancels(&self, task: TaskId) {
+        let path = format!("{}/{task}/cancel", tasks_path(self.at, self.queue));
+        let (status, body) = proved(self.cloud(), self.ada(), ("POST", &path), None);
+        assert!(
+            (200..300).contains(&status),
+            "not cancelled: {status} {body}"
+        );
     }
 
     /// The task `task` of the queue `queue` as the server gives it to Ada's first device.

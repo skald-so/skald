@@ -18,6 +18,7 @@ use skald_proto::{AccountRecord, Cbor as _, Cert, DeviceId, DeviceKind, Revocati
 use crate::connection::{self, Connection, printable};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::kept_certs;
+use crate::key_changes;
 use crate::revocations;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
@@ -97,7 +98,8 @@ pub fn run(
     } else {
         Vec::new()
     };
-    for warning in (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)))
+    for warning in (two_bodies_warnings(&state, &checked)?.into_iter())
+        .chain(shared_name_warnings(&checked.linked))
         .chain(key_changes)
         .chain(changed)
         .chain(masters)
@@ -153,14 +155,19 @@ pub fn statuses(
 }
 
 /// The warning of each device in `checked` with certificates of two bodies
-/// (`docs/protocol/membership.md`, "Device certificate").
-pub fn two_bodies_warnings<'a>(checked: &'a Checked) -> impl Iterator<Item = String> + 'a {
-    checked.two_bodies.iter().map(|id| {
-        format!(
-            "the key of device {id} signed two different certificates of it, so neither counts; \
-             the device or its key may be compromised"
-        )
-    })
+/// (`docs/protocol/membership.md`, "Device certificate"), each kept in `state` as a key change the
+/// first time.
+pub fn two_bodies_warnings(state: &State, checked: &Checked) -> Result<Vec<String>, String> {
+    (checked.two_bodies.iter())
+        .map(|id| {
+            let warning = format!(
+                "the key of device {id} signed two different certificates of it, so neither \
+                 counts; the device or its key may be compromised"
+            );
+            key_changes::keep_once(state, &warning, &warning)?;
+            Ok(warning)
+        })
+        .collect()
 }
 
 /// The warning of each name that two or more of the `linked` certificates, those of one account,

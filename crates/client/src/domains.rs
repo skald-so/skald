@@ -8,7 +8,8 @@
 //!   resolver are never shown with another's, so a run with another one, as an agent could make,
 //!   changes nothing later runs show.
 //! - A member they list with its fingerprint shows as listed. One they list with another, and an
-//!   admin they do not list, are key changes: it warns of each once. A resolver that fails leaves
+//!   admin they do not list, are key changes: it warns of each once and keeps it by that resolver
+//!   ([`key_changes::keep_from`]). A resolver that fails leaves
 //!   the members not checked and fails no command.
 
 use std::collections::BTreeSet;
@@ -22,10 +23,14 @@ use skald_proto::{AccountId, Role, Roster};
 use crate::connection::{self, printable};
 use crate::devices::text;
 use crate::follow::{Own, master_of};
+use crate::key_changes;
 use crate::state::State;
 
 /// The resolver by default: Cloudflare's.
 pub const RESOLVER: &str = "https://cloudflare-dns.com/dns-query";
+
+/// The setting that names the resolver.
+pub const RESOLVER_SETTING: &str = "SKALD_DNS_RESOLVER";
 
 /// The label before a domain of the name its records are at.
 const LABEL: &str = "_skald";
@@ -151,6 +156,7 @@ pub fn check(
             continue;
         };
         if (state.warn_of_domain(key, member.account, &master, &warning.0)).map_err(text)? {
+            key_changes::keep_from(state, &key_changes::dns(resolver), &warning.1)?;
             warnings.push(warning.1);
         }
     }

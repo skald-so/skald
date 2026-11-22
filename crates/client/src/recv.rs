@@ -123,6 +123,10 @@ pub fn run(
     agent: Option<&Name>,
     (waits, json): (bool, bool),
 ) -> Result<bool, String> {
+    // What the agent is to be told, such as of a claim the heartbeat found lost.
+    if let Some(agent) = agent {
+        crate::presence::notices(dir, agent);
+    }
     holding_warnings(dir, agent.is_some(), || {
         let form = Form::of(agent.is_some(), json);
         received(
