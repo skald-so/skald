@@ -493,11 +493,6 @@ pub fn random_name() -> io::Result<String> {
 fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
     let url = escaped(url);
     let file = std::path::absolute(dir.join(format!("page-{}.html", random_name()?)))?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut opened = options.open(&file)?;
     let html = format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
          <meta name=\"referrer\" content=\"no-referrer\">\
@@ -505,12 +500,7 @@ fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
          <title>skald</title></head>\
          <body><p>Opening the page of skald: <a href=\"{url}\">go there</a>.</p></body></html>\n"
     );
-    let written = opened.write_all(html.as_bytes());
-    if let Err(err) = written {
-        drop(opened);
-        let _ = fs::remove_file(&file);
-        return Err(err);
-    }
+    skald_adapters::file::write_private(&file, html.as_bytes())?;
     Ok(file)
 }
 

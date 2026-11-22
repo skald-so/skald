@@ -70,6 +70,7 @@ use crate::devices::text;
 use crate::follow::{self, SpaceDevices};
 use crate::history;
 use crate::key_chain;
+use crate::key_changes;
 use crate::key_packages;
 use crate::mailbox::Mailbox;
 use crate::message_status;
@@ -715,10 +716,15 @@ fn key_packages(
             Ok(_) => {
                 taken.entry(device).or_insert(package);
             }
-            Err(err) => eprintln!(
-                "skald: warning: the server handed out a KeyPackage of the device {device} that \
-                 fails its checks: {err}; this device does not add it"
-            ),
+            Err(err) => {
+                let warning = format!(
+                    "the server handed out a KeyPackage of the device {device} that fails its \
+                     checks: {err}; this device does not add it"
+                );
+                let key = key_changes::key_of("key package", &package);
+                key_changes::keep_once(&follower.state, &key, &warning)?;
+                eprintln!("skald: warning: {warning}");
+            }
         }
     }
     Ok(taken.into_values().collect())
