@@ -639,7 +639,7 @@ pub fn extend(
                  recv repeats it, and nothing extends its claim"
             ));
         }
-        lapsed(&follower.state, &held, &reference)?;
+        lapsed(&follower.state, &held, &reference, state::unix_now())?;
         let sent = state::unix_now();
         let body = json!({ "progress": progress.name() });
         match fence(&mut follower, &held.fencing(), "extend", body) {
@@ -697,7 +697,7 @@ pub fn end(
         let reference = reference(&follower.state, task);
         let earlier = held.record.end.is_some();
         if !earlier {
-            lapsed(&follower.state, &held, &reference)?;
+            lapsed(&follower.state, &held, &reference, state::unix_now())?;
             held.record.end = Some(End {
                 done: ending == Ending::Complete,
                 retry: ending == Ending::Fail(true),
@@ -1055,10 +1055,10 @@ fn drop_claim(state: &State, task: TaskId) {
     }
 }
 
-/// Fails, dropping it, if the lease of `held` passed on the device's clock since the last answered
-/// request that started it.
-fn lapsed(state: &State, held: &Held, reference: &str) -> Result<(), String> {
-    if state::unix_now() < held.row.since.saturating_add(held.record.lease) {
+/// Fails, dropping it, if the lease of `held` passed by `now` on the device's clock since the last
+/// answered request that started it.
+fn lapsed(state: &State, held: &Held, reference: &str, now: u64) -> Result<(), String> {
+    if now < held.row.since.saturating_add(held.record.lease) {
         return Ok(());
     }
     drop_claim(state, held.row.task);
@@ -1264,11 +1264,11 @@ mod tests {
         };
         let live = held(now - 29);
         state.keep_claim(&live.row, None).unwrap();
-        assert_eq!(lapsed(&state, &live, "abcd"), Ok(()));
+        assert_eq!(lapsed(&state, &live, "abcd", now), Ok(()));
         assert_eq!(state.claims(None).unwrap(), std::slice::from_ref(&live.row));
         let gone = held(now - 30);
         state.keep_claim(&gone.row, None).unwrap();
-        let err = lapsed(&state, &gone, "abcd").unwrap_err();
+        let err = lapsed(&state, &gone, "abcd", now).unwrap_err();
         assert!(err.contains("lost"), "{err}");
         assert_eq!(state.claims(None).unwrap(), [live.row]);
     }
