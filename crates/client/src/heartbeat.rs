@@ -26,7 +26,7 @@ use crate::claims::{self, Fenced, Held, Progress};
 use crate::devices::text;
 use crate::spaces::Follower;
 use crate::state::{self, State, TaskClaim};
-use crate::uploads::{self, Running};
+use crate::uploads::{self, Running, earliest};
 use crate::{folders, lock, secrets};
 
 /// How long after an extend the server did not answer the heartbeat tries again, in seconds.
@@ -130,7 +130,7 @@ pub fn beat_here(
 
 /// Extends each claim the device holds by the state in `dir` whose agent, in the claim's space,
 /// `runs` gives, once a third of its lease passed, as [`self`] says; marks lost those it finds
-/// lost.
+/// lost. A claim that does not open it leaves out.
 pub fn beat(
     dir: &Path,
     storage: secrets::Storage,
@@ -153,17 +153,14 @@ pub fn beat(
         return Ok(Beaten::default());
     };
     let mut beaten = Beaten::default();
-    for mut held in claims::opened_all(&follower, rows)? {
+    for mut held in claims::opened_each(&follower, rows)? {
         if held.record.end.is_some() || held.record.lost.is_some() {
             continue;
         }
         let lease = held.record.lease;
         let third = (lease / 3).max(1);
         let now = state::unix_now();
-        if now >= held.row.since.saturating_add(lease) {
-            let why = format!(
-                "its lease of {lease} s passed on this device's clock without an answered extend"
-            );
+        if let Some(why) = claims::lease_passed(&held) {
             lose(&follower, &mut held, why)?;
             beaten.lost = true;
             continue;
@@ -182,11 +179,7 @@ pub fn beat(
                 beaten.due = earliest(beaten.due, now + third);
             }
             Fenced::Lost => {
-                lose(
-                    &follower,
-                    &mut held,
-                    "the server took no extend of it".to_owned(),
-                )?;
+                lose(&follower, &mut held, claims::NO_EXTEND.to_owned())?;
                 beaten.lost = true;
             }
             Fenced::Refused(why) => {
@@ -211,7 +204,7 @@ pub fn progress_of_agents(follower: &Follower) -> BTreeMap<Running, Progress> {
     if rows.is_empty() {
         return held;
     }
-    for claim in claims::opened_all(follower, rows).unwrap_or_default() {
+    for claim in claims::opened_each(follower, rows).unwrap_or_default() {
         if claim.record.lost.is_some() {
             continue;
         }
@@ -243,9 +236,4 @@ fn lose(follower: &Follower, held: &mut Held, why: String) -> Result<(), String>
             .map_err(text)?;
     }
     Ok(())
-}
-
-/// The earlier of `due` and `at`.
-fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
-    Some(due.map_or(at, |due| due.min(at)))
 }

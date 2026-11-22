@@ -34,6 +34,7 @@ mod one_shot;
 mod sessions;
 mod statuses;
 mod unheld;
+mod unreadable;
 mod waits;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), with the second
