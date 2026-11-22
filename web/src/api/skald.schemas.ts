@@ -461,6 +461,8 @@ export interface Devices {
   devices: Device[];
   /** The stored revocations of the listed devices' accounts, each as the server got it, once. */
   revocations: Revocation[];
+  /** The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
+  web?: string;
 }
 
 export type DeviceRegistrationKind =
@@ -620,6 +622,8 @@ export interface Session {
   github_login?: string;
   /** The provider a web session signed in with; only for a web session. */
   sign_in_method?: SignInProvider;
+  /** The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
+  web?: string;
 }
 
 /**
