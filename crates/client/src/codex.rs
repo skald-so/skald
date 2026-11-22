@@ -504,7 +504,8 @@ impl Served {
 
     /// Serves the sessions registered in the state in `dir` ([`Served::looks`]), `came` what came
     /// on the connection: ends those whose Codex process ended; takes in once for each space of a
-    /// session it has not taken in for, or that `came` concerns; then wakes the idle ones
+    /// session it has not taken in for, or that `came` may bring messages of, as statuses alone
+    /// give a session's hooks and wakes nothing; then wakes the idle ones
     /// ([`Served::wake`]). Gives whether it took in; `None` once a run panicked.
     pub fn look(&mut self, dir: &Path, came: &Came) -> Option<bool> {
         self.looks(dir);
@@ -526,7 +527,7 @@ impl Served {
         for live in self.live.values_mut() {
             let session = &live.session;
             if !std::mem::replace(&mut live.taken, true)
-                || (retry && came.concerns(Some(session.space)))
+                || (retry && came.brings_messages(session.space))
             {
                 (runs.entry(session.space))
                     .or_insert_with(|| (session.agent.clone(), session.folder.clone()));
