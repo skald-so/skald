@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
@@ -23,6 +24,9 @@ pub const FILE: &str = "state.sqlite3";
 /// The schema's migrations, in order: the database's `user_version` counts those applied. Each is
 /// a file of `migrations/`, in the order of their names; `build.rs` embeds them.
 const MIGRATIONS: &[&str] = include!(concat!(env!("OUT_DIR"), "/migrations.rs"));
+
+/// How long a save of the MLS state waits before it tries again to truncate the WAL.
+const WAL_AGAIN: Duration = Duration::from_millis(20);
 
 /// What a member service agent's device counts the `hops` of what its runs show under, as an
 /// agent's name: its runs send and receive as no agent, and no person shares its device.
@@ -1460,15 +1464,23 @@ impl State {
     }
 
     /// Copies the WAL into the database file and truncates it; fails if another run keeps it from
-    /// finishing.
+    /// finishing past the busy timeout. SQLite fails a checkpoint at once, without waiting, while
+    /// another run checkpoints, so such a try is repeated until the timeout passes.
     fn truncate_wal(&self) -> Result<(), Error> {
-        let busy: i64 = self
+        let timeout: u32 = self
             .db
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
-        if busy == 0 {
-            Ok(())
-        } else {
-            Err(Error::WalBusy)
+            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+        let until = Instant::now() + Duration::from_millis(timeout.into());
+        loop {
+            let busy: i64 =
+                (self.db).query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
+            if busy == 0 {
+                return Ok(());
+            }
+            if Instant::now() >= until {
+                return Err(Error::WalBusy);
+            }
+            std::thread::sleep(WAL_AGAIN);
         }
     }
 
@@ -7408,6 +7420,84 @@ pub(crate) mod tests {
 
         assert_eq!(saved, Err(Error::WalBusy.to_string()));
         reader.db.execute_batch("COMMIT").unwrap();
+    }
+
+    /// A save whose truncating of the WAL starts while another run checkpoints it, which SQLite
+    /// fails at once, waits for that run and truncates the WAL.
+    #[test]
+    fn mls_save_beside_another_runs_checkpoint_truncates_the_wal() {
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::thread::{self, JoinHandle};
+
+        use rusqlite::trace::{TraceEvent, TraceEventCodes};
+
+        /// The state's file, until the other run starts.
+        static OTHER_FILE: Mutex<Option<PathBuf>> = Mutex::new(None);
+        /// The other run, a checkpoint, once it started.
+        static OTHER_RUN: Mutex<Option<JoinHandle<rusqlite::Result<i64>>>> = Mutex::new(None);
+        /// A read that keeps the other run's checkpoint waiting until the other run ends it.
+        static READER: Mutex<Option<State>> = Mutex::new(None);
+        /// Whether the other run's checkpoint waited for the read.
+        static WAITED: AtomicBool = AtomicBool::new(false);
+
+        /// The other run's busy handler: ends the read after ten waits.
+        fn waits(count: i32) -> bool {
+            WAITED.store(true, Ordering::SeqCst);
+            if count == 10
+                && let Some(reader) = READER.lock().unwrap().take()
+            {
+                reader.db.execute_batch("COMMIT").unwrap();
+            }
+            thread::sleep(Duration::from_millis(10));
+            count < 1000
+        }
+        /// Before the save's first checkpoint, starts the other run's and lets the save go on
+        /// once it waits for the read.
+        fn other_run(event: TraceEvent<'_>) {
+            let TraceEvent::Stmt(_, sql) = event else {
+                return;
+            };
+            if !sql.contains("wal_checkpoint") {
+                return;
+            }
+            let Some(file) = OTHER_FILE.lock().unwrap().take() else {
+                return;
+            };
+            let run = thread::spawn(move || {
+                let db = Connection::open(file)?;
+                db.busy_handler(Some(waits))?;
+                db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            });
+            *OTHER_RUN.lock().unwrap() = Some(run);
+            let until = Instant::now() + Duration::from_secs(10);
+            while !WAITED.load(Ordering::SeqCst) && Instant::now() < until {
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+
+        let dir = TestDir::new("state-mls-checkpoints");
+        let state = State::open(&dir).unwrap();
+        let reader = State::open(&dir).unwrap();
+        reader.db.execute_batch("BEGIN").unwrap();
+        reader.session().unwrap();
+        *READER.lock().unwrap() = Some(reader);
+        *OTHER_FILE.lock().unwrap() = Some(dir.join(FILE));
+        state
+            .db
+            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run));
+
+        let saved = state.mls_step(|_| Ok((Some(sealed(&[(b"group:1", &[1; 40])])), ())));
+
+        state.db.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        let run = OTHER_RUN.lock().unwrap().take().expect("no other run");
+        run.join().unwrap().unwrap();
+        assert!(WAITED.load(Ordering::SeqCst), "the other run did not wait");
+        assert_eq!(saved, Ok(()));
+        let wal = files(&dir)
+            .into_iter()
+            .find(|(name, _)| name.ends_with("-wal"));
+        assert_eq!(wal.map(|(_, bytes)| bytes.len()), Some(0), "the WAL");
     }
 
     #[test]
