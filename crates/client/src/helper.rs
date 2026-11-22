@@ -20,6 +20,8 @@
 //!   so it does a Codex session while its Codex process runs ([`crate::codex`]).
 //! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
 //!   intake, when its sessions change, when a value nears its `expires` and before it exits.
+//! - While it waits idle, it keeps the device's connection open, so it learns when the server
+//!   closes it because the account is deleted; it then says so and exits ([`crate::deletion`]).
 //! - The helper exits after an idle time with no command, session, registered Claude Code session
 //!   or live Codex session, after sign-out and when a newer command or a sign-in asks it to; a helper that is
 //!   killed leaves its socket, which the next helper replaces.
@@ -49,7 +51,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, claude_socket, connection, mailbox, state, uploads};
+use crate::{Command, Operation, claude_socket, connection, deletion, mailbox, state, uploads};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -594,6 +596,7 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
     sessions.serve_agents(settings);
+    let mut watch = deletion::Watch::default();
     let parting = loop {
         match listener.accept() {
             Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {
@@ -609,6 +612,9 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
                 let looked = sessions.look(&dir);
+                if watch.reported(&dir, settings, looked == Some(false)) {
+                    break None;
+                }
                 sessions.keep_presence(&dir, false);
                 match looked {
                     Some(true) => last = Instant::now(),

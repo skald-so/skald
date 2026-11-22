@@ -41,6 +41,7 @@ mod codex;
 mod codex_app_server;
 mod connection;
 mod copies;
+mod deletion;
 mod delivery;
 mod device;
 mod devices;
@@ -352,6 +353,15 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Deletes the account this machine signed in to, on the server of its session, only as its
+    /// person at a terminal. It shows the spaces the deletion deletes, those only the account is in,
+    /// and stops while the account is the only admin of a space with other members, naming the
+    /// command that hands over its admin rights. Otherwise it says what goes at once and what 30
+    /// days later, and deletes once you type the account's username. With a sign-in older than the
+    /// server allows, it first signs in again in the browser, as skald sign-in does. Once deleted,
+    /// it deletes this machine's secrets, the device's keys among them, and its local state. Nothing
+    /// undoes a deletion.
+    DeleteAccount,
     /// Sets the username of the account this machine signed in to, on the server of its session.
     /// The server refuses a username that is invalid, reserved or another account's, and the
     /// account keeps its old one.
@@ -1225,6 +1235,7 @@ impl Command {
             Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
+            Command::DeleteAccount => Some("delete-account"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
@@ -1347,6 +1358,8 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
+            // It stops the helper and takes the lock itself, then deletes the state with it.
+            Command::DeleteAccount => None,
             // It takes its person's answers here and its steps lock ([`link`], [`held`]).
             Command::Link { .. } | Command::Held => None,
             Command::AddRule { .. } | Command::ApproveBinding { .. } => Some(true),
@@ -1480,6 +1493,10 @@ fn main() -> ExitCode {
     // sent.
     if matches!(operation.command, Command::Invite { .. }) && !std::io::stdout().is_terminal() {
         return exit(Err(invites::NOT_AT_TERMINAL.to_owned()));
+    }
+    // The username is typed only at a terminal, checked before anything is sent.
+    if matches!(operation.command, Command::DeleteAccount) && !link_code::at_terminal() {
+        return exit(Err(deletion::NOT_AT_TERMINAL.to_owned()));
     }
     if let Command::Mcp {
         relayed,
@@ -1942,6 +1959,10 @@ fn performed(operation: Operation) -> Result<(), String> {
         && !hooked
         && let Ok(dir) = state::dir(state_dir.clone())
     {
+        // A device of a deleted account sends nothing.
+        if (command.connects() || command.prompts()) && deletion::reported(&dir) {
+            return Err(deletion::said(&dir));
+        }
         // A grant the device took waits for the server to store its certificate.
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());
@@ -2051,6 +2072,9 @@ fn performed(operation: Operation) -> Result<(), String> {
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
             state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
+        }
+        Command::DeleteAccount => {
+            state::dir(state_dir).and_then(|dir| deletion::run(&dir, key_storage, speaks, timeout))
         }
         Command::SetUsername { username } => state::dir(state_dir)
             .and_then(|dir| set_username::run(&dir, key_storage, speaks, timeout, &username)),

@@ -653,7 +653,7 @@ fn account_id(account: &Account) -> Result<AccountId, Error> {
 /// Asks for a code, opens its verification page in the browser through a file in `dir`, prints
 /// one line with its link and polls until its person approves it; gives the session token. The
 /// file is gone once it returns.
-fn device_flow(connection: &mut Connection, dir: &Path) -> Result<String, Error> {
+pub fn device_flow(connection: &mut Connection, dir: &Path) -> Result<String, Error> {
     let (grant, _opened) = authorize(connection, dir, true)?;
     poll_for(connection, &grant, &AtomicBool::new(false))?
         .ok_or_else(|| Error::Unexpected("a device flow that stopped".to_owned()))
