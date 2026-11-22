@@ -20,7 +20,8 @@
 //!   lost, the device drops it and sends no result.
 //! - While a session of the claiming agent runs, the device extends the claim itself, stating the
 //!   progress of its last answered extend ([`crate::heartbeat`]); a claim the heartbeat found lost,
-//!   the next command on it says so.
+//!   the next command on it says so. An extend, complete or fail changes the claim holding
+//!   [`changing`], which the heartbeat holds too, as the helper's runs on a thread of its own.
 //! - A complete or fail waits in the local state before its request, so a run killed after it
 //!   repeats it. Once the server takes it, the device sends the `task-result` ([`groups`]): from
 //!   the claiming agent, to the task's `from`, `hops` the task's plus one, under `mls` when the
@@ -28,6 +29,8 @@
 //!   with a history entry; also over the limit on `hops`, as nothing answers a result. The claim
 //!   ends with that result in the outbox. Each `skald recv` repeats the completes and fails that
 //!   wait, and sends the results that wait, first.
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -55,6 +58,14 @@ use crate::state::{self, State, TaskClaim};
 
 /// Why a claim whose extend got `claim-lost` is lost.
 pub(crate) const NO_EXTEND: &str = "the server took no extend of it";
+
+/// Held while a run reads a claim the device holds, asks the server and keeps what it answered.
+static CHANGING: Mutex<()> = Mutex::new(());
+
+/// Holds [`CHANGING`] until the guard drops.
+pub(crate) fn changing() -> MutexGuard<'static, ()> {
+    CHANGING.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 /// What a claim states it takes: the trust level `own` and tasks without a template. Other levels
 /// and templates come with the device's queue settings.
@@ -653,6 +664,7 @@ pub fn extend(
                  recv repeats it, and nothing extends its claim"
             ));
         }
+        let _changing = changing();
         found_lost(&follower.state, &held, &reference)?;
         lapsed(&follower.state, &held, &reference)?;
         let sent = state::unix_now();
@@ -713,6 +725,7 @@ pub fn end(
         let reference = reference(&follower.state, task);
         let earlier = held.record.end.is_some();
         if !earlier {
+            let _changing = changing();
             found_lost(&follower.state, &held, &reference)?;
             lapsed(&follower.state, &held, &reference)?;
             held.record.end = Some(End {

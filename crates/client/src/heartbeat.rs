@@ -4,9 +4,9 @@
 //!
 //! - A claim's session is any session of its agent in its space on the device: an MCP server's or
 //!   a `skald recv --wait`. The helper extends the claims of the agents whose sessions run through
-//!   it ([`Beats`]); without the helper, a one-shot session extends its own agent's
-//!   ([`beat_agent`]). A claim as the person, or of an agent with no session running, gets none:
-//!   `skald extend` keeps it.
+//!   it, on a thread of its own ([`Beats`]); without the helper, a one-shot session extends its
+//!   own agent's ([`beat_agent`]). A claim as the person, or of an agent with no session running,
+//!   gets none: `skald extend` keeps it.
 //! - Each extend comes once a third of the lease has passed since the last answered request that
 //!   started it, and states the progress of the last answered extend, `started` until `skald
 //!   extend` states another, which extends at once.
@@ -17,6 +17,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread;
 use std::time::Duration;
 
 use serde_json::json;
@@ -35,6 +38,9 @@ const AGAIN: u64 = 1;
 /// How often a one-shot session looks whether an extend of its agent's claims is due.
 pub const TICK: Duration = Duration::from_secs(1);
 
+/// How often the helper's heartbeat looks whether an extend is due.
+const LOOK: Duration = Duration::from_millis(100);
+
 /// What a heartbeat made of the claims it looked at.
 #[derive(Debug, Default, PartialEq)]
 pub struct Beaten {
@@ -44,35 +50,79 @@ pub struct Beaten {
     pub lost: bool,
 }
 
-/// The helper's heartbeat: what it last looked with, and when it looks again.
+/// The helper's heartbeat, on a thread of its own, so no session run, presence check or command
+/// but an extend, complete or fail ([`claims::changing`]) delays an extend: it starts at the first
+/// [`Beats::check`] and stops when the helper drops it.
 #[derive(Default)]
 pub struct Beats {
-    running: Option<BTreeSet<Running>>,
-    due: Option<u64>,
-    /// Whether a command ran since: it may have changed the claims.
-    ran: bool,
+    shared: Option<Arc<Shared>>,
+}
+
+/// What the helper and its heartbeat's thread share.
+#[derive(Default)]
+struct Shared {
+    /// The agents whose sessions run.
+    running: Mutex<BTreeSet<Running>>,
+    /// Whether a command ran since the last look: it may have changed the claims.
+    ran: AtomicBool,
+    /// Whether the heartbeat found a claim lost since the helper last asked.
+    lost: AtomicBool,
+    /// Whether the helper dropped the heartbeat.
+    stop: AtomicBool,
 }
 
 impl Beats {
     /// Notes that a command ran.
-    pub fn ran(&mut self) {
-        self.ran = true;
+    pub fn ran(&self) {
+        if let Some(shared) = &self.shared {
+            shared.ran.store(true, Ordering::SeqCst);
+        }
     }
 
-    /// Extends what is due of the claims of the agents of `running` by the state in `dir`
-    /// ([`beat`]), once a command ran, the agents that run changed or an extend is due; gives
-    /// whether it found a claim lost.
+    /// Hands the heartbeat the agents of `running`, starting it on the state in `dir` at the first
+    /// call; gives whether it found a claim lost since the last call.
     pub fn check(&mut self, dir: &Path, running: &BTreeSet<Running>) -> bool {
+        let shared = self.shared.get_or_insert_with(|| {
+            let shared = Arc::new(Shared::default());
+            let (dir, beating) = (dir.to_path_buf(), Arc::clone(&shared));
+            thread::spawn(move || beat_while(&dir, &beating));
+            shared
+        });
+        *shared
+            .running
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = running.clone();
+        shared.lost.swap(false, Ordering::SeqCst)
+    }
+}
+
+impl Drop for Beats {
+    fn drop(&mut self) {
+        if let Some(shared) = &self.shared {
+            shared.stop.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+/// The heartbeat's thread, until the helper drops it: each [`LOOK`], extends what is due of the
+/// claims of the agents that run by the state in `dir` ([`beat`]), once a command ran, the agents
+/// that run changed or an extend is due.
+fn beat_while(dir: &Path, shared: &Shared) {
+    let (mut looked, mut due): (Option<BTreeSet<Running>>, Option<u64>) = (None, None);
+    while !shared.stop.load(Ordering::SeqCst) {
+        thread::sleep(LOOK);
+        let running = (shared.running.lock())
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
         let now = state::unix_now();
-        let same = self.running.as_ref() == Some(running);
-        if !self.ran && same && self.due.is_none_or(|due| now < due) {
-            return false;
+        let same = looked.as_ref() == Some(&running);
+        if !shared.ran.load(Ordering::SeqCst) && same && due.is_none_or(|due| now < due) {
+            continue;
         }
         let Some(settings) = uploads::remembered() else {
-            return false;
+            continue;
         };
-        self.ran = false;
-        self.running = Some(running.clone());
+        shared.ran.store(false, Ordering::SeqCst);
         let runs = |space: SpaceId, agent: &str| {
             running.contains(&Running {
                 space,
@@ -85,15 +135,15 @@ impl Beats {
             (settings.speaks, settings.timeout),
             runs,
         );
+        looked = Some(running);
         match beaten {
             Ok(beaten) => {
-                self.due = beaten.due;
-                beaten.lost
+                due = beaten.due;
+                if beaten.lost {
+                    shared.lost.store(true, Ordering::SeqCst);
+                }
             }
-            Err(_) => {
-                self.due = Some(now + AGAIN);
-                false
-            }
+            Err(_) => due = Some(now + AGAIN),
         }
     }
 }
@@ -130,7 +180,7 @@ pub fn beat_here(
 
 /// Extends each claim the device holds by the state in `dir` whose agent, in the claim's space,
 /// `runs` gives, once a third of its lease passed, as [`self`] says; marks lost those it finds
-/// lost. A claim that does not open it leaves out.
+/// lost. A claim that does not open it leaves out. Holds [`claims::changing`] throughout.
 pub fn beat(
     dir: &Path,
     storage: secrets::Storage,
@@ -140,6 +190,7 @@ pub fn beat(
     if !dir.join(state::FILE).is_file() {
         return Ok(Beaten::default());
     }
+    let _changing = claims::changing();
     let rows: Vec<TaskClaim> = (State::open(dir).map_err(text)?)
         .claims(None)
         .map_err(text)?

@@ -20,9 +20,9 @@
 //!   so it does a Codex session while its Codex process runs ([`crate::codex`]).
 //! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
 //!   intake, when its sessions change, when a value nears its `expires` and before it exits.
-//! - It extends the claims of its sessions' agents as they are due ([`crate::heartbeat`]). A
-//!   one-shot session's heartbeat it runs as any command, but the sessions take it as no command
-//!   that ran.
+//! - It extends the claims of its sessions' agents as they are due, on a thread of its own beside
+//!   its commands ([`crate::heartbeat`]). A one-shot session's heartbeat it runs as any command,
+//!   but the sessions take it as no command that ran.
 //! - The helper exits after an idle time with no command, session, registered Claude Code session
 //!   or live Codex session, after sign-out and when a newer command or a sign-in asks it to; a
 //!   helper that is killed leaves its socket, which the next helper replaces.
