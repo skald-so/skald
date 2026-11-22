@@ -53,6 +53,9 @@ use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, State, TaskClaim};
 
+/// Why a claim whose extend got `claim-lost` is lost.
+pub(crate) const NO_EXTEND: &str = "the server took no extend of it";
+
 /// What a claim states it takes: the trust level `own` and tasks without a template. Other levels
 /// and templates come with the device's queue settings.
 const TAKES: &str = r#"{"trust_levels":["own"],"templates":[],"without_template":true}"#;
@@ -672,7 +675,7 @@ pub fn extend(
             }
             Fenced::Lost => {
                 drop_claim(&follower.state, held.row.task);
-                Err(lost(&reference, "the server took no extend of it"))
+                Err(lost(&reference, NO_EXTEND))
             }
             Fenced::Refused(why) => {
                 drop_claim(&follower.state, held.row.task);
@@ -1041,6 +1044,16 @@ pub(crate) fn opened_all(follower: &Follower, rows: Vec<TaskClaim>) -> Result<Ve
         .collect()
 }
 
+/// As [`opened_all`], leaving out each claim that does not open.
+pub(crate) fn opened_each(follower: &Follower, rows: Vec<TaskClaim>) -> Result<Vec<Held>, String> {
+    let key = key_packages::local_state_key(&follower.state, &follower.secrets)?;
+    let opened = rows.into_iter().filter_map(|row| {
+        let record = open(&key, follower.this, &row).ok()?;
+        Some(Held { row, record })
+    });
+    Ok(opened.collect())
+}
+
 /// What the device sealed of `row` with `key` for the device `this`.
 fn open(key: &StateKey, this: DeviceId, row: &TaskClaim) -> Result<Record, String> {
     key.open(this, &item(row.task), &row.sealed)
@@ -1073,20 +1086,22 @@ fn drop_claim(state: &State, task: TaskId) {
     }
 }
 
-/// Fails, dropping it, if the lease of `held` passed on the device's clock since the last answered
-/// request that started it.
+/// Fails, dropping it, if the lease of `held` passed on the device's clock ([`lease_passed`]).
 fn lapsed(state: &State, held: &Held, reference: &str) -> Result<(), String> {
-    if state::unix_now() < held.row.since.saturating_add(held.record.lease) {
+    let Some(why) = lease_passed(held) else {
         return Ok(());
-    }
+    };
     drop_claim(state, held.row.task);
-    Err(lost(
-        reference,
-        &format!(
-            "its lease of {} s passed on this device's clock without an answered extend",
-            held.record.lease
-        ),
-    ))
+    Err(lost(reference, &why))
+}
+
+/// Why `held` is lost, if its lease passed on the device's clock since the last answered request
+/// that started it.
+pub(crate) fn lease_passed(held: &Held) -> Option<String> {
+    let lease = held.record.lease;
+    (state::unix_now() >= held.row.since.saturating_add(lease)).then(|| {
+        format!("its lease of {lease} s passed on this device's clock without an answered extend")
+    })
 }
 
 /// Fails, dropping it, if the heartbeat found `held` lost ([`crate::heartbeat`]).

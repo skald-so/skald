@@ -365,7 +365,7 @@ fn checked(dir: &Path, settings: Settings, live: &Live, now: u64) -> Result<Opti
 }
 
 /// The earlier of `due` and `at`.
-fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
+pub(crate) fn earliest(due: Option<u64>, at: u64) -> Option<u64> {
     Some(due.map_or(at, |due| due.min(at)))
 }
 
