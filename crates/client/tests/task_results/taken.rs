@@ -14,6 +14,7 @@ use crate::states::passes;
 const NOTES: &str = "result test: claude asks for the release notes of build 518";
 const NOTES_DONE: &str = "result test: codex wrote the release notes of build 518";
 const LINT: &str = "result test: claude asks codex beside it to lint the parser";
+const LINT_FAILED: &str = "result test: codex beside claude found the linter missing";
 const LINT_DONE: &str = "result test: codex beside claude linted the parser";
 const SUITE: &str = "result test: claude asks for a run of the flaky suite";
 const SUITE_FAILED: &str = "result test: codex found the database down";
@@ -71,11 +72,13 @@ fn done_result_reaches_the_enqueuing_agent_once_and_the_claiming_device_gets_its
     );
 }
 
-/// Claude enqueues a task; codex on the same machine claims and completes it. Claude's `skald recv
-/// --json` gives its result once, as an object of the type `result` with the task's ID, `done`,
-/// codex's text and the reference of the task; claude's next run gives it no more.
+/// Claude enqueues a task; codex on the same machine claims it and fails it with retry: claude's
+/// `skald recv` shows that result as `(task failed)`. Once the backoff passed, codex claims it again
+/// and completes it. Claude's `skald recv --json` gives that result once, as an object of the type
+/// `result` with the task's ID, `done`, codex's text and the reference of the task; claude's next
+/// run gives it no more.
 #[test]
-fn done_result_of_an_agent_on_the_same_device_reaches_the_enqueuing_agent_once() {
+fn results_of_an_agent_on_the_same_device_reach_the_enqueuing_agent_once() {
     let results = Results::new(
         [4_268_102_001, 4_268_102_002],
         ["ada-lints-on-one-machine", "bob-watches-one-machine"],
@@ -87,6 +90,24 @@ fn done_result_of_an_agent_on_the_same_device_reaches_the_enqueuing_agent_once()
     let channel = results.claims.channel.as_str();
     let claimed = run_in(machine, codex, CLAIM, &[CHANNEL, channel]);
     assert!(claimed.stdout.contains(LINT), "not claimed: {claimed:?}");
+    let failed = run_in(
+        machine,
+        codex,
+        FAIL,
+        &[RETRY_FLAG, &task.to_string(), LINT_FAILED],
+    );
+    assert!(failed.success, "{failed:?}");
+
+    let read = results.claude_reads();
+
+    assert_result_line(&read.stdout, task, (Outcome::Failed, LINT_FAILED));
+
+    passes(results.claims.cloud(), task, BACKOFF);
+    let claimed = run_in(machine, codex, CLAIM, &[CHANNEL, channel]);
+    assert!(
+        claimed.stdout.contains(LINT),
+        "not claimed again: {claimed:?}"
+    );
     let completed = run_in(machine, codex, COMPLETE, &[&task.to_string(), LINT_DONE]);
     assert!(completed.success, "{completed:?}");
 

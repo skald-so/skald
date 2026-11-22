@@ -15,7 +15,6 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::Deserialize;
 use skald_proto::{
     Address, Cbor as _, ChannelId, ClaimId, Content, DeviceId, Header, MessageId, Outcome, QueueId,
     QueuedTask, SpaceId, TaskId, TaskResult,
@@ -24,9 +23,10 @@ use skald_proto::{
 use crate::connection::{self, printable};
 use crate::devices::text;
 use crate::forms::ResultOf;
-use crate::queues::{self, Queue};
+use crate::queues;
 use crate::spaces::Follower;
 use crate::state::State;
+use crate::tasks::Answered;
 
 /// What a kept result's line names of `result`.
 pub fn result_of(result: &TaskResult) -> ResultOf {
@@ -96,7 +96,7 @@ pub fn judge(
 /// Where a result's task is: its queue, or the task as the server gives it.
 enum Found {
     Queue(QueueId),
-    Given(Given),
+    Given(Answered),
 }
 
 /// Check 2 of "Results" by `state`, the device's: the task `task` is one the device enqueued in
@@ -112,7 +112,7 @@ fn enqueued(
     };
     let (Some(channel), Some(queue)) = (enqueued.channel, enqueued.queue) else {
         return Ok(Err(format!(
-            "its task {task} was enqueued by an older skald, which kept not where"
+            "its task {task} was enqueued by an older skald, which kept no channel for it"
         )));
     };
     if (enqueued.space, channel) != at {
@@ -143,20 +143,15 @@ fn on_server(
     if ours.is_none() || to != ours {
         return Ok(Err("its to is not this run's agent".to_owned()));
     }
-    #[derive(Deserialize)]
-    struct Queues {
-        queues: Vec<Queue>,
-    }
     let listed = match get(follower, &queues::queues_path(at))? {
-        Ok(answer) => serde_json::from_slice::<Queues>(&answer)
-            .map_err(|_| "unexpected answer from the server: a channel's queues".to_owned())?,
+        Ok(answer) => queues::queues_of(&answer)?,
         Err(why) => {
             return Ok(Err(format!(
                 "the server lists no queues of its channel: {why}"
             )));
         }
     };
-    for queue in listed.queues {
+    for queue in listed {
         let Ok(given) = given(follower, at, queue.id()?, task)? else {
             continue;
         };
@@ -175,22 +170,6 @@ fn on_server(
     )))
 }
 
-/// A task as the server gives it: of `Task` in the OpenAPI spec, what the checks read.
-#[derive(Deserialize)]
-struct Given {
-    queued_task: String,
-    state: String,
-    claim: Option<GivenClaim>,
-}
-
-/// A task's last claim as the server gives it.
-#[derive(Deserialize)]
-struct GivenClaim {
-    claim_id: String,
-    generation: u64,
-    device: String,
-}
-
 /// The task `task` of the queue `queue` of the channel `at` as the server gives it, or the problem
 /// of its refusal.
 fn given(
@@ -198,7 +177,7 @@ fn given(
     at: (SpaceId, ChannelId),
     queue: QueueId,
     task: TaskId,
-) -> Result<Result<Given, String>, String> {
+) -> Result<Result<Answered, String>, String> {
     let path = format!("{}/{queue}/tasks/{task}", queues::queues_path(at));
     Ok(match get(follower, &path)? {
         Ok(answer) => Ok(serde_json::from_slice(&answer)
@@ -220,7 +199,7 @@ fn get(follower: &mut Follower, path: &str) -> Result<Result<Vec<u8>, String>, S
 
 /// Check 3 of "Results": the server gives the task as `done` with `result`'s `claim_id` and
 /// `generation`, claimed by `sender`.
-fn completed(given: &Given, result: &TaskResult, sender: DeviceId) -> Result<(), String> {
+fn completed(given: &Answered, result: &TaskResult, sender: DeviceId) -> Result<(), String> {
     let task = result.task;
     if given.state != "done" {
         return Err(format!(

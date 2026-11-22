@@ -8,9 +8,10 @@ use skald_proto::{ClaimId, Content, Outcome, Task, Unknown};
 
 use crate::claiming::address;
 use crate::fixtures::TO;
+use crate::lines::AFTER_MISSING;
 use crate::queuing::tasks_path;
 use crate::results::{Results, assert_dropped, assert_result_line, named};
-use crate::senders::LAPTOP_AGENT;
+use crate::senders::{LAPTOP_AGENT, labelled_of};
 use crate::states::{self, CLAIMED, Held};
 
 /// What the tests enqueue and answer; no text is anywhere else.
@@ -29,10 +30,14 @@ const NOT_ENQUEUED: &str = "drop test: bob answers the laptop's task to claude";
 const IN_DEFAULT: &str = "drop test: claude asks in the default channel for build 736";
 const OTHER_CHANNEL: &str = "drop test: bob answers the default channel's task here";
 const TASK_BODY: &str = "drop test: bob writes a task as a message to claude";
+const BEFORE_RESULT: &str = "drop test: bob tells claude the result is coming";
+const AFTER_DROPPED: &str = "drop test: bob asks claude whether the result came";
 
 /// Codex on Ada's second machine claims claude's task with `skald claim`, and its device completes
-/// it through the server's request, sending no result. Bob's device writes a `done` result of it
-/// to claude, naming that claim. Claude's `skald recv` drops it with a warning.
+/// it through the server's request, sending no result. Bob's device says a line to claude, then
+/// writes a `done` result of the task to claude, naming that claim: claude's `skald recv` shows the
+/// line and drops the result with a warning. Bob's device says another line to claude; claude's
+/// next run shows it, not after missing ones: the dropped result's counter counts.
 #[test]
 fn result_from_another_device_than_the_claiming_one_is_dropped() {
     let mut results = Results::new(
@@ -51,11 +56,23 @@ fn result_from_another_device_than_the_claiming_one_is_dropped() {
     };
     let (cloud, laptop) = (results.claims.cloud(), results.claims.laptop());
     states::taken(cloud, laptop, &held, ("complete", serde_json::json!({})));
+    results.bob_says_to_claude(BEFORE_RESULT);
     let msg_id = results.bob_results_to_claude(&held, (Outcome::Done, BUILT_ELSEWHERE));
 
     let read = results.claude_reads();
 
     assert_dropped(&read, msg_id, BUILT_ELSEWHERE);
+    labelled_of(&read.stdout, BEFORE_RESULT, BEFORE_RESULT);
+
+    results.bob_says_to_claude(AFTER_DROPPED);
+
+    let read = results.claude_reads();
+
+    let line = labelled_of(&read.stdout, AFTER_DROPPED, AFTER_DROPPED);
+    assert!(
+        !read.stdout.contains(AFTER_MISSING),
+        "{line:?} after missing: {read:?}"
+    );
 }
 
 /// Bob's device claims and completes claude's task, then writes three `done` results of it to

@@ -22,7 +22,7 @@ use crate::machine::{Finished, Machine};
 use crate::played::mls_envelope;
 use crate::queuing::{default_queue, enqueued, references, refers_to_task, tasks};
 use crate::states::{self, Held};
-use crate::talk::stored;
+use crate::talk::{Line, stored};
 
 /// How a result's line names its outcome.
 pub fn outcome_mark(outcome: Outcome) -> &'static str {
@@ -154,6 +154,18 @@ impl Results {
         let to = address(to);
         self.bob_writes(|msg_id, counter| {
             result(task, named, (outcome, text), msg_id).content((from, to), counter, 1)
+        })
+    }
+
+    /// Bob's device says `text` to claude from Bob's agent, as [`Results::bob_writes`] does.
+    /// Gives its `msg_id`.
+    #[track_caller]
+    pub fn bob_says_to_claude(&mut self, text: &str) -> MessageId {
+        let (from, to) = (self.bob_agent(), self.claims.claude());
+        self.bob_writes(|msg_id, counter| {
+            let mut line = Line::new(&from, counter.get(), text);
+            line.to = Some(to);
+            line.content(msg_id)
         })
     }
 

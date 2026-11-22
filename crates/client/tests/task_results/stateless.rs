@@ -25,6 +25,10 @@ const MOVED: &str = "stateless result test: deploy-bot asks for a task the serve
 const MOVED_FAILED: &str = "stateless result test: bob failed the moved task";
 const FOR_ADA: &str = "stateless result test: deploy-bot asks ada's device alone";
 const FOR_ADA_FAILED: &str = "stateless result test: bob failed the task for ada's device";
+const CLAIMED_ONLY: &str = "stateless result test: deploy-bot asks for a task bob never completes";
+const NOT_DONE: &str = "stateless result test: bob says done before completing";
+const TO_ADA: &str = "stateless result test: deploy-bot asks for a task bob answers to ada";
+const TO_ADA_FAILED: &str = "stateless result test: bob sends the bot's result to ada";
 
 /// Bob's agent, whose address Bob's device writes results as.
 const BOB_AGENT: &str = "claude-r5t2mz";
@@ -70,6 +74,18 @@ impl Bot {
         (task, named): (skald_proto::TaskId, Named),
         (outcome, text): (Outcome, &str),
     ) -> MessageId {
+        let to = self.scene.address.clone();
+        self.bob_results_to(&to, (task, named), (outcome, text))
+    }
+
+    /// As [`Bot::bob_results`], to `to`.
+    #[track_caller]
+    fn bob_results_to(
+        &mut self,
+        to: &str,
+        (task, named): (skald_proto::TaskId, Named),
+        (outcome, text): (Outcome, &str),
+    ) -> MessageId {
         self.bob_said += 1;
         let talk = &self.scene.talk;
         let bob = &talk.played[0];
@@ -79,7 +95,7 @@ impl Bot {
             bob.person.handle,
             crate::world::HOST
         ));
-        let to = address(&self.scene.address);
+        let to = address(to);
         let mut header = mls_envelope(talk.at(), &[], &[self.scene.device])
             .envelope()
             .header
@@ -130,15 +146,26 @@ fn stateless_run_shows_the_result_of_a_task_its_agent_enqueued() {
     assert_eq!(object["text"], DEPLOYED, "{object}");
 }
 
-/// Two tasks the agent enqueued: one the server then keeps in the queue `default` of the space's
-/// default channel, and one whose `sched` names Ada's device. Bob's device writes a `failed`
-/// result of each to the agent. The agent's run drops both with a warning each.
+/// Four tasks the agent enqueued: one Bob's device claims and does not complete; one the server
+/// then keeps in the queue `default` of the space's default channel; one whose `sched` names Ada's
+/// device; and one more. Bob's device writes a `done` result of the first to the agent, a `failed`
+/// result of the second and third to the agent, and a `failed` result of the fourth to Ada. The
+/// agent's run drops all four with a warning each.
 #[test]
-fn stateless_run_drops_a_result_of_a_task_of_another_channel_or_for_another_device() {
+fn stateless_run_drops_a_result_of_a_task_not_done_of_another_channel_or_for_another_device() {
     let mut bot = Bot::new(
         [4_268_122_001, 4_268_122_002],
         ["ada-runs-a-careful-deployer", "bob-answers-the-wrong-tasks"],
     );
+    let claimed = bot.enqueues_as_the_agent(CLAIMED_ONLY, |_| {});
+    let talk = &bot.scene.talk;
+    let held = states::claims(
+        talk.cloud(),
+        &talk.played[0].person,
+        talk.at(),
+        claimed.queue,
+    );
+    assert_eq!(held.task, claimed.task, "Bob claimed another task");
     let moved = bot.enqueues_as_the_agent(MOVED, |_| {});
     let talk = &bot.scene.talk;
     let (cloud, ada) = (talk.cloud(), &talk.ada);
@@ -158,9 +185,19 @@ fn stateless_run_drops_a_result_of_a_task_of_another_channel_or_for_another_devi
         (for_ada.task, (ClaimId::generate(), 1)),
         (Outcome::Failed, FOR_ADA_FAILED),
     );
+    let other = bot.enqueues_as_the_agent(TO_ADA, |_| {});
+    let ada_address = bot.scene.talk.address(&bot.scene.talk.ada);
+    let to_ada_failed = bot.bob_results_to(
+        &ada_address,
+        (other.task, (ClaimId::generate(), 1)),
+        (Outcome::Failed, TO_ADA_FAILED),
+    );
+    let not_done = bot.bob_results((claimed.task, named(&held)), (Outcome::Done, NOT_DONE));
 
     let got = bot.scene.agent.received();
 
     assert_dropped(&got, moved_failed, MOVED_FAILED);
     assert_dropped(&got, for_ada_failed, FOR_ADA_FAILED);
+    assert_dropped(&got, to_ada_failed, TO_ADA_FAILED);
+    assert_dropped(&got, not_done, NOT_DONE);
 }
