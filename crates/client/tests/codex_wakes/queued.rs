@@ -3,6 +3,8 @@
 //! sent the message, at whatever level, however long, and with the `text` setting `inline`.
 
 use std::path::PathBuf;
+use std::thread;
+use std::time::Duration;
 
 use skald_proto::MessageId;
 
@@ -27,6 +29,10 @@ const FIRST: &str = "codex wake test: api asks web to look at the first issue";
 const FROM_BOB: &str = "codex wake test: review asks web to rotate the staging key";
 /// What the agent review of Ada's second machine says to web, at the level `own`.
 const FROM_LAPTOP: &str = "codex wake test: the laptop asks web to merge the docs branch";
+
+/// How long web's session stays idle before each timed message: past the helper's reload of the
+/// registrations after the last turn's hooks, so only the message itself can wake the session.
+const IDLE: Duration = Duration::from_secs(3);
 
 /// A message of 15,000 characters that api sends web.
 fn long_spec() -> String {
@@ -70,11 +76,12 @@ pub fn assert_inbox_gives(codex: &mut Codex, sent: &[(&str, MessageId)]) {
 /// Bob joins `clienta`, Ada's second machine is linked, and the person sets the text of `peer` in
 /// the default channel to `inline`. web's session starts in a Codex app of its own, with a config
 /// home of its own: it is idle. api sends web a message: the app's `codex` runs `codex queue` once;
-/// a turn of the session runs. Then, one after another, Bob's agent review sends web a message,
-/// the second machine's agent review one, and api one of 15,000 characters: after each, the app's
-/// `codex` runs `codex queue` once more, within a second of the send's return, for web's thread
-/// with its config home, holding only the signal, and then a turn runs. No other run of `codex`
-/// follows, and the `codex` on the search path never runs. web's `inbox` gives the four messages.
+/// a turn of the session runs. Then, one after another, each once the session stayed idle 3
+/// seconds, Bob's agent review sends web a message, the second machine's agent review one, and api
+/// one of 15,000 characters: after each, the app's `codex` runs `codex queue` once more, within a
+/// second of the send's return, for web's thread with its config home, holding only the signal,
+/// and then a turn runs. No other run of `codex` follows, and the `codex` on the search path never
+/// runs. web's `inbox` gives the four messages.
 pub fn an_idle_session_gets_one_codex_queue_with_only_the_signal_within_a_second() {
     let mut codex = Codex::new(4_928_001_001, "ada-codex-wake-idle");
     let bob = codex.web.with_bob(4_928_001_002, "bob-codex-wake-idle");
@@ -106,6 +113,7 @@ pub fn an_idle_session_gets_one_codex_queue_with_only_the_signal_within_a_second
     let long = long_spec();
     let mut sent = vec![(FIRST, first)];
     for round in 0..3 {
+        thread::sleep(IDLE);
         let (text, msg_id) = match round {
             0 => (FROM_BOB, codex.web.peer(&bob, FROM_BOB)),
             1 => {
