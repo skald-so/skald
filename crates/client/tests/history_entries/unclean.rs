@@ -2,16 +2,15 @@
 //! device the members did not admit holds.
 
 use skald_crypto::MlsFraming;
-use skald_proto::{Role, Roster};
+use skald_proto::Role;
 
 use crate::chain::{assert_none_sent_of, bob_commits_empty, carol};
 use crate::entries::{
-    ada_s_message, assert_ada_s_entry, entries_of, entries_sent, killed_in_unclean_epoch,
-    talk_entries,
+    ada_s_message, assert_ada_s_entry, entries_of, entries_sent, hide_later_revisions,
+    killed_in_unclean_epoch, talk_entries,
 };
-use crate::kit::rosters;
 use crate::talk::{Talk, commit_sent, messages_sent};
-use crate::world::{ACME, serve_revisions};
+use crate::world::ACME;
 
 /// The epoch of the `mls` message envelope `payload` holds.
 fn epoch_of(payload: &[u8]) -> u64 {
@@ -19,14 +18,6 @@ fn epoch_of(payload: &[u8]) -> u64 {
         Some(MlsFraming::Message { epoch, .. }) => epoch,
         other => panic!("no MLS message: {other:?}"),
     }
-}
-
-/// From now on, the relay gives Ada's machine the revisions of the talk's space the server holds
-/// now, and no later one.
-fn hide_later_revisions(talk: &Talk) {
-    let space = talk.space.id;
-    let now: Vec<Roster> = rosters(talk.cloud(), &talk.ada.token, space);
-    serve_revisions(talk.cloud(), space, &now.iter().collect::<Vec<&Roster>>());
 }
 
 /// The relay keeps the revisions of the talk's space from Ada's machine as they were, as a

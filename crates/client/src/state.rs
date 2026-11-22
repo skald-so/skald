@@ -1193,7 +1193,14 @@ impl State {
     /// The epochs of `channel` whose key a wrap to the recovery key gave the device
     /// ([`MlsChanges::recovered`]).
     pub fn recovered_epochs(&self, channel: ChannelId) -> Result<BTreeSet<u64>, Error> {
-        let sql = "SELECT epoch FROM recovered_epoch WHERE channel = ?1";
+        self.epochs(
+            "SELECT epoch FROM recovered_epoch WHERE channel = ?1",
+            channel,
+        )
+    }
+
+    /// The epochs `sql` selects of `channel`, its parameter `?1`.
+    fn epochs(&self, sql: &str, channel: ChannelId) -> Result<BTreeSet<u64>, Error> {
         let rows = self.of_channel(sql, channel, |row| row.get::<_, i64>(0))?;
         (rows.into_iter())
             .map(|epoch| read_epoch(channel, epoch))
@@ -1405,6 +1412,23 @@ impl State {
                 params![channel.to_string(), sql_u64(epoch)?, kind, recipient],
             )?;
         }
+        Ok(())
+    }
+
+    /// The epochs of `channel` whose queue key object the device does not read again.
+    pub fn settled_queue_keys(&self, channel: ChannelId) -> Result<BTreeSet<u64>, Error> {
+        self.epochs(
+            "SELECT epoch FROM settled_queue_key WHERE channel = ?1",
+            channel,
+        )
+    }
+
+    /// Keeps the queue key object of `epoch` of `channel` from being read again.
+    pub fn settle_queue_key(&self, channel: ChannelId, epoch: u64) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO settled_queue_key (channel, epoch) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            params![channel.to_string(), sql_u64(epoch)?],
+        )?;
         Ok(())
     }
 
@@ -7515,6 +7539,23 @@ pub(crate) mod tests {
             })
             .unwrap();
         assert_eq!(state.claims(None).unwrap(), []);
+    }
+
+    #[test]
+    fn queue_keys_stay_settled_per_channel_and_epoch() {
+        let dir = TestDir::new("state-queue-keys");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (ChannelId::generate(), ChannelId::generate());
+
+        state.settle_queue_key(one, 2).unwrap();
+        state.settle_queue_key(one, 1).unwrap();
+        state.settle_queue_key(one, 2).unwrap();
+
+        assert_eq!(
+            state.settled_queue_keys(one).unwrap(),
+            BTreeSet::from([1, 2])
+        );
+        assert_eq!(state.settled_queue_keys(other).unwrap(), BTreeSet::new());
     }
 
     #[test]

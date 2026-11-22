@@ -28,6 +28,9 @@ const LONGEST: Duration = Duration::from_secs(30 * 24 * 3_600);
 #[derive(Serialize)]
 struct NewInvite {
     invite: String,
+    /// The server's web address, which the invite's link starts with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
 }
 
 /// `InviteRequest` in the spec, and `StoredInvite`.
@@ -82,7 +85,8 @@ async fn as_admin(db: &PgPool, space: &str, account: &str, does: &str) -> Result
     Ok(found)
 }
 
-/// `POST /spaces/<space>/invites`: a new invite ID for the space, for an admin's session.
+/// `POST /spaces/<space>/invites`: a new invite ID for the space, for an admin's session, with the
+/// server's web address.
 pub(crate) async fn issue(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -104,6 +108,7 @@ pub(crate) async fn issue(
         true,
         NewInvite {
             invite: invite.to_string(),
+            web: (state.sign_in.as_deref()).map(|settings| settings.web().origin()),
         },
     )
 }
