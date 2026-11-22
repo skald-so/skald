@@ -1626,6 +1626,7 @@ fn run_hook(
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         input.session.process = codex::parent();
+        input.session.codex = input.session.process.and_then(codex::exe_of);
     } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);

@@ -13,6 +13,13 @@ dist = true
 name = "skald"
 path = "src/main.rs"
 
+# Its binary also stands in for the `codex` command, whose arguments libtest would refuse, so it
+# runs a harness of its own (tests/codex_wakes/main.rs).
+[[test]]
+name = "codex_wakes"
+path = "tests/codex_wakes/main.rs"
+harness = false
+
 [dependencies]
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
