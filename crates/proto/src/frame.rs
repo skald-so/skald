@@ -75,7 +75,7 @@ pub enum Frame {
     },
     /// `sync`, client → server: the device's cursor, stated on connecting.
     Sync { cursor: u64 },
-    /// `message`, `status` or `space-notice`, server → client.
+    /// `message`, `status`, `space-notice` or `link-notice`, server → client.
     Push(Push),
     /// `ack`, client → server: the device's cursor after writing entries.
     Ack { seq: NonZeroU64 },
@@ -113,12 +113,15 @@ pub enum HistoryItem {
     Wrap(Vec<u8>),
     /// An encoded `history-entry` of the message `msg_id`, which the server cannot read in it.
     Entry { msg_id: MessageId, entry: Vec<u8> },
+    /// An encoded `queue-key`: the channel's queue key object of an epoch.
+    QueueKey(Vec<u8>),
 }
 
 // The kinds of a history item.
 const LINK: u64 = 1;
 const WRAP: u64 = 2;
 const ENTRY: u64 = 3;
+const QUEUE_KEY: u64 = 4;
 
 impl Codec for HistoryItem {
     fn encode(&self) -> Vec<u8> {
@@ -128,6 +131,7 @@ impl Codec for HistoryItem {
             Self::Entry { msg_id, entry } => {
                 cbor::array([cbor::uint(ENTRY), cbor::id(msg_id), cbor::bytes(entry)])
             }
+            Self::QueueKey(object) => cbor::array([cbor::uint(QUEUE_KEY), cbor::bytes(object)]),
         }
     }
 
@@ -147,6 +151,10 @@ impl Codec for HistoryItem {
                     msg_id: msg_id.id("history.item.msg_id")?,
                     entry: entry.bytes("history.item.entry")?.to_vec(),
                 }
+            }
+            QUEUE_KEY => {
+                let [_, object] = item.tuple("history.item")?;
+                Self::QueueKey(object.bytes("history.item.queue_key")?.to_vec())
             }
             other => {
                 return Err(field_error("history.item.kind", FieldProblem::Value(other)));
@@ -170,6 +178,8 @@ pub enum Push {
     },
     /// `space-notice`: the space has a new roster revision or invite acceptance.
     SpaceNotice { space: SpaceId },
+    /// `link-notice`: a device of the account waits for linking.
+    LinkNotice,
     /// A `batch` entry of a type this version does not know, which its reader ignores.
     Unknown(UnknownPush),
 }
@@ -245,6 +255,7 @@ const AUTH: u64 = 10;
 const HISTORY: u64 = 11;
 const HISTORY_STORED: u64 = 12;
 const HISTORY_REFUSED: u64 = 13;
+const LINK_NOTICE: u64 = 14;
 
 impl Frame {
     /// The header of the envelope in the `send` frame `bytes`, when all that keeps the frame from
@@ -363,7 +374,7 @@ impl Codec for Frame {
                     cursor: cursor.uint("sync.cursor")?,
                 }
             }
-            MESSAGE | STATUS | SPACE_NOTICE => Self::Push(Push::decode(item)?),
+            MESSAGE | STATUS | SPACE_NOTICE | LINK_NOTICE => Self::Push(Push::decode(item)?),
             ACK => {
                 let [_, seq] = item.tuple("ack")?;
                 Self::Ack {
@@ -419,6 +430,7 @@ impl Codec for Push {
                 cbor::array([cbor::uint(STATUS), cbor::uint(seq.get()), status.encode()])
             }
             Self::SpaceNotice { space } => cbor::array([cbor::uint(SPACE_NOTICE), cbor::id(space)]),
+            Self::LinkNotice => cbor::array([cbor::uint(LINK_NOTICE)]),
             Self::Unknown(unknown) => unknown.bytes.clone(),
         }
     }
@@ -444,6 +456,10 @@ impl Codec for Push {
                 Ok(Self::SpaceNotice {
                     space: space.id("space-notice.space")?,
                 })
+            }
+            LINK_NOTICE => {
+                let [_] = item.tuple("link-notice")?;
+                Ok(Self::LinkNotice)
             }
             // A `batch` holds no frame of another known type.
             other @ (SEND | STORED | SEND_REFUSED | SYNC | ACK | BATCH | AUTH | HISTORY

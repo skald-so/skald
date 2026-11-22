@@ -19,14 +19,14 @@ use crate::common::{Response, Server, get_url, send};
 pub const SPACES: &str = "/spaces";
 
 /// The spec, read once.
-fn the_spec() -> &'static Value {
+pub fn the_spec() -> &'static Value {
     static SPEC: OnceLock<Value> = OnceLock::new();
     SPEC.get_or_init(spec)
 }
 
 /// The spec's path that `path` matches, a parameter matching any segment, such as
 /// `/spaces/{space}/revisions` for `/spaces/<ID>/revisions`; `path` itself if none does.
-fn template(path: &str) -> String {
+pub fn template(path: &str) -> String {
     let segments: Vec<&str> = path.split('/').collect();
     let paths = the_spec()["paths"].as_object().expect("paths in the spec");
     let matches = |candidate: &str| {
@@ -58,6 +58,16 @@ impl Session {
         Session {
             base: flow.stand.server.base().to_owned(),
             token: None,
+        }
+    }
+
+    /// The session of `token` on `flow`'s server, such as another machine's of the same account.
+    /// The spaces tests start none.
+    #[allow(dead_code)]
+    pub fn of_token(flow: &DeviceFlow, token: &str) -> Self {
+        Session {
+            base: flow.stand.server.base().to_owned(),
+            token: Some(token.to_owned()),
         }
     }
 

@@ -2,19 +2,17 @@
 //! thread of its own so that a test can wait for each event with a deadline.
 
 use std::io::{BufRead, BufReader, Read};
-use std::sync::OnceLock;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
 use skald_proto::{Cbor, DeviceId, Frame, PROTOCOL_VERSION, Push, SpaceId, VERSION_HEADER};
 
-use crate::api::Person;
+use crate::api::{Person, the_spec};
 use crate::common::agent::{agent, get};
 use crate::common::device_flow::{DeviceFlow, text};
 use crate::common::devices::Device;
-use crate::common::spec::{operation_violations, spec};
+use crate::common::spec::operation_violations;
 use crate::common::{Response, Server};
 use crate::fixture::Fixture;
 use crate::https::{Https, PROOF};
@@ -38,18 +36,14 @@ pub enum Event {
     End,
     /// A `space-notice` of the space.
     Notice(SpaceId),
+    /// A `link-notice`.
+    LinkNotice,
     /// A comment line.
     KeepAlive,
     /// The server ended the response, or its connection.
     Closed,
     /// An event that is not one frame of those a stream sends.
     Bad(String),
-}
-
-/// The spec, read once.
-fn the_spec() -> &'static Value {
-    static SPEC: OnceLock<Value> = OnceLock::new();
-    SPEC.get_or_init(spec)
 }
 
 /// Checks that `response` to the opening of a stream conforms to the spec; an open stream's body
@@ -331,13 +325,15 @@ fn event_of(id: Option<String>, data: &str) -> Event {
     match frame {
         Frame::Batch(pushes) if pushes.is_empty() => Event::End,
         Frame::Push(Push::SpaceNotice { space }) => Event::Notice(space),
+        Frame::Push(Push::LinkNotice) => Event::LinkNotice,
         Frame::Push(push) => match Entry::of(push) {
             Some(entry) if id == Some(entry.seq().to_string()) => Event::Entry(entry),
             Some(entry) => Event::Bad(format!("{entry:?} in an event whose id is {id:?}")),
             None => Event::Bad(format!("a push a server does not send: {data:?}")),
         },
         other => Event::Bad(format!(
-            "one message, status or space-notice per event, or an empty batch, not {other:?}"
+            "one message, status, space-notice or link-notice per event, or an empty batch, not \
+             {other:?}"
         )),
     }
 }

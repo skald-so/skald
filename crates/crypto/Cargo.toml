@@ -6,12 +6,20 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-# Seals history links and entries.
+# Seals history links and entries, and the master backup.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }
+# Invite links.
+base64 = "0.23"
 # Seals the MLS state.
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
+# The link codes' CPace, on ristretto255.
+curve25519-dalek = "5"
+# The recovery key's derivation: `docs/protocol/membership.md`, "Account".
+argon2 = { version = "0.6", default-features = false, features = ["alloc", "zeroize"] }
 ed25519-dalek = "3"
 getrandom = "0.4"
+# The link codes' request and grant keys.
+hkdf = "0.13"
 # Stateless HPKE: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256 and AES-128-GCM.
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
@@ -20,9 +28,23 @@ mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_p
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.23"
+# The RSA keys ssh-key verifies with: which of them `crypto` checks.
+rsa = { version = "0.10", default-features = false }
+sha2 = { version = "0.11", default-features = false }
 skald-proto = { path = "../proto" }
+# Checks certificates' SSH signatures; why this version: docs/dev/tech-stack.md.
+ssh-key = { version = "=0.7.0-rc.12", default-features = false, features = ["alloc", "ed25519", "p256", "p384", "p521", "rsa"] }
 x25519-dalek = { version = "3", features = ["static_secrets"] }
 zeroize = "1"
+
+[dev-dependencies]
+# Only for the tests: the link codes' CPace against another implementation of its draft, natively
+# and in WASM, and the random generator it takes.
+getrandom = { version = "0.4", features = ["sys_rng"] }
+pakery-cpace = "0.6"
+pakery-crypto = { version = "0.6", features = ["cpace"] }
+# Only for the tests: signatures as a P-256 security key makes them.
+p256 = { version = "0.14", features = ["ecdsa"] }
 
 # In WASM: the random generator of the browser or Node.js.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

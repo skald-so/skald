@@ -88,6 +88,37 @@ pub(crate) async fn web_session_from_page(
     does: &str,
 ) -> Result<Session, Refusal> {
     let session = web_session(state, headers, does).await?;
+    from_page(state, headers)?;
+    Ok(session)
+}
+
+/// Refuses `session` unless its sign-in is more recent than `age`, read on `conn`: with
+/// `SignInTooOld` when it is older, `NotSignedIn` when the session has ended. A database failure is
+/// one at `doing`.
+pub(crate) async fn recent(
+    conn: &mut sqlx::PgConnection,
+    session: &Session,
+    age: Duration,
+    doing: &'static str,
+) -> Result<(), Refusal> {
+    let recent: Option<(bool,)> = sqlx::query_as(
+        "SELECT created_at > now() - make_interval(secs => $2) FROM sessions
+         WHERE token_hash = $1",
+    )
+    .bind(&session.token_hash)
+    .bind(age.as_secs_f64())
+    .fetch_optional(conn)
+    .await
+    .map_err(|err| Refusal::Database(doing, err))?;
+    match recent {
+        None => Err(Refusal::NotSignedIn),
+        Some((false,)) => Err(Refusal::SignInTooOld),
+        Some((true,)) => Ok(()),
+    }
+}
+
+/// Refuses the request unless it comes from a page of this server, as its `Origin` says.
+pub(crate) fn from_page(state: &AppState, headers: &HeaderMap) -> Result<(), Refusal> {
     let from_page = state
         .sign_in
         .as_deref()
@@ -97,7 +128,7 @@ pub(crate) async fn web_session_from_page(
             "The request does not come from a page of this server.".to_owned(),
         ));
     }
-    Ok(session)
+    Ok(())
 }
 
 /// `GET /account/sessions`: every session of the web session's account that has not ended.

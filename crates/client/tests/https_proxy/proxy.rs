@@ -99,6 +99,19 @@ impl Proxy {
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
     }
+
+    /// Fails unless it got a `CONNECT` to `host` at `port`.
+    #[track_caller]
+    pub fn assert_tunneled(&self, host: &str, port: u16) {
+        let connect = format!("CONNECT {host}:{port} ");
+        let tunnels = self.requests();
+        assert!(
+            tunnels
+                .iter()
+                .any(|request| request.line().starts_with(&connect)),
+            "no {connect}through the proxy: {tunnels:?}"
+        );
+    }
 }
 
 /// A free local port that nothing listens on: a proxy that is down.
@@ -168,7 +181,7 @@ fn keep_sent(
 }
 
 /// The head of the request on `client`, up to its empty line; `None` if it never ends.
-fn read_head(client: &mut TcpStream) -> Option<String> {
+pub fn read_head(client: &mut TcpStream) -> Option<String> {
     let mut head = Vec::new();
     let mut byte = [0];
     while !head.ends_with(b"\r\n\r\n") {

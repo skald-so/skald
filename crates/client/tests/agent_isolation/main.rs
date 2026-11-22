@@ -78,6 +78,9 @@ const REMOVE_FROM_CHANNEL: &str = "remove-from-channel";
 const SET_HISTORY_PERIOD: &str = "set-history-period";
 const HISTORY: &str = "--history";
 
+/// The command that lists a space's service tokens.
+const SERVICE_TOKENS: &str = "service-tokens";
+
 /// A space of Ada's device: its ID, its name and the IDs of its channels.
 struct Space {
     id: SpaceId,
@@ -472,6 +475,7 @@ fn refusal_of_a_persons_command_names_it_as_the_persons() {
         &[APPROVE, path(&a)],
         &[CREATE_SPACE, GLOBEX],
         &[CREATE_CHANNEL, CLIENT_A],
+        &[SERVICE_TOKENS, CLIENT_A],
     ]
     .map(<[&str]>::to_vec)
     .into_iter()

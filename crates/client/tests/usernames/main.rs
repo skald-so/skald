@@ -33,7 +33,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::Browser;
 use cloud::Cloud;
-use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, NO, SERVER, SIGN_IN, SIGN_OUT, YES};
+use machine::{DEVICES, Finished, Machine, SERVER, SIGN_IN, SIGN_OUT};
 use serde_json::{Value, json};
 use skald_github_stand_in::User;
 use skald_proto::{Cbor, Cert};
@@ -138,11 +138,9 @@ fn set_username(machine: &Machine, username: &str) -> Finished {
 
 /// Runs `skald sign-in` again on `machine`, which has a session on `cloud`; fails unless it
 /// succeeds with that session, asking for no new code.
-fn sign_in_again(cloud: &Cloud, machine: &Machine, first: &str) -> Finished {
+fn sign_in_again(cloud: &Cloud, machine: &Machine) -> Finished {
     let grants = cloud.grants().len();
-    let again = machine
-        .start(&[SIGN_IN, SERVER, &cloud.url, FIRST_DEVICE, first])
-        .finish();
+    let again = machine.start(&[SIGN_IN, SERVER, &cloud.url]).finish();
     assert!(again.success, "{again:?}");
     assert_eq!(cloud.grants().len(), grants, "a new code: {again:?}");
     again
@@ -166,7 +164,7 @@ fn assert_sets(cloud: &Cloud, person: &Person, wanted: &str) -> Finished {
     assert!(set.success, "{set:?}");
     assert!(set.shown().contains(wanted), "{set:?}");
     assert_eq!(username_of(cloud, &person.token), wanted);
-    let again = sign_in_again(cloud, &person.machine, YES);
+    let again = sign_in_again(cloud, &person.machine);
     assert_names(&again, wanted, &person.user.login);
     again
 }
@@ -202,7 +200,7 @@ fn sign_in_names_the_username_and_not_the_github_login() {
         !state_holds(&ada.machine, &ada.user.login),
         "the state keeps the GitHub login"
     );
-    let again = sign_in_again(&cloud, &ada.machine, YES);
+    let again = sign_in_again(&cloud, &ada.machine);
     assert_names(&again, username, &ada.user.login);
 }
 
@@ -222,7 +220,7 @@ fn sign_in_names_the_same_username_after_the_github_login_changes() {
     let renamed = cloud.user(ada.user.id, "Ada_Renamed_Standin");
 
     let second = Machine::new().with_host_name("ada-laptop");
-    let signed_in = cloud.signed_in(&browser.page(), &second, &renamed, &[FIRST_DEVICE, NO]);
+    let signed_in = cloud.signed_in(&browser.page(), &second, &renamed, &[]);
 
     assert!(signed_in.success, "{signed_in:?}");
     let token = cloud.last_token();
@@ -233,7 +231,7 @@ fn sign_in_names_the_same_username_after_the_github_login_changes() {
         !signed_in.shown().contains(&ada.user.login),
         "{signed_in:?}"
     );
-    let again = sign_in_again(&cloud, &ada.machine, YES);
+    let again = sign_in_again(&cloud, &ada.machine);
     assert_names(&again, username, &renamed.login);
     assert!(!again.shown().contains(&ada.user.login), "{again:?}");
 }
@@ -257,7 +255,7 @@ fn set_username_sets_a_free_username_and_sign_in_names_it() {
     assert!(!again.shown().contains("ada-sets-standin"), "{again:?}");
 
     let second = Machine::new().with_host_name("ada-laptop");
-    let signed_in = cloud.signed_in(&browser.page(), &second, &ada.user, &[FIRST_DEVICE, NO]);
+    let signed_in = cloud.signed_in(&browser.page(), &second, &ada.user, &[]);
     assert!(signed_in.success, "{signed_in:?}");
     assert_names(&signed_in, wanted, &ada.user.login);
 }
@@ -287,12 +285,7 @@ fn other_account_error_names_the_username_set_with_the_cli() {
     let out = bob.machine.start(&[SIGN_OUT]).finish();
     assert!(out.success, "{out:?}");
 
-    let refused = cloud.signed_in(
-        &browser.page(),
-        &bob.machine,
-        &ada.user,
-        &[FIRST_DEVICE, YES],
-    );
+    let refused = cloud.signed_in(&browser.page(), &bob.machine, &ada.user, &[]);
 
     assert!(!refused.success, "{refused:?}");
     assert_names(&refused, wanted, &ada.user.login);
@@ -351,7 +344,7 @@ fn invalid_reserved_or_taken_username_is_refused_with_the_servers_reason_and_the
         );
     }
     assert_eq!(username_of(&cloud, &bob.token), taken);
-    let again = sign_in_again(&cloud, &ada.machine, YES);
+    let again = sign_in_again(&cloud, &ada.machine);
     assert_names(&again, old, &ada.user.login);
 }
 
@@ -423,7 +416,7 @@ fn local_state_from_before_keeps_its_session_and_names_the_username() {
     write_state_before_usernames(&cloud, &ada);
     let mark = cloud.relay.mark();
 
-    let again = sign_in_again(&cloud, &ada.machine, NO);
+    let again = sign_in_again(&cloud, &ada.machine);
 
     let bearer = format!("\nauthorization: bearer {}", ada.token.to_lowercase());
     assert!(
@@ -471,7 +464,7 @@ fn account_with_a_sign_in_method_of_another_provider_is_named_by_its_username() 
     let (_, session) = cloud.session_of(&ada.token);
     assert_eq!(session.get("github_login"), None, "{session}");
 
-    let again = sign_in_again(&cloud, &ada.machine, YES);
+    let again = sign_in_again(&cloud, &ada.machine);
     assert_names(&again, username, &ada.user.login);
 
     let again = assert_sets(&cloud, &ada, "ada-still-google");

@@ -1,24 +1,27 @@
 //! Storing sent envelopes: `docs/protocol/delivery.md`, "Send" and "Mailbox". The server answers a
 //! device's `send` with `stored` once the envelope and its mailbox entries are committed, or with
 //! `send-refused` and its problem, storing nothing of the envelope. An `hpke` envelope goes to its
-//! one recipient; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
+//! one recipient, a `service` device only while a token of it that has not ended receives in the
+//! envelope's channel; the channel's group routes an `mls` one ([`groups`](crate::groups)). It stores
 //! at most one envelope per idempotency key and answers a retry as it answered the first send. It
 //! counts each space's messages per month; with the server's cloud limits
-//! (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit, and a
-//! message past its space's number for the month.
+//! (`docs/dev/architecture.md`, "Cloud limits"), it refuses a payload over the size limit, a
+//! message past its space's number for the month, and one past its device's send rate.
 
 use std::num::NonZeroU64;
+use std::time::Duration;
 
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    AccountId, Cbor as _, DeviceId, Frame, Header, RawEnvelope, Roster, Scheme, SendKey, SpaceId,
-    Stored,
+    AccountId, Cbor as _, Channel, ChannelId, DeviceId, Frame, Header, RawEnvelope, Roster,
+    RosterBody, Scheme, SendKey, SpaceId, Stored,
 };
 use sqlx::{PgConnection, PgPool};
 
 use crate::MAILBOX_LONGEST;
 use crate::delivery::Wakers;
 use crate::groups;
+use crate::service_tokens::Token;
 
 /// The device a connection is authenticated as.
 pub(crate) struct Sender {
@@ -26,6 +29,8 @@ pub(crate) struct Sender {
     pub(crate) account: AccountId,
     /// The protocol version of its connection.
     pub(crate) version: NonZeroU64,
+    /// The service token of its connection, for a `service` device.
+    pub(crate) token: Option<Token>,
 }
 
 /// The server's limits on sends; none without a setting.
@@ -35,6 +40,15 @@ pub(crate) struct Limits {
     pub(crate) message_size: Option<u64>,
     /// The messages a space stores per calendar month in UTC.
     pub(crate) monthly_messages: Option<u64>,
+    /// The messages a device stores within a sliding window.
+    pub(crate) send_rate: Option<SendRate>,
+}
+
+/// A send rate: `messages` per `window`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SendRate {
+    pub(crate) messages: u64,
+    pub(crate) window: Duration,
 }
 
 /// Why a send is refused: the problems of "Send".
@@ -46,6 +60,7 @@ pub(crate) enum Problem {
     UnknownRecipient,
     TooLarge,
     QuotaExceeded,
+    RateLimited,
 }
 
 impl Problem {
@@ -57,6 +72,7 @@ impl Problem {
             Self::UnknownRecipient => "unknown-recipient",
             Self::TooLarge => "too-large",
             Self::QuotaExceeded => "quota-exceeded",
+            Self::RateLimited => "rate-limited",
         }
     }
 }
@@ -136,10 +152,9 @@ async fn answer(
             Ok((route, envelope)) => {
                 // A handshake message is no message of the space's to count. The others count
                 // also without a limit, for the space's usage.
-                let counted = (!route.lasting()).then_some((header.space, limits.monthly_messages));
+                let counted = (!route.lasting()).then_some((header.space, limits));
                 match store(db, wakers, sender, header, &key, route, *envelope, counted).await? {
                     Kept::Answer(answer) => answer,
-                    Kept::OverQuota => refuse(db, sender, &key, Problem::QuotaExceeded).await?,
                     Kept::Refused(problem) => refuse(db, sender, &key, problem).await?,
                 }
             }
@@ -187,14 +202,14 @@ async fn route(
     let Some(channel) = body.channels.iter().find(|c| c.id == header.channel) else {
         return Ok(Err(Problem::NotAMember));
     };
-    // Whether `device` of `account` is in the channel: its account a member of it, not excluded.
-    let in_channel = |account: AccountId, device: DeviceId| {
-        channel.members.iter().any(|m| m.account == account)
-            && body.members.iter().any(|m| {
-                m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device))
-            })
+    let in_channel = |account, device| in_channel(body, channel, account, device);
+    // A `service` device sends with its token only where the token's send permission and channels
+    // let it.
+    let sends = match &sender.token {
+        Some(token) => token.sends_in(header.space, header.channel),
+        None => in_channel(sender.account, sender.device),
     };
-    if !in_channel(sender.account, sender.device) {
+    if !sends {
         return Ok(Err(Problem::NotAMember));
     }
     if header.scheme == Scheme::Mls {
@@ -204,16 +219,42 @@ async fn route(
     let Some(recipient) = send_key(header).recipient else {
         return Ok(Err(Problem::UnknownRecipient));
     };
-    match certified_account(db, recipient).await? {
-        Some(account) if in_channel(account, recipient) => Ok(Ok(Route::Device(recipient))),
+    // A `service` device receives in a channel only with a token: `store` checks it.
+    match certified(db, recipient).await? {
+        Some((_, true)) => Ok(Ok(Route::Service(recipient))),
+        Some((account, false)) if in_channel(account, recipient) => {
+            Ok(Ok(Route::Device(recipient)))
+        }
         _ => Ok(Err(Problem::UnknownRecipient)),
     }
+}
+
+/// Whether `device` of `account` is in `channel` of the revision `body`: its account a member of
+/// the channel, the device not excluded.
+pub(crate) fn in_channel(
+    body: &RosterBody,
+    channel: &Channel,
+    account: AccountId,
+    device: DeviceId,
+) -> bool {
+    channel.members.iter().any(|m| m.account == account) && listed(body, account, device)
+}
+
+/// Whether `device` of `account` is in the space of the revision `body`: its account a member, the
+/// device not excluded.
+pub(crate) fn listed(body: &RosterBody, account: AccountId, device: DeviceId) -> bool {
+    body.members
+        .iter()
+        .any(|m| m.account == account && !m.excluded.as_ref().is_some_and(|e| e.contains(&device)))
 }
 
 /// Where an envelope goes.
 enum Route {
     /// To its one recipient device, under `hpke`.
     Device(DeviceId),
+    /// To its one recipient, a `service` device, under `hpke`, while a token of it that has not
+    /// ended and has the receive permission lists the envelope's channel.
+    Service(DeviceId),
     /// Where the channel's group routes it, under `mls`: an `MLSMessage` of this framing.
     Group(MlsFraming),
 }
@@ -226,7 +267,10 @@ impl Route {
 }
 
 /// The latest roster revision of `space`, if it has one.
-pub(crate) async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>, sqlx::Error> {
+pub(crate) async fn latest(
+    db: impl sqlx::PgExecutor<'_>,
+    space: SpaceId,
+) -> Result<Option<Roster>, sqlx::Error> {
     let found: Option<(Vec<u8>,)> = sqlx::query_as(
         "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid
          ORDER BY revision DESC LIMIT 1",
@@ -237,19 +281,42 @@ pub(crate) async fn latest(db: &PgPool, space: SpaceId) -> Result<Option<Roster>
     Ok(found.map(|(roster,)| Roster::from_cbor(&roster).expect("a stored revision decodes")))
 }
 
-/// The account of `device` if it has a certificate on the server and is not revoked.
-async fn certified_account(
+/// The account of `device`, and whether it is a `service` device, if it has a certificate on the
+/// server and is not revoked.
+async fn certified(
     db: &PgPool,
     device: DeviceId,
-) -> Result<Option<AccountId>, sqlx::Error> {
-    let found: Option<(String,)> = sqlx::query_as(
-        "SELECT account_id::text FROM devices
+) -> Result<Option<(AccountId, bool)>, sqlx::Error> {
+    let found: Option<(String, bool)> = sqlx::query_as(
+        "SELECT account_id::text, kind = 'service' FROM devices
          WHERE id = $1::uuid AND cert IS NOT NULL AND NOT revoked",
     )
     .bind(device.to_string())
     .fetch_optional(db)
     .await?;
-    Ok(found.map(|(account,)| account.parse().expect("a stored account ID")))
+    Ok(found.map(|(account, service)| (account.parse().expect("a stored account ID"), service)))
+}
+
+/// Whether `device` has a token that has not ended and has the receive permission, of `space` and
+/// listing `channel`. Locked on `conn` until it commits: a revocation of the token, or a revision
+/// that ends it, waits for the envelope stored meanwhile.
+async fn receives_in(
+    conn: &mut PgConnection,
+    device: DeviceId,
+    (space, channel): (SpaceId, ChannelId),
+) -> Result<bool, sqlx::Error> {
+    let found: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM service_tokens
+         WHERE device_id = $1::uuid AND space_id = $2::uuid AND $3::uuid = ANY(channels)
+             AND 'receive' = ANY(permissions) AND expires_at > now()
+         LIMIT 1 FOR SHARE",
+    )
+    .bind(device.to_string())
+    .bind(space.to_string())
+    .bind(channel.to_string())
+    .fetch_optional(conn)
+    .await?;
+    Ok(found.is_some())
 }
 
 /// The answer the send of `sender` with `key` got, if it was answered.
@@ -321,18 +388,18 @@ struct Outgoing<'a> {
 enum Kept {
     /// Its `stored`; `None` if a send with its key is answered already.
     Answer(Option<Frame>),
-    /// Nothing: its message is past its space's number for the month.
-    OverQuota,
-    /// Nothing, for this problem: its `hpke` recipient is revoked, or the channel's group refuses
-    /// it.
+    /// Nothing, for this problem: its `hpke` recipient is revoked or, a `service` device, has no
+    /// token that receives in the channel, the channel's group refuses it, or its message is past
+    /// its space's number for the month or its device's send rate.
     Refused(Problem),
 }
 
 /// Stores `envelope`, the send of `sender` with `key` and `header`, with an entry in the mailbox of
 /// each device `route` gives, and gives its `stored`; tells the other instances in `wakers`, and
-/// wakes the recipients' connections on this one. With `counted`, a space and its monthly limit if
-/// any, a message not counted yet counts in the space's month, and is not stored past the limit. Nothing
-/// is stored for a revoked `hpke` recipient, and no entry for a revoked device.
+/// wakes the recipients' connections on this one. With `counted`, a space and the server's limits, a
+/// message not counted yet counts in the space's month and towards its device's send rate, and is
+/// not stored past either limit. Nothing is stored for a revoked `hpke` recipient, and no entry for
+/// a revoked device.
 #[allow(clippy::too_many_arguments)]
 async fn store(
     db: &PgPool,
@@ -342,11 +409,16 @@ async fn store(
     key: &SendKey,
     route: &Route,
     envelope: Outgoing<'_>,
-    counted: Option<(SpaceId, Option<u64>)>,
+    counted: Option<(SpaceId, Limits)>,
 ) -> Result<Kept, sqlx::Error> {
     let mut tx = db.begin().await?;
     let routed = match route {
-        Route::Device(device) => {
+        Route::Service(device)
+            if !receives_in(&mut tx, *device, (header.space, header.channel)).await? =>
+        {
+            Err(Problem::UnknownRecipient)
+        }
+        Route::Device(device) | Route::Service(device) => {
             let open = receiving(&mut tx, &[*device]).await?;
             if open.is_empty() {
                 Err(Problem::UnknownRecipient)
@@ -410,10 +482,10 @@ async fn store(
         .execute(&mut *tx)
         .await?;
     }
-    if let Some((space, limit)) = counted
-        && !count(&mut tx, sender, key, space, limit).await?
+    if let Some((space, limits)) = counted
+        && let Some(problem) = count(&mut tx, sender, key, space, limits).await?
     {
-        return Ok(Kept::OverQuota);
+        return Ok(Kept::Refused(problem));
     }
     wakers.tell(&mut tx, recipients.iter().copied()).await?;
     tx.commit().await?;
@@ -445,15 +517,15 @@ pub(crate) async fn receiving(
         .collect())
 }
 
-/// Counts the message of `sender`'s send with `key` in `space`'s month on `conn`, unless it is
-/// counted already; `false` if it is not, as the space has stored `limit` messages this month.
+/// Counts the message of `sender`'s send with `key` in `space`'s month and towards `sender`'s send
+/// rate on `conn`, unless it is counted already; the problem if it is past either of `limits`.
 async fn count(
     conn: &mut PgConnection,
     sender: &Sender,
     key: &SendKey,
     space: SpaceId,
-    limit: Option<u64>,
-) -> Result<bool, sqlx::Error> {
+    limits: Limits,
+) -> Result<Option<Problem>, sqlx::Error> {
     // Of the message's envelopes stored at once, the second waits for the first to commit, and
     // finds it counted.
     let new = sqlx::query(
@@ -466,8 +538,14 @@ async fn count(
     .execute(&mut *conn)
     .await?;
     if new.rows_affected() == 0 {
-        return Ok(true);
+        return Ok(None);
     }
+    if let Some(rate) = limits.send_rate
+        && !within_rate(conn, sender, rate).await?
+    {
+        return Ok(Some(Problem::RateLimited));
+    }
+    let limit = limits.monthly_messages;
     // Last in the transaction: the month's row lock makes the space's counts wait for each other.
     let counted: Option<(i64,)> = sqlx::query_as(
         "INSERT INTO message_counts AS c (space_id, month, messages)
@@ -480,5 +558,28 @@ async fn count(
     .bind(limit.map(|limit| i64::try_from(limit).unwrap_or(i64::MAX)))
     .fetch_optional(conn)
     .await?;
-    Ok(counted.is_some())
+    Ok(counted.is_none().then_some(Problem::QuotaExceeded))
+}
+
+/// Whether `sender`'s messages counted within `rate`'s window, the one just counted on `conn`
+/// included, are at most its number.
+async fn within_rate(
+    conn: &mut PgConnection,
+    sender: &Sender,
+    rate: SendRate,
+) -> Result<bool, sqlx::Error> {
+    // The device's counts, on any instance, wait for each other: each sees the ones before it.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('send-rate ' || $1, 0))")
+        .bind(sender.device.to_string())
+        .execute(&mut *conn)
+        .await?;
+    let (counted,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM counted_messages
+         WHERE sender_id = $1::uuid AND counted_at > now() - make_interval(secs => $2)",
+    )
+    .bind(sender.device.to_string())
+    .bind(rate.window.as_secs_f64())
+    .fetch_one(conn)
+    .await?;
+    Ok(u64::try_from(counted).unwrap_or(0) <= rate.messages)
 }

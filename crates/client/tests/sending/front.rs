@@ -30,6 +30,8 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
+use super::relay::{answered_in_full, reset};
+
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
 
@@ -76,6 +78,18 @@ pub struct Upload {
     pub forwarded: bool,
 }
 
+/// A queue key object a machine uploaded in a `history` frame, the item `[4, queue-key]`, read from
+/// its bytes alone.
+#[derive(Debug, Clone)]
+pub struct QueueKeyUpload {
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    /// The object's CBOR bytes.
+    pub object: Vec<u8>,
+    /// Whether the front forwarded it to the server.
+    pub forwarded: bool,
+}
+
 /// What came through so far, and the rules.
 struct State {
     sent: Vec<Sent>,
@@ -85,6 +99,10 @@ struct State {
     cut_link_of: Option<ChannelId>,
     /// The channel at whose next wrap in a `history` frame it closes the connection.
     cut_wrap_of: Option<ChannelId>,
+    /// Every queue key object the machines uploaded, in the order they came.
+    queue_keys: Vec<QueueKeyUpload>,
+    /// The channel at whose next queue key object in a `history` frame it closes the connection.
+    cut_queue_key_of: Option<ChannelId>,
     /// The server's `stored` and `send-refused` frames, as it sent them.
     answered: Vec<Frame>,
     answers: Answers,
@@ -128,7 +146,7 @@ struct State {
     held_auths: usize,
 }
 
-/// What the front knows of one WebSocket connection.
+/// What the front knows of one connection.
 #[derive(Default)]
 struct Link {
     /// The device its `auth` names.
@@ -143,9 +161,24 @@ struct Link {
     noticed: AtomicBool,
     /// The end of catch-up it holds back until a `space-notice` comes, as it would forward it.
     held_end: Mutex<Option<Vec<u8>>>,
+    /// What the machine sent and what the server answered on it, while it is no WebSocket.
+    http: Mutex<(Vec<u8>, Vec<u8>)>,
 }
 
 impl Link {
+    /// Keeps `bytes` of HTTP the machine sent, if `sent`, or the server answered.
+    fn http(&self, bytes: &[u8], sent: bool) {
+        let mut http = self.http.lock().expect("a connection's HTTP");
+        let kept = if sent { &mut http.0 } else { &mut http.1 };
+        kept.extend_from_slice(bytes);
+    }
+
+    /// Whether the server has answered every request the machine sent whole, as HTTP.
+    fn answered_in_full(&self) -> bool {
+        let http = self.http.lock().expect("a connection's HTTP");
+        answered_in_full(&http.0, &http.1)
+    }
+
     fn device(&self) -> Option<DeviceId> {
         *self.device.lock().expect("a connection's device")
     }
@@ -213,6 +246,8 @@ impl Front {
                 uploads: Vec::new(),
                 cut_link_of: None,
                 cut_wrap_of: None,
+                queue_keys: Vec::new(),
+                cut_queue_key_of: None,
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 history_answers: Answers::Forward,
@@ -275,6 +310,18 @@ impl Front {
     /// link of `channel`; the server never gets it.
     pub fn cut_next_link(&self, channel: ChannelId) {
         self.shared.state().cut_link_of = Some(channel);
+    }
+
+    /// Every queue key object the machines uploaded so far, in the order they came, cut ones
+    /// included.
+    pub fn queue_key_uploads(&self) -> Vec<QueueKeyUpload> {
+        self.shared.state().queue_keys.clone()
+    }
+
+    /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
+    /// queue key object of `channel`; the server never gets it.
+    pub fn cut_next_queue_key(&self, channel: ChannelId) {
+        self.shared.state().cut_queue_key_of = Some(channel);
     }
 
     /// Closes the connection, both ways, at the next `history` frame a machine sends that carries a
@@ -448,7 +495,14 @@ fn to_server(
     let mut buffer = [0; 16 * 1024];
     loop {
         let count = match machine.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
+            Ok(0) | Err(_) => {
+                // The machine left a connection the server has answered in full: it ends with a
+                // reset.
+                if frames.is_none() && link.answered_in_full() {
+                    return reset(&server);
+                }
+                break;
+            }
             Ok(count) => count,
         };
         let chunk = &buffer[..count];
@@ -473,6 +527,7 @@ fn to_server(
                 frames = Some(chunk[head..].to_vec());
                 continue;
             }
+            link.http(chunk, true);
             if server.write_all(chunk).is_err() {
                 break;
             }
@@ -480,6 +535,29 @@ fn to_server(
         };
         pending.extend_from_slice(chunk);
         while let Some((decoded, raw)) = next_frame(pending) {
+            if let Some((space, channel, object)) = queue_key_upload(&raw) {
+                let mut state = shared.state();
+                let cut = state.cut_queue_key_of == Some(channel);
+                if cut {
+                    state.cut_queue_key_of = None;
+                }
+                state.queue_keys.push(QueueKeyUpload {
+                    space,
+                    channel,
+                    object,
+                    forwarded: !cut,
+                });
+                drop(state);
+                if cut {
+                    let _ = machine.shutdown(Shutdown::Both);
+                    let _ = server.shutdown(Shutdown::Both);
+                    return;
+                }
+                if server.write_all(&raw).is_err() {
+                    return;
+                }
+                continue;
+            }
             let ack = match decoded {
                 Some(Frame::Send { envelope, report }) => {
                     let mut state = shared.state();
@@ -600,6 +678,7 @@ fn to_machine(
             continue;
         }
         if !upgrading.load(Ordering::SeqCst) {
+            link.http(chunk, false);
             if machine.write_all(chunk).is_err() {
                 break;
             }
@@ -847,6 +926,45 @@ fn ws_frame(bytes: &[u8]) -> Option<(WsFrame, usize)> {
         payload,
     };
     Some((frame, end))
+}
+
+/// The space, the channel and the object of a `history` frame whose item is a queue key object,
+/// `[11, upload, space, channel, [4, queue-key]]`, in the WebSocket frame `raw`; read from the bytes,
+/// whatever the frames the code under test decodes.
+fn queue_key_upload(raw: &[u8]) -> Option<(SpaceId, ChannelId, Vec<u8>)> {
+    let (frame, _) = ws_frame(raw)?;
+    let rest = frame.payload.strip_prefix(&[0x85, 0x0b])?;
+    let upload = *rest.first()?;
+    let rest = rest.get(head_width(upload, 0)?..)?;
+    let (space, rest) = cbor_id(rest)?;
+    let (channel, rest) = cbor_id(rest)?;
+    let rest = rest.strip_prefix(&[0x82, 0x04])?;
+    // The object, a byte string, ends the frame.
+    let object = rest.get(head_width(*rest.first()?, 2)?..)?;
+    let ids = (SpaceId::from_bytes(space), ChannelId::from_bytes(channel));
+    Some((ids.0, ids.1, object.to_vec()))
+}
+
+/// How many bytes a CBOR head takes whose first byte is `first`, if it is of major type `major`.
+fn head_width(first: u8, major: u8) -> Option<usize> {
+    if first >> 5 != major {
+        return None;
+    }
+    match first & 0x1f {
+        0..=23 => Some(1),
+        24 => Some(2),
+        25 => Some(3),
+        26 => Some(5),
+        27 => Some(9),
+        _ => None,
+    }
+}
+
+/// A 16-byte string at the start of `bytes`, and what follows it.
+fn cbor_id(bytes: &[u8]) -> Option<([u8; 16], &[u8])> {
+    let rest = bytes.strip_prefix(&[0x50])?;
+    let id = rest.get(..16)?.try_into().ok()?;
+    Some((id, &rest[16..]))
 }
 
 /// `payload` as one unmasked binary frame, as a server sends it.

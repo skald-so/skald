@@ -40,7 +40,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::{Browser, Page};
 use cloud::{ASK_MASTER, Cloud};
-use machine::{DEVICES, FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED, THIS_DEVICE};
+use machine::{DEVICES, Finished, Machine, NOT_LINKED, THIS_DEVICE};
 use serde_json::{Value, json};
 use skald_crypto::{SigningKey, issue};
 use skald_github_stand_in::User;
@@ -107,17 +107,16 @@ fn setup(github_id: u64, login: &str) -> (Cloud, Browser, Ada) {
     (cloud, browser, ada)
 }
 
-/// Signs `machine` in as `user`, the person approving at `page`, answering `first` whether it is
-/// the account's first device.
-fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User, first: &str) -> Finished {
-    cloud.signed_in(page, machine, user, &[FIRST_DEVICE, first])
+/// Signs `machine` in as `user`, the person approving at `page`.
+fn sign_in(cloud: &Cloud, page: &Page, machine: &Machine, user: &User) -> Finished {
+    cloud.signed_in(page, machine, user, &[])
 }
 
 /// A second machine of Ada's account, registered and waiting for linking, without a certificate;
 /// its host name is its registered `name`.
 fn second_machine(cloud: &Cloud, browser: &Browser, ada: &Ada, host: &str) -> Machine {
     let machine = Machine::new().with_host_name(host);
-    sign_in(cloud, &browser.page(), &machine, &ada.user, NO);
+    sign_in(cloud, &browser.page(), &machine, &ada.user);
     machine
 }
 
@@ -160,6 +159,7 @@ impl MadeUp {
             issuer,
             issued: MADE_UP_ISSUED,
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: Unknown::default(),
         }

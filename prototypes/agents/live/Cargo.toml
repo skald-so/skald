@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 agent-app-server = { path = "../app-server" }
+agent-channel = { path = "../channel" }
 agent-inbox = { path = "../inbox" }
 agent-limits = { path = "../limits" }
 agent-queue = { path = "../queue" }

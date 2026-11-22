@@ -4,6 +4,10 @@
 //! Every response is checked against the OpenAPI spec in `api/openapi.json`.
 
 mod common;
+// Storing the certificate of a device a linked device issued.
+#[allow(dead_code)]
+#[path = "linked_certificates/upload.rs"]
+mod upload;
 
 use std::collections::BTreeMap;
 use std::sync::Barrier;
@@ -135,9 +139,8 @@ fn invalid_registrations_are_refused() {
             Some(json!(device.id.to_string().to_uppercase())),
         ),
         with(&registration, "device", None),
-        // Other kinds come with later stories.
+        // Only `client` and `service` devices register here.
         with(&registration, "kind", Some(json!("browser"))),
-        with(&registration, "kind", Some(json!("service"))),
         with(&registration, "kind", Some(json!("toaster"))),
         with(&registration, "kind", None),
         // `name` is 1 to 64 bytes.
@@ -171,10 +174,9 @@ fn requests_without_a_valid_session_are_refused() {
     let device = Device::new("Laptop");
     let master = Key::generate();
     let registration = serde_json::to_vec(&device.registration()).expect("JSON");
-    let given = serde_json::to_vec(&json!({
-        "master": b64(&master.public()),
-        "cert": b64(&device.cert(&machine.account, &master)),
-    }))
+    let given = serde_json::to_vec(
+        &machine.master_request(&master, &device.cert(&machine.account, &master)),
+    )
     .expect("JSON");
     let unknown = format!("Bearer {}x", machine.token);
     let basic = format!("Basic {}", b64(b"ada:secret"));
@@ -288,10 +290,12 @@ fn first_device_gives_the_master_key_and_its_certificate() {
     holds();
 }
 
-/// With `--devices-limit`, only a new device counts against it: at 1, once the first device holds
-/// its certificate, its registration's retry is taken and another device's is refused.
+/// With `--devices-limit`, a registration does not count against it, only a certificate does: at
+/// 1, once the first device holds its certificate, its registration's retry is taken and another
+/// device registers, while that device's certificate, issued by the first device, is refused with
+/// `403` and the account keeps one certificate.
 #[test]
-fn at_the_devices_limit_a_registered_device_registers_again() {
+fn at_the_devices_limit_a_device_registers_and_its_certificate_is_refused() {
     let flow = DeviceFlow::start_with(&["--devices-limit", "1"]);
     let ada = flow.stand.user(3_120_665_030, "ada-limit-retry-standin");
     let first = machine(&flow, &ada);
@@ -304,8 +308,21 @@ fn at_the_devices_limit_a_registered_device_registers_again() {
 
     // A retry after a lost answer.
     assert_taken(&first.register(&registration));
-    assert_refused(&first.register(&phone.registration()), 403);
-    assert_eq!(first.devices(), listed(&[], &[(&laptop, &laptop_cert)]));
+    assert_taken(&first.register(&phone.registration()));
+    assert_eq!(
+        first.devices(),
+        listed(&[&phone], &[(&laptop, &laptop_cert)])
+    );
+
+    let account = account_id(&first.account);
+    let phone_cert = upload::issued_by(&phone, account, DeviceKind::Client, &laptop);
+    let base = flow.stand.server.base();
+    let refused = upload::put_cert(base, &first.token, phone.id, &phone_cert);
+    upload::assert_over_limit(&refused, "the phone's certificate");
+    assert_eq!(
+        first.devices(),
+        listed(&[&phone], &[(&laptop, &laptop_cert)])
+    );
 }
 
 #[test]
@@ -318,12 +335,12 @@ fn device_list_gives_each_certificate_as_sent() {
     machine.register_device(&device);
     machine.register_device(&other);
 
-    // A body with a field of a later version, 10 => "later": the map's head counts one more pair,
+    // A body with a field of a later version, 11 => "later": the map's head counts one more pair,
     // and the field goes last, as deterministic encoding orders the keys.
     let mut body = device.body(&machine.account).to_cbor();
     assert_eq!(body[0], 0xa7, "a map of 7 pairs");
     body[0] = 0xa8;
-    body.extend_from_slice(&[0x0a, 0x65]);
+    body.extend_from_slice(&[0x0b, 0x65]);
     body.extend_from_slice(b"later");
     let master = Key::generate();
     let signature = master.key.sign(CERT_LABEL, &[&body]);
@@ -453,17 +470,27 @@ fn invalid_certificates_are_refused() {
         assert_eq!(response.status, 400, "{what}: {}", text(&response));
         assert_refused(&response, 400);
     }
-    let cert = b64(&genuine);
+    let request = machine.master_request(&master, &genuine);
+    let with = |field: &str, value: Value| {
+        let mut sent = request.clone();
+        sent[field] = value;
+        sent
+    };
+    let without = |field: &str| {
+        let mut sent = request.clone();
+        sent.as_object_mut().expect("a JSON object").remove(field);
+        sent
+    };
     for (what, sent) in [
         (
             "a master key of 31 bytes",
-            json!({ "master": b64(&master.public()[..31]), "cert": cert }),
+            with("master", json!(b64(&master.public()[..31]))),
         ),
-        ("no master key", json!({ "cert": cert })),
-        ("no certificate", json!({ "master": b64(&master.public()) })),
+        ("no master key", without("master")),
+        ("no certificate", without("cert")),
         (
             "a certificate not in base64url",
-            json!({ "master": b64(&master.public()), "cert": "not base64url!" }),
+            with("cert", json!("not base64url!")),
         ),
     ] {
         let response = machine.give(&sent);

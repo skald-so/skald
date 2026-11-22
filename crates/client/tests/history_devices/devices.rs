@@ -9,10 +9,12 @@ use skald_proto::{
     Cbor as _, CertBody, ChannelId, DeviceId, DeviceKind, MessageId, SpaceId, Unknown,
 };
 
+use crate::chain::uploads_link;
 use crate::fixtures::hex;
 use crate::keys;
-use crate::machine::{FIRST_DEVICE, Machine, NO};
-use crate::reading::{Said, says};
+use crate::kit::{Change, issue_channel, latest, received, revise};
+use crate::machine::Machine;
+use crate::reading::{Said, admits, rotates, says};
 use crate::talk::{Line, Talk};
 use crate::world::{Person, World, now};
 
@@ -38,8 +40,50 @@ pub fn said_by(
     says(&talk.world.cloud, &mut talk.played[who], at, &line)
 }
 
+/// A revision Bob's device, an admin's, signs adds a channel of the talk's space with Bob alone,
+/// whose group his device creates: epoch 1, where he says `before[0]`. His device commits an empty
+/// Commit: epoch 2, where he says `before[1]`. A revision Bob's device signs adds Ada to the channel
+/// with `history` false, and Bob's device adds Ada's: epoch 3, which Ada's run joins from the
+/// Welcome. Gives the channel.
+#[track_caller]
+pub fn adds_ada_without_history(talk: &mut Talk, before: [&'static str; 2]) -> ChannelId {
+    let space = talk.space.id;
+    let cloud = &talk.world.cloud;
+    let bob = &mut talk.played[BOB];
+    let channel = issue_channel(cloud, &bob.person.token, space);
+    let at = (space, channel);
+    let alone = Change {
+        channels: vec![(channel, vec![&bob.person])],
+        ..Change::default()
+    };
+    revise(
+        cloud,
+        &latest(cloud, &bob.person.token, space),
+        &bob.person,
+        &alone,
+    );
+    bob.creates_alone(cloud, at);
+    bob.uploads_group_info(cloud, at);
+    said_by(talk, BOB, (at, 1), before[0]);
+    let cloud = &talk.world.cloud;
+    assert_eq!(
+        rotates(cloud, &mut talk.played[BOB], at),
+        2,
+        "the epoch of Bob's empty Commit"
+    );
+    said_by(talk, BOB, (at, 2), before[1]);
+    let cloud = &talk.world.cloud;
+    admits(cloud, &talk.played[BOB].person, at, (&talk.ada, false));
+    let bob = &mut talk.played[BOB];
+    bob.take_in(cloud);
+    bob.welcomes(cloud, at, &talk.ada);
+    uploads_link(cloud, bob, at, (3, 2));
+    received(&talk.ada.machine);
+    channel
+}
+
 /// A second machine of `first`'s account, with the host name `host`, linked by hand as a link
-/// code's link will: it signs in as no first device; the test certifies its device with the keys
+/// code's link will: it signs in; the test certifies its device with the keys
 /// of `first`'s machine, sets the certificate up in the server's database, and writes it, the
 /// pinned master key and the spaces of `first`'s machine into the second machine's local state.
 /// `first`'s machine accepted the latest revision of each space at its last run, so those are the
@@ -49,7 +93,7 @@ pub fn second_machine(world: &World, first: &Person, host: &'static str) -> Pers
     let cloud = &world.cloud;
     let machine = Machine::new().with_host_name(host);
     let page = world.browser.page();
-    let signed_in = cloud.signed_in(&page, &machine, &first.user, &[FIRST_DEVICE, NO]);
+    let signed_in = cloud.signed_in(&page, &machine, &first.user, &[]);
     assert!(signed_in.success, "{signed_in:?}");
     let token = cloud.last_token();
     let waiting: Vec<DeviceId> = (cloud.devices(&token).into_iter())
@@ -86,6 +130,7 @@ pub fn second_machine(world: &World, first: &Person, host: &'static str) -> Pers
         issuer: Some(first.device),
         issued: now(),
         ssh: None,
+        github: None,
         name: host.to_owned(),
         unknown: Unknown::default(),
     };

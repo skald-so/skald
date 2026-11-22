@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Tests the Claude Code plugin of the monorepo marketplace ("Channels" and "Release" in
+# docs/dev/infrastructure.md) in this working tree, and how script/release-update versions it, with
+# the git-cliff of script/install-git-cliff, on a fixture repository: a copy of this working tree
+# released as 0.40.5 and tagged v0.40.5, with a PR merged since.
+#   - .claude-plugin/marketplace.json is the marketplace `skald`, with an owner, listing the plugin
+#     `skald` once; the plugin's source is skald-so/skald at `main`, the latest stable release,
+#     never dev's.
+#   - The plugin's manifest, .claude-plugin/plugin.json in the directory of that repository the
+#     source names, its root without a path, is valid and names the plugin `skald` at the workspace
+#     version; so does the marketplace's entry if it gives a version.
+#   - The plugin has a skill: a SKILL.md, under skills/ or a directory the manifest adds, with a name
+#     and a description, whose rules name inbox, reply, send, peer, service and data.
+#   - The plugin runs `skald hook claude` on each event the hook handler takes from Claude Code, the
+#     names Event::name gives in crates/client/src/hook.rs but those Cli::handles leaves out for
+#     Cli::Claude, for every session and tool, from hooks/hooks.json or the hooks the manifest
+#     gives, in shell form or exec form; on Notification, at least for the type PERMISSION_NOTICE
+#     there names.
+#   - script/release-update writes the next release's version, 0.40.6, into the plugin's manifest,
+#     and into the marketplace's entry if it gives one, and leaves the source at main.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release.sh"
+failures=0
+
+fail() {
+  echo "claude-plugin-test: $*" >&2
+  failures=$((failures + 1))
+}
+
+# entry <tree>: the entry of the plugin `skald` in <tree>'s marketplace file, one line of JSON;
+# nothing without one.
+entry() {
+  jq -c 'first(.plugins[]? | select(.name == "skald"))' "$1/.claude-plugin/marketplace.json" \
+    2>/dev/null || true
+}
+
+# manifest <tree>: the path of the plugin's manifest in <tree>.
+manifest() {
+  local dir
+  dir=$(entry "$1" | jq -r 'if (.source | type) == "string" then .source else .source.path // "." end' \
+    2>/dev/null || true)
+  echo "$1/${dir#./}/.claude-plugin/plugin.json"
+}
+
+workspace=$("$root/script/release-version")
+
+# The marketplace.
+market=$root/.claude-plugin/marketplace.json
+if ! jq -e 'type == "object"' "$market" >/dev/null 2>&1; then
+  fail ".claude-plugin/marketplace.json is missing or not a JSON object"
+else
+  [[ $(jq -r '.name' "$market") == skald ]] || fail "the marketplace is named '$(jq -r '.name' "$market")', not skald"
+  jq -e '.owner.name | strings | length > 0' "$market" >/dev/null || fail "the marketplace names no owner"
+  count=$(jq '[.plugins[]? | select(.name == "skald")] | length' "$market")
+  [[ $count == 1 ]] || fail "the marketplace lists the plugin skald $count times, not once"
+  source=$(entry "$root" | jq -c '.source')
+  jq -e '
+    type == "object" and .ref == "main" and (
+      (.source == "github" and .repo == "skald-so/skald")
+      or ((.source == "url" or .source == "git-subdir")
+        and (.url | strings | test("^((https://github\\.com/)|(git@github\\.com:))?skald-so/skald(\\.git)?$"))))
+  ' <<<"$source" >/dev/null || fail "the plugin's source is not skald-so/skald at main: $source"
+fi
+
+# The plugin's manifest and version.
+plugin=$(manifest "$root")
+if ! jq -e 'type == "object"' "$plugin" >/dev/null 2>&1; then
+  fail "the plugin's manifest, ${plugin#"$root"/}, is missing or not a JSON object"
+else
+  [[ $(jq -r '.name' "$plugin") == skald ]] || fail "the plugin's manifest names '$(jq -r '.name' "$plugin")', not skald"
+  [[ $(jq -r '.version' "$plugin") == "$workspace" ]] ||
+    fail "the plugin's version is '$(jq -r '.version' "$plugin")', not the workspace's $workspace"
+fi
+listed=$(entry "$root" | jq -r '.version // empty' 2>/dev/null || true)
+[[ -z $listed || $listed == "$workspace" ]] || fail "the marketplace lists the plugin at $listed, not $workspace"
+
+# The skill.
+home=$(dirname "$(dirname "$plugin")")
+dirs=("$home/skills")
+while IFS= read -r added; do
+  [[ -z $added ]] || dirs+=("$home/${added#./}")
+done < <(jq -r '.skills // empty | if type == "array" then .[] else . end' "$plugin" 2>/dev/null || true)
+skills=$(find "${dirs[@]}" -name SKILL.md -type f 2>/dev/null | sort -u || true)
+if [[ -z $skills ]]; then
+  fail "the plugin has no skill: no SKILL.md under ${dirs[*]#"$root"/}"
+else
+  rules=
+  while IFS= read -r skill; do
+    [[ $(head -n 1 "$skill") == --- ]] || fail "${skill#"$root"/} starts with no front matter"
+    for field in name description; do
+      sed -n '2,/^---$/p' "$skill" | grep -q "^$field: *[^ ]" || fail "${skill#"$root"/} gives no $field"
+    done
+    rules+=$(cat "$skill")$'\n'
+  done <<<"$skills"
+  for word in inbox reply send peer service data; do
+    grep -qi -- "$word" <<<"$rules" || fail "the skill's rules do not name $word"
+  done
+fi
+
+# The hooks: the event maps of hooks/hooks.json and of each file or inline object the manifest's
+# `hooks` gives, as one JSON array.
+maps=$(
+  {
+    jq -c '.hooks // empty' "$home/hooks/hooks.json" 2>/dev/null || true
+    jq -r '.hooks // empty | if type == "array" then .[] else . end | strings' "$plugin" 2>/dev/null |
+      while IFS= read -r file; do jq -c '.hooks // empty' "$home/${file#./}" 2>/dev/null || true; done
+    jq -c '.hooks // empty | if type == "array" then .[] else . end | objects' "$plugin" 2>/dev/null || true
+  } | jq -sc .
+)
+# The events the hook handler takes, and the notification type it acts on.
+hook_rs=$root/crates/client/src/hook.rs
+events=$(sed -n '/pub fn name(self)/,/^    }$/p' "$hook_rs" | grep -o '=> "[A-Za-z]*"' | tr -d '=>" ' | sort -u)
+notice=$(sed -n 's/^pub const PERMISSION_NOTICE: &str = "\(.*\)";$/\1/p' "$hook_rs")
+# Cli::handles' arm for Cli::Claude: `true`, or the events it leaves out, as `event != Event::X` or
+# `!matches!(event, Event::X | ...)`; each such event's name is no event of Claude Code's.
+claude=$(sed -n '/pub fn handles(self/,/^    }$/p' "$hook_rs" | awk '/Cli::Claude =>/ { p = 1; print; next } p && /Cli::/ { exit } p')
+if ! grep -Eq 'Cli::Claude => (true|event != Event::|!matches!\()' <<<"$claude"; then
+  fail "Cli::handles in hook.rs has no arm for Cli::Claude the test reads: $claude"
+fi
+for variant in $(grep -o 'Event::[A-Za-z]*' <<<"$claude" | sed 's/^Event:://' | sort -u); do
+  name=$(sed -n '/pub fn name(self)/,/^    }$/p' "$hook_rs" |
+    sed -n "s/.*Event::$variant\( {[^}]*}\)\{0,1\} => \"\([A-Za-z]*\)\".*/\2/p")
+  [[ -n $name ]] || fail "Event::name in hook.rs gives no name of Event::$variant: the test reads it wrong"
+  events=$(grep -vx -- "$name" <<<"$events" || true)
+done
+for known in SessionStart SessionEnd PostToolUse Stop PermissionRequest Notification; do
+  grep -qx "$known" <<<"$events" || fail "Event::name in hook.rs does not give $known: the test reads it wrong"
+done
+[[ -n $notice ]] || fail "hook.rs gives no PERMISSION_NOTICE: the test reads it wrong"
+for event in $events; do
+  matched=
+  [[ $event == Notification ]] && matched=$notice
+  jq -e --arg event "$event" --arg matched "$matched" '
+    any(.[][$event][]?; (.matcher // "" | . == "" or . == "*" or ($matched != "" and . == $matched))
+      and any(.hooks[]?;
+      .type == "command" and (
+        (.args == null and (.command | strings | test("^\\s*skald\\s+hook\\s+claude\\s*$")))
+        or (.command == "skald" and .args == ["hook", "claude"]))))
+  ' <<<"$maps" >/dev/null || fail "the plugin does not run skald hook claude on every $event"
+done
+
+# The version script/release-update writes.
+"$root/script/install-git-cliff" >/dev/null
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+fixture_git "$tmp"
+released=$tmp/released
+copy_tree "$root" "$released"
+set_version "$released" 0.40.5
+# squash <title>: commits every change in the fixture as the squash merge of a PR titled <title>.
+squash() {
+  git -C "$released" add --all
+  git -C "$released" commit --quiet --allow-empty --message "$1"
+}
+git -C "$released" init --quiet --initial-branch dev
+squash "chore: import the repository (#1)"
+git -C "$released" tag v0.40.5
+printf '\n// %s\n' "a change after the release" >>"$released/crates/client/src/main.rs"
+squash "feat(client): change the client after the release (#2)"
+if ! printed=$(cd "$released" && script/release-update 2>"$tmp/update.log"); then
+  fail "script/release-update failed: $(tail -n 5 "$tmp/update.log")"
+elif [[ $printed != 0.40.6 ]]; then
+  fail "script/release-update printed '$printed', not 0.40.6"
+else
+  got=$(jq -r '.version' "$(manifest "$released")" 2>/dev/null || true)
+  [[ $got == 0.40.6 ]] || fail "script/release-update left the plugin's version at '$got', not 0.40.6"
+  listed=$(entry "$released" | jq -r '.version // empty' 2>/dev/null || true)
+  [[ -z $listed || $listed == 0.40.6 ]] ||
+    fail "script/release-update left the marketplace's entry at $listed, not 0.40.6"
+  ref=$(entry "$released" | jq -r '.source.ref' 2>/dev/null || true)
+  [[ $ref == main ]] || fail "after script/release-update the plugin's source is at '$ref', not main"
+fi
+
+if ((failures > 0)); then
+  echo "claude-plugin-test: $failures case(s) failed" >&2
+  exit 1
+fi
+echo "claude-plugin-test: all cases passed"

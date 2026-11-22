@@ -2,8 +2,8 @@
 // site/main/ with Vite, and docs/ with VitePress (site/config.mjs). A page is each Markdown file of
 // docs/ that git does not ignore, at its path, a README.md as its directory's index; without a
 // docs/start.md, the docs start page, /start, lists the pages. A page at / fails the build, as the
-// main page is there. Links between pages, to their headings and to files outside docs/ must resolve.
-// The fonts' licenses ship in fonts/.
+// main page is there. The docs pages take the theme of site/theme/. Links between pages, to their
+// headings and to files outside docs/ must resolve. The fonts' licenses ship in fonts/.
 // Usage, after npm ci in site/: node site/build.mjs <out dir> [<docs dir>]
 //   <docs dir>  docs/ by default; its parent is the repository root that links leave docs/ for.
 //   SKALD_SITE_REF  the git ref that links to files outside docs/ name on GitHub; main by default.
@@ -75,6 +75,8 @@ async function main() {
     path.join(src, '.vitepress', 'config.mjs'),
     `import { siteConfig } from ${JSON.stringify(path.join(here, 'config.mjs'))};\nexport default siteConfig(${JSON.stringify(options)});\n`,
   );
+  fs.mkdirSync(path.join(src, '.vitepress', 'theme'));
+  fs.writeFileSync(path.join(src, '.vitepress', 'theme', 'index.mjs'), `export { default } from ${JSON.stringify(path.join(here, 'theme', 'index.mjs'))};\n`);
   fs.rmSync(out, { recursive: true, force: true });
   try {
     await build(src);

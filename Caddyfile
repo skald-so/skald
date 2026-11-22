@@ -5,17 +5,28 @@
 # an unknown one to its index page.
 {$SKALD_SITE} {
 	@server {
-		path /account/devices /account/master /account/personal-space /account/revocations
+		path /account /account/anchors /account/deletion /account/devices /account/links
+		path /account/links/* /account/master
+		path /account/personal-space /account/revocations
 		path /account/sessions /account/sessions/end-others /account/sessions/*
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
 		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
 		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
-		path /devices/*/key-packages /health /key-packages /mailbox/ack /mailbox/events
-		path /mailbox/poll /mailbox/send /openapi.json /protocol /server /session /session/challenge
+		path /devices/*/cert /devices/*/challenge /devices/*/key-packages /devices/*/session /health
+		path /invites/* /invites/*/acceptance /key-packages /links /links/messages /mailbox/ack
+		path /mailbox/events /mailbox/poll /mailbox/send /openapi.json /protocol /server
+		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
-		path /spaces/*/channels/*/history/wraps /spaces/*/devices /spaces/*/members
-		path /spaces/*/revisions /spaces/*/usage /ws
+		path /spaces/*/channels/*/history/wraps /spaces/*/channels/*/presence /spaces/*/devices
+		path /spaces/*/channels/*/queue-keys/*
+		path /spaces/*/channels/*/queues /spaces/*/channels/*/queues/*
+		path /spaces/*/channels/*/queues/*/claims /spaces/*/channels/*/queues/*/tasks
+		path /spaces/*/channels/*/queues/*/tasks/* /spaces/*/channels/*/queues/*/tasks/*/*
+		path /spaces/*/acceptances /spaces/*/invites /spaces/*/invites/* /spaces/*/members
+		path /spaces/*/revisions /spaces/*/service-grants /spaces/*/service-tokens
+		path /spaces/*/service-tokens/* /spaces/*/usage
+		path /ws
 	}
 	handle @server {
 		reverse_proxy skald-server:8080

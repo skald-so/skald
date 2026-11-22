@@ -42,6 +42,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(30);
 /// A device session's challenge for a WebSocket, `POST`: `docs/protocol/delivery.md`,
 /// "Connecting".
 const CHALLENGE_PATH: &str = "/session/challenge";
+/// The label of a device's signature for a session by its key.
+const DEVICE_SESSION_LABEL: &str = "skald device session";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -73,11 +75,12 @@ pub enum Error {
         speaks: VersionRange,
     },
     /// The server refused the request for another reason: the problem's type `kind`, its
-    /// `detail`.
+    /// `detail` and, of a `duplicate` task, its extension member `task`.
     Refused {
         status: u16,
         kind: String,
         detail: String,
+        task: Option<String>,
     },
     /// An OAuth error answer (RFC 6749, §5.2; RFC 8628, §3.5), such as `authorization_pending`.
     OAuth { error: String, description: String },
@@ -169,12 +172,13 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `text` with its control characters escaped, such as `\u{1b}` for ESC: the server's text must not
-/// drive the terminal.
+/// `text` with its control characters and the line and paragraph separators U+2028 and U+2029
+/// escaped, such as `\u{1b}` for ESC: the server's text must not drive the terminal, nor break a
+/// line for a reader that breaks lines there.
 pub fn printable(text: &str) -> String {
     text.chars()
         .map(|char| {
-            if char.is_control() {
+            if char.is_control() || matches!(char, '\u{2028}' | '\u{2029}') {
                 char.escape_debug().to_string()
             } else {
                 char.to_string()
@@ -332,10 +336,19 @@ fn connect(
 
 /// The error of an I/O operation on the server connection.
 pub(crate) fn io_error(err: io::Error, timeout: Duration) -> Error {
-    match err.kind() {
-        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => Error::Timeout(timeout),
-        _ => Error::Unreachable(err.to_string()),
+    if timed_out(&err) {
+        Error::Timeout(timeout)
+    } else {
+        Error::Unreachable(err.to_string())
     }
+}
+
+/// Whether `err`, of a read or write with a timeout, is that the timeout ran out.
+pub(crate) fn timed_out(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+    )
 }
 
 /// `stream`, a connection to the server of `uri`, under TLS by `config`; the handshake runs on its
@@ -517,11 +530,10 @@ impl Socket {
 
     /// The error of a read or write within `timeout` that failed with `err`.
     fn failed(err: io::Error, timeout: NextTimeout) -> ureq::Error {
-        match err.kind() {
-            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => {
-                ureq::Error::Timeout(timeout.reason)
-            }
-            _ => ureq::Error::Io(err),
+        if timed_out(&err) {
+            ureq::Error::Timeout(timeout.reason)
+        } else {
+            ureq::Error::Io(err)
         }
     }
 }
@@ -553,15 +565,27 @@ impl Transport for Socket {
     /// Whether the connection is still open, so that the agent may send another request on it: no
     /// byte waits on it, and it is not closed.
     fn is_open(&mut self) -> bool {
-        if self.stream.set_nonblocking(true).is_err() {
-            return false;
-        }
-        let idle = matches!(
-            (&self.stream).read(&mut [0]),
-            Err(err) if err.kind() == io::ErrorKind::WouldBlock
-        );
-        self.stream.set_nonblocking(false).is_ok() && idle
+        idle(
+            |on| self.stream.set_nonblocking(on),
+            |byte| (&self.stream).read(byte),
+        )
     }
+}
+
+/// Whether a stream is open with no byte waiting on it: once `set_nonblocking(true)` has made it
+/// nonblocking, `read` would block, and `set_nonblocking(false)` makes it blocking again.
+pub(crate) fn idle(
+    set_nonblocking: impl Fn(bool) -> io::Result<()>,
+    read: impl FnOnce(&mut [u8]) -> io::Result<usize>,
+) -> bool {
+    if set_nonblocking(true).is_err() {
+        return false;
+    }
+    let idle = matches!(
+        read(&mut [0]),
+        Err(err) if err.kind() == io::ErrorKind::WouldBlock
+    );
+    set_nonblocking(false).is_ok() && idle
 }
 
 /// What `read` gives, read again while a signal interrupts it.
@@ -587,6 +611,60 @@ impl Resolver for Deferred {
     ) -> Result<ResolvedSocketAddrs, ureq::Error> {
         Ok(self.empty())
     }
+}
+
+/// The proxy the client reaches `base`, a URL it connects to, through: the one
+/// [`Proxy::for_host`] gives for an `https://` URL, none for plain HTTP to this machine.
+fn proxy_of(base: &str) -> Result<Option<Proxy>, Error> {
+    match scheme(base)? {
+        Scheme::Https => {
+            let uri: Uri = base.parse().map_err(|_| Error::Url(base.to_owned()))?;
+            Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)
+        }
+        Scheme::Loopback => Ok(None),
+    }
+}
+
+/// The agent of HTTP requests that dials as [`dial`] says, through `proxy` if given, with
+/// `resolver`, over TLS trusting `roots` if given; it follows no redirect, and each request fails
+/// after `timeout`.
+fn http_agent(
+    roots: Option<&Roots>,
+    proxy: Option<Proxy>,
+    resolver: Pinned,
+    timeout: Duration,
+) -> ureq::Agent {
+    let mut config = ureq::Agent::config_builder()
+        .proxy(None)
+        .http_status_as_error(false)
+        // A redirect could take a request to another host, in the clear.
+        .max_redirects(0)
+        .timeout_global(Some(timeout));
+    if let Some(roots) = roots {
+        config = config.tls_config(roots.ureq());
+    }
+    let dial = Dial {
+        proxy,
+        resolver,
+        timeout,
+    };
+    ureq::Agent::with_parts(
+        config.build(),
+        ().chain(dial).chain(RustlsConnector::default()),
+        Deferred,
+    )
+}
+
+/// An agent of plain HTTP requests, with none of a connection's headers, to the service at `base`,
+/// such as `https://api.github.com`, that reaches it as a connection reaches its server: over
+/// HTTPS through the proxy `HTTPS_PROXY` names, or in plain HTTP to this machine only.
+pub fn agent_to(base: &str, timeout: Duration) -> Result<ureq::Agent, Error> {
+    let proxy = proxy_of(base)?;
+    let roots = (scheme(base)? == Scheme::Https).then(Roots::load);
+    let resolver = Pinned {
+        system: Arc::new(DefaultResolver::default()),
+    };
+    Ok(http_agent(roots.as_ref(), proxy, resolver, timeout))
 }
 
 /// A connection to the server at one base URL.
@@ -621,6 +699,22 @@ enum Body<'a> {
     Form(&'a [(&'a str, &'a str)]),
     /// JSON.
     Json(Method, &'a [u8]),
+    /// None, a `GET` with the device's proof `proof`.
+    ProvedGet { proof: &'a str },
+    /// None, a `DELETE` with the device's proof `proof`.
+    ProvedDelete { proof: &'a str },
+    /// JSON, sent by `method` with the device's proof `proof`.
+    ProvedJson {
+        method: Method,
+        json: &'a [u8],
+        proof: &'a str,
+    },
+    /// CBOR, sent by `method` with the device's proof `proof`.
+    ProvedCbor {
+        method: Method,
+        cbor: &'a [u8],
+        proof: &'a str,
+    },
     /// A frame, `POST`ed with the device's proof `proof`, its answer awaited for `wait` more than
     /// the timeout.
     Frame {
@@ -630,11 +724,12 @@ enum Body<'a> {
     },
 }
 
-/// The method of a request with a JSON body.
+/// The method of a request with a body.
 #[derive(Clone, Copy)]
 pub enum Method {
     Post,
     Put,
+    Patch,
 }
 
 /// The server's answer to one request.
@@ -673,6 +768,12 @@ struct Challenge {
     challenge: String,
 }
 
+/// `DeviceKeySession` in the API spec.
+#[derive(Deserialize)]
+struct Session {
+    token: String,
+}
+
 /// The fields of a problem details object the client reads.
 #[derive(Deserialize)]
 struct Problem {
@@ -682,6 +783,8 @@ struct Problem {
     detail: String,
     #[serde(default)]
     supported: Vec<u64>,
+    #[serde(default)]
+    task: Option<String>,
 }
 
 impl Connection {
@@ -704,13 +807,7 @@ impl Connection {
         timeout: Duration,
         system: Arc<dyn Resolver>,
     ) -> Result<Self, Error> {
-        let proxy = match scheme(server)? {
-            Scheme::Https => {
-                let uri: Uri = server.parse().map_err(|_| Error::Url(server.to_owned()))?;
-                Proxy::for_host(uri.host().unwrap_or_default()).map_err(|_| Error::ProxyUrl)?
-            }
-            Scheme::Loopback => None,
-        };
+        let proxy = proxy_of(server)?;
         Self::proxied(server, speaks, timeout, system, proxy)
     }
 
@@ -723,26 +820,8 @@ impl Connection {
         proxy: Option<Proxy>,
     ) -> Result<Self, Error> {
         let roots = (scheme(server)? == Scheme::Https).then(Roots::load);
-        let mut config = ureq::Agent::config_builder()
-            .proxy(None)
-            .http_status_as_error(false)
-            // A redirect could take a request to another host, in the clear.
-            .max_redirects(0)
-            .timeout_global(Some(timeout));
-        if let Some(roots) = &roots {
-            config = config.tls_config(roots.ureq());
-        }
         let resolver = Pinned { system };
-        let dial = Dial {
-            proxy: proxy.clone(),
-            resolver: resolver.clone(),
-            timeout,
-        };
-        let agent = ureq::Agent::with_parts(
-            config.build(),
-            ().chain(dial).chain(RustlsConnector::default()),
-            Deferred,
-        );
+        let agent = http_agent(roots.as_ref(), proxy.clone(), resolver.clone(), timeout);
         Ok(Connection {
             base: server.trim_end_matches('/').to_owned(),
             tls: roots.map(|roots| roots.rustls()),
@@ -797,6 +876,11 @@ impl Connection {
         self.http(path, Some(token), Body::Post)
     }
 
+    /// `POST <path>` of the JSON `json` without a session; the body of the answer that serves it.
+    pub fn post_json(&mut self, path: &str, json: &[u8]) -> Result<Vec<u8>, Error> {
+        self.http(path, None, Body::Json(Method::Post, json))
+    }
+
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
     pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
         self.http(path, None, Body::Form(form))
@@ -811,6 +895,75 @@ impl Connection {
         json: &[u8],
     ) -> Result<Vec<u8>, Error> {
         self.http(path, Some(token), Body::Json(method, json))
+    }
+
+    /// `GET <path>` as the device of `proof`, on the device session or service token `token`.
+    pub fn get_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+    ) -> Result<Vec<u8>, Error> {
+        self.http(path, Some(token), Body::ProvedGet { proof })
+    }
+
+    /// `POST <path>` of the JSON `json` as the device of `proof`, on the device session of `token`.
+    pub fn post_json_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        json: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.send_json_proved(Method::Post, path, (token, proof), json)
+    }
+
+    /// `<method> <path>` of the JSON `json` as the device of `proof`, on the device session of
+    /// `token`.
+    pub fn send_json_proved(
+        &mut self,
+        method: Method,
+        path: &str,
+        (token, proof): (&str, &str),
+        json: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let body = Body::ProvedJson {
+            method,
+            json,
+            proof,
+        };
+        self.http(path, Some(token), body)
+    }
+
+    /// `DELETE <path>` as the device of `proof`, on the device session of `token`.
+    pub fn delete_proved(&mut self, path: &str, (token, proof): (&str, &str)) -> Result<(), Error> {
+        self.http(path, Some(token), Body::ProvedDelete { proof })
+            .map(drop)
+    }
+
+    /// `PUT <path>` of the CBOR `cbor` as the device of `proof`, on the device session of `token`.
+    pub fn put_cbor_proved(
+        &mut self,
+        path: &str,
+        (token, proof): (&str, &str),
+        cbor: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        self.send_cbor_proved(Method::Put, path, (token, proof), cbor)
+    }
+
+    /// `<method> <path>` of the CBOR `cbor` as the device of `proof`, on the device session of
+    /// `token`.
+    pub fn send_cbor_proved(
+        &mut self,
+        method: Method,
+        path: &str,
+        (token, proof): (&str, &str),
+        cbor: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let body = Body::ProvedCbor {
+            method,
+            cbor,
+            proof,
+        };
+        self.http(path, Some(token), body)
     }
 
     /// `POST <path>` of `frame` as the device of `proof`, on the device session of `token`; the body
@@ -844,12 +997,33 @@ impl Connection {
                 Body::Form(form) => {
                     with_headers(agent.post(&url), &version, bearer).send_form(form.iter().copied())
                 }
-                Body::Json(method, json) => match method {
-                    Method::Post => with_headers(agent.post(&url), &version, bearer),
-                    Method::Put => with_headers(agent.put(&url), &version, bearer),
+                Body::Json(method, json) => {
+                    with_headers(with_body(&agent, method, &url), &version, bearer)
+                        .content_type("application/json")
+                        .send(json)
                 }
-                .content_type("application/json")
-                .send(json),
+                Body::ProvedGet { proof } => with_headers(agent.get(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .call(),
+                Body::ProvedDelete { proof } => with_headers(agent.delete(&url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .call(),
+                Body::ProvedJson {
+                    method,
+                    json,
+                    proof,
+                } => with_headers(with_body(&agent, method, &url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .content_type("application/json")
+                    .send(json),
+                Body::ProvedCbor {
+                    method,
+                    cbor,
+                    proof,
+                } => with_headers(with_body(&agent, method, &url), &version, bearer)
+                    .header(PROOF_HEADER, proof)
+                    .content_type("application/cbor")
+                    .send(cbor),
                 Body::Frame { frame, proof, .. } => {
                     with_headers(agent.post(&url), &version, bearer)
                         .header(PROOF_HEADER, proof)
@@ -916,13 +1090,56 @@ impl Connection {
         })
     }
 
-    /// A new challenge of the device session of `token`.
-    fn challenge(&mut self, token: &str) -> Result<Vec<u8>, Error> {
+    /// A new challenge of the device session of `token`, and the signature of `key` with `label`
+    /// over it and the server's origin.
+    fn signed_challenge(
+        &mut self,
+        token: &str,
+        key: &SigningKey,
+        label: &str,
+    ) -> Result<(Vec<u8>, [u8; 64]), Error> {
         let answer = self.post_as(CHALLENGE_PATH, token)?;
-        serde_json::from_slice::<Challenge>(&answer)
+        self.signed(&answer, key, label)
+    }
+
+    /// The challenge in `answer`, and the signature of `key` with `label` over it and the server's
+    /// origin.
+    fn signed(
+        &self,
+        answer: &[u8],
+        key: &SigningKey,
+        label: &str,
+    ) -> Result<(Vec<u8>, [u8; 64]), Error> {
+        let challenge = serde_json::from_slice::<Challenge>(answer)
             .ok()
             .and_then(|answer| URL_SAFE_NO_PAD.decode(answer.challenge).ok())
-            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))
+            .ok_or_else(|| Error::Unexpected("a challenge that is not base64url".to_owned()))?;
+        let signature = key.sign(label, &[&challenge, origin(&self.base).as_bytes()]);
+        Ok((challenge, signature))
+    }
+
+    /// A device session of the account of the device `device`, whose signing key is `key`, by that
+    /// key and its complete certificate `cert` in CBOR, with no session
+    /// (`docs/protocol/membership.md`, "Device key session"): gives its token.
+    pub fn device_key_session(
+        &mut self,
+        device: DeviceId,
+        key: &SigningKey,
+        cert: &[u8],
+    ) -> Result<String, Error> {
+        let answer = self.http(&format!("/devices/{device}/challenge"), None, Body::Post)?;
+        let (challenge, signature) = self.signed(&answer, key, DEVICE_SESSION_LABEL)?;
+        let request = serde_json::json!({
+            "challenge": URL_SAFE_NO_PAD.encode(&challenge),
+            "signature": URL_SAFE_NO_PAD.encode(signature),
+            "cert": URL_SAFE_NO_PAD.encode(cert),
+        })
+        .to_string();
+        let path = format!("/devices/{device}/session");
+        let answer = self.post_json(&path, request.as_bytes())?;
+        serde_json::from_slice::<Session>(&answer)
+            .map(|session| session.token)
+            .map_err(|_| Error::Unexpected("a device session without its token".to_owned()))
     }
 
     /// The proof of an HTTPS request of the device `device`, whose signing key is `key`, on a new
@@ -933,8 +1150,7 @@ impl Connection {
         device: DeviceId,
         key: &SigningKey,
     ) -> Result<String, Error> {
-        let challenge = self.challenge(token)?;
-        let signature = key.sign(REQUEST_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let (challenge, signature) = self.signed_challenge(token, key, REQUEST_LABEL)?;
         let proof = RequestProof {
             challenge,
             device,
@@ -955,8 +1171,7 @@ impl Connection {
         key: &SigningKey,
     ) -> Result<WebSocket, Error> {
         let mut socket = self.open_websocket(path)?;
-        let challenge = self.challenge(token)?;
-        let signature = key.sign(AUTH_LABEL, &[&challenge, origin(&self.base).as_bytes()]);
+        let (challenge, signature) = self.signed_challenge(token, key, AUTH_LABEL)?;
         let auth = Frame::Auth {
             challenge,
             device,
@@ -1070,6 +1285,7 @@ impl Connection {
                 kind,
                 detail,
                 supported,
+                task,
             } = problem;
             let speaks = self.speaks;
             if kind == VersionProblem::TooOld.type_uri() {
@@ -1080,6 +1296,7 @@ impl Connection {
                     status,
                     kind,
                     detail,
+                    task,
                 });
             }
             // An older version each time: the loop ends.
@@ -1098,6 +1315,19 @@ fn best_of(speaks: VersionRange, supported: &[u64]) -> Option<NonZeroU64> {
         .filter(|&&version| speaks.contains(version))
         .max()
         .and_then(|&version| NonZeroU64::new(version))
+}
+
+/// A request to `url` by `method`, which has a body.
+fn with_body(
+    agent: &ureq::Agent,
+    method: Method,
+    url: &str,
+) -> ureq::RequestBuilder<ureq::typestate::WithBody> {
+    match method {
+        Method::Post => agent.post(url),
+        Method::Put => agent.put(url),
+        Method::Patch => agent.patch(url),
+    }
 }
 
 /// `request` stating `version`, with the session of `bearer`, `Bearer <token>`, if given.
@@ -1195,6 +1425,15 @@ pub(crate) mod tests {
         assert_eq!(
             error("Unknown code.\u{1b}").to_string(),
             "the server refused the request: invalid_grant: Unknown code.\\u{1b}"
+        );
+    }
+
+    /// Control characters and the line and paragraph separators are escaped; other text is kept.
+    #[test]
+    fn printable_escapes_control_characters_and_line_separators() {
+        assert_eq!(
+            printable("a\nb\u{1b}c\u{85}d\u{2028}e\u{2029}f · é"),
+            "a\\nb\\u{1b}c\\u{85}d\\u{2028}e\\u{2029}f · é"
         );
     }
 
@@ -1436,28 +1675,13 @@ pub(crate) mod tests {
     fn challenging(challenge: &[u8]) -> (String, thread::JoinHandle<Seen>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let url = format!("http://{}", listener.local_addr().expect("the address"));
-        let body = format!(r#"{{"challenge":"{}"}}"#, URL_SAFE_NO_PAD.encode(challenge));
+        let (_, answer) = challenge_answer(challenge);
         let served = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("the WebSocket");
             let mut socket = tungstenite::accept_hdr(stream, select).expect("a WebSocket");
             let (stream, _) = listener.accept().expect("the challenge request");
-            let mut reader = BufReader::new(stream.try_clone().expect("clone the stream"));
-            let mut request = Vec::new();
-            loop {
-                let mut line = String::new();
-                reader.read_line(&mut line).expect("a request line");
-                if line == "\r\n" {
-                    break;
-                }
-                request.push(line.trim_end().to_ascii_lowercase());
-            }
-            write!(
-                &stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                 connection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .expect("answer");
+            let request = take(&stream).head;
+            (&stream).write_all(answer.as_bytes()).expect("answer");
             drop(stream);
             let first = match socket.read().expect("a frame") {
                 Message::Binary(bytes) => bytes.to_vec(),

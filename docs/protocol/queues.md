@@ -33,8 +33,9 @@ The server keeps a queue's ID, its channel and its settings, in plaintext:
 - The server issues the queue ID at creation.
 - Every channel has the queue `default`, with the default settings, which the server creates when it issues the channel ID. A queue is not an agent's: a task for one agent names it as its addressee ([Tasks](#tasks)).
 - A `client` or `browser` device of a member of the channel creates a queue.
-- A `client` or `browser` device of the creator's account or of an admin of the space changes a setting other than `mode`, or deletes the queue with its tasks. `default` has no creator, and nobody deletes it.
+- A `client` or `browser` device of the creator's account or of an admin of the space changes a setting other than `mode`, or deletes the queue with its tasks. `default` has no creator, keeps its name, and nobody deletes it.
 - The server refuses anything else with `not-allowed`.
+- Each queue request proves its device as a mailbox request over HTTPS does, a `service` device's on a challenge of its token ([Connecting](delivery.md#connecting)): a session or a service token alone makes none.
 - Paths and bodies of the queue requests belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). CBOR items travel as [Encoding](README.md#encoding) says.
 
 ## Tasks
@@ -137,8 +138,9 @@ queue-key-body = {
 ```
 
 - The sender of each Commit uploads the queue key object of the new epoch with its link and wraps; any member device of an epoch uploads it if the server has none. A device uploads none for an epoch it did not judge clean.
-- The server keeps the first per channel and epoch, and takes uploads only from member devices of the epoch.
-- A member device that finds the server's object with a `key` other than the `pk` it derives MUST warn its user.
+- The server keeps the first per channel and epoch, and takes uploads only from member devices of the epoch, each on its connection, which proves its key, as [Uploads](membership.md#uploads) says of links and wraps: a member `service` device's on a connection of its service token, in the token's channels; a session or a service token alone uploads none.
+- The server gives an epoch's object, as the bytes it got, to devices that may send in the channel ([Send](delivery.md#send)), each proving its key: [api/openapi.json](../../api/openapi.json).
+- A member device that finds the server's object with a `key` other than the `pk` it derives MUST warn its user, once per epoch.
 - A `service` device that is not a member holds no `sk`: it enqueues tasks and reads none.
 
 ## Task states
@@ -240,7 +242,7 @@ The claiming device MUST NOT run a task unless, when it starts it:
 3. `channel`, `queue` and `task` are those of the claim; `sched` is the same map as the record's; `mode` is the claim's;
 4. the content passes checks 2 and 3 of [Envelope](README.md#envelope) with `sender` as the sending device; it has a `task` body and no `counter`, and `to` exactly when `sched` has `device`; the `request`'s `messageId` is `task` in text form;
 5. `deadline`, if any, has not passed, and under `at-most-once` the claim's `attempt` is 1;
-6. the task matches the claim, as [Claims and leases](#claims-and-leases) says, with the [trust level](membership.md#trust-levels) of `sender`; and `to`, if any, names an agent of this device.
+6. the task matches the claim, as [Claims and leases](#claims-and-leases) says, with the [trust level](membership.md#trust-levels) of `sender`; and `to`, if any, names the agent of this device that claims it.
 
 - A task that fails check 1 because the device lacks the epoch's key, fails check 6, or needs a mode the device cannot enforce ([Running a task](#running-a-task)): a `client` device releases it, a `service` device fails it with retry.
 - A task that fails any other check: the device fails it without retry and tells its user.
@@ -330,7 +332,8 @@ Queue requests are refused with a problem details object, as in [Server answers]
 | Problem | The request |
 |---|---|
 | `not-a-member` | Comes from a device that may not enqueue or claim in the queue: [Tasks](#tasks), [Claim checks](#claim-checks) |
-| `not-allowed` | Creates, changes or deletes a queue, restarts or cancels a task, or releases a claim, from a device that may not; deletes `default` |
+| `not-allowed` | Creates, changes or deletes a queue, restarts or cancels a task, or releases a claim, from a device that may not; changes a queue's `mode`, renames `default` or deletes it |
+| `queue-name-taken` | Creates a queue, or renames one, with a name its channel has |
 | `unknown-queue` | Names a queue the channel does not have |
 | `unknown-task` | Names a task the queue does not have |
 | `duplicate` | Uploads a task whose ID another device used, or whose `idempotency_key` another task of the queue has; the extension member `task` names that task |
@@ -352,7 +355,7 @@ Queue requests are refused with a problem details object, as in [Server answers]
 - A revoked device keeps the queue keys of the epochs it held, as it keeps their history keys ([threat model, "Trade-offs"](../threat-model.md#trade-offs)): it reads the tasks sealed under them if it gets them. It reads none sealed after the Commit that removes it, except by a device outside the group that the server keeps from that revocation ([membership.md](membership.md#security-considerations)). It claims nothing, and its results are dropped.
 - A queue key comes from the history key, so whoever reads an epoch's history reads its tasks: a member without history access is kept from earlier tasks as from earlier history, by the server.
 - A `service` device that is not a member holds only queue public keys: a leaked service key with its token enqueues tasks at the `service` trust level and reads only what is sent to it under `hpke`. A leaked token alone signs no task, and it creates, changes or deletes no queue and releases, restarts or cancels no task.
-- A member `service` device's key and token usually sit in one CI secret. A leaked token alone claims tasks it cannot open, and fails them or lets their leases end, the device's live claims included: they go to `dead` or back after the backoff. A leak of the whole secret also opens and runs the tasks it claims, reads what the device's keys reach and enqueues tasks at the `service` trust level. Neither releases, restarts or cancels a task, so neither makes an `at-most-once` task run twice.
+- A member `service` device's key and token usually sit in one CI secret. A leaked token alone makes no queue request ([Queues](#queues)), so it claims, fails and holds no task. A leak of the whole secret claims tasks, opens and runs them, fails them or lets their leases end, the device's live claims included, so they go to `dead` or back after the backoff; it also reads what the device's keys reach and enqueues tasks at the `service` trust level. It releases, restarts and cancels no task, so it makes no `at-most-once` task run twice.
 - A member device can upload a wrong queue key object first. Tasks that non-member `service` devices seal to it are then unreadable to the other devices; member devices warn their users. It breaks availability, not secrecy from the server.
 - A claiming device can return any result: it reaches the sender's agent as a message from that device's agent and trust level does ([Device to agent](delivery.md#device-to-agent)), and nothing shows that it is honest. A `test` result's commit and tree hash bind it to the claiming device and a tree, and the check of [Results](#results) shows it complete, not true.
 - Queue names and settings, `sched` with the addressee's device, what each claim states, and which device uploads, claims and completes each task, and when, are visible to the server. Everything the server sees: [threat model, "The server sees"](../threat-model.md#the-server-sees).

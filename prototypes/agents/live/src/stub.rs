@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 
-use agent_inbox::INBOX;
+use agent_inbox::{CLAIM, INBOX};
 use serde_json::{Value, json};
 
 use crate::SERVER;
@@ -27,6 +27,9 @@ pub const QUICK: &str = "true";
 
 /// A short pause, after which Claude Code has written its transcript.
 pub const PAUSE: &str = "sleep 2";
+
+/// A shell command no check's settings allow, so Claude Code asks for permission to run it.
+pub const PROMPTED: &str = "touch prompted.txt";
 
 /// The stub's reply once its script ends.
 pub const DONE: &str = "Done.";
@@ -45,6 +48,8 @@ pub enum Call {
     Quick,
     /// Runs `PAUSE`.
     Pause,
+    /// Runs `PROMPTED`.
+    Prompted,
     /// Calls the server's `ack` tool for each message the conversation holds, with its secret as
     /// `AckWith` says.
     Ack(AckWith),
@@ -60,6 +65,29 @@ pub enum Call {
     /// refuses the request does: the model never gets it. A script that starts with it plays
     /// nothing else.
     Fail,
+    /// Calls the server's stub `claim` tool.
+    Claim,
+    /// Calls the CLI's tool `name` with the JSON object `input`, such as Claude Code's `Write`.
+    Tool {
+        name: &'static str,
+        input: &'static str,
+    },
+}
+
+impl Call {
+    /// A call of the CLI's tool `name` with `input`, made for a script built at run time: the
+    /// stub's scripts live as long as the check.
+    pub fn tool(name: &str, input: &Value) -> Self {
+        Self::Tool {
+            name: Box::leak(name.into()),
+            input: Box::leak(input.to_string().into()),
+        }
+    }
+
+    /// `calls` as a script, made at run time ([`Call::tool`]).
+    pub fn script(calls: Vec<Self>) -> &'static [Self] {
+        Box::leak(calls.into_boxed_slice())
+    }
 }
 
 /// The prompt a [`Call::Cron`] schedules.
@@ -84,12 +112,15 @@ impl Call {
             Self::Shell => Some(SHELL),
             Self::Quick => Some(QUICK),
             Self::Pause => Some(PAUSE),
+            Self::Prompted => Some(PROMPTED),
             Self::Inbox
             | Self::Ack(_)
             | Self::InboxSeen
             | Self::Reply
             | Self::Cron
-            | Self::Fail => None,
+            | Self::Fail
+            | Self::Claim
+            | Self::Tool { .. } => None,
         }
     }
 
@@ -104,8 +135,15 @@ impl Call {
                 .collect()
         };
         match self {
-            Self::Shell | Self::Quick | Self::Pause | Self::Cron | Self::Fail => None,
+            Self::Shell
+            | Self::Quick
+            | Self::Pause
+            | Self::Prompted
+            | Self::Cron
+            | Self::Fail
+            | Self::Tool { .. } => None,
             Self::Inbox => Some((INBOX, json!({}))),
+            Self::Claim => Some((CLAIM, json!({}))),
             Self::InboxSeen => Some((INBOX, json!({ "seen": seen(&held) }))),
             Self::Ack(with) => {
                 let acks: Vec<Value> = held
@@ -219,6 +257,14 @@ impl StubLog {
     }
 }
 
+/// A second script of a stub on the Responses API: once a request holds `text`, the stub plays
+/// `then`, its steps counted from the input item that first holds `text`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cue {
+    pub text: &'static str,
+    pub then: &'static [Call],
+}
+
 /// A running stub; it stops when dropped.
 #[derive(Debug)]
 pub struct Stub {
@@ -231,6 +277,12 @@ pub struct Stub {
 impl Stub {
     /// Starts a stub on a free local port that answers with `script`'s calls, then with `DONE`.
     pub fn start(script: &'static [Call]) -> io::Result<Self> {
+        Self::start_cued(script, None)
+    }
+
+    /// As [`Stub::start`], and with `cue`, if given, plays its script once a request holds its
+    /// text.
+    pub fn start_cued(script: &'static [Call], cue: Option<Cue>) -> io::Result<Self> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let addr = listener.local_addr()?;
         let log = Arc::new(Mutex::new(StubLog::default()));
@@ -243,7 +295,7 @@ impl Stub {
                 }
                 let Ok(stream) = stream else { continue };
                 let log = Arc::clone(&accepted_log);
-                thread::spawn(move || serve(stream, script, &log));
+                thread::spawn(move || serve(stream, script, cue, &log));
             }
         });
         Ok(Self {
@@ -290,11 +342,16 @@ fn lock(log: &Mutex<StubLog>) -> MutexGuard<'_, StubLog> {
 }
 
 /// Answers the requests of one connection until the client closes it.
-fn serve(stream: TcpStream, script: &[Call], log: &Mutex<StubLog>) -> io::Result<()> {
+fn serve(
+    stream: TcpStream,
+    script: &[Call],
+    cue: Option<Cue>,
+    log: &Mutex<StubLog>,
+) -> io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     while let Some(request) = read_request(&mut reader)? {
-        let response = answer(script, &request, &mut lock(log));
+        let response = answer_cued(script, cue, &request, &mut lock(log));
         writer.write_all(&response.to_bytes())?;
     }
     Ok(())
@@ -400,7 +457,18 @@ pub fn foreign_credentials(headers: &[(String, String)]) -> Vec<String> {
 }
 
 /// Answers `request` with the next turn of `script` and records it in `log`.
-pub fn answer(script: &[Call], request: &Request, log: &mut StubLog) -> Response {
+#[cfg(test)]
+fn answer(script: &[Call], request: &Request, log: &mut StubLog) -> Response {
+    answer_cued(script, None, request, log)
+}
+
+/// As [`answer`], with the script of `cue`, if given, once a request holds its text.
+pub fn answer_cued(
+    script: &[Call],
+    cue: Option<Cue>,
+    request: &Request,
+    log: &mut StubLog,
+) -> Response {
     let foreign = foreign_credentials(&request.headers);
     if !foreign.is_empty() {
         for name in foreign {
@@ -421,7 +489,7 @@ pub fn answer(script: &[Call], request: &Request, log: &mut StubLog) -> Response
     match path {
         "/v1/messages" => messages(script, &body),
         "/v1/messages/count_tokens" => Response::json(200, &json!({ "input_tokens": 0 })),
-        "/v1/responses" => responses(script, &body),
+        "/v1/responses" => responses(script, cue, &body),
         _ => Response::json(404, &error("not found")),
     }
 }
@@ -468,6 +536,10 @@ fn messages(script: &[Call], body: &Value) -> Response {
                 (Call::Cron, ..) => (
                     "CronCreate".to_owned(),
                     json!({ "cron": "* * * * *", "prompt": LOOP_PROMPT, "recurring": true }),
+                ),
+                (Call::Tool { name, input }, ..) => (
+                    (*name).to_owned(),
+                    serde_json::from_str(input).unwrap_or_default(),
                 ),
                 (_, Some(command), _) => ("Bash".to_owned(), json!({ "command": command })),
                 (_, None, Some((tool, input))) => (format!("mcp__{SERVER}__{tool}"), input),
@@ -535,39 +607,63 @@ fn messages(script: &[Call], body: &Value) -> Response {
     ])
 }
 
+/// The items of `items` after the first that holds `text`; `None` if none holds it.
+fn after_cue(items: &Value, text: &str) -> Option<Value> {
+    let items = items.as_array()?;
+    let at = items.iter().position(|item| {
+        let mut texts = Vec::new();
+        strings(item, &mut texts);
+        texts.iter().any(|held| held.contains(text))
+    })?;
+    Some(Value::Array(items[at + 1..].to_vec()))
+}
+
 /// An OpenAI Responses API answer, always streamed.
-fn responses(script: &[Call], body: &Value) -> Response {
-    let step = played(&body["input"], |item| {
-        usize::from(
-            item["type"]
-                .as_str()
-                .is_some_and(|kind| kind.ends_with("_output")),
-        )
-    });
+fn responses(script: &[Call], cue: Option<Cue>, body: &Value) -> Response {
+    let outputs = |items: &Value| {
+        played(items, |item| {
+            usize::from(
+                item["type"]
+                    .as_str()
+                    .is_some_and(|kind| kind.ends_with("_output")),
+            )
+        })
+    };
+    let cued = cue.and_then(|cue| Some((cue.then, after_cue(&body["input"], cue.text)?)));
+    let (script, step) = match &cued {
+        Some((then, after)) => (*then, outputs(after)),
+        None => (script, outputs(&body["input"])),
+    };
+    // The IDs count every output, so a cued call's never repeats one before the cue.
+    let n = outputs(&body["input"]);
     let item = match script.get(step) {
         Some(call) => {
-            let call_id = format!("call_stub_{step}");
-            let id = format!("fc_stub_{step}");
-            match (call.command(), call.server_tool(body)) {
+            let call_id = format!("call_stub_{n}");
+            let id = format!("fc_stub_{n}");
+            match (call, call.command(), call.server_tool(body)) {
+                (Call::Tool { name, input }, ..) => json!({
+                    "type": "function_call", "id": id, "call_id": call_id, "name": name,
+                    "arguments": input,
+                }),
                 // Codex waits for the command up to `yield_time_ms`, 10 s by default.
-                (Some(command), _) => json!({
+                (_, Some(command), _) => json!({
                     "type": "function_call", "id": id, "call_id": call_id, "name": "exec_command",
                     "arguments": json!({ "cmd": command, "yield_time_ms": 30_000 }).to_string(),
                 }),
-                (None, Some((tool, input))) => json!({
+                (_, None, Some((tool, input))) => json!({
                     "type": "function_call", "id": id, "call_id": call_id,
                     "namespace": format!("mcp__{SERVER}"), "name": tool,
                     "arguments": input.to_string(),
                 }),
-                (None, None) => unreachable!("a call runs a command or a tool"),
+                (_, None, None) => unreachable!("a call runs a command or a tool"),
             }
         }
         None => json!({
-            "type": "message", "id": format!("msg_stub_{step}"), "role": "assistant",
+            "type": "message", "id": format!("msg_stub_{n}"), "role": "assistant",
             "content": [{ "type": "output_text", "text": DONE }],
         }),
     };
-    let id = format!("resp_stub_{step}");
+    let id = format!("resp_stub_{n}");
     let usage = json!({
         "input_tokens": 0, "input_tokens_details": null,
         "output_tokens": 0, "output_tokens_details": null, "total_tokens": 0,
@@ -706,6 +802,26 @@ mod tests {
     }
 
     #[test]
+    fn calls_the_claim_tool_and_a_tool_made_at_run_time() {
+        let script = Call::script(vec![
+            Call::Claim,
+            Call::tool("Write", &json!({ "file_path": "/w/a", "content": "x" })),
+        ]);
+        let mut log = StubLog::default();
+        let (block, _) = streamed_block(&answer(script, &messages_request(0, true), &mut log));
+        assert_eq!(block["name"], "mcp__skald__claim");
+        assert_eq!(block["input"], json!({}));
+        let (block, stop) = streamed_block(&answer(script, &messages_request(1, true), &mut log));
+        assert_eq!(
+            block,
+            json!({ "type": "tool_use", "id": "toolu_stub_1", "name": "Write", "input": { "file_path": "/w/a", "content": "x" } })
+        );
+        assert_eq!(stop, "tool_use");
+        let (block, _) = streamed_block(&answer(script, &messages_request(2, true), &mut log));
+        assert_eq!(block["text"], DONE);
+    }
+
+    #[test]
     fn answers_unstreamed_messages() {
         let response = answer(
             &[Call::Inbox],
@@ -790,6 +906,55 @@ mod tests {
             })
         );
         assert_eq!(log.requests.len(), 3);
+    }
+
+    #[test]
+    fn plays_the_cue_s_script_from_the_item_that_holds_its_text() {
+        const CUE: Cue = Cue {
+            text: "the cue",
+            then: &[Call::Inbox, Call::Claim],
+        };
+        let mut log = StubLog::default();
+        let mut answered =
+            |request: &Request| responded_item(&answer_cued(BUSY, Some(CUE), request, &mut log));
+        // Before the cue, the script plays.
+        assert_eq!(answered(&responses_request(0))["name"], "exec_command");
+        assert_eq!(answered(&responses_request(1))["name"], "inbox");
+        // From the item that holds the cue, its script plays, with IDs that go on counting.
+        let mut cued = responses_request(1);
+        let mut body: Value = serde_json::from_slice(&cued.body).unwrap();
+        let mut input = body["input"].as_array().unwrap().clone();
+        input.push(json!({ "type": "message", "role": "user",
+            "content": [{ "type": "input_text", "text": "before the cue, after" }] }));
+        body["input"] = Value::Array(input.clone());
+        cued.body = body.to_string().into_bytes();
+        let first = answered(&cued);
+        assert_eq!(
+            (&first["name"], &first["call_id"]),
+            (&json!("inbox"), &json!("call_stub_1"))
+        );
+        input.push(json!({ "type": "function_call", "call_id": "call_stub_1" }));
+        input.push(json!({ "type": "function_call_output", "call_id": "call_stub_1" }));
+        body["input"] = Value::Array(input.clone());
+        cued.body = body.to_string().into_bytes();
+        let second = answered(&cued);
+        assert_eq!(
+            (&second["name"], &second["call_id"]),
+            (&json!("claim"), &json!("call_stub_2"))
+        );
+        input.push(json!({ "type": "function_call_output", "call_id": "call_stub_2" }));
+        body["input"] = Value::Array(input);
+        cued.body = body.to_string().into_bytes();
+        assert_eq!(answered(&cued)["content"][0]["text"], DONE);
+        assert_eq!(
+            after_cue(
+                &json!([{ "a": "x" }, { "b": ["the cue"] }, { "c": "y" }]),
+                "the cue"
+            ),
+            Some(json!([{ "c": "y" }]))
+        );
+        assert_eq!(after_cue(&json!([{ "a": "x" }]), "the cue"), None);
+        assert_eq!(after_cue(&json!("not a list"), "the cue"), None);
     }
 
     #[test]
@@ -1181,6 +1346,7 @@ mod tests {
         assert_eq!(Call::Quick.server_tool(&body), None);
         assert_eq!(Call::Pause.server_tool(&body), None);
         assert_eq!(Call::Pause.command(), Some("sleep 2"));
+        assert_eq!(Call::Prompted.command(), Some("touch prompted.txt"));
         // Without messages, a reply names none.
         assert_eq!(
             Call::Reply.server_tool(&json!({})).unwrap(),

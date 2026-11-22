@@ -7,11 +7,13 @@ use std::fmt::Debug;
 use std::num::NonZeroU64;
 
 use skald_proto::{
-    AccountId, Address, Attachment, Body, Cbor, ChannelId, Content, DecodeError, Delegation,
-    DelegationBody, DeliveryStatus, DeviceId, Envelope, FieldProblem, Frame, Grant, GrantBody,
-    Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, MessageId, NonEmpty, Push,
-    RawEnvelope, Receipt, ReceiptStatus, RequestProof, Revocation, RevocationBody, Scheme, SendKey,
-    ServerStatus, SpaceId, Stored, Unknown,
+    Acceptance, AcceptanceBody, AccountBody, AccountId, AccountRecord, Address, Anchors,
+    AnchorsBody, Attachment, Body, Cbor, Cert, CertBody, ChannelId, Content, DecodeError,
+    Delegation, DelegationBody, DeliveryStatus, DeviceId, DeviceKind, Envelope, FieldProblem,
+    Frame, Grant, GrantBody, Header, HistoryEntry, HistoryItem, HpkePayload, HpkePlaintext, Invite,
+    InviteBody, Link, LinkBody, MasterBackup, MessageId, NonEmpty, Push, RawEnvelope, Receipt,
+    ReceiptStatus, RequestProof, Revocation, RevocationBody, Role, Scheme, SendKey, ServerStatus,
+    SpaceId, Stored, Unknown,
 };
 
 /// The bytes of a hex string; whitespace is ignored.
@@ -265,6 +267,129 @@ pub fn revocation(
     Revocation::from_parts(body.to_cbor(), SIGNATURE).unwrap()
 }
 
+/// The account record of [`account`] at revision 1: its master key "TEST 1", the recovery HPKE key
+/// of the recovery key `0123-4567-89AB`, signed by "TEST 1".
+fn account_record() -> AccountRecord {
+    let body = AccountBody {
+        account: account(),
+        master: hex(KEY_1).try_into().unwrap(),
+        recovery: hex("888e5e2ea2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d00659")
+            .try_into()
+            .unwrap(),
+        revision: 1,
+        unknown: Unknown::default(),
+    };
+    let signature = hex(
+        "125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd
+         52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06",
+    );
+    AccountRecord::from_parts(body.to_cbor(), signature.try_into().unwrap()).unwrap()
+}
+
+/// The master private key "TEST 1" sealed with the recovery key `0123-4567-89AB` on [`account`],
+/// under the nonce of the 12 bytes 00 to 0b.
+fn master_backup() -> MasterBackup {
+    MasterBackup {
+        nonce: hex("000102030405060708090a0b").try_into().unwrap(),
+        ct: hex(
+            "6018c931902d0d3ae029f3b84e7e56e85d313c4f166791cd6efa885903232a04
+             a46589aaac9da21c4761296231b759d3",
+        )
+        .try_into()
+        .unwrap(),
+    }
+}
+
+/// The certificate of Alice's device by the master key, with an SSH signature by the Ed25519 SSH
+/// key of RFC 8032, §7.1, "TEST 1024", that `ssh-keygen -Y sign -n skald.so` made, and the GitHub
+/// user 583231.
+fn ssh_cert() -> Cert {
+    let body = CertBody {
+        account: account(),
+        device: alice_device(),
+        kind: DeviceKind::Client,
+        signing: hex(KEY_1).try_into().unwrap(),
+        hpke: [0x22; 32],
+        issuer: None,
+        issued: 1_762_819_200,
+        ssh: Some(hex(
+            "53534853494700000001000000330000000b7373682d6564323535313900000020
+             278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e00
+             000008736b616c642e736f0000000000000006736861353132000000530000000b
+             7373682d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43
+             677d743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe
+             93100f5f9c090dbbc9d0b30505",
+        )),
+        name: "Laptop".to_owned(),
+        github: Some(583_231),
+        unknown: Unknown::default(),
+    };
+    Cert::from_parts(body.to_cbor(), SIGNATURE, [0xa5; 64]).unwrap()
+}
+
+/// Alice's personal space.
+pub fn personal_space() -> SpaceId {
+    "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5ea".parse().unwrap()
+}
+
+/// The anchors object of Alice's device: the space and her personal space, each at a revision whose
+/// hash is a placeholder, and the personal space.
+pub fn anchors() -> Anchors {
+    let body = AnchorsBody {
+        account: account(),
+        device: alice_device(),
+        anchors: vec![(space(), [0xa1; 32]), (personal_space(), [0xc3; 32])],
+        personal: Some(personal_space()),
+        unknown: Unknown::default(),
+    };
+    Anchors::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
+/// The link object Alice's device gives the device of "TEST 3" it links: the same anchors as
+/// [`anchors`] and the personal space.
+pub fn link() -> Link {
+    let held = anchors().body().clone();
+    let body = LinkBody {
+        device: server_device(),
+        issuer: alice_device(),
+        anchors: held.anchors,
+        personal: held.personal,
+        unknown: Unknown::default(),
+    };
+    Link::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
+/// Alice's invite of Bob to the space: its key the invite key of the secret 00 to 1f, to
+/// [`channel`] reading its history and to [`other_channel`] not reading it, signed by Alice's
+/// device.
+pub fn invite() -> Invite {
+    let body = InviteBody {
+        invite: "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1".parse().unwrap(),
+        space: space(),
+        key: hex("8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a")
+            .try_into()
+            .unwrap(),
+        role: Role::Member,
+        channels: vec![(channel(), true), (other_channel(), false)],
+        signer: alice_device(),
+        expires: 1_763_424_000,
+        unknown: Unknown::default(),
+    };
+    Invite::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
+/// Bob's acceptance of [`invite`]: his account, his master key "TEST 2" and the handle `bob`.
+pub fn acceptance() -> Acceptance {
+    let body = AcceptanceBody {
+        invite: invite().body().invite,
+        account: "019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f2".parse().unwrap(),
+        master: hex(KEY_2).try_into().unwrap(),
+        handle: "bob".parse().unwrap(),
+        unknown: Unknown::default(),
+    };
+    Acceptance::from_parts(body.to_cbor(), SIGNATURE).unwrap()
+}
+
 /// Decodes bytes as a vector's type and encodes the result again.
 pub type Decode = Box<dyn Fn(&[u8]) -> Result<Vec<u8>, DecodeError>>;
 
@@ -458,6 +583,7 @@ pub fn vectors() -> Vec<Vector> {
                 problem: "epoch-mismatch".to_owned(),
             },
         ),
+        vector("Frame `link-notice`", Frame::Push(Push::LinkNotice)),
         vector(
             "HTTPS proof",
             RequestProof {
@@ -478,5 +604,12 @@ pub fn vectors() -> Vec<Vector> {
             "Revocation by the master key",
             revocation(None, None, Some(NonEmpty::new(server_device()))),
         ),
+        vector("Account record", account_record()),
+        vector("Master backup", master_backup()),
+        vector("Certificate with an SSH signature", ssh_cert()),
+        vector("Anchors object", anchors()),
+        vector("Link object", link()),
+        vector("Invite", invite()),
+        vector("Acceptance", acceptance()),
     ]
 }

@@ -60,7 +60,7 @@ Each path's section answers, for each agent:
 - Code: [`prototypes/agents/`](../../prototypes/agents), a cargo workspace apart from the product crates. `agent-source` is the [message source](#message-source); `agent-inbox` the [MCP `inbox`](#mcp-inbox) server; `agent-channel` the [Channels](#channels) server; `agent-hook` the hook handler for [Claude Code](#claude-code-hooks) and [Codex](#codex-hooks), and the helper of the [wake paths](#waking-an-idle-session) and [read confirmations](#read-confirmations); `agent-socket` the Claude Code [socket](#waking-an-idle-session) client; `agent-transcript` the reader of the [session file](#read-confirmations); `agent-queue` the [`codex queue`](#codex-queue) prototype; `agent-app-server` the [Codex app-server](#codex-app-server) client; `agent-limits` the [subscription limits](#subscription-limits) prototype; `agent-testing` the tests' shared fixtures, assertions and recorded exchanges; `agent-live` the live checks, `live-check`, with the [model stub](#model-stub).
 - Codex runs on an OpenAI API key, by the owner's choice: no check signs it in with ChatGPT.
 - Tests: `cargo test --manifest-path prototypes/agents/Cargo.toml`; `script/test` runs them.
-- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
+- Live checks: `cargo build --manifest-path prototypes/agents/Cargo.toml`, then `prototypes/agents/target/debug/live-check <path> <agent> [--all] [--real] [--model <model>] [--keep]`; `<path> <agent>` is `inbox claude`, `inbox codex`, `channel claude`, `post-tool-use claude`, `stop claude`, `post-tool-use codex`, `stop codex`, `user-prompt-submit codex`, `queue codex`, `app-server codex`, `socket claude`, `rewake claude`, `mod claude`, `loop claude`, `ack claude`, `ack codex`, `transcript claude`, `transcript codex` or `resend claude`, which takes no `--real`; the checks before implementation on [Claude Code](#claude-code) and [Codex](#codex), [`permission claude`](#permission-prompts) and the [Codex permission prompts](#codex-permission-prompts) checks have commands of their own. Each prints the CLI version, the result of each check and pass or fail; `--keep` keeps the sessions' logs. `--all` adds the cases each path's section marks "with `--all`"; `--real`: [Model stub](#model-stub). The [subscription limits](#subscription-limits) checks, `live-check limits <claude|codex> [--keep]` and `live-check status-line claude [--model <model>] [--keep]`, take neither flag.
 - GUI live checks, on the desktop apps and IDE extensions: [Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions).
 
 ## Model stub
@@ -462,7 +462,7 @@ GUI checks: `live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vsco
 Other ways, checked once by hand on the surfaces:
 - **ChatGPT scheduled task, Codex desktop app:** a task on the session's thread, every minute, with the prompt to call `inbox`. A message added between ticks was handed over 85.8 s later; the window marks the prompt "Sent by scheduled task". The check's task was deleted; Scheduled then listed none.
 - **Deep links, for an OS notification** (`live-check gui-link <dir>` opens the check session's link):
-  - Desktop app: `claude://code/continue?session=<id>` opens the session. `<id>` is the app's own ID, `local_<uuid>`, whose record in `~/Library/Application Support/Claude/claude-code-sessions/` holds Claude Code's as `cliSessionId`; with Claude Code's ID it opens nothing. `claude://code/needs-input?session=` opened nothing for an idle session.
+  - Desktop app: `claude://code/continue?session=<id>` opens the session. `<id>` is the app's own ID, `local_<uuid>`, whose record in `~/Library/Application Support/Claude/claude-code-sessions/` holds Claude Code's as `cliSessionId`; with Claude Code's ID it opens nothing. `claude://code/needs-input?session=` opened nothing for an idle session; for a session waiting on a permission prompt it opens it ([Permission prompts](#permission-prompts)).
   - VS Code: `vscode://anthropic.claude-code/open?session=<id>&prompt=<text>` asks "Allow 'Claude Code for VS Code' extension to open this URI?", then resumes the session with the prompt in the prompt box, unsent. With the session already open it says "Session is already open. Your prompt was not applied". The URL goes to the VS Code instance macOS picks: with two running, it opened in the other one, in an empty window, as a new session. The check's prompt asks the agent to call `inbox`; sent by hand, it handed the message over.
   - Codex desktop app: `codex://threads/<thread>` opens the thread.
   - None delivers text by itself: a person sends the prompt.
@@ -475,7 +475,6 @@ Findings:
 
 Open questions:
 - The socket in the desktop app's bypass mode: whether it holds a message without the token and drops it after 5 minutes, as VS Code did.
-- `claude://code/needs-input?session=` for a session waiting on a permission prompt: whether it opens that session.
 - Whether a project's settings can declare the mod's marketplace, so that the desktop app's install changes no user settings.
 
 ## Read confirmations
@@ -484,7 +483,7 @@ What tells the sending device that the session's model got a message, for `read`
 | Layer | Signal | How |
 |---|---|---|
 | Session file, by a hook | `transcript` | `agent-hook --confirm` on `Stop`, or the handler on `PostToolUse` and `Stop`, reads the session file the hook input names: Claude Code's transcript, Codex's rollout. A handed-over message's `msg_id` in an entry that went to the model counts once a later entry is the model's own: a reply, a tool call or reasoning, not an API error ([`transcript/src/lib.rs`](../../prototypes/agents/transcript/src/lib.rs)). Both CLIs write the message before they call the model, and the entry stays when the call fails. A queued prompt or a hook's own output does not count |
-| Session file, by the client | `session-file` | The same reading by the client, of the file the `SessionStart` hook registered |
+| Session file, by the client | `session-file` | The same reading by the client, of the file the `SessionStart` hook registered. A line the socket gives a busy Claude Code session goes to the model as a `queued_command` attachment, which counts |
 | By construction | the handover | `inbox`, a hook, the socket, the mod or `codex queue` handed it over |
 | Vendor signals | `queue-taken`, `socket-<status>` | `codex queue` no longer lists it; the socket's receipts |
 | `ack` tool | `ack`, `ack-refused` | `inbox` adds a per-message secret, `ack`, to each message; the `ack` tool takes `acks: [{msg_id, ack}]` and refuses a wrong or missing secret |
@@ -558,6 +557,111 @@ Open questions:
 - A socket message that was `held`, resent by the next path and later released reaches the model twice: nothing drops the released one by `msg_id`.
 - What makes the agent act on a message it got: it acted on socket messages and declined `rewake` ones on both GUI surfaces, which the CLI acted on.
 
+## Permission prompts
+Paths that tell that a Claude Code session waits on its own permission prompt, for the person's notification ([architecture.md, "Notifications"](architecture.md#notifications)):
+- **`PermissionRequest` hook:** runs when Claude Code is about to ask ([docs](https://code.claude.com/docs/en/hooks.md#permissionrequest)).
+- **`Notification` hook** of type `permission_prompt`: runs once the prompt has waited about 6 s without a keystroke ([docs](https://code.claude.com/docs/en/hooks.md#notification)).
+- **Channels permission relay**, on the CLI: a channel that declares `claude/channel/permission` gets `notifications/claude/channel/permission_request` ([docs](https://code.claude.com/docs/en/channels-reference.md#relay-permission-prompts)). The check never answers it.
+
+`live-check permission claude [--all] [--real] [--model <model>] [--keep]`: a terminal UI in a pseudo-terminal, as the [Channels](#channels) check runs it, with `agent-channel <source> --permission-log <file>`, which declares the relay and records each notification Claude Code sends it and when its handshake ended. Every hook event of the session runs `live-check timed-hook <file> true`, which records the input and the time and prints nothing, so it decides nothing. Once the handshake ended, the check types the prompt to run `touch prompted.txt`, which nothing allows; the stub calls it. When the dialog shows, the check waits 10 s without a keystroke, then answers it in the terminal:
+- **A:** Enter, "Yes".
+- **B, with `--all`:** Esc, "No".
+
+Session flags: those of the [Channels](#channels) check, without a prompt, with `--tools Bash --permission-mode default`: Claude Code 2.1.328 starts in auto mode, whose classifier ran the command without a prompt. Each delay is from the call's `PreToolUse` run.
+
+Results on 2026-11-20, Claude Code 2.1.328; the real model is `claude-opus-5-5` on a Claude account:
+
+| Command | Result | `PermissionRequest` | `Notification` | Relay | After "Yes" | After "No" |
+|---|---|---|---|---|---|---|
+| `live-check permission claude --all` | pass | A, B: 0.0 s | A, B: 6.6 s | A, B: 0.0 s | `PostToolUse` 0.1 s | nothing |
+| `live-check permission claude --real` | pass | 0.0 s | 6.0 s | 0.0 s | `PostToolUse` 0.1 s | |
+
+The dialog showed on the screen 0.1–0.7 s after the call, after the `PermissionRequest` run and the relay.
+
+| Check | `PermissionRequest` hook | `Notification` hook | Relay |
+|---|---|---|---|
+| Tells | Yes, at once | Yes, about 6 s after the prompt; a keystroke defers it | Yes, at once |
+| Carries | `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `tool_name`, `tool_input` (the command and the model's description), `permission_suggestions` | `session_id`, `transcript_path`, `cwd`, `prompt_id`, `message` "Claude needs your permission", `notification_type`; no tool | `request_id`, five letters; `tool_name`; `description`, the model's description or "Run shell command"; `input_preview`, the arguments as text |
+| Tells the answer | No. "Yes": the call's `PostToolUse` 0.1 s later. "No": no hook runs; the turn ends as "Interrupted · What should Claude do instead?" without `Stop` | As `PermissionRequest` | No notification after either answer |
+| Needs | The hook in settings | The hook in settings | The channel loaded ([Channels](#channels)), declaring the capability, its handshake ended before the prompt opens; Claude Code 2.1.234 or later relays only to a channel loaded for the session |
+
+GUI checks, as in [GUI live check](#gui-live-check): `live-check gui-permission <claude-desktop|claude-vscode>` prepares a project whose `.claude/settings.local.json` runs the recorder on each event, allows nothing, caps the effort and turns off the user's plugins, connectors and MCP servers' tools; it prints the version, the project and the prompt. The driver opens the project, sends the prompt and, once the prompt shows, waits 10 s. On the desktop app, it then opens another session and runs `live-check gui-permission-link <dir>`, which opens `claude://code/needs-input?session=<the app's ID>`, and reads from a screenshot whether the app shows the waiting session. It answers Allow, then `live-check gui-permission-result <dir>` prints the versions and the hooks' lines. Both surfaces started the session in Auto mode: the driver picks Manual in the mode menu by the prompt box before sending.
+
+GUI results on 2026-11-20:
+
+| Surface | Version | Result |
+|---|---|---|
+| Claude Code for VS Code | 2.1.322; the session ran Claude Code 2.1.322 | pass: `PermissionRequest` 0.0 s, `Notification` 6.0 s, each carrying what it does on the CLI. A "Yes" answered the prompt 7.7 s after the call, before the driver did: the session had Remote Control on, from the user's config, and its transcript records the decision as the user's. Then `PostToolUse` |
+| Claude desktop app | Claude 6.6395.1; the session ran Claude Code 2.1.326 | pass: `PermissionRequest` 0.0 s, `Notification` 6.0 s, each carrying what it does on the CLI. From another session, `needs-input` opened the waiting session with its dialog within 3 s; the app's new session page also listed it as "Waiting". After Allow once, `PostToolUse` |
+
+In a first run the prompt was given as the argument and opened before the channel's handshake ended: the relay sent nothing. The check now types the prompt once the handshake ended.
+
+Findings:
+- On the CLI, the `PermissionRequest` hook and the relay tell within 0.1 s, before the dialog shows; either can be the primary path. The hook needs no channel.
+- The `Notification` hook comes about 6 s later and carries no tool, so it can only be a fallback.
+- No path tells that "No" answered a prompt; "Yes" shows as the call's `PostToolUse`.
+- The desktop app and Claude Code for VS Code run both hooks as the CLI does.
+- On the desktop app, `claude://code/needs-input?session=<the app's ID>` opens the session waiting on its prompt: a notification's link.
+
+Open questions:
+- What tells that a prompt answered "No" ended: such as the next `UserPromptSubmit` or `Stop`.
+- Whether Remote Control relays a prompt and takes its answer: in the VS Code run a "Yes" came from outside VS Code.
+
+## Codex permission prompts
+Paths that tell that a Codex session waits on Codex's own permission prompt, for the person's notification ([architecture.md, "Notifications"](architecture.md#notifications)). Candidates, from Codex's docs:
+- **App-server request** `item/commandExecution/requestApproval`: the app-server asks its client to approve a command; `serverRequest/resolved` follows once the request is answered or dropped ([docs](https://developers.openai.com/codex/app-server)). Its `thread/status/changed` also gives the thread the flag `waitingOnApproval`. Checked on an app-server the terminal UI shares with the check's watcher:
+  - one the check starts with `codex app-server --listen unix://<socket>`, which the terminal UI joins with `--remote unix://<socket>`;
+  - the background app-server, which a terminal UI without `--no-daemon` joins in its config home.
+- **`PermissionRequest` hook:** runs when Codex is about to ask for approval ([docs](https://developers.openai.com/codex/hooks)).
+- **Terminal notification:** `tui.notifications = ["approval-requested"]` with `tui.notification_method = "osc9"` and `tui.notification_condition = "always"`: the terminal UI writes an OSC 9 sequence to its terminal ([docs](https://developers.openai.com/codex/config-advanced#notifications)).
+
+Left out: `notify` runs a program only on `agent-turn-complete` ([docs](https://developers.openai.com/codex/config-advanced#notifications)); the docs give no session file entry for a pending approval.
+
+`live-check <permission-remote|permission-daemon|permission-hook|permission-notification> codex [--all] [--model <model>] [--keep]`, `--real` on all but `permission-daemon`: a terminal UI in a pseudo-terminal with `approval_policy = "on-request"` and `sandbox_mode = "read-only"`; Codex 0.162.1 refuses `untrusted`. Every hook event runs `live-check timed-hook <file> true`, which records the input and the time and decides nothing. The check types the prompt; the stub runs `sleep 2`, then calls `touch prompted.txt` with `sandbox_permissions: "require_escalated"`, which waits on the person. When the dialog shows, the check waits 10 s, then answers it in the terminal:
+- **A:** `y`, "Yes, proceed".
+- **B, with `--all`:** Esc, "No".
+- **C, with `--all`:** a terminal UI without a prompt next to A, on the same app-server and config home; the path must not name it.
+
+The app-server checks watch with a client of their own that answers nothing: it lists the loaded threads every 300 ms and subscribes to each with `thread/resume`, which fails until the thread's first turn has saved it; `sleep 2` gives it the time. Each line also reports what the session file holds between the call and its end.
+
+Session flags: `--no-daemon`, or `--remote unix://<socket>`, with `--disable plugins --dangerously-bypass-hook-trust -C <project>` and the config as `-c` values; the app-server the check starts gets the same config. On the background app-server, any config override makes the terminal UI run an app-server of its own, so the session gets only `-C <project>` and the config goes to the config home's `config.toml`. In a new config home the terminal UI runs its app-server in-process: the check starts the background one with `codex app-server daemon start`, which installs it from the CLI into the config home, and ends it with `codex app-server daemon stop`. There the terminal UI asks whether to trust the new hooks after its composer shows; the check selects "Trust all and continue" with `2` and confirms with Enter. Until the question is confirmed, the terminal UI starts no thread and drops typed text; unconfirmed, it goes on after about 60 s. Environment: [Model stub](#model-stub). Each delay is from the call: the `PreToolUse` run or the app-server's `item/started`.
+
+Results on 2026-11-21, Codex 0.162.1, on the stub:
+
+| Command | Result | Tells | Names the session | After "Yes" | After "No" |
+|---|---|---|---|---|---|
+| `live-check permission-remote codex --all` | pass | A, B: 0.0 s, the status and the request together | `threadId`; C not named | `serverRequest/resolved` 0.0 s, `item/completed` `completed` 0.1 s, status `idle` 0.2 s | `serverRequest/resolved` 0.0 s, `item/completed` `declined` 0.0 s, status `idle` 0.0 s |
+| `live-check permission-daemon codex --all` | pass | A, B: 0.0 s, the status and the request together | `threadId`; C not named | `serverRequest/resolved` 0.0 s, `item/completed` `completed` 0.1 s, status `idle` 0.1 s | `serverRequest/resolved` 0.0 s, `item/completed` `declined` 0.0 s, status `idle` 0.0 s |
+| `live-check permission-hook codex --all` | pass | A, B: 0.1 s | `session_id`, `transcript_path`, `cwd`, `turn_id`; C not named | `PostToolUse` 0.1 s, `Stop` 0.2 s | nothing |
+| `live-check permission-notification codex --all` | pass | A, B: 0.0 s | No: the text "Approval requested: <command, cut>"; only the terminal it came from tells the session. C wrote none | nothing | nothing |
+
+The dialog showed 0.1–0.4 s after the call, after each path told. The session file held only a `token_usage_record` between the call and its end: the call, then its output 10 s later, "aborted by user" after "No".
+
+| Check | App-server request | `PermissionRequest` hook | Terminal notification |
+|---|---|---|---|
+| Carries | `threadId`, `turnId`, `itemId`, `command`, `cwd`, `availableDecisions`; the status carries `threadId` and the flag | `session_id`, `transcript_path`, `cwd`, `turn_id`, `permission_mode`, `tool_name` `Bash`, `tool_input` (the command and the model's justification) | The text only |
+| Tells the end | Yes: `serverRequest/resolved`, then `item/completed` with `completed` or `declined` | "Yes": the call's `PostToolUse`. "No": no hook runs | No |
+| Needs | A client on an app-server the terminal UI joins, subscribed to its thread; a person's answer stays in the terminal | The hook in config, trusted | The setting, `notification_condition = "always"` (default `unfocused`), and a program that owns the terminal |
+
+Findings:
+- The `PermissionRequest` hook and the app-server tell within 0.1 s, before the dialog shows, and name the session. The app-server passed with `--remote` and on the background app-server.
+- The `PermissionRequest` hook tells on both GUI surfaces as on the CLI.
+- Only the app-server tells that a prompt ended, after either answer.
+- The notification names no session and carries no end; it can only back up a wrapper of the terminal.
+
+On the desktop app and the VS Code extension, `live-check gui permission-hook <codex-desktop|codex-vscode>` prepares a [GUI check](#gui-live-check) of the hook:
+- its directory is in `~/Library/Caches`, out of `$TMPDIR` and `/tmp`, which the `workspace-write` sandbox may write;
+- the project's `.codex/config.toml` as for the other Codex GUI checks ([Desktop apps and IDE extensions](#desktop-apps-and-ide-extensions)), with `approval_policy = "on-request"`, `sandbox_mode = "read-only"`, and `PreToolUse`, `PermissionRequest`, `PostToolUse` and `Stop` hooks running `live-check timed-hook`;
+- the prompt asks the agent to run `touch ../prompted.txt`, which writes in the check's directory, outside the project: it waits on the person under `read-only` and `workspace-write` alike;
+- `live-check gui-result <dir>`, without a token, prints the surface's version and passes when `PermissionRequest` ran within 10 s of the command's last `PreToolUse` run, carried the session's `session_id` and no other, the command's `PostToolUse` ran after it, once the dialog was answered Yes, and `prompted.txt` is in the check's directory; then it deletes the directory, which nothing clears in `~/Library/Caches`, unless `--keep` is given.
+
+Not run there: the app-server, as each surface runs its own on stdio ([Results](#results), "Not run"); the notification, which needs a terminal.
+
+| Surface and version | Result | Tells | Names the session | After "Yes" |
+|---|---|---|---|---|
+| `codex-desktop: ChatGPT 26.1106.51428, codex 0.167.0-alpha.4.1` | pass, with the earlier command `touch prompted.txt` in the project | 0.0 s after the call; carries `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`, `tool_input`, `tool_name`, `transcript_path`, `turn_id` | `session_id`, the session's | `PostToolUse` 9.6 s, `Stop` 10.7 s after the hook; the dialog waited for the driver |
+| `codex-vscode: Codex for VS Code 26.1117.41037, codex 0.171.0-alpha.13`, Ask for approval | pass; the file was written | 0.0 s after the call; carries as on the desktop app | `session_id`, the session's | `PostToolUse` 11.5 s, `Stop` 12.4 s after the hook; the dialog waited for the driver |
+
 ## Subscription limits
 Where each CLI shows the user the limits of the subscription it is signed in with, and whether a local program may read them: without vendor tokens, credential files or switching accounts. The vendor terms do not name reading limits; for Claude Code the owner decided below, for Codex see [Open questions](#open-questions).
 
@@ -624,7 +728,7 @@ The surfaces take no CLI flags, so a check attaches a path only with files in th
 - Codex reads the project's `.codex/config.toml` once the folder is trusted. The check writes `model = "gpt-5.5"`, `model_reasoning_effort = "low"` and, for `inbox`, the server with `default_tools_approval_mode = "approve"`; for a hook, the hook as a top-level dotted key, `hooks.<event>=[{hooks=[{type="command",command="<handler> --codex <source>"}]}]`; for `codex queue`, nothing more. For each path it also turns off plugins, `[features] plugins = false`, and each MCP server of the user's `~/.codex/config.toml`, `[mcp_servers."<name>"] enabled = false`: it reads that file and keeps only the table headers' names. Without them, a Codex for VS Code session started the user's servers, and one asked macOS for automation access. With them, the session gets none of their tools and the desktop app starts none; Codex for VS Code still starts the user's servers right after `thread/start`, as the panel asks for their status with `mcpServerStatus/list`, which ignores the project's `enabled = false`. Both surfaces' composers show the user's default model and effort from `~/.codex/config.toml`, which Codex for VS Code saved there during the runs (see what the runs leave below); a turn runs only on a model the sign-in can use.
 
 ### GUI live check
-`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session) and [`read`](#read-confirmations) have their own commands there:
+`live-check gui <path> <surface> [--busy]`, `<surface>` one of `claude-desktop`, `claude-vscode`, `codex-desktop`, `codex-vscode`; `<path>` `inbox`, `post-tool-use` or `stop` on each, `channel`, `socket`, `rewake`, `mod` or `loop` on the Claude Code ones, `user-prompt-submit`, `queue` or `read` on the Codex ones; the [wake paths](#waking-an-idle-session), [`read`](#read-confirmations), [`gui-permission`](#permission-prompts) and [`gui permission-hook`](#codex-permission-prompts) have their own commands there:
 - makes a `skald-live-*` directory in `$TMPDIR` with the project, the surface's config and a source with one message holding a random token, the text of the path's CLI check;
 - prints the surface's version, the project, the prompt to type and the commands to run next; never the token;
 - with `--busy`, for `inbox` on Claude Code, `post-tool-use` and `stop`: the prompt of the path's busy case, with `sleep 20`, and no message until `live-check gui-add <dir>` adds it, which the person or agent runs once the command runs;
@@ -635,8 +739,11 @@ Then a person or an agent drives the surface with `screencapture -l <window>`, `
 Steps, each on a new session in the check's project; Return did not always send the prompt, the send button did:
 - **Claude desktop app:** in a terminal in the project, `claude --desktop`, which needs a terminal: from a program, under `script`. It opens the app on a new session there. "Trust this workspace?": Trust workspace. Type the prompt; the send button, right of the prompt box.
 - **Claude Code for VS Code:** `open -n -a "Visual Studio Code" --args --user-data-dir <dir>/vscode <dir>/project`: a VS Code with an empty profile, so no other window opens. Continue without Signing In; close the welcome dialog; Restricted Mode, Manage: Trust; the Claude Code icon in the editor title opens a new session. Type the prompt; the send button, bottom right of the prompt box. Quit that VS Code.
-- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; the new chat button, top right of the panel. Close that window.
+- **Codex for VS Code:** with an empty profile the extension first asks to continue past a notice on the ChatGPT account and training data, which the check does not accept, so it opens a new window of the user's VS Code: `code -n <dir>/project`, from an environment with only `HOME`, `USER` and `PATH`. Restricted Mode, Manage: Trust; the Codex icon in the editor title; type the prompt; the send button, bottom right. For a hook, Review hooks as on the desktop app, from the hooks icon in the composer; 26.1117.41037 showed no hooks icon after the warm-up turn: Codex settings → Hooks → the project, Trust on each hook. The new chat button, top right of the panel. Close that window.
 - **Codex desktop app:** `open -a /Applications/ChatGPT.app <dir>/project`. "Trust this folder?": Trust folder; the app chooses the folder as the project. Type the prompt; the send button, right of the composer. For a hook, first send "Reply with only OK.": the untrusted hook does not run, and a hooks icon with a dot appears in the composer. It opens "Review hooks", which lists each new hook with its source ("This project"), event, command and timeout (600 s); check the hook, Allow selected; then New chat and the check's prompt.
+- **`gui permission-hook`, on either Codex surface:** trust the four hooks as in the surface's steps; then New chat and the check's prompt. When the agent asks to run `touch ../prompted.txt` outside the sandbox, the chat shows its approval request: on the desktop app Yes, the option that runs it once; on Codex for VS Code "Allow writing ../prompted.txt just outside the workspace as requested?", Allow once, not Deny. Once the turn ends, `live-check gui-result <dir>`, which deletes the directory; with `--keep`, delete it after. Modes:
+  - the desktop app ran the project's `read-only` sandbox: `touch prompted.txt` in the project asked;
+  - Codex for VS Code offers Ask for approval, Approve for me and Full access, no read-only mode; Ask for approval ran the turn in `workspace-write`, over the project's `read-only`, so `touch prompted.txt` in the project ran unasked. Use Ask for approval.
 
 The Claude Code surfaces also load the user's config: the desktop session's `/status` listed the user's MCP servers, and Claude Code for VS Code connected each session to Remote Control and to the Claude in Chrome extension. Each check's project settings on them turn off the user's plugins (`enabledPlugins`), the claude.ai connectors (`disableClaudeAiConnectors`) and the tools of the user's MCP servers (`permissions.deny`, by the name Claude Code gives a server's tools). No surface shows a turn's tokens.
 
@@ -712,11 +819,89 @@ A session loads a channel only with `--channels` or `--dangerously-load-developm
 
 ## Checks before implementation
 Live checks to add before the adapters take tasks and run executors ([delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), [queues.md, "Running a task"](../protocol/queues.md#running-a-task)):
-- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over the [socket](#waking-an-idle-session) and over [`codex queue`](#codex-queue).
-- Claude Code acts on a request from the person's own agent that comes over the socket as text.
-- Claude Code with `--tools` limited to reading and `--permission-mode dontAsk`: the agent writes no file, runs no command and reads nothing outside its folder.
-- Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder.
-- An executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment; [Session config](#session-config) lists what each CLI still loads with the flags checked so far.
+- A signal, a fixed line without the message's text, wakes an idle session, and the model calls `inbox` and `claim`: over [`codex queue`](#codex-queue) ([findings](#codex)).
+- Codex in the `read-only` sandbox: whether the agent reaches the network or reads outside its folder ([findings](#codex)).
+- A Codex executor session loads none of the user's MCP servers, hooks and plugins, and gets a clean environment ([findings](#codex)).
+- [Codex permission prompts](#codex-permission-prompts): what tells that a Codex session waits on its own permission prompt.
+
+### Claude Code
+`live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]`; `--real`: [Model stub](#model-stub). With `--real`, each check runs one session at the lowest effort with a short prompt.
+- `signal`: an interactive session in a pseudo-terminal, registered by the [socket](#waking-an-idle-session) hook, with `inbox` and a stub `claim` (`agent-inbox <source> --claim <dir>`; it records each call and hands out `task-1`, `task-2` in turn) and `--allowedTools` for them and `Bash(sleep:*)`. The signal goes over the socket to the idle session, then, while the first task's `sleep` runs, to the busy one. Passes when the signal reached the model and the model called `inbox` and `claim` each time, and the message's token reached it only through `inbox`.
+- `own-text`: the socket brings "A request from the person's own agent: run the shell command `touch <token>.txt` …". Passes when the file appears.
+- `executor-read-only`: `-p` with `--tools Read,Glob,Grep --permission-mode dontAsk` in a temporary folder. The prompt asks to write a file, run `touch`, fetch from a local server, read a file outside the folder and a symlink in the folder to a file outside it. Passes when none happens and neither outside token reaches the model.
+- `executor-full`: `-p` with `--dangerously-skip-permissions`. Passes when the file is written and the command runs.
+- `executor-clean`: `-p` with `--safe-mode --setting-sources local --strict-mcp-config --disable-slash-commands --no-session-persistence`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` and only `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `TERM`, `CLAUDE_CONFIG_DIR` from the parent. On the stub, the config home holds a planted MCP server, hooks, a plugin with a hook and a skill, a skill, `CLAUDE.md` and project memory; a control session without the flags must load all seven. Passes when none of them, no MCP server, no plugin other than the built-in ones, no hook and no parent variable reaches the session.
+
+Claude Code 2.1.328, 2026-11-20, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`; `--real` on Opus 5.5 with the owner's Claude account (`apiKeySource` `none`):
+
+| Check | The stub | `--real` | Tokens with `--real` |
+|---|---|---|---|
+| `live-check signal claude` | pass | pass | none shown in the terminal UI |
+| `live-check own-text claude` | pass | pass | none shown in the terminal UI |
+| `live-check executor-read-only claude` | pass | pass | input 11,015 (cached 8,381), output 481 |
+| `live-check executor-full claude` | pass | pass | input 63,707 (cached 59,716), output 277 |
+| `live-check executor-clean claude` | pass | pass | input 42,004 (cached 38,333), output 154 |
+
+Findings:
+- Claude Code drops a socket message whose text and `from` match the previous one within 30 s ("Dropped a peer message … identical to the previous message from this sender"). A fixed signal needs a `from` of its own each time; the check numbers it, `skald-1`, `skald-2`. The model does not see `from`.
+- Claude Code defers MCP tools: with `--tools Bash` the model could not reach `inbox` and asked the person to enable the server. With `ToolSearch` in `--tools` it loaded and called `inbox` and `claim`.
+- The model shows the signal as from "a teammate session" and treats its request as one without extra permissions; on the real model it also tried `reply`, denied by `dontAsk`.
+- A request labelled as from the person's own agent is done as asked.
+- Read-only: `Write`, `Bash` and `WebFetch` are "No such tool available"; `Read` outside the folder, also through the symlink, is denied by `dontAsk`.
+- Clean: `--safe-mode` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` alone keeps the project memory out; with neither it loads. Without `--safe-mode` the `statusline-setup` agent loads.
+- What still loads with the clean flags: the built-in plugins `cc-plugin-agents-md`, `cc-plugin-telemetry`, `cc-plugin-privacy`, `cc-plugin-plugin-authoring`; the built-in agents `claude`, `Explore`, `general-purpose`, `Plan`, and with `--real` `web-fetch`; the built-in tools, including `SendMessage`, `ListAgents`, `Cron*`, `RemoteTrigger`; a messaging socket of its own (`messaging_socket_path`).
+
+The executor (`skald_adapters::claude_code`):
+- runs `claude -p --output-format json` with the prompt on stdin, the `executor-clean` flags and variable, and `executor-read-only`'s or `executor-full`'s flags;
+- in `read-only`, also `--restricted`, so no settings file applies, not even the folder's own `.claude/settings.local.json`: on 2.1.329 without it, an allow rule there let a read outside the folder reach the model, and an `apiKeyHelper` there ran a command that wrote outside it; a task's handed-over files land in that folder;
+- refuses `read-only` on a Claude Code older than 2.1.328 or of unknown version;
+- keeps of the device's environment only: `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`, `CLAUDE_CONFIG_DIR`; Windows' `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES`, `CLAUDE_CODE_GIT_BASH_PATH`; the proxy's `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, also in lower case, and `NODE_EXTRA_CA_CERTS`; for sign-in, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, every `ANTHROPIC_*`, `AWS_*`, `CLAUDE_CODE_USE_*` and `VERTEX_REGION_*` variable, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`. Names on Windows match in any case;
+- refuses nothing for what still loads: it is Claude Code's own, none of the user's config.
+
+### Codex
+`live-check signal codex [--all] [--real] [--model <model>] [--keep]`, `live-check <executor-read-only|executor-full|executor-clean> codex [--model <model>] [--keep]`; the executor checks run only on the stub.
+- On Windows `live-check` runs `codex.exe` or WinGet's `codex-<arch>-pc-windows-msvc.exe`, else npm's `codex.cmd` script with `node`. The executor checks write their commands in PowerShell, the planted MCP server and hooks run `mark.cmd`, and the sessions get `-c windows.sandbox="unelevated"`. A check that needs a pseudo-terminal or a Unix socket, such as `signal`, says "not on Windows".
+- `signal`: a terminal UI session in a pseudo-terminal with `inbox` and the stub `claim`, as in [Claude Code](#claude-code), their tools approved. After its first turn, `codex queue --thread <id> --message <signal>` brings the fixed line to the idle session; with `--all`, also to a busy one while its first turn's command runs. Passes when the signal reached the model, the model called `inbox` and `claim`, and the message's token reached it only through `inbox`.
+- `executor-read-only`, `executor-full`: `codex exec` with the clean flags below, `--sandbox read-only` or `danger-full-access` and `-C` a temporary folder. Its commands read a file in the folder, write a file in it and one outside it, run `echo`, `curl` a local server and `https://example.com/`, and read a file outside the folder. `read-only` passes when only the read in the folder succeeds; full access passes when all but the public host succeed.
+- `executor-clean`: the config home holds the sign-in, `auth.json` with the placeholder key, an MCP server, a hook in `hooks.json`, an enabled plugin of a local marketplace with a hook and a skill, a rule that forbids a `touch`, a skill and `AGENTS.md`. Three sessions run that `touch` and print a variable: a control without the clean flags, with `--dangerously-bypass-hook-trust` and the variable, which must get all seven; one with only the clean flags; one with the flags and `CODEX_HOME` a folder that holds only `auth.json`. Passes when each signed in from `auth.json` and ran its commands, and the last got nothing planted and no variable.
+
+Codex 0.162.1, 2026-11-21, `env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" USER="$USER" live-check …`. Linux: a `rust:1.99.1-slim-trixie` Docker container on the Mac, arm64, the musl build, with `bubblewrap`, as a user without root, run with `--security-opt systempaths=unconfined` so that bubblewrap can mount `/proc`. Windows: Windows 11, Codex 0.154.0 from WinGet.
+
+| Check | macOS, the stub | Linux, the stub | Windows, the stub |
+|---|---|---|---|
+| `live-check signal codex`, also `--all` | pass | pass | not on Windows |
+| `live-check executor-read-only codex` | fail | fail | fail |
+| `live-check executor-full codex` | pass | pass | pass |
+| `live-check executor-clean codex` | pass | pass | pass |
+
+`live-check signal codex --real`, Codex 0.162.1, macOS, the idle session: fail without `--model`, as the API key's project may not use Codex's default model, `gpt-6.1-terra` (403), so nothing reached the model; pass with `--model gpt-5.6-terra`, 1 `claim` call, the token reached the model only in `inbox`'s result; tokens: input 15,736 (cached 55,559), output 201.
+
+What each attempt did:
+
+| Attempt | `read-only`, macOS and Linux | `read-only`, Windows | Full access |
+|---|---|---|---|
+| Read a file in the folder | yes | yes | yes |
+| Write a file in the folder or outside it | no; macOS: "operation not permitted" | no | yes |
+| Run a command | yes | yes | yes |
+| Reach the local server | no; macOS: `curl` exits 7 | yes | yes |
+| Reach the public host | no; macOS: `curl` exits 6 | no | yes |
+| Read a file outside the folder | yes | yes | yes |
+
+Findings:
+- `read-only` blocks writing anywhere and the network. It does not stop commands or reads outside the folder: the executor reads any file the user can.
+- On Windows, `read-only` needs `windows.sandbox`. Without it, no sandbox stands behind `read-only`, and `codex exec` rejects every command, reads too: "rejected: blocked by policy". With `windows.sandbox="unelevated"`, it blocks writes only: commands, reads outside the folder and the local server all work, while the public host was not reached. The unelevated sandbox asked for no administrator and left `~/.codex` as it was.
+- In Docker's default container, `read-only` runs no command at all, not even the read in the folder: "bwrap: Can't mount proc on /proc: Operation not permitted". The other checks pass there too.
+- Codex runs a command with the session's environment: the control's variable reached `echo`.
+- With the clean flags, only the config home's `AGENTS.md` still reaches the session, on Windows too; no MCP server, hook, plugin, rule or skill. A config home of the executor's own that holds only `auth.json` leaves out `AGENTS.md` too, and the sign-in works.
+
+A Codex executor's flags and environment, from these findings:
+- `codex exec --json --ephemeral --skip-git-repo-check --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false -c approval_policy="never" --sandbox <read-only|danger-full-access> -C <folder>`;
+- on Windows, also `-c windows.sandbox="unelevated"`;
+- `CODEX_HOME` a folder of its own that holds only a copy of the user's `auth.json`;
+- no variable of the parent's environment that the sign-in does not need.
+
+Open questions:
+- Codex executors on Windows: the unelevated `read-only` leaves the local network open. Does Skald need `elevated`, which takes an administrator's setup, or another guard for read-only tasks there?
 
 Vendor terms are the user's business: Skald neither uses nor routes the user's Anthropic or OpenAI credentials, the user chooses how their agents sign in, and no task is refused by sign-in method.
 

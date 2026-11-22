@@ -667,6 +667,15 @@ impl MlsDevice {
         self.history.get(&channel)?.get(&epoch)
     }
 
+    /// Keeps `key` as the history key of `channel` in `epoch`, one the device got outside the
+    /// group, such as from a wrap to the recovery key, unless it holds one of that epoch. The
+    /// sealed state keeps it as it keeps the keys of the epochs the device entered.
+    pub fn keep_history_key(&mut self, channel: ChannelId, epoch: u64, key: HistoryKey) {
+        (self.history.entry(channel).or_default())
+            .entry(epoch)
+            .or_insert(key);
+    }
+
     fn client(&self) -> mls_rs::Client<impl MlsConfig + use<>> {
         profile::client(&self.signing, self.id, &self.store)
     }
@@ -908,6 +917,7 @@ mod tests {
                     issued: NOW,
                     name: "A device".to_owned(),
                     ssh: None,
+                    github: None,
                     unknown: Unknown::default(),
                 };
                 crate::issue(&body, &SigningKey::from_bytes(&[1; 32]), &key).unwrap()
@@ -1036,6 +1046,26 @@ mod tests {
         let exported = group.export_secret(b"skald history", b"", 16).unwrap();
         let key = device.history_key(channel, 0).expect("epoch 0's key");
         assert_eq!(key.to_bytes().as_slice(), exported.as_bytes());
+    }
+
+    #[cfg_attr(not(target_arch = "wasm32"), test)]
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+    fn a_kept_history_key_stays_sealed_and_never_replaces_a_held_one() {
+        let mut device = device();
+        let channel = ChannelId::from_bytes([9; 16]);
+        device.create_group(channel, NOW).unwrap();
+        let entered = device.history_key(channel, 0).unwrap().to_bytes();
+
+        device.keep_history_key(channel, 0, HistoryKey::from_bytes(&[1; 16]));
+        device.keep_history_key(channel, 4, HistoryKey::from_bytes(&[2; 16]));
+        let other = ChannelId::from_bytes([10; 16]);
+        device.keep_history_key(other, 2, HistoryKey::from_bytes(&[3; 16]));
+        let device = reloaded(&device);
+
+        assert_eq!(device.history_key(channel, 0).unwrap().to_bytes(), entered);
+        assert_eq!(*device.history_key(channel, 4).unwrap().to_bytes(), [2; 16]);
+        assert_eq!(*device.history_key(other, 2).unwrap().to_bytes(), [3; 16]);
+        assert!(device.history_key(other, 1).is_none());
     }
 
     #[cfg_attr(not(target_arch = "wasm32"), test)]

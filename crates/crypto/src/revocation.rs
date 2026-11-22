@@ -78,6 +78,41 @@ pub fn revoked_devices(
     revoked
 }
 
+/// Whether a master-key revocation among `revocations` marks `device` as stolen, against the pinned
+/// `master` key: `device`'s chain, by checks 1 and 2 among `certs`, passes through the revoked device
+/// other than through a device in the revocation's `keep` ("Revocation"). A device whose
+/// certificate fails checks 1 and 2 is not marked.
+#[must_use]
+pub fn marked_stolen(
+    master: &[u8; 32],
+    certs: &[Cert],
+    revocations: &[Revocation],
+    device: DeviceId,
+) -> bool {
+    let Ok((cert, chain)) = check_chain(master, certs, device) else {
+        return false;
+    };
+    let account = cert.body().account;
+    revocations.iter().any(|revocation| {
+        let body = revocation.body();
+        body.account == account
+            && body.signer.is_none()
+            && signed_by(revocation, master)
+            && marks_stolen(body, &chain)
+    })
+}
+
+/// Whether the signature of `revocation` verifies with `key`.
+fn signed_by(revocation: &Revocation, key: &[u8; 32]) -> bool {
+    verify(
+        key,
+        REVOCATION_LABEL,
+        &[revocation.body_bytes()],
+        revocation.signature(),
+    )
+    .is_ok()
+}
+
 /// `device`, then each issuer up that the `issuer` of its certificate among `certs` names, unchecked.
 fn issuers(certs: &[Cert], device: DeviceId) -> Vec<DeviceId> {
     let mut chain = vec![device];
@@ -141,15 +176,7 @@ fn counting<'r>(
         if body.account != account {
             continue;
         }
-        let verifies = |key: &[u8; 32]| {
-            verify(
-                key,
-                REVOCATION_LABEL,
-                &[revocation.body_bytes()],
-                revocation.signature(),
-            )
-            .is_ok()
-        };
+        let verifies = |key: &[u8; 32]| signed_by(revocation, key);
         match body.signer {
             None if verifies(master) => by_master.push(revocation),
             None => {}

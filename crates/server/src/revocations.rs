@@ -4,7 +4,8 @@
 //! its devices. A device is revoked when checks 3 and 4 of "Device checks" fail with the stored
 //! revocations; checks 1 and 2 were made when the server took each certificate. At revocation, on
 //! every instance, the server expires each mailbox entry of the device ("Mailbox"), closes its
-//! connections and adds it no later entry.
+//! connections, ends its session by its key ("Device key session"), deletes its presence values and
+//! adds it no later entry.
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -13,12 +14,12 @@ use sha2::{Digest as _, Sha256};
 use skald_proto::{AccountId, Cbor as _, DeviceId, Revocation, ServerStatus, SpaceId};
 use sqlx::{PgConnection, PgPool};
 
-use crate::AppState;
 use crate::delivery::{Statuses, remove_on, removing};
 use crate::devices::{base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
 use crate::spaces::certs;
+use crate::{AppState, presence, sessions};
 
 /// `RevocationRequest` in the spec.
 #[derive(Deserialize)]
@@ -121,10 +122,11 @@ pub(crate) async fn store(
     .map_err(failed)?;
     revocations.push(revocation);
     let revoked = skald_crypto::revoked_devices(&master, &certs, &revocations, id);
-    let (newly, statuses) = mark(&mut tx, &state, &account, &revoked)
+    let (newly, statuses, ended) = mark(&mut tx, &state, &account, &revoked)
         .await
         .map_err(failed)?;
     tx.commit().await.map_err(failed)?;
+    sessions::close_ended(&state, &ended);
     statuses.woken(&state.wakers);
     for device in newly {
         state.connections.end_device(device);
@@ -133,16 +135,16 @@ pub(crate) async fn store(
 }
 
 /// Marks the devices of `account` in `revoked` as revoked and its others as not, on `conn`, in its
-/// transaction. Expires every mailbox entry of each device it newly revokes, deletes its
-/// KeyPackages, and tells the other
-/// instances to close its connections once the transaction commits. Gives those devices, and the
-/// statuses the expiry added.
+/// transaction. Takes from each device it newly revokes what [`withdraw`] takes, deletes its
+/// session by its key, and tells the other instances to close its connections and end that session
+/// once the transaction commits. Gives those devices, the statuses the expiry added and the
+/// SHA-256s of the ended sessions' tokens.
 async fn mark(
     conn: &mut PgConnection,
     state: &AppState,
     account: &str,
     revoked: &[DeviceId],
-) -> Result<(Vec<DeviceId>, Statuses), sqlx::Error> {
+) -> Result<(Vec<DeviceId>, Statuses, Vec<(Vec<u8>,)>), sqlx::Error> {
     let revoked: Vec<String> = revoked.iter().map(ToString::to_string).collect();
     // The rows' locks make a store to the mailbox of a device it revokes wait for this transaction,
     // or this one wait for the store, whose entry it then expires.
@@ -159,21 +161,45 @@ async fn mark(
         .into_iter()
         .filter_map(|(device, revoked)| revoked.then_some(device))
         .collect();
-    let query = sqlx::query_as(removing!(
-        "DELETE FROM entries WHERE device_id = ANY($1::text[]::uuid[])
-         RETURNING device_id, seq, envelope_id, now() AS at"
-    ))
-    .bind(&newly);
-    let statuses = remove_on(conn, &state.wakers, query, ServerStatus::Expired).await?;
-    sqlx::query("DELETE FROM key_packages WHERE device_id = ANY($1::text[]::uuid[])")
-        .bind(&newly)
-        .execute(&mut *conn)
-        .await?;
+    let statuses = withdraw(conn, state, &newly).await?;
+    let ended: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "DELETE FROM sessions WHERE key_device = ANY($1::text[]::uuid[]) RETURNING token_hash",
+    )
+    .bind(&newly)
+    .fetch_all(&mut *conn)
+    .await?;
     let newly: Vec<DeviceId> = newly
         .iter()
         .map(|device| device.parse().expect("a stored device ID"))
         .collect();
-    let events: Vec<Event> = newly.iter().copied().map(Event::Revoked).collect();
+    let mut events: Vec<Event> = newly.iter().copied().map(Event::Revoked).collect();
+    events.extend(
+        ended
+            .iter()
+            .map(|(session,)| Event::SessionEnded(session.clone())),
+    );
     state.instance.tell(conn, &events).await?;
-    Ok((newly, statuses))
+    Ok((newly, statuses, ended))
+}
+
+/// Takes from `devices`, newly revoked, what the server serves only to devices that are not, on
+/// `conn`, in its transaction: expires every mailbox entry of each, and deletes its KeyPackages and
+/// presence values. Gives the statuses the expiry added.
+pub(crate) async fn withdraw(
+    conn: &mut PgConnection,
+    state: &AppState,
+    devices: &[String],
+) -> Result<Statuses, sqlx::Error> {
+    let query = sqlx::query_as(removing!(
+        "DELETE FROM entries WHERE device_id = ANY($1::text[]::uuid[])
+         RETURNING device_id, seq, envelope_id, now() AS at"
+    ))
+    .bind(devices);
+    let statuses = remove_on(conn, &state.wakers, query, ServerStatus::Expired).await?;
+    sqlx::query("DELETE FROM key_packages WHERE device_id = ANY($1::text[]::uuid[])")
+        .bind(devices)
+        .execute(&mut *conn)
+        .await?;
+    presence::revoked(conn, devices).await?;
+    Ok(statuses)
 }

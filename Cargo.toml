@@ -17,5 +17,19 @@ lto = "thin"
 [profile.dev]
 debug = "line-tables-only"
 
+# Dependencies, and skald-crypto, which their generic ciphers are compiled into, are optimized:
+# unoptimized, the client's cryptography made an intake take about 2 s on Windows.
 [profile.dev.package."*"]
 debug = false
+opt-level = 2
+
+[profile.dev.package.skald-crypto]
+opt-level = 2
+
+# Argon2id of the recovery key runs at the spec's cost in every build: optimized, a test build's
+# derivation takes as long as a release's.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

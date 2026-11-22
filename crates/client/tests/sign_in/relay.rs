@@ -2,15 +2,18 @@
 //! them, so a test sees what the machine sent and what the server answered, as on the wire. It can
 //! also lose the server's answer to a request, or hold requests until several have come, as a
 //! network or a race would, rewrite the body of an answer, as a compromised server would, and answer
-//! a request itself, never letting it reach the server, as an older server would.
+//! a request itself, never letting it reach the server, as an older server or a proxy that blocks it
+//! would.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+use socket2::SockRef;
 
 /// One read off a connection: when, which connection, which way, and the bytes.
 struct Chunk {
@@ -25,6 +28,14 @@ struct Chunk {
 pub struct Sent {
     pub at: Instant,
     pub head: String,
+}
+
+/// How many of `sent` have a line that starts with `request`, whatever its case.
+pub fn count_heads(sent: &[Sent], request: &str) -> usize {
+    let request = request.to_lowercase();
+    (sent.iter())
+        .filter(|sent| sent.head.starts_with(&request))
+        .count()
 }
 
 /// How the relay loses the server's answer to a request.
@@ -181,6 +192,28 @@ impl Shared {
     }
 }
 
+/// The reads of every relay this process started, so that [`given_pairings`] reads all answers.
+static ALL_READS: Mutex<Vec<Arc<Mutex<Vec<Chunk>>>>> = Mutex::new(Vec::new());
+
+/// Every pairing a server gave a run without a session through a relay of this process, as the
+/// `"pairing"` strings of its answers say.
+pub fn given_pairings() -> Vec<String> {
+    let all = ALL_READS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let mut pairings = Vec::new();
+    for reads in all {
+        let reads = reads.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes: Vec<u8> = (reads.iter())
+            .filter(|read| !read.to_server)
+            .flat_map(|read| read.bytes.iter().copied())
+            .collect();
+        pairings.extend(strings_named(&String::from_utf8_lossy(&bytes), "pairing"));
+    }
+    pairings
+}
+
 /// The relay on a free local port; the machine talks to [`Relay::url`].
 pub struct Relay {
     pub url: String,
@@ -199,6 +232,7 @@ impl Relay {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let url = format!("http://{}", listener.local_addr().expect("local address"));
         let reads = Arc::new(Mutex::new(Vec::new()));
+        (ALL_READS.lock().unwrap_or_else(PoisonError::into_inner)).push(Arc::clone(&reads));
         let shared = Arc::new(Shared::default());
         let kept = Arc::clone(&reads);
         let rules = Arc::clone(&shared);
@@ -287,15 +321,34 @@ impl Relay {
 
     /// As [`Relay::refuse`], with the problem details object `body`.
     pub fn refuse_with(&self, request: &str, status: &str, body: &str) {
-        let answer = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\nconnection: close\r\n\
-             content-length: {}\r\n\r\n{body}",
+        self.answer_itself(request, status, ("application/problem+json", body));
+    }
+
+    /// From now on, answers each request whose line starts with `request` itself with
+    /// `403 Forbidden` and no problem details, as a proxy that blocks it would, closing the
+    /// connection; the server never gets the request.
+    pub fn block(&self, request: &str) {
+        self.answer_itself(request, "403 Forbidden", ("text/plain", ""));
+    }
+
+    /// From now on, answers each request whose line starts with `request` itself with `status` and
+    /// a body `body` of the media type `media`, closing the connection.
+    fn answer_itself(&self, request: &str, status: &str, (media, body): (&str, &str)) {
+        self.answer_with(request, status, (media, body.as_bytes()));
+    }
+
+    /// As [`Relay::refuse`], with any body: `body` of the media type `media`, such as a CBOR item
+    /// a compromised server could give in place of the server's answer.
+    pub fn answer_with(&self, request: &str, status: &str, (media, body): (&str, &[u8])) {
+        let mut answer = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: {media}\r\nconnection: close\r\n\
+             content-length: {}\r\n\r\n",
             body.len()
-        );
+        )
+        .into_bytes();
+        answer.extend_from_slice(body);
         let mut rules = self.shared.rules.lock().expect("the relay's rules");
-        rules
-            .refusals
-            .push((request.to_owned(), answer.into_bytes()));
+        rules.refusals.push((request.to_owned(), answer));
     }
 
     /// From now on, lets every request reach the server again.
@@ -449,6 +502,8 @@ fn pipe(
         loop {
             let count = match from.read(&mut buffer) {
                 Ok(0) => break,
+                // A front before the relay resets a connection it is done with.
+                Err(err) if err.kind() == io::ErrorKind::ConnectionReset => break,
                 Err(err) => {
                     eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
                     break;
@@ -495,8 +550,72 @@ fn pipe(
                 break;
             }
         }
+        // The machine left a connection the server has answered in full: it ends with a reset.
+        if to_server && idle(&reads.lock().expect("the relay's reads"), connection) {
+            reset(&to);
+            return;
+        }
         let _ = to.shutdown(Shutdown::Write);
     });
+}
+
+/// Whether the server has answered every request the machine sent on `connection` whole, without
+/// upgrading the connection: nothing the machine sent waits for the server there.
+fn idle(reads: &[Chunk], connection: usize) -> bool {
+    let bytes = |to_server: bool| -> Vec<u8> {
+        reads
+            .iter()
+            .filter(|read| read.connection == connection && read.to_server == to_server)
+            .flat_map(|read| read.bytes.iter().copied())
+            .collect()
+    };
+    answered_in_full(&bytes(true), &bytes(false))
+}
+
+/// Whether `answered`, what a server sent on a connection, answers every request of `sent`, what
+/// the machine sent on it, whole, without upgrading the connection.
+pub fn answered_in_full(sent: &[u8], answered: &[u8]) -> bool {
+    answers(answered) == Some(request_starts(&String::from_utf8_lossy(sent)).len())
+}
+
+/// How many answers `bytes`, what a server sent on a connection, holds, if it ends where an answer
+/// ends; `None` if not, or if an answer upgrades the connection. An informational answer, such as
+/// `100 Continue`, counts for none.
+fn answers(mut bytes: &[u8]) -> Option<usize> {
+    let mut count = 0;
+    while !bytes.is_empty() {
+        let end = bytes.windows(4).position(|four| four == b"\r\n\r\n")?;
+        let head = String::from_utf8_lossy(&bytes[..end]).to_lowercase();
+        let rest = &bytes[end + 4..];
+        let status: u16 = head.split(' ').nth(1)?.parse().ok()?;
+        let header = |name: &str| {
+            head.split("\r\n").skip(1).find_map(|line| {
+                let (field, value) = line.split_once(':')?;
+                (field.trim() == name).then(|| value.trim().to_owned())
+            })
+        };
+        let length = if status == 101 {
+            return None;
+        } else if status < 200 || status == 204 || status == 304 {
+            0
+        } else if header("transfer-encoding").is_some_and(|value| value.contains("chunked")) {
+            dechunked(rest)?.1
+        } else {
+            header("content-length")?.parse().ok()?
+        };
+        bytes = rest.get(length..)?;
+        count += usize::from(status >= 200);
+    }
+    Some(count)
+}
+
+/// Ends `stream`'s connection with a reset once every copy of it is dropped: unlike a close, it
+/// leaves neither end in TIME_WAIT, which holds the closing end's port for 30 s on macOS and for
+/// minutes on Windows, where a whole run of the tests used up the ports. Ends reading too, so
+/// that a thread that reads the stream lets go of its copy.
+pub fn reset(stream: &TcpStream) {
+    let _ = SockRef::from(stream).set_linger(Some(Duration::ZERO));
+    let _ = stream.shutdown(Shutdown::Read);
 }
 
 /// The answer `answer` with its body rewritten by `rewrite` if its status is 200, and whatever came

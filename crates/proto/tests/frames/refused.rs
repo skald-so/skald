@@ -225,7 +225,7 @@ fn malformed_frames_are_refused() {
         format!("84 0b 05 50{SPACE} 50{CHANNEL}"),
         format!("85 0b 20 50{SPACE} 50{CHANNEL} 82 01 41a0"),
         format!("85 0b 05 50{CHANNEL} 6178 82 01 41a0"),
-        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 04 41a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 05 41a0"),
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 80"),
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 41a0"),
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 01 6178"),
@@ -233,6 +233,8 @@ fn malformed_frames_are_refused() {
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 02 a0"),
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 03 50{MSG_1}"),
         format!("85 0b 05 50{SPACE} 50{CHANNEL} 83 03 41a0 41a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 82 04 a0"),
+        format!("85 0b 05 50{SPACE} 50{CHANNEL} 83 04 41a0 00"),
         format!("86 0b 05 50{SPACE} 50{CHANNEL} 82 01 41a0 00"),
         // history-stored
         "81 0c".to_owned(),

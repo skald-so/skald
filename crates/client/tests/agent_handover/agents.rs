@@ -7,7 +7,6 @@ use skald_proto::{MessageId, RawEnvelope};
 
 use crate::gaps::sends;
 use crate::kit::RECV;
-use crate::lines::assert_handed_line;
 use crate::machine::{Finished, Machine};
 use crate::talk::{Line, Talk, encrypted};
 use crate::world::{ACME, ADD_RULE, AGENT, HOST, dir_of, path, run};
@@ -69,6 +68,17 @@ impl Agents {
         let envelope = self.bob_says(line);
         sends(&self.talk, &envelope)
     }
+
+    /// Bob's device says `text` in the channel, as message `1`, in an envelope whose `messageId`
+    /// is not its `msg_id`, which a proxy puts into Ada's next catch-up. Gives its `msg_id`.
+    pub fn bob_forges(&mut self, text: &str) -> MessageId {
+        let mut line = Line::new(&self.bob(), 1, text);
+        line.message_id = Some(MessageId::generate());
+        let forged = self.bob_says(&line);
+        let msg_id = forged.envelope().header.msg_id;
+        (self.talk.front).inject(self.talk.ada.device, vec![forged]);
+        msg_id
+    }
 }
 
 /// Runs `skald --agent <agent> recv` on `machine` in `dir`; fails unless it succeeds.
@@ -81,13 +91,6 @@ pub fn run_as_in(machine: &Machine, dir: &Path, agent: &str) -> Finished {
         dir.display()
     );
     finished
-}
-
-/// Fails unless `shown`, an agent's output, holds `text` once, on one line whose reference refers
-/// to the `msg_id` `id`, and holds no UUID.
-#[track_caller]
-pub fn assert_handed_once(shown: &str, text: &str, id: MessageId) {
-    assert_handed_line(shown, text, id);
 }
 
 /// Fails if `shown` holds `text`.

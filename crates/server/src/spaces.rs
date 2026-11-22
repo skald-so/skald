@@ -19,8 +19,8 @@ use sqlx::PgPool;
 use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
-use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::{AppState, history, mailboxes, revocations};
+use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
+use crate::{AppState, history, invites, mailboxes, queues, revocations, sessions};
 
 /// `SpaceRequest` in the spec.
 #[derive(Deserialize)]
@@ -79,6 +79,8 @@ struct ListedMember {
     github_login: Option<String>,
     linked_devices: i64,
     joined_at: String,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    deleted: bool,
 }
 
 /// `ListedMembers` in the spec.
@@ -101,7 +103,7 @@ pub(crate) struct Found {
     /// Whether the account gets the space.
     pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
-    admin: bool,
+    pub(crate) admin: bool,
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
@@ -135,15 +137,57 @@ impl FromRequestParts<AppState> for Gotten {
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
         let SignedIn(account) = SignedIn::from_request_parts(parts, state).await?;
-        let Path(space) = Path::<String>::from_request_parts(parts, state)
-            .await
-            .map_err(|_| Refusal::NoSpace)?;
-        let found = find(&state.db, &space, &account).await?;
+        let found = find(&state.db, &path_space(parts, state).await?, &account).await?;
         if !found.gets {
             return Err(Refusal::NoSpace);
         }
         Ok(Gotten(found))
     }
+}
+
+/// The space of the request's path, which the session's account gets or has the acceptance of an
+/// invite to until it ends, or the request's service token is of, as a handler's argument.
+pub(crate) struct Readable(pub(crate) SpaceId);
+
+impl FromRequestParts<AppState> for Readable {
+    type Rejection = Refusal;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
+        let caller = Caller::from_request_parts(parts, state).await?;
+        let space = path_space(parts, state).await?;
+        match (readable(&state.db, &caller, &space).await, &caller) {
+            (Err(Refusal::NoSpace), Caller::Session(account)) => {
+                let accepted = invites::accepted(&state.db, &space, account).await?;
+                Ok(Readable(accepted.ok_or(Refusal::NoSpace)?))
+            }
+            (readable, _) => Ok(Readable(readable?)),
+        }
+    }
+}
+
+/// The space of the request's path, as it stands.
+async fn path_space(parts: &mut Parts, state: &AppState) -> Result<String, Refusal> {
+    let Path(space) = Path::<String>::from_request_parts(parts, state)
+        .await
+        .map_err(|_| Refusal::NoSpace)?;
+    Ok(space)
+}
+
+/// The space `space`, if `caller` reads it: a session of an account that gets it, or a service
+/// token of it.
+pub(crate) async fn readable(
+    db: &PgPool,
+    caller: &Caller,
+    space: &str,
+) -> Result<SpaceId, Refusal> {
+    let found = match caller {
+        Caller::Session(account) => {
+            let found = find(db, space, account).await?;
+            found.gets.then_some(found.id)
+        }
+        Caller::Token(token) => space.parse().ok().filter(|space| *space == token.space),
+    };
+    found.ok_or(Refusal::NoSpace)
 }
 
 /// `POST /spaces`: creates a space the session's account owns, unless it owns as many as it may.
@@ -285,32 +329,61 @@ pub(crate) async fn list(State(state): State<AppState>, SignedIn(account): Signe
 }
 
 /// `GET /spaces/<space>/revisions`: the space's revisions as stored, in order.
-pub(crate) async fn revisions(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
-    let stored: Vec<(Vec<u8>,)> = sqlx::query_as(
-        "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid ORDER BY revision",
-    )
-    .bind(found.id.to_string())
-    .fetch_all(&state.db)
-    .await
-    .map_err(|err| Refusal::Database("read the revisions", err))?;
-    let revisions = stored.iter().map(|(roster,)| base64(roster)).collect();
+pub(crate) async fn revisions(State(state): State<AppState>, Readable(space): Readable) -> Answer {
+    let revisions = stored_revisions(&state.db, space).await?;
     Ok(Json(Revisions { revisions }).into_response())
 }
 
+/// The revisions of `space` as stored, in order, in base64url.
+pub(crate) async fn stored_revisions(db: &PgPool, space: SpaceId) -> Result<Vec<String>, Refusal> {
+    let stored: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "SELECT roster FROM roster_revisions WHERE space_id = $1::uuid ORDER BY revision",
+    )
+    .bind(space.to_string())
+    .fetch_all(db)
+    .await
+    .map_err(|err| Refusal::Database("read the revisions", err))?;
+    Ok(stored.iter().map(|(roster,)| base64(roster)).collect())
+}
+
 /// `GET /spaces/<space>/devices`: the devices of the accounts the space's revisions list, and those
-/// accounts' revocations.
-pub(crate) async fn devices(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
+/// accounts' revocations and account records, and which of them are deleted.
+pub(crate) async fn devices(State(state): State<AppState>, Readable(space): Readable) -> Answer {
+    Ok(Json(space_devices(&state.db, space).await?).into_response())
+}
+
+/// The devices of the accounts the revisions of `space` list, with those accounts' revocations and
+/// account records, and which of them are deleted.
+pub(crate) async fn space_devices(db: &PgPool, space: SpaceId) -> Result<Devices, Refusal> {
     let listed = sqlx::query_as(
         "SELECT id::text, cert FROM devices
          WHERE account_id IN (SELECT account_id FROM roster_members WHERE space_id = $1::uuid)
          ORDER BY registered_at, id",
     )
-    .bind(found.id.to_string())
-    .fetch_all(&state.db)
+    .bind(space.to_string())
+    .fetch_all(db)
     .await
     .map_err(|err| Refusal::Database("read the space's devices", err))?;
-    let revocations = revocations::of_space(&state.db, found.id).await?;
-    Ok(Json(Devices::of(listed, &revocations)).into_response())
+    let revocations = revocations::of_space(db, space).await?;
+    let accounts: Vec<(String, Option<Vec<u8>>, bool)> = sqlx::query_as(
+        "SELECT id::text, record, deleted_at IS NOT NULL FROM accounts
+         WHERE (record IS NOT NULL OR deleted_at IS NOT NULL)
+           AND id IN (SELECT account_id FROM roster_members WHERE space_id = $1::uuid)
+         ORDER BY id",
+    )
+    .bind(space.to_string())
+    .fetch_all(db)
+    .await
+    .map_err(|err| Refusal::Database("read the space's account records", err))?;
+    let (mut records, mut deleted) = (Vec::new(), Vec::new());
+    for (account, record, gone) in accounts {
+        records.extend(record.map(|record| (record,)));
+        if gone {
+            deleted.push(account);
+        }
+    }
+    let devices = Devices::of(listed, &revocations).with_records(&records);
+    Ok(devices.with_deleted(deleted))
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
@@ -327,13 +400,14 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     let revision =
         i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
-    let rows: Vec<(String, Option<String>, i64, String)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>, i64, String, bool)> = sqlx::query_as(
         "SELECT m.account_id::text,
              (SELECT login FROM sign_in_methods
               WHERE account_id = m.account_id AND provider = $3 ORDER BY created_at LIMIT 1),
              (SELECT count(*) FROM devices
               WHERE account_id = m.account_id AND cert IS NOT NULL AND NOT revoked),
-             to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
+             to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
+             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL)
          FROM roster_members m
          JOIN roster_revisions r ON r.space_id = m.space_id AND r.revision = 1 + COALESCE(
              (SELECT max(o.revision) FROM roster_revisions o
@@ -350,16 +424,18 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's members", err))?;
-    let mut shown: HashMap<String, (Option<String>, i64, String)> = rows
+    let mut shown: HashMap<String, (Option<String>, i64, String, bool)> = rows
         .into_iter()
-        .map(|(account, login, linked, joined)| (account, (login, linked, joined)))
+        .map(|(account, login, linked, joined, deleted)| {
+            (account, (login, linked, joined, deleted))
+        })
         .collect();
     let members = roster
         .body()
         .members
         .iter()
         .filter_map(|member| {
-            let (github_login, linked_devices, joined_at) =
+            let (github_login, linked_devices, joined_at, deleted) =
                 shown.remove(&member.account.to_string())?;
             Some(ListedMember {
                 handle: member.handle.to_string(),
@@ -370,26 +446,35 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
                 github_login,
                 linked_devices,
                 joined_at,
+                deleted,
             })
         })
         .collect();
     Ok(Json(ListedMembers { members }).into_response())
 }
 
-/// `POST /spaces/<space>/channels`: a new channel ID for the space, for an admin's session.
+/// `POST /spaces/<space>/channels`: a new channel ID for the space, with its queue `default`, for an
+/// admin's session.
 pub(crate) async fn channel(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     if !found.admin {
         return Err(Refusal::NotAllowed(
             "only an admin in the space's latest revision gets a channel ID".to_owned(),
         ));
     }
-    let channel = ChannelId::generate().to_string();
+    let channel = ChannelId::generate();
+    let failed = |err| Refusal::Database("issue a channel ID", err);
+    let mut tx = state.db.begin().await.map_err(failed)?;
     sqlx::query("INSERT INTO channels (id, space_id) VALUES ($1::uuid, $2::uuid)")
-        .bind(&channel)
+        .bind(channel.to_string())
         .bind(found.id.to_string())
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await
-        .map_err(|err| Refusal::Database("issue a channel ID", err))?;
+        .map_err(failed)?;
+    queues::create_default(&mut tx, channel)
+        .await
+        .map_err(failed)?;
+    tx.commit().await.map_err(failed)?;
+    let channel = channel.to_string();
     Ok((StatusCode::CREATED, Json(NewChannel { channel })).into_response())
 }
 
@@ -481,13 +566,34 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
+    within_agents_limit(&state, &roster, previous.as_ref())?;
     insert(&state, found.id, &roster, previous.as_ref(), &sent).await
+}
+
+/// Refuses `roster` if it lists more service agent entries than the server's limit and than
+/// `previous`, the revision it follows, if any: a space over a lowered limit still removes agents
+/// and changes the rest (`docs/dev/architecture.md`, "Cloud limits").
+fn within_agents_limit(
+    state: &AppState,
+    roster: &Roster,
+    previous: Option<&Roster>,
+) -> Result<(), Refusal> {
+    let Some(limit) = state.service_agents_limit else {
+        return Ok(());
+    };
+    let agents = roster.body().service_agents.len();
+    let before = previous.map_or(0, |previous| previous.body().service_agents.len());
+    if agents > before && agents > limit as usize {
+        return Err(Refusal::ServiceAgentsLimit(limit));
+    }
+    Ok(())
 }
 
 /// Checks `roster`, a revision the account `account` may store in the space `found` after
 /// `previous`, or revision 1 if `None`: its space and name, its signer and signature, checks 2 to 4
-/// of "Roster" with the certificates the server holds, a revoked service agent having none
-/// (revision 1: checks 3 and 4, and its creator an admin), and its channels.
+/// of "Roster" with the certificates the server holds (revision 1: checks 3 and 4, and its creator
+/// an admin), its `service` devices, in entries and in `services`, none revoked and each on a
+/// member's account, and its channels.
 async fn check(
     db: &PgPool,
     found: &Found,
@@ -556,23 +662,39 @@ async fn check(
     };
     checked.map_err(|err| Refusal::Roster(err.to_string()))?;
     // Check 4 took revoked devices' certificates, which the chains of the devices they keep need;
-    // a revoked service agent has none.
-    let agents: Vec<String> = body
-        .service_agents
-        .iter()
-        .map(|agent| agent.device.to_string())
+    // a new revision lists, in an entry or in a channel's `services`, only `service` devices that
+    // are not revoked, on a member's account.
+    let mut listed: Vec<String> = (body.service_agents.iter())
+        .map(|agent| agent.device)
+        .chain(
+            body.channels
+                .iter()
+                .flat_map(|it| it.services.iter().copied()),
+        )
+        .map(|device| device.to_string())
         .collect();
-    let revoked: Option<(String,)> = sqlx::query_as(
-        "SELECT id::text FROM devices WHERE id = ANY($1::text[]::uuid[]) AND revoked LIMIT 1",
+    listed.sort();
+    listed.dedup();
+    let members: Vec<String> = (body.members.iter())
+        .map(|member| member.account.to_string())
+        .collect();
+    let refused_device: Option<(String, bool)> = sqlx::query_as(
+        "SELECT listed, coalesce(d.revoked, false) FROM unnest($1::text[]) AS listed
+         LEFT JOIN devices d ON d.id = listed::uuid AND d.kind = 'service' AND d.cert IS NOT NULL
+         WHERE d.id IS NULL OR d.revoked OR d.account_id <> ALL($2::text[]::uuid[])
+         ORDER BY listed LIMIT 1",
     )
-    .bind(&agents)
+    .bind(&listed)
+    .bind(&members)
     .fetch_optional(db)
     .await
-    .map_err(|err| Refusal::Database("read the service agents", err))?;
-    if let Some((device,)) = revoked {
-        return Err(Refusal::Roster(format!(
-            "the service agent {device} is revoked"
-        )));
+    .map_err(|err| Refusal::Database("read the service devices", err))?;
+    if let Some((device, revoked)) = refused_device {
+        return Err(Refusal::Roster(if revoked {
+            format!("the service device {device} is revoked")
+        } else {
+            format!("{device} is no certified service device on a member's account")
+        }));
     }
 
     let channels: Vec<String> = body.channels.iter().map(|c| c.id.to_string()).collect();
@@ -594,7 +716,7 @@ async fn check(
 }
 
 /// Whether `roster` lists `account` as an admin.
-fn admin(roster: &Roster, account: AccountId) -> bool {
+pub(crate) fn admin(roster: &Roster, account: AccountId) -> bool {
     roster
         .body()
         .members
@@ -622,6 +744,39 @@ pub(crate) async fn certs(
         .collect())
 }
 
+/// Refuses `roster` if it leaves the space with members whose accounts are not deleted and no admin
+/// whose account is not. The accounts' locks, taken after the space's, make a deletion of one of
+/// them wait for the revision, or the revision for the deletion, which it then sees.
+async fn with_living_admin(tx: &mut sqlx::PgConnection, roster: &Roster) -> Result<(), Refusal> {
+    let members: Vec<String> = (roster.body().members.iter())
+        .map(|member| member.account.to_string())
+        .collect();
+    // A locking read gives each row as the transaction it waited for left it.
+    let found: Vec<(String, bool)> = sqlx::query_as(
+        "SELECT id::text, deleted_at IS NOT NULL FROM accounts
+         WHERE id = ANY($1::text[]::uuid[]) ORDER BY id FOR KEY SHARE",
+    )
+    .bind(&members)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|err| Refusal::Database("read a revision's accounts", err))?;
+    // An account this server does not hold is no deleted one.
+    let living = |account: &AccountId| {
+        let account = account.to_string();
+        !found.iter().any(|(id, deleted)| *deleted && *id == account)
+    };
+    let members = &roster.body().members;
+    let has_living = members.iter().any(|member| living(&member.account));
+    let living_admin =
+        (members.iter()).any(|member| member.role == Role::Admin && living(&member.account));
+    if has_living && !living_admin {
+        return Err(Refusal::Roster(
+            "the revision leaves the space with no admin whose account is not deleted".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 /// Stores `roster`, received as `sent`, as the next revision of `space`, with its members, and
 /// gives their accounts' connections a notice of `space`, on each instance; with the accounts it
 /// adds to channels after `previous`. Of two revisions with one number at once, the first is stored
@@ -643,6 +798,14 @@ async fn insert(
         .begin()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
+    // A service token's creation waits for the revision, and the revision for the creation
+    // (`service_tokens::create`).
+    sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
+        .bind(space.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| Refusal::Database("store a revision", err))?;
+    with_living_admin(&mut tx, roster).await?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let inserted = sqlx::query(
         "INSERT INTO roster_revisions (space_id, revision, roster) VALUES ($1::uuid, $2, $3)
@@ -680,6 +843,33 @@ async fn insert(
     history::added(&mut tx, roster, previous)
         .await
         .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
+    // An invite ends once a stored revision lists a member with it.
+    let invites: Vec<String> = (body.members.iter())
+        .filter_map(|member| member.invite.map(|invite| invite.to_string()))
+        .collect();
+    invites::admitted(&mut tx, space, &invites)
+        .await
+        .map_err(|err| Refusal::Database("end the invites of admitted members", err))?;
+    // A token ends once the latest revision lists its device in no service agent entry.
+    let agents: Vec<String> = body
+        .service_agents
+        .iter()
+        .map(|agent| agent.device.to_string())
+        .collect();
+    let ending = |err| Refusal::Database("end the service tokens of removed agents", err);
+    let ended: Vec<(Vec<u8>,)> = sqlx::query_as(
+        "DELETE FROM service_tokens
+         WHERE space_id = $1::uuid AND device_id <> ALL($2::text[]::uuid[])
+         RETURNING token_hash",
+    )
+    .bind(space.to_string())
+    .bind(&agents)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(ending)?;
+    sessions::tell_ended(state, &mut tx, &ended)
+        .await
+        .map_err(ending)?;
     state
         .instance
         .tell(&mut tx, &[Event::Revision(space, revision)])
@@ -689,6 +879,7 @@ async fn insert(
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
     state.instance.record(space, revision);
+    sessions::close_ended(state, &ended);
     // An account the revision removes gets no notice.
     state
         .notices

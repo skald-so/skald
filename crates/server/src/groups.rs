@@ -19,11 +19,11 @@ use skald_crypto::{ChannelView, MlsContent, MlsFraming};
 use skald_proto::{AccountId, ChannelId, ChannelMember, DeviceId, Header, Roster};
 use sqlx::PgConnection;
 
-use crate::AppState;
 use crate::devices::{base64, bytes};
 use crate::mailboxes::{Problem, Sender, latest as latest_revision, receiving};
-use crate::refusal::{Answer, Refusal, SignedIn, parse};
-use crate::spaces::find;
+use crate::refusal::{Answer, Caller, Refusal, parse};
+use crate::spaces::readable;
+use crate::{AppState, presence};
 
 /// Checks how an `mls` envelope with `header` and a payload of `framing`, `None` if it is no
 /// `MLSMessage`, is addressed: a Welcome to `recipients`, a message of the channel's group to the
@@ -159,7 +159,8 @@ fn others(members: &[DeviceId], sender: DeviceId) -> Vec<DeviceId> {
 /// A Commit's recipients: each member device of the epoch it commits from but `sender`. The first
 /// Commit of epoch 0 starts the channel's group at epoch 1 on `tx`; a later one must be of the
 /// current epoch, otherwise `epoch-mismatch`, and one the view follows, sent by the device of its
-/// sender leaf or its joiner, otherwise `not-a-member`; the view follows it on `tx`.
+/// sender leaf or its joiner, otherwise `not-a-member`; the view follows it on `tx`, and the presence
+/// values of the devices it removes go.
 async fn commit(
     tx: &mut PgConnection,
     sender: &Sender,
@@ -195,6 +196,7 @@ async fn commit(
     .execute(&mut *tx)
     .await?;
     keep_epoch(tx, channel, &next).await?;
+    presence::keep_members(tx, channel, &texts(&next.members)).await?;
     Ok(Ok(others(&group.members, sender.device)))
 }
 
@@ -285,19 +287,25 @@ struct ChannelGroup {
 }
 
 /// The channel `channel` of the space `space`, path parameters, that the latest revision lists,
-/// for a session of `account`, which gets the space; with the channel's members.
+/// for `caller`: a session of an account that gets the space, or a service token of the space that
+/// lists the channel; with the channel's members.
 async fn channel_of(
     state: &AppState,
-    account: &str,
+    caller: &Caller,
     space: &str,
     channel: &str,
 ) -> Result<(ChannelId, Vec<ChannelMember>), Refusal> {
-    let found = find(&state.db, space, account).await?;
-    if !found.gets {
-        return Err(Refusal::NoSpace);
-    }
+    let space = readable(&state.db, caller, space).await?;
     let channel: ChannelId = channel.parse().map_err(|_| Refusal::NoChannel)?;
-    let roster: Option<Roster> = latest_revision(&state.db, found.id)
+    if caller
+        .token()
+        .is_some_and(|token| !token.lists(space, channel))
+    {
+        return Err(Refusal::NotAllowed(
+            "the service token does not list the channel".to_owned(),
+        ));
+    }
+    let roster: Option<Roster> = latest_revision(&state.db, space)
         .await
         .map_err(|err| Refusal::Database("read the latest revision", err))?;
     let listed = roster.and_then(|roster| {
@@ -308,34 +316,37 @@ async fn channel_of(
     Ok((channel, listed.ok_or(Refusal::NoChannel)?))
 }
 
-/// The channel `channel` of the space `space`, path parameters, for a session of `account`, which
-/// the latest revision lists as one of the channel's members, with whether it lists the account
-/// with `history`; otherwise refused.
+/// The channel `channel` of the space `space`, path parameters, for `caller`: a session of an
+/// account the latest revision lists as one of the channel's members, or a service token that
+/// lists the channel; with whether the revision lists the account, the token's device's for a
+/// token, with `history`. Otherwise refused.
 pub(crate) async fn members_channel(
     state: &AppState,
-    account: &str,
+    caller: &Caller,
     space: &str,
     channel: &str,
 ) -> Result<(ChannelId, bool), Refusal> {
-    let (channel, members) = channel_of(state, account, space, channel).await?;
-    let id: AccountId = account.parse().expect("a stored account ID");
-    let Some(member) = members.iter().find(|member| member.account == id) else {
-        return Err(Refusal::NotAllowed(
+    let (channel, members) = channel_of(state, caller, space, channel).await?;
+    let id: AccountId = caller.account().parse().expect("a stored account ID");
+    let member = members.iter().find(|member| member.account == id);
+    match (member, caller) {
+        (Some(member), _) => Ok((channel, member.history)),
+        (None, Caller::Token(_)) => Ok((channel, false)),
+        (None, Caller::Session(_)) => Err(Refusal::NotAllowed(
             "only the channel's members in the latest revision get it".to_owned(),
-        ));
-    };
-    Ok((channel, member.history))
+        )),
+    }
 }
 
 /// `GET /spaces/<space>/channels/<channel>/group-info`: whether the channel has a group, and its
 /// GroupInfo of the current epoch if the server has one; for sessions of the channel's members in
-/// the latest revision.
+/// the latest revision and service tokens that list the channel.
 pub(crate) async fn latest(
     State(state): State<AppState>,
-    SignedIn(account): SignedIn,
+    caller: Caller,
     Path((space, channel)): Path<(String, String)>,
 ) -> Answer {
-    let (channel, _) = members_channel(&state, &account, &space, &channel).await?;
+    let (channel, _) = members_channel(&state, &caller, &space, &channel).await?;
     let found: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT group_info FROM channel_groups WHERE channel_id = $1::uuid")
             .bind(channel.to_string())
@@ -352,17 +363,20 @@ pub(crate) async fn latest(
 }
 
 /// `PUT /spaces/<space>/channels/<channel>/group-info`: keeps a GroupInfo of the channel's current
-/// epoch, from a session of an account with a member device that it lists, with `ratchet_tree` and
-/// `external_pub`, that verifies and has the GroupContext of the group the server follows. The
-/// first one, of epoch 1, only from the device of the channel's first Commit; the server follows
-/// the group from it.
+/// epoch, from a session of an account with a member device that it lists, or a service token that
+/// lists the channel, whose device it lists, with `ratchet_tree` and `external_pub`, that verifies
+/// and has the GroupContext of the group the server follows. The first one, of epoch 1, only from
+/// the device of the channel's first Commit; the server follows the group from it.
 pub(crate) async fn upload(
     State(state): State<AppState>,
-    SignedIn(account): SignedIn,
+    caller: Caller,
     Path((space, channel)): Path<(String, String)>,
     body: Bytes,
 ) -> Answer {
-    let (channel, _) = channel_of(&state, &account, &space, &channel).await?;
+    let (channel, _) = channel_of(&state, &caller, &space, &channel).await?;
+    let account = caller.account();
+    // A token uploads as its device alone.
+    let only = caller.token().map(|token| token.device.to_string());
     let request: GroupInfoRequest = parse(&body)?;
     let group_info = bytes(&request.group_info, "group_info")?;
     let uploaded = ChannelView::observe_joinable(channel, &group_info).map_err(|err| {
@@ -381,10 +395,11 @@ pub(crate) async fn upload(
     let uploaders: Vec<(String,)> = sqlx::query_as(
         "SELECT id::text FROM devices
          WHERE account_id = $1::uuid AND id = ANY($2::text[]::uuid[]) AND cert IS NOT NULL
-           AND NOT revoked",
+           AND NOT revoked AND ($3::uuid IS NULL OR id = $3::uuid)",
     )
     .bind(&account)
     .bind(texts(&uploaded.members))
+    .bind(only)
     .fetch_all(&mut *tx)
     .await
     .map_err(failed)?;

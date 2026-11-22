@@ -64,14 +64,16 @@ mod relay;
 #[path = "../roster_revisions/world.rs"]
 mod world;
 
-// The recording proxy of the tests of `HTTPS_PROXY`, and the test CA and TLS endpoint of the tests
-// of HTTPS.
+// The recording proxy and the machines behind it of the tests of `HTTPS_PROXY`, and the test CA
+// and TLS endpoint of the tests of HTTPS.
 #[path = "../https_proxy/proxy.rs"]
 mod proxy;
 #[path = "../common/tls.rs"]
 mod tls;
 #[path = "../https/front.rs"]
 mod tls_front;
+#[path = "../https_proxy/trust.rs"]
+mod trust;
 
 // Finding keys in bytes, and the helpers of every client test.
 #[path = "../common/mod.rs"]
@@ -204,7 +206,7 @@ fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
         at_once(
             &behind,
             transport,
-            &["send", &channel, &mine],
+            &["send", "--all", "--channel", &channel, &mine],
             "send with an empty mailbox",
         );
         behind.bob_sends(&format!("bob, waiting for a send over {transport:?}"));
@@ -212,7 +214,7 @@ fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
         at_once(
             &behind,
             transport,
-            &["send", &channel, &again],
+            &["send", "--all", "--channel", &channel, &again],
             "send with an entry waiting",
         );
         let waiting = format!("bob, waiting for a recv over {transport:?}");

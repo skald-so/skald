@@ -226,6 +226,40 @@ fn generated_state_keys_differ() {
     assert_eq!(keys.len(), 8);
 }
 
+/// A service device's state key comes from its key secret's two private keys alone: the same keys
+/// give the same state key, which loads what it sealed; a change to either gives another, which
+/// does not, and neither key is the state key.
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_service_devices_state_key_comes_from_its_key_secret_alone() {
+    let (signing, hpke) = ([23; 32], [24; 32]);
+    let key = StateKey::of_service(&signing, &hpke);
+    assert_eq!(
+        *StateKey::of_service(&signing, &hpke).to_bytes(),
+        *key.to_bytes()
+    );
+    let others = [
+        StateKey::of_service(&[25; 32], &hpke),
+        StateKey::of_service(&signing, &[25; 32]),
+        StateKey::of_service(&hpke, &signing),
+    ];
+    let mut all: BTreeSet<[u8; 32]> = others.iter().map(|other| *other.to_bytes()).collect();
+    all.insert(*key.to_bytes());
+    assert_eq!(all.len(), 4, "keys that differ give state keys that differ");
+    assert!(!all.contains(&signing) && !all.contains(&hpke));
+
+    let device_key = SigningKey::from_bytes(&signing);
+    let channel = ChannelId::generate();
+    let mut device = MlsDevice::new(&device_key, &key);
+    device.create_group(channel, NOW).expect("a new group");
+    let state = device.seal();
+    let again = StateKey::of_service(&signing, &hpke);
+    assert!(MlsDevice::load(&device_key, &again, &state).is_ok());
+    for other in &others {
+        assert!(MlsDevice::load(&device_key, other, &state).is_err());
+    }
+}
+
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn state_and_history_keys_never_show_their_bytes() {

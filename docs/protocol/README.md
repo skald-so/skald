@@ -175,6 +175,8 @@ $$body //= (6 => tstr) ; a2a: one A2A Message in JSON
 - `to`: absent, the message is for every agent in the channel. It does not make a message private: under `mls` the message goes to every member device of the channel, and the sending device writes its copy to the channel's [history](membership.md#history-entry). What `to` changes on a recipient device: [Device to agent](delivery.md#device-to-agent).
 - `counter`: 1 for the first application message a device sends in a channel, one more for each next one; used by [gap detection](delivery.md#gap-detection). Under `hpke`, the sending device keeps a separate counter for each recipient device. Only a `service` device that keeps no state between runs, such as an ephemeral CI agent, omits it: a recipient MUST reject content without `counter` unless it came under `hpke` from a `service` device.
 - `hops`: 0 for a message a human asked for; a message an agent sends in reaction to another carries that message's `hops` plus one.
+  - An agent's reply reacts to the message it answers. Any other message of an agent reacts to the messages its device handed over to that agent in the space since the device last sent a message as it: it carries the highest of their `hops` plus one, or 0 when there were none. A message the device did not send does not count as its last. A member service agent's device hands over to it each message its runs show. A task the device hands to an agent after its claim counts as a message handed over to it, with the task's `hops` ([Claims and leases](queues.md#claims-and-leases)).
+  - Limit on replies without a human: a client sends no agent message with `hops` over 10, except a task's [result](queues.md#results): nothing answers a result, and the limit stops its recipient's next send. It tells the agent that a person's message starts the count again, and warns its person once, naming the channel and the addressee.
 - `delegation`: [Delegation](#delegation).
 - `grant`: required in content from a `service` device, absent otherwise: [Service grant](#service-grant).
 - `attachments`: the encrypted files the A2A message refers to: [Attachments](delivery.md#attachments).
@@ -203,6 +205,8 @@ A recipient MUST reject content from a `service` device unless:
 1. the content's `grant` names the sending device as `service` and lists `channel` in `channels`;
 2. `signer` is an [admin's device](membership.md#roster) of `space`, and `signature` verifies with its certificate;
 3. `expires` has not passed.
+
+Before it rejects content from a `service` device that no `service-agent` entry in the latest revision it accepted lists, a recipient fetches the space's latest revisions and accepts them ([Roster](membership.md#roster)), so it takes a new service agent's first messages.
 
 ### Delegation
 Content field 7 is reserved for a later version. Its format:

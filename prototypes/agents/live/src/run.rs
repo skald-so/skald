@@ -20,11 +20,14 @@ use crate::Result;
 /// The longest a session may take.
 const TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Starts a check of `agent`: prints its CLI's version and makes the check's temporary directory.
+/// Starts a check of `agent`: makes the check's temporary directory and prints its CLI's version,
+/// which the CLI gives in a config home of its own there.
 pub fn start(agent: Agent) -> Result<TempDir> {
-    let version = agent.command().arg("--version").output()?;
+    let work = tempfile::Builder::new().prefix("skald-live-").tempdir()?;
+    let (var, home) = agent.config_home(&work.path().join("version"))?;
+    let version = agent.command().arg("--version").env(var, home).output()?;
     println!("{}", agent.version(&version.stdout));
-    Ok(tempfile::Builder::new().prefix("skald-live-").tempdir()?)
+    Ok(work)
 }
 
 /// Starts a check of `agent` whose sessions run the workspace's binary `name`, as [`start`] does;

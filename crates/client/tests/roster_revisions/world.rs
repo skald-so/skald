@@ -394,6 +394,17 @@ pub fn store(cloud: &Cloud, token: &str, roster: &Roster) {
     );
 }
 
+/// `owner`'s machine creates the space `name`, and revision 3, signed by its device, adds `member`
+/// as a member; gives revision 3, which the server stores.
+pub fn create_with_member(cloud: &Cloud, owner: &Person, name: &str, member: &Person) -> Roster {
+    let second = create(cloud, owner, name);
+    let third = next_by(&second, owner, |members| {
+        members.push(member.member(Role::Member));
+    });
+    store(cloud, &owner.token, &third);
+    third
+}
+
 /// The request for `space`'s revisions, as its line starts.
 pub fn revisions_request(space: SpaceId) -> String {
     format!("GET /spaces/{space}/revisions")
@@ -567,12 +578,13 @@ pub fn members(machine: &Machine, space: &str) -> Finished {
     shown
 }
 
-/// Fails unless `shown` shows `handle` with the role `role` and never with the other role.
+/// Fails unless `shown`, a run of `skald members`, lists `handle` with the role `role` and never
+/// with the other role. The list is on standard output: on standard error, a run that accepts a
+/// role change names the signer's handle beside another member's new role.
 pub fn assert_role(shown: &Finished, handle: &Name, role: &str) {
     let other = if role == ADMIN { MEMBER } else { ADMIN };
-    let lines = plain_lines(shown);
-    let of_handle: Vec<&String> = lines
-        .iter()
+    let of_handle: Vec<&str> = (shown.stdout.lines())
+        .filter(|line| !line.to_lowercase().contains(WARNING))
         .filter(|line| words(line).contains(&handle.as_str()))
         .collect();
     assert!(

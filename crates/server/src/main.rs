@@ -26,6 +26,8 @@ const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
 const LONG_POLL_LONGEST: u64 = 24 * 3_600;
 /// The longest `--sse-keep-alive`, in seconds: an hour.
 const SSE_KEEP_ALIVE_LONGEST: u64 = 3_600;
+/// The longest `--send-rate-window`, in seconds: a day.
+const SEND_RATE_WINDOW_LONGEST: u64 = 24 * 3_600;
 
 /// `--sign-up`.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -97,8 +99,9 @@ struct Cli {
     )]
     sign_in_state_lifetime: u64,
 
-    /// How recent a web session's sign-in has to be to link another sign-in method to its account
-    /// or remove one; with an older one, the person signs in again first.
+    /// How recent a session's sign-in has to be to link another sign-in method to its account or
+    /// remove one, as a web session, or to delete the account; with an older one, the person signs
+    /// in again first.
     #[arg(
         long,
         env = "SKALD_LINK_SIGN_IN_AGE",
@@ -219,8 +222,8 @@ struct Cli {
     )]
     history_retention: Option<u64>,
 
-    /// The longest payload of an envelope a device sends, in bytes; a longer one is refused with
-    /// too-large [default: no limit].
+    /// The longest payload of an envelope a device sends, and the longest ct of a task it
+    /// enqueues, in bytes; a longer one is refused with too-large [default: no limit].
     #[arg(
         long,
         env = "SKALD_MESSAGE_SIZE_LIMIT",
@@ -239,8 +242,28 @@ struct Cli {
     )]
     monthly_messages_limit: Option<u64>,
 
+    /// The number of messages one device stores within the send rate window, each counted once
+    /// whatever its envelopes, a handshake message not at all; the next one is refused with
+    /// rate-limited [default: no limit].
+    #[arg(
+        long,
+        env = "SKALD_SEND_RATE_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u64).range(1..)
+    )]
+    send_rate_limit: Option<u64>,
+
+    /// The sliding window of --send-rate-limit, in seconds, at most a day [default: 60].
+    #[arg(
+        long,
+        env = "SKALD_SEND_RATE_WINDOW",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=SEND_RATE_WINDOW_LONGEST)
+    )]
+    send_rate_window: Option<u64>,
+
     /// The number of devices with a certificate an account may have, service and revoked devices
-    /// aside; a new device of an account that has as many does not register [default: no limit].
+    /// aside; a certificate that would give an account more is not stored [default: no limit].
     #[arg(
         long,
         env = "SKALD_DEVICES_LIMIT",
@@ -248,6 +271,17 @@ struct Cli {
         value_parser = clap::value_parser!(u32).range(1..)
     )]
     devices_limit: Option<u32>,
+
+    /// The number of service agent entries a space's latest revision may list; a revision that
+    /// lists more than the setting and than the revision before it is not stored [default: no
+    /// limit].
+    #[arg(
+        long,
+        env = "SKALD_SERVICE_AGENTS_LIMIT",
+        value_name = "N",
+        value_parser = clap::value_parser!(u32).range(1..)
+    )]
+    service_agents_limit: Option<u32>,
 
     /// The longest a long-poll waits for its device's mailbox, in seconds, at most a day; one that
     /// asks for longer ends at it [default: 30].
@@ -268,6 +302,16 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=SSE_KEEP_ALIVE_LONGEST)
     )]
     sse_keep_alive: Option<u64>,
+
+    /// How long after its hello a link code's run ends, in seconds, at most the code's 5 minutes
+    /// [default: 300].
+    #[arg(
+        long,
+        env = "SKALD_LINK_CODE_LIFETIME",
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(1..=skald_server::LINK_CODE_LIFETIME.as_secs())
+    )]
+    link_code_lifetime: Option<u64>,
 
     /// The server's name in agent addresses, a DNS name such as skald.example; it should never
     /// change [default: the host of --public-url, unless that is an IP address].
@@ -489,9 +533,13 @@ impl Cli {
             history_retention: self.history_retention.map(Duration::from_secs),
             message_size_limit: self.message_size_limit,
             monthly_messages_limit: self.monthly_messages_limit,
+            send_rate_limit: self.send_rate_limit,
+            send_rate_window: self.send_rate_window.map(Duration::from_secs),
             devices_limit: self.devices_limit,
+            service_agents_limit: self.service_agents_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
             sse_keep_alive: self.sse_keep_alive.map(Duration::from_secs),
+            link_code_lifetime: self.link_code_lifetime.map(Duration::from_secs),
         })
     }
 }
@@ -665,6 +713,44 @@ mod tests {
     }
 
     #[test]
+    fn a_link_codes_run_lasts_from_a_second_to_5_minutes() {
+        let lifetime = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--link-code-lifetime",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.link_code_lifetime)
+            .ok()
+        };
+        assert_eq!(lifetime(1), Some(Some(1)));
+        assert_eq!(lifetime(300), Some(Some(300)));
+        assert_eq!(lifetime(0), None);
+        assert_eq!(lifetime(301), None);
+    }
+
+    #[test]
+    fn the_send_rate_window_is_from_a_second_to_a_day() {
+        let window = |seconds: u64| {
+            Cli::try_parse_from([
+                "skald-server",
+                "--database-url",
+                "postgres://localhost/skald",
+                "--send-rate-window",
+                &seconds.to_string(),
+            ])
+            .map(|cli| cli.send_rate_window)
+            .ok()
+        };
+        assert_eq!(window(1), Some(Some(1)));
+        assert_eq!(window(86_400), Some(Some(86_400)));
+        assert_eq!(window(0), None);
+        assert_eq!(window(86_401), None);
+    }
+
+    #[test]
     fn the_cloud_limits_are_from_1() {
         let parsed = |setting: &str, value: &str| {
             Cli::try_parse_from([
@@ -679,6 +765,8 @@ mod tests {
                     cli.message_size_limit,
                     cli.monthly_messages_limit,
                     cli.devices_limit.map(u64::from),
+                    cli.service_agents_limit.map(u64::from),
+                    cli.send_rate_limit,
                 ]
             })
             .ok()
@@ -687,14 +775,17 @@ mod tests {
             "--message-size-limit",
             "--monthly-messages-limit",
             "--devices-limit",
+            "--service-agents-limit",
+            "--send-rate-limit",
         ];
         for (at, setting) in settings.into_iter().enumerate() {
-            let mut one = [None; 3];
+            let mut one = [None; 5];
             one[at] = Some(1);
             assert_eq!(parsed(setting, "1"), Some(one), "{setting}");
             assert_eq!(parsed(setting, "0"), None, "{setting}");
         }
         assert_eq!(parsed("--devices-limit", "4294967296"), None);
+        assert_eq!(parsed("--service-agents-limit", "4294967296"), None);
     }
 
     #[test]

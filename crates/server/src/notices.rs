@@ -1,17 +1,21 @@
-//! Notices of new roster revisions: `docs/protocol/delivery.md`, "Frames". Once the server has
-//! stored a revision, each connection of a device of an account that gets the space, on this
-//! instance, sends a `space-notice`. A notice is no mailbox entry: a connection that is not open
-//! when the revision is stored gets none. A long-poll answers a notice of each revision stored
-//! since its device's previous long-poll answer ([`since_last_answer`]).
+//! Notices of new roster revisions and of devices waiting for linking: `docs/protocol/delivery.md`,
+//! "Frames". Once the server has stored a revision, each connection of a device of an account that
+//! gets the space, on this instance, sends a `space-notice`; once a run of a link code opens, each
+//! connection of a device session of the run's account sends a `link-notice`. A notice is no
+//! mailbox entry: a connection that is not open then gets none. A long-poll answers a notice of
+//! each revision stored, and a `link-notice` if a run opened, since its device's previous long-poll
+//! answer ([`since_last_answer`], [`crate::link_runs::since_last_answer`]).
 
 use std::collections::HashMap;
 use std::mem;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use skald_proto::{AccountId, DeviceId, SpaceId};
+use skald_proto::{AccountId, DeviceId, Push, SpaceId};
 use sqlx::PgPool;
 use tokio::sync::Notify;
+
+use crate::service_tokens::{self, Token};
 
 /// The connections of this instance that get notices, by their device's account.
 #[derive(Default)]
@@ -23,11 +27,31 @@ pub(crate) struct Notices {
 /// A connection that gets notices: its number and its notices not sent yet.
 type Connection = (u64, Arc<Pending>);
 
-/// The spaces a connection has notices of that it has not sent yet.
+/// The notices a connection has not sent yet.
 #[derive(Default)]
 struct Pending {
-    spaces: Mutex<Vec<SpaceId>>,
+    noticed: Mutex<Noticed>,
     added: Notify,
+}
+
+/// Notices not sent yet: the spaces they name, in the order they came, and whether a device of the
+/// account waits for linking.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Noticed {
+    pub(crate) spaces: Vec<SpaceId>,
+    pub(crate) linking: bool,
+}
+
+impl Noticed {
+    /// Its frames for a connection of `token`, if it has one: the `space-notice` of each space the
+    /// token sees, and a `link-notice` for a device session only.
+    pub(crate) fn pushes(self, token: Option<&Token>) -> Vec<Push> {
+        let linking = (self.linking && token.is_none()).then_some(Push::LinkNotice);
+        (service_tokens::seen(token, self.spaces).into_iter())
+            .map(|space| Push::SpaceNotice { space })
+            .chain(linking)
+            .collect()
+    }
 }
 
 impl Notices {
@@ -36,13 +60,27 @@ impl Notices {
         let by_account = self.by_account.lock().expect("the notices");
         for account in accounts {
             for (_, pending) in by_account.get(&account).into_iter().flatten() {
-                let mut spaces = pending.spaces.lock().expect("a connection's notices");
+                let mut noticed = pending.noticed.lock().expect("a connection's notices");
                 // One notice of a space tells the client all it needs to fetch.
-                if !spaces.contains(&space) {
-                    spaces.push(space);
+                if !noticed.spaces.contains(&space) {
+                    noticed.spaces.push(space);
                 }
                 pending.added.notify_one();
             }
+        }
+    }
+
+    /// Gives each connection of a device of `account` a notice that one of its devices waits for
+    /// linking.
+    pub(crate) fn link(&self, account: AccountId) {
+        let by_account = self.by_account.lock().expect("the notices");
+        for (_, pending) in by_account.get(&account).into_iter().flatten() {
+            pending
+                .noticed
+                .lock()
+                .expect("a connection's notices")
+                .linking = true;
+            pending.added.notify_one();
         }
     }
 
@@ -80,13 +118,13 @@ pub(crate) struct Listening {
 }
 
 impl Listening {
-    /// Waits for notices, and gives the spaces they name, in the order they came.
-    pub(crate) async fn next(&self) -> Vec<SpaceId> {
+    /// Waits for notices, and gives them.
+    pub(crate) async fn next(&self) -> Noticed {
         loop {
-            let spaces =
-                mem::take(&mut *self.pending.spaces.lock().expect("a connection's notices"));
-            if !spaces.is_empty() {
-                return spaces;
+            let noticed =
+                mem::take(&mut *self.pending.noticed.lock().expect("a connection's notices"));
+            if noticed != Noticed::default() {
+                return noticed;
             }
             // A notice added since the take leaves a permit, so this returns at once.
             self.pending.added.notified().await;
@@ -153,15 +191,23 @@ mod tests {
 
     /// The spaces `listening` has notices of now.
     fn now(listening: &Listening) -> Vec<SpaceId> {
-        mem::take(&mut *listening.pending.spaces.lock().unwrap())
+        mem::take(&mut listening.pending.noticed.lock().unwrap().spaces)
+    }
+
+    /// Whether `listening` has a `link-notice` now.
+    fn linking(listening: &Listening) -> bool {
+        mem::take(&mut listening.pending.noticed.lock().unwrap().linking)
+    }
+
+    /// Two connections of account 1 and one of account 2, listening to `notices`.
+    fn two_accounts(notices: &Arc<Notices>) -> [Listening; 3] {
+        [account(1), account(1), account(2)].map(|account| notices.listen(account))
     }
 
     #[test]
     fn a_notice_reaches_each_connection_of_its_accounts_only() {
         let notices = Arc::new(Notices::default());
-        let first = notices.listen(account(1));
-        let second = notices.listen(account(1));
-        let other = notices.listen(account(2));
+        let [first, second, other] = two_accounts(&notices);
 
         notices.notify([account(1)], space(1));
 
@@ -210,7 +256,32 @@ mod tests {
         });
 
         let next = tokio::time::timeout(Duration::from_secs(5), listening.next()).await;
-        assert_eq!(next.expect("a notice within 5 s"), vec![space(1)]);
+        assert_eq!(next.expect("a notice within 5 s").spaces, vec![space(1)]);
         waiting.await.unwrap();
+    }
+
+    #[test]
+    fn a_link_notice_reaches_each_connection_of_its_account_only() {
+        let notices = Arc::new(Notices::default());
+        let [first, second, other] = two_accounts(&notices);
+
+        notices.link(account(1));
+
+        assert!(linking(&first));
+        assert!(linking(&second));
+        assert!(!linking(&other));
+        assert_eq!(now(&first), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn next_gives_a_link_notice() {
+        let notices = Arc::new(Notices::default());
+        let listening = notices.listen(account(1));
+        notices.link(account(1));
+
+        let next = tokio::time::timeout(Duration::from_secs(5), listening.next()).await;
+        let noticed = next.expect("a notice within 5 s");
+        assert!(noticed.linking);
+        assert!(noticed.spaces.is_empty());
     }
 }

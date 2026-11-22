@@ -8,16 +8,21 @@
 //!   that runs; one whose helper cannot start runs here, holding the lock itself.
 //! - On the socket, the command and the helper first say their versions. A helper older than the
 //!   command exits once it has closed its socket, and the command goes on as if none ran. A command
-//!   older than the helper fails, naming both versions, and leaves it running.
+//!   older than the helper fails, naming both versions, and leaves it running; an MCP server's tool
+//!   call goes through it ([`route_into`]).
 //! - A command hands its operation and working directory over; the helper runs it there, and the
 //!   command shows its output and exits with its exit code. A write of the operation's output
 //!   returns once the command has written it, or fails as the command's write did, so the
 //!   operation marks nothing shown that the command did not show.
 //! - A `skald recv --wait` is a session of the helper ([`crate::wait`]), which ends its sessions
-//!   when it exits.
-//! - The helper exits after an idle time with no command or session, after sign-out and when a
-//!   newer command or a sign-in asks it to; a helper that is killed leaves its socket, which the
-//!   next helper replaces.
+//!   when it exits; so is the session an MCP server holds of it for its whole run.
+//! - While a Claude Code session is registered, the helper serves it ([`crate::claude_socket`]);
+//!   so it does a Codex session while its Codex process runs ([`crate::codex`]).
+//! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
+//!   intake, when its sessions change, when a value nears its `expires` and before it exits.
+//! - The helper exits after an idle time with no command, session, registered Claude Code session
+//!   or live Codex session, after sign-out and when a newer command or a sign-in asks it to; a helper that is
+//!   killed leaves its socket, which the next helper replaces.
 //! - The socket's directory is its owner's only; on Windows it has the access rights it inherits
 //!   from the state directory.
 
@@ -26,7 +31,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitCode, Stdio};
+use std::process::{ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -44,7 +49,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::lock::{self, Lock, Taken};
 use crate::output;
 use crate::wait::{self, Ran, Session, Sessions};
-use crate::{Command, Operation, mailbox, state};
+use crate::{Command, Operation, claude_socket, connection, mailbox, state, uploads};
 
 /// How long the helper waits idle, with no command, before it exits.
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
@@ -92,6 +97,14 @@ enum Kind {
 }
 
 impl Kind {
+    /// The kind of a write to `stream`.
+    fn output(stream: output::Stream) -> Self {
+        match stream {
+            output::Stream::Out => Kind::Out,
+            output::Stream::Err => Kind::Err,
+        }
+    }
+
     fn of(byte: u8) -> Option<Self> {
         [
             Kind::Hello,
@@ -139,27 +152,50 @@ pub fn version() -> String {
         .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_owned())
 }
 
+/// What takes the output of an operation a helper runs, on the command's side: each write, to
+/// standard output or standard error, which it gives back whether it wrote.
+pub type Sink<'s> = dyn FnMut(output::Stream, &[u8]) -> io::Result<()> + 's;
+
 /// Where `operation`, of a command that changes the state in `dir`, runs: through the helper that
 /// runs, or one it starts if `starts` and there is a state; otherwise here, once it holds the lock,
 /// waiting for it as [`lock::take`] does, with a missing `dir` created if `create`, unless a helper
-/// starts meanwhile.
+/// starts meanwhile. What a helper's run of it shows goes to standard output and standard error.
 pub fn route(
     dir: &Path,
     operation: &Operation,
     create: bool,
     starts: bool,
 ) -> Result<Route, String> {
+    route_into(dir, operation, (create, starts, false), &mut shown)
+}
+
+/// Writes `bytes` to the standard output or standard error, as `stream` says.
+fn shown(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
+    output::direct(stream, bytes)
+}
+
+/// As [`route`], what a helper's run of `operation` shows going to `sink`; through a helper newer
+/// than this run too if `newer`, as an MCP server's tool call goes ([`crate::mcp`]).
+pub fn route_into(
+    dir: &Path,
+    operation: &Operation,
+    (create, starts, newer): (bool, bool, bool),
+    sink: &mut Sink,
+) -> Result<Route, String> {
     let dir = std::path::absolute(dir)
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
     let timeout = operation.timeout;
     let mut start = starts && dir.join(state::FILE).is_file();
-    let mut started: Option<(Child, Instant)> = None;
+    let mut started: Option<(Started, Instant)> = None;
     for _ in 0..ROUNDS {
         loop {
             if let Some(stream) = connect(&dir) {
                 if let Some((stream, helper)) = greet(stream, timeout)? {
                     match compare(&version(), &helper) {
-                        Ordering::Equal => return hand(stream, operation).map(Route::Helped),
+                        Ordering::Equal => return hand(stream, operation, sink).map(Route::Helped),
+                        Ordering::Less if newer => {
+                            return hand(stream, operation, sink).map(Route::Helped);
+                        }
                         Ordering::Greater => dismiss(stream, timeout),
                         Ordering::Less => return Err(older(&version(), &helper)),
                     }
@@ -196,6 +232,15 @@ pub fn route(
         }
     }
     Err("the helper of the local state keeps going away; run the command again".to_owned())
+}
+
+/// Starts the helper of the state in `dir` unless one runs, without waiting for it.
+pub fn start(dir: &Path, timeout: Duration) {
+    if let Ok(dir) = std::path::absolute(dir)
+        && !running(&dir)
+    {
+        let _ = spawn(&dir, timeout);
+    }
 }
 
 /// Asks the helper of the state in `dir`, if one runs, to exit, so a sign-in takes the lock; fails
@@ -246,18 +291,11 @@ fn greet(
             stream,
             String::from_utf8_lossy(&helper).into_owned(),
         ))),
-        Err(err)
-            if matches!(
-                err.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) =>
-        {
-            Err(format!(
-                "the helper of the local state is busy with another command: gave up waiting \
-                 for it after {} seconds; nothing changed",
-                timeout.as_secs()
-            ))
-        }
+        Err(err) if connection::timed_out(&err) => Err(format!(
+            "the helper of the local state is busy with another command: gave up waiting for it \
+             after {} seconds; nothing changed",
+            timeout.as_secs()
+        )),
         _ => Ok(None),
     }
 }
@@ -271,35 +309,42 @@ fn dismiss(mut stream: UnixStream, timeout: Duration) {
     }
 }
 
-/// Hands `operation` over on `stream` and shows what the helper's run of it shows, saying whether
-/// each write of it worked; gives its exit code.
-fn hand(mut stream: UnixStream, operation: &Operation) -> Result<ExitCode, String> {
+/// Hands `operation` over on `stream` and gives `sink` what the helper's run of it shows, saying
+/// whether each write of it worked; gives its exit code.
+fn hand(stream: UnixStream, operation: &Operation, sink: &mut Sink) -> Result<ExitCode, String> {
+    let gone = "the helper of the local state exited before the command finished; run the \
+                command again";
+    stream.set_read_timeout(None).map_err(|_| gone.to_owned())?;
+    handed((&mut &stream, &mut &stream), operation, sink, gone)
+}
+
+/// Hands `operation` over on `to` and gives `sink` what the run of it shows on `from`, saying on
+/// `to` whether each write of it worked; gives its exit code, or fails with `gone` once `from` or
+/// `to` ends before it.
+fn handed(
+    (from, to): (&mut impl Read, &mut impl Write),
+    operation: &Operation,
+    sink: &mut Sink,
+    gone: &str,
+) -> Result<ExitCode, String> {
     let cwd = std::env::current_dir()
         .map_err(|err| format!("cannot read the working directory: {err}"))?;
     let request = serde_json::to_vec(&Handed { cwd, operation })
-        .map_err(|err| format!("cannot hand the command to the helper: {err}"))?;
-    let gone = "the helper of the local state exited before the command finished; run the \
-                command again";
-    stream
-        .set_read_timeout(None)
-        .and_then(|()| send(&mut stream, Kind::Run, &request))
-        .map_err(|_| gone.to_owned())?;
+        .map_err(|err| format!("cannot hand the command over: {err}"))?;
+    send(to, Kind::Run, &request).map_err(|_| gone.to_owned())?;
     loop {
-        let written = match receive(&mut stream) {
-            Ok(Some((Kind::Out, bytes))) => {
-                let mut out = io::stdout().lock();
-                out.write_all(&bytes).and_then(|()| out.flush())
-            }
-            Ok(Some((Kind::Err, bytes))) => io::stderr().lock().write_all(&bytes),
+        let written = match receive(from) {
+            Ok(Some((Kind::Out, bytes))) => sink(output::Stream::Out, &bytes),
+            Ok(Some((Kind::Err, bytes))) => sink(output::Stream::Err, &bytes),
             Ok(Some((Kind::Code, code))) => {
                 return Ok(ExitCode::from(code.first().copied().unwrap_or(1)));
             }
             _ => return Err(gone.to_owned()),
         };
-        // A helper gone meanwhile shows as the end of the stream.
+        // A run gone meanwhile shows as the end of the stream.
         let _ = match written {
-            Ok(()) => send(&mut stream, Kind::Written, &[]),
-            Err(err) => send(&mut stream, Kind::Unwritten, err.to_string().as_bytes()),
+            Ok(()) => send(to, Kind::Written, &[]),
+            Err(err) => send(to, Kind::Unwritten, err.to_string().as_bytes()),
         };
     }
 }
@@ -339,15 +384,31 @@ fn older(command: &str, helper: &str) -> String {
 
 /// The version of the `skald` installed where this run's binary is, as it says.
 fn on_disk() -> Option<String> {
+    version_at(&installed()?)
+}
+
+/// Where this run's binary is installed, also once another `skald` replaced it there.
+pub fn installed() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     // Linux names a replaced binary so.
-    let exe = match exe
-        .to_str()
-        .and_then(|path| path.strip_suffix(" (deleted)"))
-    {
-        Some(path) => PathBuf::from(path),
-        None => exe,
-    };
+    Some(
+        match exe
+            .to_str()
+            .and_then(|path| path.strip_suffix(" (deleted)"))
+        {
+            Some(path) => PathBuf::from(path),
+            None => exe,
+        },
+    )
+}
+
+/// Whether the `skald` at `exe` is newer than this run, as it says its version.
+pub fn newer_at(exe: &Path) -> bool {
+    version_at(exe).is_some_and(|disk| compare(&version(), &disk) == Ordering::Less)
+}
+
+/// The version the `skald` at `exe` says it is.
+fn version_at(exe: &Path) -> Option<String> {
     let said = std::process::Command::new(exe)
         .arg("--version")
         .env_remove(VERSION_SETTING)
@@ -361,30 +422,114 @@ fn on_disk() -> Option<String> {
     Some(version.to_owned())
 }
 
+/// The flag of `skald mcp` with which it runs an operation that an older `skald` relays to it.
+const RELAYED: &str = "--relayed";
+
+/// Runs `operation` with the newer `skald` at `exe`, one-shot if `one_shot`: hands it over on its
+/// standard input, as to a helper, and gives `sink` what its run of it shows on its standard
+/// output, saying whether each write of it worked ([`relayed`]); gives its exit code.
+pub fn relay(
+    exe: &Path,
+    operation: &Operation,
+    one_shot: bool,
+    sink: &mut Sink,
+) -> Result<ExitCode, String> {
+    let mut command = std::process::Command::new(exe);
+    if one_shot {
+        command.arg("--one-shot");
+    }
+    let mut child = command
+        .args(["mcp", RELAYED])
+        .env_remove(VERSION_SETTING)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot run the installed skald {}: {err}", exe.display()))?;
+    let (Some(mut to), Some(mut from)) = (child.stdin.take(), child.stdout.take()) else {
+        unreachable!("the run's standard input and output are pipes");
+    };
+    let gone = format!(
+        "the installed skald {} exited before the command finished; run it again",
+        exe.display()
+    );
+    let ran = handed((&mut from, &mut to), operation, sink, &gone);
+    drop((to, from));
+    let _ = child.wait();
+    ran
+}
+
+/// For a run that an older `skald` relays an operation to ([`relay`]): the working directory and
+/// the operation it hands over on standard input.
+pub fn relayed() -> Result<(PathBuf, Operation), String> {
+    let cant = |why: String| format!("cannot take the relayed command: {why}");
+    match receive(&mut io::stdin().lock()) {
+        Ok(Some((Kind::Run, request))) => serde_json::from_slice::<Request>(&request)
+            .map(|request| (request.cwd, request.operation))
+            .map_err(|err| cant(err.to_string())),
+        Ok(_) => Err(cant("nothing came".to_owned())),
+        Err(err) => Err(cant(err.to_string())),
+    }
+}
+
+/// Writes `bytes` to `stream` of the `skald` that relayed the operation: returns once it has
+/// written them, or fails as its write did.
+pub fn to_relaying(stream: output::Stream, bytes: &[u8]) -> io::Result<()> {
+    send(&mut io::stdout().lock(), Kind::output(stream), bytes)?;
+    answered(&mut io::stdin().lock())
+}
+
+/// Gives the `skald` that relayed the operation its exit code.
+pub fn relayed_code(code: u8) -> Result<(), String> {
+    send(&mut io::stdout().lock(), Kind::Code, &[code])
+        .map_err(|err| format!("cannot give the relayed command its exit code: {err}"))
+}
+
+/// Takes the answer to a write on `stream`: whether it was written.
+fn answered(stream: &mut impl Read) -> io::Result<()> {
+    match receive(stream)? {
+        Some((Kind::Written, _)) => Ok(()),
+        Some((Kind::Unwritten, why)) => {
+            Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()))
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "the command went away",
+        )),
+    }
+}
+
 /// Starts the helper of the state in `dir`, detached from this run's terminal and outputs, as this
 /// run's version, waiting for the lock up to `timeout`.
-fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
-    command
-        .arg("--state-dir")
-        .arg(dir)
-        .arg("--timeout")
-        .arg(timeout.as_secs().max(1).to_string());
+fn spawn(dir: &Path, timeout: Duration) -> io::Result<Started> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--state-dir".into(),
+        dir.into(),
+        "--timeout".into(),
+        timeout.as_secs().max(1).to_string().into(),
+    ];
     if let Some(retry) = wait::retry_set() {
-        command
-            .arg("--websocket-retry")
-            .arg(retry.as_secs().to_string());
+        args.extend([
+            "--websocket-retry".into(),
+            retry.as_secs().to_string().into(),
+        ]);
     }
-    command
-        .arg("helper")
-        .env(VERSION_SETTING, version())
-        .current_dir(dir)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    args.push("helper".into());
+    // A hook's session is the state's to serve, not the helper's.
+    let dropped = [crate::hook::SOCKET_SETTING, crate::hook::TOKEN_SETTING];
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .args(args)
+            .env(VERSION_SETTING, version())
+            .current_dir(dir)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        for name in dropped {
+            command.env_remove(name);
+        }
         // SAFETY: setsid is async-signal-safe; it only starts a session without a terminal.
         unsafe {
             command.pre_exec(|| {
@@ -392,21 +537,24 @@ fn spawn(dir: &Path, timeout: Duration) -> io::Result<Child> {
                 Ok(())
             });
         }
+        command.spawn()
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-        windows::keep_own_handles();
-    }
-    command.spawn()
+    windows::spawn(&std::env::current_exe()?, &args, dir, &dropped)
 }
 
-/// Runs the helper of the state in `dir`, exiting after `idle` with no command; waits for the lock
-/// up to `timeout`, and exits at once when another helper of the state answers.
-pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String> {
+/// A helper this run started.
+#[cfg(unix)]
+type Started = std::process::Child;
+#[cfg(windows)]
+use windows::Started;
+
+/// Runs the helper of the state in `dir`, exiting after `idle` with no command, wait, registered
+/// Claude Code session or live Codex session, which it serves with `settings`
+/// ([`crate::claude_socket`], [`crate::codex`]); waits for the lock up to the request timeout,
+/// and exits at once when another helper of the state answers.
+pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> Result<(), String> {
+    let timeout = settings.2;
     let dir = std::path::absolute(dir)
         .map_err(|err| format!("cannot use the state directory {}: {err}", dir.display()))?;
     let place = dir.join(DIR);
@@ -442,8 +590,10 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
         .set_nonblocking(true)
         .map_err(|err| format!("cannot listen on {}: {err}", bound.0.display()))?;
     let _ = std::env::set_current_dir(&dir);
+    uploads::set_helper();
     let mut last = Instant::now();
     let mut sessions = Sessions::default();
+    sessions.serve_agents(settings);
     let parting = loop {
         match listener.accept() {
             Ok((stream, _)) => match serve_one(stream, &dir, &mut sessions) {
@@ -451,13 +601,16 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
                 Served::Ran => {
                     last = Instant::now();
                     sessions.ran();
+                    sessions.keep_presence(&dir, true);
                 }
                 Served::Joined => last = Instant::now(),
                 Served::Exit(stream) => break stream,
             },
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
-                match sessions.look(&dir) {
+                let looked = sessions.look(&dir);
+                sessions.keep_presence(&dir, false);
+                match looked {
                     Some(true) => last = Instant::now(),
                     Some(false) if last.elapsed() >= idle => break None,
                     Some(false) => {}
@@ -467,8 +620,8 @@ pub fn serve(dir: &Path, idle: Duration, timeout: Duration) -> Result<(), String
             }
         }
     };
-    // Its sessions end as a dead helper's do.
-    drop(sessions);
+    // Its sessions end as a dead helper's do, its agents then offline.
+    sessions.end(&dir);
     drop(listener);
     drop(bound);
     if let Some(mut stream) = parting {
@@ -537,7 +690,8 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     };
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
-    if operation.command.waits() {
+    uploads::remember(uploads::Settings::of(&operation));
+    if operation.command.waits() || wait::holds(&operation) {
         let session = Session {
             stream,
             cwd: request.cwd,
@@ -628,21 +782,8 @@ fn on_behalf(
     let mut sink = stream.try_clone().ok()?;
     let ran = output::into(
         move |stream, bytes| {
-            let kind = match stream {
-                output::Stream::Out => Kind::Out,
-                output::Stream::Err => Kind::Err,
-            };
-            send(&mut sink, kind, bytes)?;
-            match receive(&mut sink)? {
-                Some((Kind::Written, _)) => Ok(()),
-                Some((Kind::Unwritten, why)) => {
-                    Err(io::Error::other(String::from_utf8_lossy(&why).into_owned()))
-                }
-                _ => Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "the command went away",
-                )),
-            }
+            send(&mut sink, Kind::output(stream), bytes)?;
+            answered(&mut sink)
         },
         || {
             panic::catch_unwind(AssertUnwindSafe(|| {
@@ -746,24 +887,335 @@ pub mod versions {
 
 #[cfg(windows)]
 mod windows {
+    use std::ffi::{OsStr, OsString};
+    use std::io;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::Path;
+
     use windows_sys::Win32::Foundation::{
-        HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation,
+        CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0,
+        WAIT_TIMEOUT,
     };
-    use windows_sys::Win32::System::Console::{
-        GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CREATE_NEW_PROCESS_GROUP, CREATE_UNICODE_ENVIRONMENT, CreateProcessW, DETACHED_PROCESS,
+        DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
+        InitializeProcThreadAttributeList, LPPROC_THREAD_ATTRIBUTE_LIST,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW, STARTUPINFOW, UpdateProcThreadAttribute, WaitForSingleObject,
     };
 
-    /// Keeps this run's standard handles from a process it starts, so a helper does not hold the
-    /// outputs of the command that started it open.
-    pub fn keep_own_handles() {
-        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-            // SAFETY: the process's own standard handles; a missing one is skipped.
-            unsafe {
-                let handle = GetStdHandle(which);
-                if !handle.is_null() && handle != INVALID_HANDLE_VALUE {
-                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
-                }
+    use super::{VERSION_SETTING, version};
+
+    /// A helper this run started: its process.
+    pub struct Started(HANDLE);
+
+    impl Started {
+        /// Whether it exited, as [`std::process::Child::try_wait`] says.
+        pub fn try_wait(&mut self) -> io::Result<Option<()>> {
+            // SAFETY: the process's handle, open until drop.
+            match unsafe { WaitForSingleObject(self.0, 0) } {
+                WAIT_TIMEOUT => Ok(None),
+                WAIT_OBJECT_0 => Ok(Some(())),
+                _ => Err(io::Error::last_os_error()),
             }
+        }
+    }
+
+    impl Drop for Started {
+        fn drop(&mut self) {
+            // SAFETY: the process's handle, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Starts `exe` with `args` in `dir`, with this run's settings but `dropped`, as this run's
+    /// version, with no console and NUL as its only handle of this run's: a handle a shell between
+    /// the agent CLI and the hook passed on, such as the CLI's end of the hook's output, would
+    /// otherwise stay open in the helper, and the CLI would wait for the hook's output while the
+    /// helper runs.
+    pub fn spawn(
+        exe: &Path,
+        args: &[OsString],
+        dir: &Path,
+        dropped: &[&str],
+    ) -> io::Result<Started> {
+        let wide = |text: &OsStr| text.encode_wide().collect::<Vec<u16>>();
+        let mut application = wide(exe.as_os_str());
+        application.push(0);
+        let mut line = Vec::new();
+        for (at, arg) in std::iter::once(exe.as_os_str())
+            .chain(args.iter().map(OsString::as_os_str))
+            .enumerate()
+        {
+            if at > 0 {
+                line.push(u16::from(b' '));
+            }
+            quote(&wide(arg), &mut line);
+        }
+        line.push(0);
+        let mut settings: Vec<(OsString, OsString)> = std::env::vars_os()
+            .filter(|(name, _)| {
+                let name = name.to_string_lossy();
+                !(dropped.iter().chain(&[VERSION_SETTING]))
+                    .any(|dropped| dropped.eq_ignore_ascii_case(&name))
+            })
+            .collect();
+        settings.push((VERSION_SETTING.into(), version().into()));
+        settings.sort_by_cached_key(|(name, _)| name.to_string_lossy().to_uppercase());
+        let mut block = Vec::new();
+        for (name, value) in &settings {
+            block.extend(wide(name));
+            block.push(u16::from(b'='));
+            block.extend(wide(value));
+            block.push(0);
+        }
+        block.push(0);
+        let mut current = wide(dir.as_os_str());
+        current.push(0);
+        // The helper's standard handles: NUL, as `Stdio::null()` gives a child, and its only
+        // inherited handle.
+        let nul = Nul::open()?;
+        let attributes = HandleList::of(&nul.0)?;
+        let mut startup = STARTUPINFOEXW::default();
+        startup.StartupInfo.cb =
+            u32::try_from(std::mem::size_of::<STARTUPINFOEXW>()).map_err(io::Error::other)?;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = nul.0;
+        startup.StartupInfo.hStdOutput = nul.0;
+        startup.StartupInfo.hStdError = nul.0;
+        startup.lpAttributeList = attributes.list();
+        let mut process = PROCESS_INFORMATION::default();
+        let flags = DETACHED_PROCESS
+            | CREATE_NEW_PROCESS_GROUP
+            | CREATE_UNICODE_ENVIRONMENT
+            | EXTENDED_STARTUPINFO_PRESENT;
+        // SAFETY: each string ends with a zero, the settings' block with two; the attribute list
+        // lets the child inherit only NUL; `process` takes the handles, closed below or by
+        // `Started`.
+        let created = unsafe {
+            CreateProcessW(
+                application.as_ptr(),
+                line.as_mut_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+                flags,
+                block.as_ptr().cast(),
+                current.as_ptr(),
+                (&raw const startup).cast::<STARTUPINFOW>(),
+                &mut process,
+            )
+        };
+        if created == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the thread's handle, which nothing uses, closed once.
+        unsafe { CloseHandle(process.hThread) };
+        Ok(Started(process.hProcess))
+    }
+
+    /// The NUL device, opened for reading and writing, inheritable; closed on drop.
+    struct Nul(HANDLE);
+
+    impl Nul {
+        fn open() -> io::Result<Self> {
+            let name: Vec<u16> = "NUL\0".encode_utf16().collect();
+            let security = SECURITY_ATTRIBUTES {
+                nLength: u32::try_from(std::mem::size_of::<SECURITY_ATTRIBUTES>())
+                    .map_err(io::Error::other)?,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            // SAFETY: the name ends with a zero; the handle is closed on drop.
+            let handle = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    &security,
+                    OPEN_EXISTING,
+                    0,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(Nul(handle))
+        }
+    }
+
+    impl Drop for Nul {
+        fn drop(&mut self) {
+            // SAFETY: the handle opened above, closed once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// A process's attribute list that names the only handle it inherits; deleted on drop.
+    struct HandleList<'h> {
+        /// The list's room, in words, which align it.
+        room: Vec<usize>,
+        /// The list in the room.
+        list: LPPROC_THREAD_ATTRIBUTE_LIST,
+        _handle: std::marker::PhantomData<&'h HANDLE>,
+    }
+
+    impl<'h> HandleList<'h> {
+        fn of(handle: &'h HANDLE) -> io::Result<Self> {
+            let mut size = 0;
+            // SAFETY: with no list, it only gives the size one needs.
+            unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size) };
+            let mut room = vec![0; size.div_ceil(std::mem::size_of::<usize>())];
+            let mut list = HandleList {
+                list: room.as_mut_ptr().cast(),
+                room,
+                _handle: std::marker::PhantomData,
+            };
+            // SAFETY: the room holds `size` bytes.
+            if unsafe { InitializeProcThreadAttributeList(list.list(), 1, 0, &mut size) } == 0 {
+                list.room.clear();
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: the list initialized above; `handle` outlives it.
+            let updated = unsafe {
+                UpdateProcThreadAttribute(
+                    list.list(),
+                    0,
+                    usize::try_from(PROC_THREAD_ATTRIBUTE_HANDLE_LIST).map_err(io::Error::other)?,
+                    std::ptr::from_ref(handle).cast(),
+                    std::mem::size_of::<HANDLE>(),
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                )
+            };
+            if updated == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(list)
+        }
+
+        fn list(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
+            self.list
+        }
+    }
+
+    impl Drop for HandleList<'_> {
+        fn drop(&mut self) {
+            if !self.room.is_empty() {
+                // SAFETY: the list initialized in `of`, deleted once.
+                unsafe { DeleteProcThreadAttributeList(self.list()) };
+            }
+        }
+    }
+
+    /// Adds `arg` to the command line `line` as programs built with the C runtime split it.
+    fn quote(arg: &[u16], line: &mut Vec<u16>) {
+        let [space, tab, mark, slash] = [b' ', b'\t', b'"', b'\\'].map(u16::from);
+        if !arg.is_empty() && !arg.iter().any(|unit| [space, tab, mark].contains(unit)) {
+            line.extend_from_slice(arg);
+            return;
+        }
+        line.push(mark);
+        let mut slashes = 0;
+        for &unit in arg {
+            if unit == slash {
+                slashes += 1;
+            } else {
+                if unit == mark {
+                    line.extend(std::iter::repeat_n(slash, slashes + 1));
+                }
+                slashes = 0;
+            }
+            line.push(unit);
+        }
+        line.extend(std::iter::repeat_n(slash, slashes));
+        line.push(mark);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        /// An argument goes on the command line as the C runtime splits it back.
+        #[test]
+        fn arguments_are_quoted_as_the_c_runtime_splits_them() {
+            for (arg, quoted) in [
+                ("helper", "helper"),
+                ("", r#""""#),
+                (r"C:\Program Files\skald", r#""C:\Program Files\skald""#),
+                (r"C:\a b\", r#""C:\a b\\""#),
+                (r#"say "hi""#, r#""say \"hi\"""#),
+                (r#"a\"b"#, r#""a\\\"b""#),
+            ] {
+                let wide: Vec<u16> = arg.encode_utf16().collect();
+                let mut line = Vec::new();
+                super::quote(&wide, &mut line);
+                assert_eq!(String::from_utf16(&line).unwrap(), quoted, "{arg:?}");
+            }
+        }
+
+        /// The file whose presence in a run's working directory makes
+        /// [`a_started_process_has_nul_as_its_standard_handles`] act as the process it starts.
+        const PROBE: &str = "probe";
+
+        /// A process [`super::spawn`] starts has NUL as each of its standard handles, which its
+        /// writes reach.
+        #[test]
+        fn a_started_process_has_nul_as_its_standard_handles() {
+            use std::io::Write;
+
+            use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_CHAR, GetFileType};
+            use windows_sys::Win32::System::Console::{
+                GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE,
+            };
+
+            let here = std::env::current_dir().unwrap();
+            if here.join(PROBE).is_file() {
+                let kinds: Vec<String> = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE]
+                    .into_iter()
+                    .map(|which| {
+                        // SAFETY: it reads the process's standard handle.
+                        let handle = unsafe { GetStdHandle(which) };
+                        if handle.is_null() || handle == super::INVALID_HANDLE_VALUE {
+                            return "none".to_owned();
+                        }
+                        // SAFETY: a standard handle of the process.
+                        let kind = unsafe { GetFileType(handle) };
+                        (if kind == FILE_TYPE_CHAR {
+                            "char"
+                        } else {
+                            "other"
+                        })
+                        .to_owned()
+                    })
+                    .collect();
+                let mut out = std::io::stdout();
+                let written = out.write_all(b"probe").and_then(|()| out.flush()).is_ok();
+                std::fs::write(here.join("said"), format!("{kinds:?} {written}")).unwrap();
+                return;
+            }
+            let dir = crate::test_dir::TestDir::new("helper-nul");
+            std::fs::write(dir.join(PROBE), "").unwrap();
+            let args = [
+                "helper::windows::tests::a_started_process_has_nul_as_its_standard_handles",
+                "--exact",
+            ]
+            .map(std::ffi::OsString::from);
+            let mut started =
+                super::spawn(&std::env::current_exe().unwrap(), &args, &dir, &[]).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while started.try_wait().unwrap().is_none() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the process still runs"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            let said = std::fs::read_to_string(dir.join("said")).unwrap();
+            assert_eq!(said, r#"["char", "char", "char"] true"#);
         }
     }
 }

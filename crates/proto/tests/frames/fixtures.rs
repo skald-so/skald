@@ -161,6 +161,7 @@ pub fn frames() -> Vec<(&'static str, Frame, String)> {
             },
             &format!("83 03 50{MSG_1} 41a0"),
         ),
+        history(HistoryItem::QueueKey(hex("a0")), "82 04 41a0"),
         (
             "history-stored",
             Frame::HistoryStored { upload: 5 },
@@ -173,6 +174,11 @@ pub fn frames() -> Vec<(&'static str, Frame, String)> {
                 problem: "malformed".to_owned(),
             },
             format!("83 0d 05 69{}", to_hex(b"malformed")),
+        ),
+        (
+            "link-notice",
+            Frame::Push(Push::LinkNotice),
+            "81 0e".to_owned(),
         ),
     ]
 }

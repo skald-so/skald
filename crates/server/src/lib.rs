@@ -7,7 +7,7 @@ use std::time::Duration;
 use axum::extract::State;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
 use serde::Serialize;
 use skald_proto::ServerName;
@@ -16,10 +16,15 @@ use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
 mod accounts;
+mod anchors;
 mod attachments;
+mod claims;
 mod connections;
+mod deletion;
 mod delivery;
+mod device_certs;
 mod device_flow;
+mod device_sessions;
 mod devices;
 mod error_reports;
 mod events;
@@ -31,20 +36,26 @@ mod history;
 mod history_retention;
 mod http_client;
 mod instances;
+mod invites;
 mod key_packages;
+mod link_runs;
 mod links;
 mod mailboxes;
 mod notices;
 mod oidc;
+mod presence;
 mod protocol;
+mod queues;
 mod refusal;
 mod requests;
 mod revocations;
+mod service_tokens;
 mod sessions;
 mod sign_in;
 mod sign_up;
 mod spaces;
 mod sweeps;
+mod unread_bodies;
 mod usage;
 mod user_agent;
 
@@ -53,6 +64,7 @@ pub use error_reports::{SentryDsn, report_errors_to};
 pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
 use google::Google;
+pub use link_runs::LINK_CODE_LIFETIME;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
 use protocol::Statement;
 pub use protocol::Versions;
@@ -72,6 +84,9 @@ pub const MAILBOX_LONGEST: u64 = 100 * 365 * 24 * 3_600;
 
 /// The longest history retention, in seconds: 100 years.
 pub const HISTORY_LONGEST: u64 = MAILBOX_LONGEST;
+
+/// The window of the send rate limit without a setting: a minute.
+pub const SEND_RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// How long to wait for a PostgreSQL connection, and for PostgreSQL to answer the health check.
 const DATABASE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -120,21 +135,32 @@ pub struct Settings {
     /// How long the server keeps a channel's history entries, up to 100 years
     /// (`docs/protocol/membership.md`, "Uploads"); without it, the history is kept for good.
     pub history_retention: Option<Duration>,
-    /// The longest payload of an envelope, in bytes (`docs/dev/architecture.md`, "Cloud limits"); no
-    /// limit without it.
+    /// The longest payload of an envelope, and `ct` of a task, in bytes (`docs/dev/architecture.md`,
+    /// "Cloud limits"); no limit without it.
     pub message_size_limit: Option<u64>,
     /// The number of messages a space stores per calendar month in UTC (`docs/dev/architecture.md`,
     /// "Cloud limits"); no limit without it.
     pub monthly_messages_limit: Option<u64>,
+    /// The number of messages one device stores within [`Settings::send_rate_window`]
+    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    pub send_rate_limit: Option<u64>,
+    /// The sliding window of [`Settings::send_rate_limit`]; [`SEND_RATE_WINDOW`] without it.
+    pub send_rate_window: Option<Duration>,
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
+    /// The number of service agent entries a space's latest revision may list
+    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    pub service_agents_limit: Option<u32>,
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
     pub long_poll_max_wait: Option<Duration>,
     /// How often an idle mailbox stream sends a keep-alive (`docs/protocol/delivery.md`,
     /// "Frames"); [`SSE_KEEP_ALIVE`] without it.
     pub sse_keep_alive: Option<Duration>,
+    /// How long after its hello a link code's run ends (`docs/protocol/membership.md`, "Link
+    /// code"); [`LINK_CODE_LIFETIME`] without it.
+    pub link_code_lifetime: Option<Duration>,
 }
 
 /// The state the handlers share.
@@ -152,8 +178,10 @@ struct AppState {
     history_retention: Option<Duration>,
     limits: mailboxes::Limits,
     devices_limit: Option<u32>,
+    service_agents_limit: Option<u32>,
     long_poll_max_wait: Duration,
     sse_keep_alive: Duration,
+    link_code_lifetime: Duration,
     instance: instances::Instance,
     connections: Arc<connections::Connections>,
     wakers: Arc<delivery::Wakers>,
@@ -161,19 +189,30 @@ struct AppState {
 }
 
 /// The HTTP API described by [`OPENAPI_SPEC`], backed by the PostgreSQL pool `db`. Expires mailbox
-/// entries, deletes history past its retention and listens to the other instances on that database
-/// in tasks on the Tokio runtime it is called on.
+/// entries, deletes history past its retention, ended link runs and expired invites, applies tasks'
+/// lease ends and deadlines, and listens to the other instances on that database in tasks on the
+/// Tokio runtime it is called on.
 pub fn app(db: PgPool, settings: Settings) -> Router {
     let versions = settings.versions;
     let instance = instances::Instance::new();
     let wakers = Arc::new(delivery::Wakers::new(instance.clone()));
     let connections = Arc::<connections::Connections>::default();
     let notices = Arc::<notices::Notices>::default();
+    let send_rate = settings
+        .send_rate_limit
+        .map(|messages| mailboxes::SendRate {
+            messages,
+            window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
+        });
     tokio::spawn(expiry::run(
         db.clone(),
         Arc::clone(&wakers),
         settings.mailbox_retention,
+        send_rate.map(|rate| rate.window),
     ));
+    tokio::spawn(link_runs::sweep(db.clone()));
+    tokio::spawn(invites::sweep(db.clone()));
+    tokio::spawn(claims::run(db.clone(), settings.history_retention));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
@@ -196,8 +235,46 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         |statement| middleware::from_fn_with_state((versions, statement), protocol::check);
     Router::new()
         .route(
+            "/account",
+            delete(deletion::delete).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/anchors",
+            get(anchors::list)
+                .post(anchors::store)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/deletion",
+            get(deletion::preview).layer(checked(Statement::Header)),
+        )
+        .route(
             "/account/devices",
             get(devices::shown).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links",
+            post(link_runs::open).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/hello",
+            get(link_runs::hello).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/messages",
+            post(link_runs::relay).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/messages/{session}",
+            get(link_runs::messages).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/pairing",
+            post(link_runs::pair).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/account/links/waiting",
+            get(link_runs::waiting).layer(checked(Statement::Header)),
         )
         .route(
             "/account/master",
@@ -270,6 +347,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/devices/{device}/cert",
+            put(device_certs::store).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/devices/{device}/challenge",
+            post(device_sessions::challenge).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/devices/{device}/session",
+            post(device_sessions::start).layer(checked(Statement::Header)),
+        )
+        .route(
             "/devices/{device}/key-packages",
             get(key_packages::status)
                 .post(key_packages::upload)
@@ -277,8 +366,26 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route("/health", get(health))
         .route(
+            "/invites/{invite}",
+            get(invites::given).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/invites/{invite}/acceptance",
+            put(invites::accept).layer(checked(Statement::Header)),
+        )
+        .route(
             "/key-packages",
             post(key_packages::hand_out).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/links",
+            post(link_runs::open_sessionless).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/links/messages",
+            get(link_runs::run_messages)
+                .post(link_runs::run_relay)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/mailbox/ack",
@@ -303,6 +410,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route("/server", get(server).layer(checked(Statement::Header)))
         .route(
+            "/service-token",
+            get(service_tokens::own).layer(checked(Statement::Header)),
+        )
+        .route(
             "/session",
             get(sign_in::session)
                 .delete(sessions::sign_out)
@@ -318,6 +429,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(spaces::list)
                 .post(spaces::create)
                 .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/acceptances",
+            get(invites::waiting).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/channels",
@@ -342,8 +457,76 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(history::given::<{ history::WRAPS }>).layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/channels/{channel}/presence",
+            get(presence::given)
+                .put(presence::upload)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queue-keys/{epoch}",
+            get(history::queue_key).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues",
+            get(queues::list)
+                .post(queues::create)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}",
+            patch(queues::change)
+                .delete(queues::delete)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/claims",
+            post(claims::claim).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks",
+            get(queues::tasks)
+                .post(queues::enqueue)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}",
+            get(queues::task).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/cancel",
+            post(claims::change::<{ claims::CANCEL }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/complete",
+            post(claims::act::<{ claims::COMPLETE }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/extend",
+            post(claims::act::<{ claims::EXTEND }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/fail",
+            post(claims::act::<{ claims::FAIL }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/release",
+            post(claims::act::<{ claims::RELEASE }>).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/channels/{channel}/queues/{queue}/tasks/{task}/restart",
+            post(claims::change::<{ claims::RESTART }>).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/devices",
             get(spaces::devices).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/invites",
+            post(invites::issue).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/invites/{invite}",
+            put(invites::store).layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/members",
@@ -356,6 +539,20 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/service-grants",
+            get(service_tokens::grants).layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/service-tokens",
+            get(service_tokens::list)
+                .post(service_tokens::create)
+                .layer(checked(Statement::Header)),
+        )
+        .route(
+            "/spaces/{space}/service-tokens/{token}",
+            delete(service_tokens::revoke).layer(checked(Statement::Header)),
+        )
+        .route(
             "/spaces/{space}/usage",
             get(usage::space).layer(checked(Statement::Header)),
         )
@@ -364,6 +561,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             get(connections::open).layer(checked(Statement::Subprotocol)),
         )
         .route_layer(middleware::from_fn(error_reports::report_failures))
+        .layer(middleware::from_fn(unread_bodies::close_unread))
         .with_state(AppState {
             db,
             versions,
@@ -374,10 +572,13 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             limits: mailboxes::Limits {
                 message_size: settings.message_size_limit,
                 monthly_messages: settings.monthly_messages_limit,
+                send_rate,
             },
             devices_limit: settings.devices_limit,
+            service_agents_limit: settings.service_agents_limit,
             long_poll_max_wait: settings.long_poll_max_wait.unwrap_or(LONG_POLL_MAX_WAIT),
             sse_keep_alive: settings.sse_keep_alive.unwrap_or(SSE_KEEP_ALIVE),
+            link_code_lifetime: settings.link_code_lifetime.unwrap_or(LINK_CODE_LIFETIME),
             instance,
             connections,
             wakers,

@@ -13,10 +13,10 @@
 #     app's build takes, src/, public/, index.html, vite.config.ts and the tsconfig files, also
 #     workspace, whose browser tests run that build, and self-host, whose stack serves it; the theme,
 #     src/theme/, the browser of the kit tests, kit-browser.ts, and their screenshot comparison,
-#     kit-references.ts, also site, whose main page and browser tests take them
+#     kit-references.ts, also site, whose pages and browser tests take them
 #   docker-compose.yml, Caddyfile: self-host
 #   site/, docs/, Markdown files in the root: site; docs/self-host.md (the self-host stack's guide)
-#     also self-host
+#     also self-host; docs/service-agents.md (whose recipes the client's tests run) also workspace
 #   also site, on top of the above: the paths whose change can break a link of docs/, any Markdown
 #     file (its headings) and a removed path that docs/ links to or that lies in a directory it
 #     links to
@@ -117,6 +117,8 @@ while IFS= read -r path; do
     mark self-host
   elif [[ $path == docs/self-host.md ]]; then
     mark self-host site
+  elif [[ $path == docs/service-agents.md ]]; then
+    mark workspace site
   elif [[ $path == site/* || $path == docs/* || ($path == *.md && $path != */*) ]]; then
     mark site
   else

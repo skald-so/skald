@@ -1,24 +1,37 @@
-//! `skald send`: the device sends a text to a channel of a space it follows; as an agent, only in
-//! the space of its folder. It first accepts the space's latest revisions and goes through the
-//! mailbox as `skald recv` does, showing none of it: it sends its Commits and Welcomes that wait,
+//! `skald send`: the device sends a text to a channel of a space it follows, by default the default
+//! channel of the working directory's space; as an agent, only in the space of its folder. It
+//! first accepts the space's latest revisions and goes through the mailbox as `skald recv` does,
+//! showing none of it: it sends its Commits and Welcomes that wait,
 //! writes each entry, goes through the Welcomes, Commits and application messages, brings the
 //! channel's group in line ([`crate::groups`]) and uploads the links of the key chains the server
 //! lacks ([`crate::key_chain`]); a later `skald recv` shows the messages. It then
 //! encrypts the content in the channel's group and sends one `mls` envelope without `recipients`,
 //! with `report` true, unless a member device of the group is not admitted, a Commit of its own
-//! there waits for the server or no other device is in the group (`docs/protocol/membership.md`,
-//! "Admitted devices"). The content is from the person address or the agent's, with `hops` 0, the
-//! device's next `counter` in the channel and an A2A message with the text
-//! (`docs/protocol/README.md`, "Content").
+//! there waits for the server (`docs/protocol/membership.md`, "Admitted devices"), or no other
+//! device is in the group, nothing on this device gets the message and no service agent gets a
+//! copy. The content is from the person address or the agent's, to the agent `--to` names or, for
+//! `--all`, to no one in particular, with `hops` 0 from the person and, from an agent, one more than
+//! the highest `hops` of the messages handed over to it in the space since the device last sent a
+//! message as it, or 0 when none was, the device's next `counter` in the channel and an A2A message
+//! with the text (`docs/protocol/README.md`, "Content"); a member service agent counts as an agent
+//! here. An agent's message with `hops` over [`MOST_HOPS`] is not sent: the run says why and warns
+//! of it, which an agent's run holds for the person's next run. With it go its copies under `hpke`
+//! to service agents outside the channel's group ([`crate::copies`]), each with the counter the
+//! device keeps for that agent in the channel; the run warns when it sends an agent its first copy
+//! of the channel's messages. A `service` device sends none: its token gets no grants. A stateless
+//! service agent's run sends as [`crate::stateless`] says.
 //!
 //! The envelope goes into the outbox with the MLS state first. The device then sends every
 //! envelope of the outbox, those an earlier run left first, over its connection as its device, and
 //! sends the unanswered ones again with backoff and the same bytes until each gets `stored` or
 //! `send-refused`, for as long as the request timeout (`docs/protocol/delivery.md`, "Send"). Over
 //! HTTPS it sends them one at a time, each after the previous one is answered, so a channel's
-//! envelopes are stored in `counter` order ("Gap detection"). What is left waits in the outbox for
-//! the next run. It then uploads the history entries of the messages the server stored
-//! ([`crate::history`]).
+//! envelopes are stored in `counter` order ("Gap detection"). With the `stored` of a message, the
+//! device keeps it for its person and its agents, as a recipient device does
+//! ([`recv::own_message`]). What is left waits in the outbox for the next run. It then uploads the
+//! history entries of the messages the server stored ([`crate::history`]).
+//!
+//! `skald reply` sends as it does ([`crate::reply`]).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -28,8 +41,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use skald_proto::{
-    Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame, MessageId,
-    Name, Push, RawEnvelope, Roster, SendKey, SpaceId, Unknown, VersionRange,
+    Address, AddressError, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame,
+    MessageId, Name, PERSON, Push, RawEnvelope, Roster, Segment, SendKey, ServerName, SpaceId,
+    Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -38,6 +52,7 @@ use tungstenite::stream::MaybeTlsStream;
 
 use crate::agents::{NO_SERVER_NAME, server_name};
 use crate::connection::{self, WebSocket, printable};
+use crate::copies;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::forms::{self, References};
@@ -45,11 +60,18 @@ use crate::groups::{self, Link, Rosters};
 use crate::history;
 use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
+use crate::queue_keys;
 use crate::recv;
 use crate::secrets;
+use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, Outgoing, State};
+use crate::stateless;
 use crate::wraps;
+
+/// The highest `hops` an agent's message carries: the limit on replies without a human
+/// (`docs/protocol/README.md`, "Content").
+pub const MOST_HOPS: u64 = 10;
 
 /// The first pause between attempts, and the longest.
 const FIRST_PAUSE: Duration = Duration::from_millis(500);
@@ -103,6 +125,7 @@ impl Wire for Queued {
                 device: recipient.map(|device| device.to_string()),
                 device_name: None,
                 problem: Some(explained(problem)),
+                reason: None,
                 timestamp: state::unix_now(),
             }),
         };
@@ -115,6 +138,30 @@ impl Wire for Queued {
                 to_device(recipient)
             );
         }
+    }
+}
+
+/// An envelope of a message whose run says what the server answered to it ([`report`]).
+pub trait Shown: Wire {
+    /// The channel it goes to.
+    fn channel(&self) -> ChannelId;
+    /// Whether it goes with `report` true: it is no receipt.
+    fn reports(&self) -> bool;
+    /// Whether an outbox keeps it while the server has not answered it, so a later run sends it.
+    fn kept(&self) -> bool;
+}
+
+impl Shown for Queued {
+    fn channel(&self) -> ChannelId {
+        self.channel
+    }
+
+    fn reports(&self) -> bool {
+        self.outgoing.report
+    }
+
+    fn kept(&self) -> bool {
+        true
     }
 }
 
@@ -138,32 +185,50 @@ impl Delivered {
     }
 }
 
-/// Sends `text` to the channel whose ID is `channel`, by the state in `dir`, its secrets in
-/// `storage`, as `agent` if given, whose run holds its warnings for the person
-/// ([`recv::holding_warnings`]); retries for `timeout`. Reports as JSON if `json`.
+/// What a `skald send` names: its `--to`, its `--channel` and its text.
+pub type Named<'a> = (Option<&'a str>, Option<&'a str>, &'a str);
+
+/// Sends `text` for the agent `to` names ([`addressee`]), or for every agent without it, to the
+/// channel whose ID is `channel`, by default the default channel of the working directory's space,
+/// by the state in `dir`, its secrets in `storage`, as `agent` if given, whose run holds its
+/// warnings for the person ([`recv::holding_warnings`]); retries for `timeout`. Reports as JSON if
+/// `json`.
 pub fn run(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (channel, text): (&str, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     json: bool,
 ) -> Result<(), String> {
     recv::holding_warnings(dir, agent.is_some(), || {
-        let reported = match (json, agent) {
-            (true, agent) => Reported::Json(agent.map(Name::as_str)),
-            (false, Some(agent)) => Reported::Sent(agent.as_str()),
-            (false, None) => Reported::Full,
-        };
         sent(
             dir,
             storage,
             (speaks, timeout),
-            (channel, text),
+            (to, channel, text),
             agent,
-            reported,
+            reported(json, agent),
         )
     })
+}
+
+/// How a run as `agent`, if any, reports the messages it sent, as JSON if `json`.
+pub fn reported(json: bool, agent: Option<&Name>) -> Reported<'_> {
+    match (json, agent) {
+        (true, agent) => Reported::Json(agent.map(Name::as_str)),
+        (false, Some(agent)) => Reported::Sent(agent.as_str()),
+        (false, None) => Reported::Full,
+    }
+}
+
+/// What a run sends besides its sender and channel: the agent or person it is to, none for every
+/// agent in the channel, its text and, for a reply, the message it answers and its `hops`.
+pub struct Draft<'a> {
+    pub to: Option<Address>,
+    pub text: &'a str,
+    pub reply_to: Option<MessageId>,
+    pub hops: u64,
 }
 
 /// [`run`], reporting as `reported` says.
@@ -171,34 +236,136 @@ fn sent(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (channel, text): (&str, &str),
+    (to, channel, text): Named,
     agent: Option<&Name>,
     reported: Reported,
 ) -> Result<(), String> {
-    let channel = channel_id(channel)?;
+    let to = to.map(addressee).transpose()?;
+    let channel = channel.map(channel_id).transpose()?;
     let scope = Scope::of_run(dir, agent.is_some())?;
+    let (mut synced, channel) = match channel {
+        Some(channel) => of_channel(dir, storage, (speaks, timeout), channel, scope)
+            .map(|synced| (synced, channel))?,
+        None => spaces::of_working_dir(dir, storage, speaks, timeout, scope)
+            .map_err(|err| with_waiting(dir, scope, err))?,
+    };
+    let server = server_of(&mut synced.follower)?;
+    let to = (to.map(|to| to.in_space(&synced.roster.body().name, &server))).transpose()?;
+    let hops = match counted(&synced.follower, agent) {
+        Some(counted) => (synced.follower.state)
+            .handed_hops(synced.space.id, counted)
+            .map_err(|err| err.to_string())?
+            .map_or(0, |highest| highest.saturating_add(1)),
+        None => 0,
+    };
+    let draft = Draft {
+        to,
+        text,
+        reply_to: None,
+        hops,
+    };
+    send_synced(
+        dir,
+        (synced, channel),
+        (scope, server),
+        &draft,
+        agent,
+        reported,
+    )
+}
+
+/// Under which name the device of `follower` counts the `hops` of what a run as `agent`, if any,
+/// takes in: the agent's, a member service agent's ([`state::SERVICE_AGENT`]), or none for the
+/// person, whose messages keep 0.
+pub fn counted<'a>(follower: &Follower, agent: Option<&'a Name>) -> Option<&'a str> {
+    match agent {
+        Some(agent) => Some(agent.as_str()),
+        None => follower.service.map(|_| state::SERVICE_AGENT),
+    }
+}
+
+/// The space of the channel `channel` within `scope`, synced ([`spaces::of_channel`]), by the
+/// state in `dir`, its secrets in `storage`; fails as a run that sends nothing does.
+pub fn of_channel(
+    dir: &Path,
+    storage: secrets::Storage,
+    (speaks, timeout): (VersionRange, Duration),
+    channel: ChannelId,
+    scope: Scope,
+) -> Result<Synced, String> {
+    spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
+        .map_err(|err| with_waiting(dir, scope, err))
+}
+
+/// The name of `follower`'s server, which a message's sender names; fails without one.
+pub fn server_of(follower: &mut Follower) -> Result<ServerName, String> {
+    server_name(&mut follower.connection)?
+        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))
+}
+
+/// Sends `draft` to `channel` of the space `synced` holds, within `scope`, from the person or
+/// `agent` on `server`, by the state in `dir`, and reports as `reported` says. Sends nothing for
+/// an agent's draft with `hops` over [`MOST_HOPS`] ([`over_the_limit`]).
+pub fn send_synced(
+    dir: &Path,
+    (synced, channel): (Synced, ChannelId),
+    (scope, server): (Scope, ServerName),
+    draft: &Draft,
+    agent: Option<&Name>,
+    reported: Reported,
+) -> Result<(), String> {
+    if counted(&synced.follower, agent).is_some() && draft.hops > MOST_HOPS {
+        return Err(over_the_limit(agent, channel, draft.to.as_ref(), "sent"));
+    }
     let Synced {
         mut follower,
         space,
         roster,
         devices,
-    } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)
-        .map_err(|err| with_waiting(dir, scope, err))?;
+    } = synced;
+    let timeout = follower.timeout;
     if let Some(agent) = agent {
         // Messages that come from now on are also for this agent.
         (follower.state)
             .add_agent(space.id, agent.as_str())
             .map_err(|err| err.to_string())?;
     }
+    // It goes through no mailbox: what it would write there, it would ack unshown.
+    if follower.stateless() {
+        let to = (channel, server);
+        return stateless::send(&mut follower, (&roster, &devices), to, draft, reported);
+    }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
-    let from = sender(&mut follower, &roster, agent)?;
-    groups::encrypt(
+    // A service agent's message carries its token's grant; only a member's has copies.
+    let (from, grant, readers) = match follower.service {
+        Some(_) => {
+            let (from, grant) =
+                service::sender(&mut follower, (&roster, &devices), (channel, server))?;
+            (from, Some(grant), Vec::new())
+        }
+        None => {
+            let from = sender(&follower, &roster, server.clone(), agent)?;
+            let to = draft.to.as_ref();
+            let readers =
+                copies::readers(&mut follower, (&roster, &devices), (channel, to), &server);
+            (from, None, readers)
+        }
+    };
+    let (_, first) = groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
-        |msg_id, counter| content(&from, msg_id, counter, text),
+        &readers,
+        |msg_id, counter| {
+            let mut content = content(&from, draft, msg_id, counter);
+            content.grant = grant;
+            content
+        },
     )
     .map_err(|err| with_waiting(dir, scope, err))?;
+    for reader in first {
+        eprintln!("skald: warning: {}", copies::first_copy(reader, channel));
+    }
     let queued = queued(&follower.state, scope)?;
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
     match Link::new(&follower) {
@@ -220,6 +387,31 @@ fn sent(
     reported
 }
 
+/// Why what `agent`, none for a member service agent, sends to `to`, none for everyone, in
+/// `channel` as `verb` says, such as `sent` or `enqueued`, goes nowhere: it is past the limit on
+/// replies without a human. Warns of it, which an agent's run holds for its person.
+pub fn over_the_limit(
+    agent: Option<&Name>,
+    channel: ChannelId,
+    to: Option<&Address>,
+    verb: &str,
+) -> String {
+    let to = to.map_or_else(|| "every agent".to_owned(), Address::to_string);
+    let agent = agent.map_or_else(
+        || "this service agent".to_owned(),
+        |it| format!("the agent {it}"),
+    );
+    eprintln!(
+        "skald: warning: {agent} {verb} nothing to {to} in the channel {channel}: the \
+         agents answered each other {MOST_HOPS} times without a person; a person's message to one \
+         of them starts the count again"
+    );
+    format!(
+        "the agents answered each other {MOST_HOPS} times without a person; a person's message \
+         starts the count again; nothing is {verb}"
+    )
+}
+
 /// The channel ID `given` names, as a command takes it.
 pub fn channel_id(given: &str) -> Result<ChannelId, String> {
     given
@@ -230,10 +422,11 @@ pub fn channel_id(given: &str) -> Result<ChannelId, String> {
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
 /// Welcomes and Commits, brings in line the groups of the channels of each space the run accepted
-/// the revisions of and uploads the links of their key chains and the wraps of their current
-/// epochs the server lacks. Gives the last accepted revision of `space` and its accounts' devices,
-/// `synced` as the run synced them first, as they are then. Warns of what fails.
-fn through_mailbox(
+/// the revisions of and uploads the links of their key chains, the wraps of their current epochs
+/// and their queue key objects the server lacks. Gives the last accepted revision of `space` and
+/// its accounts' devices, `synced` as the run synced them first, as they are then. Warns of what
+/// fails.
+pub fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
     space: SpaceId,
@@ -255,6 +448,7 @@ fn through_mailbox(
     groups::align_with(follower, &mut link);
     key_chain::upload_missing(follower, &mut link, scope);
     wraps::upload_missing(follower, &mut link, scope);
+    queue_keys::upload_missing(follower, &mut link, scope);
     Ok(rosters.remove(&space).expect("the channel's space"))
 }
 
@@ -262,6 +456,10 @@ fn through_mailbox(
 /// outbox of the state in `dir` within `scope` still wait, if any: only a run that sends a message
 /// or receives sends them.
 fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
+    // A stateless service agent's run has no outbox of earlier runs.
+    if service::stateless() {
+        return err;
+    }
     let outbox = dir
         .is_dir()
         .then(|| State::open(dir).and_then(|state| state.outbox()).ok())
@@ -280,10 +478,12 @@ fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
     )
 }
 
-/// The admitted `client` devices of `channel` in `roster`, the space's latest revision, but `this`
-/// one, each with its valid certificate among `devices`: those of the accounts of the channel's
-/// members that their member's `excluded` does not list. The certificates of `own`'s account are
-/// checked against the master key it pinned, any other's against the revision's.
+/// The devices admitted to `channel` in `roster`, the space's latest revision, but `this` one,
+/// each with its valid certificate among `devices` ("Admitted devices"): the `client` devices of
+/// the accounts of the channel's members that their member's `excluded` does not list, and the
+/// `service` devices of the channel's `services`, of a member's account. The certificates of
+/// `own`'s account are checked against the master key it pinned, any other's against the
+/// revision's.
 pub fn admitted<'d>(
     own: &Own,
     this: DeviceId,
@@ -307,14 +507,26 @@ pub fn admitted<'d>(
             }
         }
     }
+    for member in body.members.iter() {
+        for cert in devices.of(roster, own, member) {
+            let body = cert.body();
+            if body.kind == DeviceKind::Service
+                && body.device != this
+                && channel.services.contains(&body.device)
+            {
+                admitted.insert(body.device, cert);
+            }
+        }
+    }
     admitted
 }
 
 /// The address the message is from: the person's, or `agent`'s, of the device's account in
-/// `roster`'s space, on the server of the machine's session.
-fn sender(
-    follower: &mut Follower,
+/// `roster`'s space, on `server`, the server of the machine's session.
+pub fn sender(
+    follower: &Follower,
     roster: &Roster,
+    server: ServerName,
     agent: Option<&Name>,
 ) -> Result<Address, String> {
     let body = roster.body();
@@ -325,8 +537,6 @@ fn sender(
             body.name.as_str()
         )
     })?;
-    let server = server_name(&mut follower.connection)?
-        .ok_or_else(|| format!("{NO_SERVER_NAME}, so a message has no sender; nothing is sent"))?;
     let (space, owner) = (body.name.clone(), member.handle.clone());
     Ok(match agent {
         Some(agent) => Address::new(space, owner, agent.clone(), server),
@@ -334,30 +544,115 @@ fn sender(
     })
 }
 
-/// The content of a message of `text` from `from`, of `msg_id`, with `counter`.
-fn content(
+/// The content of `draft` from `from`, of `msg_id`, with `counter`.
+pub fn content(
     from: &Address,
+    draft: &Draft,
     msg_id: MessageId,
     counter: std::num::NonZeroU64,
-    text: &str,
 ) -> Content {
     let a2a = serde_json::json!({
         "messageId": msg_id.to_string(),
         "role": "ROLE_USER",
-        "parts": [{ "text": text }],
+        "parts": [{ "text": draft.text }],
     })
     .to_string();
     Content {
         from: from.clone(),
-        to: None,
+        to: draft.to.clone(),
         counter: Some(counter),
-        hops: 0,
-        reply_to: None,
+        hops: draft.hops,
+        reply_to: draft.reply_to,
         body: Some(Body::A2a(a2a)),
         delegation: None,
         grant: None,
         attachments: None,
         unknown: Unknown::default(),
+    }
+}
+
+/// What `--to` names, lowercased.
+#[derive(Debug, PartialEq)]
+pub enum Addressee {
+    Full(Address),
+    /// `owner/agent`, in the channel's space on the machine's server.
+    Short(Name, Name),
+}
+
+/// The agent `given` to `--to` names, lowercased (`docs/protocol/README.md`, "Agent address"):
+/// its full address or `owner/agent`. Fails for an invalid address, and for a person's: only a
+/// reply goes to a person.
+pub fn addressee(given: &str) -> Result<Addressee, String> {
+    let lowered = given.to_lowercase();
+    let invalid = |err: &dyn std::fmt::Display| {
+        format!("--to \"{}\": {err}; nothing is sent", printable(given))
+    };
+    let form = "invalid agent address: use space/owner/agent@server, or owner/agent in the \
+                channel's space";
+    let addressee = parsed(&lowered, &invalid, form)?;
+    let agent = match &addressee {
+        Addressee::Full(address) => address.agent(),
+        Addressee::Short(_, agent) => agent,
+    };
+    if agent.as_str() == PERSON {
+        return Err(format!(
+            "--to \"{}\" is a person's address: --to takes an agent's, as only a reply goes to a \
+             person; nothing is sent",
+            printable(given)
+        ));
+    }
+    Ok(addressee)
+}
+
+/// What `lowered`, a lowercased address, names: a full address or `owner/agent`. Fails with
+/// `invalid` of the problem, `form` for an address of neither form.
+pub fn parsed(
+    lowered: &str,
+    invalid: &dyn Fn(&dyn std::fmt::Display) -> String,
+    form: &str,
+) -> Result<Addressee, String> {
+    if lowered.contains('@') {
+        return Ok(Addressee::Full(
+            lowered.parse().map_err(|err| invalid(&err))?,
+        ));
+    }
+    let Some((owner, agent)) = lowered.split_once('/').filter(|(_, it)| !it.contains('/')) else {
+        return Err(invalid(&form));
+    };
+    let segment = |segment, name: &str| {
+        name.parse::<Name>()
+            .map_err(|err| invalid(&AddressError::Segment(segment, err)))
+    };
+    Ok(Addressee::Short(
+        segment(Segment::Owner, owner)?,
+        segment(Segment::Agent, agent)?,
+    ))
+}
+
+impl Addressee {
+    /// The full address in the space `space` on the server `server`; fails for an address of
+    /// another space or server.
+    pub fn in_space(self, space: &Name, server: &ServerName) -> Result<Address, String> {
+        let address = match self {
+            Addressee::Full(address) => address,
+            Addressee::Short(owner, agent) => {
+                Address::new(space.clone(), owner, agent, server.clone())
+            }
+        };
+        if address.space() != space {
+            // The agent's output names nothing of another space.
+            return Err(format!(
+                "--to names an agent of another space than the channel's, {space}: a message is \
+                 only for the agents of its channel's space; nothing is sent"
+            ));
+        }
+        if address.server() != server {
+            return Err(format!(
+                "--to names an agent on another server than this device's, {server}; nothing is \
+                 sent"
+            ));
+        }
+        Ok(address)
     }
 }
 
@@ -379,7 +674,7 @@ pub fn queued(state: &State, scope: Scope) -> Result<Vec<Queued>, String> {
             let channel = envelope.envelope().header.channel;
             let frame = Frame::Send {
                 envelope,
-                report: true,
+                report: outgoing.report,
             }
             .to_cbor();
             Ok(Queued {
@@ -568,8 +863,7 @@ fn read_answers<W: Wire>(
 pub fn timed_out(err: &tungstenite::Error) -> bool {
     matches!(
         err,
-        tungstenite::Error::Io(err)
-            if matches!(err.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut)
+        tungstenite::Error::Io(err) if connection::timed_out(err)
     )
 }
 
@@ -603,6 +897,7 @@ fn explained(problem: &str) -> String {
     let meaning = match problem {
         "too-large" => "the message is too large for the server",
         "quota-exceeded" => "its space has stored as many messages this month as its limit allows",
+        "rate-limited" => "its device sends too many messages too fast for the server's rate limit",
         _ => return printable(problem),
     };
     format!("{problem} ({meaning})")
@@ -622,26 +917,26 @@ pub enum Reported<'a> {
     Quiet,
 }
 
-/// A message of the outbox: its ID, its channel and its envelopes.
-type Queue<'q> = Vec<(MessageId, ChannelId, Vec<&'q Queued>)>;
+/// A message a run sent: its ID, its channel and its envelopes.
+type Queue<'q, W> = Vec<(MessageId, ChannelId, Vec<&'q W>)>;
 
-/// Says what the server answered to each message of `queued`, as `reported` says, by the state
-/// `state` and the answers in `delivered`; fails unless every one is stored, saying which are not.
-pub fn report(
+/// Says what the server answered to each message of `queued`, but receipts, as `reported` says,
+/// by the state `state` and the answers in `delivered`; fails unless every one is stored, saying
+/// which are not.
+pub fn report<W: Shown>(
     state: &State,
-    queued: &[Queued],
+    queued: &[W],
     delivered: &Delivered,
     timeout: Duration,
     reported: Reported,
 ) -> Result<(), String> {
-    let mut messages: Queue = Vec::new();
-    for queued in queued {
-        match messages
-            .iter_mut()
-            .find(|(id, ..)| *id == queued.outgoing.msg_id)
-        {
+    let mut messages: Queue<W> = Vec::new();
+    // A receipt is no message of the device's user.
+    for queued in queued.iter().filter(|queued| queued.reports()) {
+        let (msg_id, _) = queued.key();
+        match messages.iter_mut().find(|(id, ..)| *id == msg_id) {
             Some((.., envelopes)) => envelopes.push(queued),
-            None => messages.push((queued.outgoing.msg_id, queued.channel, vec![queued])),
+            None => messages.push((msg_id, queued.channel(), vec![queued])),
         }
     }
     let outcome = outcome(&messages, delivered, timeout);
@@ -669,7 +964,7 @@ pub fn report(
             for (id, channel, envelopes) in &messages {
                 let envelopes: Vec<Value> = (envelopes.iter())
                     .map(|queued| {
-                        let recipient = queued.outgoing.recipient.map(|device| device.to_string());
+                        let recipient = queued.key().1.map(|device| device.to_string());
                         match delivered.answers.get(&queued.key()) {
                             Some(Answer::Stored) => {
                                 json!({ "recipient": recipient, "answer": "stored" })
@@ -679,7 +974,10 @@ pub fn report(
                                 "answer": "refused",
                                 "problem": problem,
                             }),
-                            None => json!({ "recipient": recipient, "answer": "waiting" }),
+                            None if queued.kept() => {
+                                json!({ "recipient": recipient, "answer": "waiting" })
+                            }
+                            None => json!({ "recipient": recipient, "answer": "unanswered" }),
                         }
                     })
                     .collect();
@@ -699,18 +997,21 @@ pub fn report(
 
 /// Says, for each of `messages`, its ID and, per envelope, by its recipient device under `hpke`,
 /// whether the server stored it, refused it or has not answered it in `delivered`.
-fn in_full(messages: &Queue, delivered: &Delivered) {
+fn in_full<W: Shown>(messages: &Queue<W>, delivered: &Delivered) {
     for (id, channel, envelopes) in messages {
         println!("The message {id} to the channel {channel}:");
         for queued in envelopes {
-            let device = (queued.outgoing.recipient)
-                .map_or_else(|| "channel".to_owned(), |device| device.to_string());
+            let device =
+                (queued.key().1).map_or_else(|| "channel".to_owned(), |device| device.to_string());
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => println!("  {device}  stored"),
                 Some(Answer::Refused(problem)) => {
                     println!("  {device}  refused: {}", explained(problem));
                 }
-                None => println!("  {device}  no answer yet: it waits in the outbox"),
+                None if queued.kept() => {
+                    println!("  {device}  no answer yet: it waits in the outbox");
+                }
+                None => println!("  {device}  no answer"),
             }
         }
     }
@@ -718,12 +1019,17 @@ fn in_full(messages: &Queue, delivered: &Delivered) {
 
 /// Fails unless the server stored every envelope of `messages` in `delivered`, saying which it has
 /// not answered within `timeout`, and why the last attempt failed, or else which it refused.
-fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result<(), String> {
+fn outcome<W: Shown>(
+    messages: &Queue<W>,
+    delivered: &Delivered,
+    timeout: Duration,
+) -> Result<(), String> {
     let (mut left, mut refused) = (Vec::new(), Vec::new());
+    let mut kept = true;
     for (id, _, envelopes) in messages {
         let mut waiting = Vec::new();
         for queued in envelopes {
-            let recipient = queued.outgoing.recipient;
+            let recipient = queued.key().1;
             match delivered.answers.get(&queued.key()) {
                 Some(Answer::Stored) => {}
                 Some(Answer::Refused(problem)) => refused.push(format!(
@@ -731,7 +1037,10 @@ fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result
                     to_device(recipient),
                     explained(problem)
                 )),
-                None => waiting.extend(recipient.map(|device| device.to_string())),
+                None => {
+                    kept &= queued.kept();
+                    waiting.extend(recipient.map(|device| device.to_string()));
+                }
             }
         }
         if !waiting.is_empty() {
@@ -748,9 +1057,13 @@ fn outcome(messages: &Queue, delivered: &Delivered, timeout: Duration) -> Result
             .failed
             .as_ref()
             .map_or_else(String::new, |err| format!(" ({err})"));
+        let then = if kept {
+            "the outbox keeps it, and the next skald send or skald recv sends it first"
+        } else {
+            "a stateless run keeps nothing, so nothing sends it later"
+        };
         return Err(format!(
-            "the server has not stored {} within {} s{why}; the outbox keeps it, and the next \
-             skald send or skald recv sends it first",
+            "the server has not stored {} within {} s{why}; {then}",
             left.join("; "),
             timeout.as_secs()
         ));
@@ -778,6 +1091,44 @@ pub(crate) mod tests {
     use crate::state::Counted;
     use crate::test_dir::TestDir;
 
+    /// `--to` takes a full address or `owner/agent`, lowercased, and completes the short form with
+    /// the channel's space and server; it refuses a person's address, an invalid one, and one of
+    /// another space or server.
+    #[test]
+    fn to_names_an_agent_of_the_channel_s_space_and_server() {
+        let space: Name = "acme".parse().unwrap();
+        let server: ServerName = "skald.example".parse().unwrap();
+        let full: Address = "acme/bob/claude@skald.example".parse().unwrap();
+        let in_acme = |given: &str| addressee(given)?.in_space(&space, &server);
+
+        for given in [
+            "acme/bob/claude@skald.example",
+            "Bob/Claude",
+            "ACME/BOB/CLAUDE@SKALD.EXAMPLE",
+        ] {
+            assert_eq!(in_acme(given).as_ref(), Ok(&full), "{given}");
+        }
+        for person in ["bob/user", "bob/USER", "acme/bob/user@skald.example"] {
+            let err = addressee(person).expect_err(person);
+            assert!(err.contains("person's address"), "{person}: {err}");
+        }
+        for invalid in [
+            "claude",
+            "bob/",
+            "/claude",
+            "a/b/c",
+            "bob/claude_1",
+            "acme/bob/claude@",
+        ] {
+            let err = addressee(invalid).expect_err(invalid);
+            assert!(err.contains("invalid agent address"), "{invalid}: {err}");
+        }
+        let err = in_acme("other/bob/claude@skald.example").unwrap_err();
+        assert!(err.contains("another space"), "{err}");
+        let err = in_acme("acme/bob/claude@elsewhere.example").unwrap_err();
+        assert!(err.contains("another server"), "{err}");
+    }
+
     /// Puts `outgoing`, the first message in `channel`, in the outbox of `state`.
     fn put(state: &State, channel: ChannelId, outgoing: Outgoing) {
         let message = Counted {
@@ -785,6 +1136,7 @@ pub(crate) mod tests {
             channel,
             counter: 1,
             agent: None,
+            addressee: None,
         };
         crate::state::tests::put(state, &[&message]).unwrap();
     }
@@ -823,6 +1175,7 @@ pub(crate) mod tests {
                 issuer: by,
                 issued: 1_800_000_000,
                 ssh: None,
+                github: None,
                 name: "laptop".to_owned(),
                 unknown: Unknown::default(),
             };
@@ -852,10 +1205,12 @@ pub(crate) mod tests {
     }
 
     /// Admitted: the `client` devices with a valid certificate of the channel's members' accounts,
-    /// this one, a browser, one the member's `excluded` lists, one with a certificate by another
-    /// key and one of a member outside the channel aside.
+    /// and the `service` devices of the channel's `services` with one of a member's account; this
+    /// one, a browser, one the member's `excluded` lists, one with a certificate by another key,
+    /// one of a member outside the channel, a `service` device the channel does not list and one
+    /// with a forged certificate aside.
     #[test]
-    fn admitted_devices_are_the_channels_valid_client_devices_but_this_one() {
+    fn admitted_devices_are_the_channels_valid_client_and_service_devices_but_this_one() {
         let (ada, bob, carol) = (Account::new(), Account::new(), Account::new());
         let id = |cert: &Cert| cert.body().device;
         let (this, _, this_key) = ada.client();
@@ -865,7 +1220,12 @@ pub(crate) mod tests {
         let (barred, ..) = bob.client();
         let (forged, ..) = bob.device(DeviceKind::Client, &SigningKey::generate(), None);
         let (outside, ..) = carol.client();
-        let certs = vec![this, laptop, browser, phone, barred, forged, outside];
+        let (bot, bot_hpke, _) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (unlisted, ..) = ada.device(DeviceKind::Service, &this_key, Some(id(&this)));
+        let (fake, ..) = ada.device(DeviceKind::Service, &SigningKey::generate(), None);
+        let certs = vec![
+            this, laptop, browser, phone, barred, forged, outside, bot, unlisted, fake,
+        ];
 
         let mut body = first(ada.id).body().clone();
         let mut bobs = member(bob.id, "bob", bob.master.public_key());
@@ -875,6 +1235,7 @@ pub(crate) mod tests {
             .push(member(carol.id, "carol", carol.master.public_key()));
         let channel = ChannelId::generate();
         body.channels = vec![channel_of(channel, &[ada.id, bob.id])];
+        body.channels[0].services = vec![id(&certs[7]), id(&certs[9])];
         let roster = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
         let own = Own {
             account: ada.id,
@@ -884,6 +1245,7 @@ pub(crate) mod tests {
             ids: certs.iter().map(id).collect(),
             certs: certs.clone(),
             revocations: Vec::new(),
+            records: Vec::new(),
         };
 
         let given: BTreeMap<DeviceId, [u8; 32]> =
@@ -894,7 +1256,11 @@ pub(crate) mod tests {
 
         assert_eq!(
             given,
-            BTreeMap::from([(id(&certs[1]), laptop_hpke), (id(&certs[3]), phone_hpke)])
+            BTreeMap::from([
+                (id(&certs[1]), laptop_hpke),
+                (id(&certs[3]), phone_hpke),
+                (id(&certs[7]), bot_hpke),
+            ])
         );
         let elsewhere = admitted(
             &own,
@@ -920,6 +1286,7 @@ pub(crate) mod tests {
                 recipient: None,
                 space,
                 envelope: vec![u8::try_from(number).unwrap()],
+                report: true,
             };
             put(&state, ChannelId::generate(), outgoing);
         }
@@ -939,14 +1306,15 @@ pub(crate) mod tests {
     }
 
     /// An agent's run sends only the envelopes of its space, in the order they went into the
-    /// outbox; a person's sends every one.
+    /// outbox; a person's sends every one. A receipt goes with `report` false, a message with
+    /// `report` true.
     #[test]
     fn queued_envelopes_are_those_of_the_scope_in_order() {
         let dir = TestDir::new("send-queued");
         let state = State::open(&dir).unwrap();
         let (own, other) = (SpaceId::generate(), SpaceId::generate());
         let mut messages = Vec::new();
-        for space in [own, other, own] {
+        for (space, report) in [(own, true), (other, true), (own, false)] {
             let channel = ChannelId::generate();
             let msg_id = MessageId::generate();
             let header = Header {
@@ -968,15 +1336,21 @@ pub(crate) mod tests {
                     payload: vec![1, 2, 3],
                 }
                 .to_cbor(),
+                report,
             };
             put(&state, channel, outgoing);
-            messages.push((msg_id, channel));
+            messages.push((msg_id, channel, report));
         }
-        let ids = |scope| -> Vec<(MessageId, ChannelId)> {
+        let ids = |scope| -> Vec<(MessageId, ChannelId, bool)> {
             queued(&state, scope)
                 .unwrap()
                 .iter()
-                .map(|queued| (queued.outgoing.msg_id, queued.channel))
+                .map(|queued| {
+                    let Ok(Frame::Send { report, .. }) = Frame::from_cbor(&queued.frame) else {
+                        panic!("no send frame");
+                    };
+                    (queued.outgoing.msg_id, queued.channel, report)
+                })
                 .collect()
         };
 

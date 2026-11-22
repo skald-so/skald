@@ -70,6 +70,17 @@ pub enum Role {
     Member = 2,
 }
 
+impl Role {
+    /// The role `item` holds as `field`.
+    pub(crate) fn decode(item: &Item<'_>, field: &'static str) -> Result<Self, DecodeError> {
+        match item.uint(field)? {
+            1 => Ok(Self::Admin),
+            2 => Ok(Self::Member),
+            other => Err(cbor::field_error(field, FieldProblem::Value(other))),
+        }
+    }
+}
+
 /// A `service` device of the space, sending as `space/owner/agent`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceAgent {
@@ -105,6 +116,8 @@ pub struct Policy {
     pub ceilings: Ceilings,
     /// The history key's longest age in seconds, at least [`HISTORY_MIN`].
     pub history: u64,
+    /// The organization's domain, whose DNS lists its accounts' fingerprints.
+    pub domain: Option<String>,
     pub unknown: Unknown,
 }
 
@@ -154,7 +167,7 @@ impl Mode {
 }
 
 impl Policy {
-    /// A new space's policy: `read-only` for both ceilings and a history of 30 days.
+    /// A new space's policy: `read-only` for both ceilings, a history of 30 days and no domain.
     pub fn new_space() -> Self {
         Self {
             ceilings: Ceilings {
@@ -162,6 +175,7 @@ impl Policy {
                 service: Mode::ReadOnly,
             },
             history: NEW_SPACE_HISTORY,
+            domain: None,
             unknown: Unknown::default(),
         }
     }
@@ -307,13 +321,7 @@ impl Codec for Member {
         Ok(Self {
             account: fields.required(1, "member.account")?.id("member.account")?,
             handle: fields.required(2, "member.handle")?.name("member.handle")?,
-            role: match fields.required(3, "member.role")?.uint("member.role")? {
-                1 => Role::Admin,
-                2 => Role::Member,
-                other => {
-                    return Err(cbor::field_error("member.role", FieldProblem::Value(other)));
-                }
-            },
+            role: Role::decode(fields.required(3, "member.role")?, "member.role")?,
             master: fields
                 .required(4, "member.master")?
                 .fixed("member.master")?,
@@ -409,6 +417,7 @@ impl Codec for Policy {
                 cbor::array(ceilings.map(|mode| cbor::uint(mode.value()))),
             )
             .put(2, cbor::uint(self.history))
+            .put_some(4, self.domain.as_deref().map(cbor::text))
             .finish()
     }
 
@@ -430,12 +439,17 @@ impl Codec for Policy {
                 },
             ));
         }
+        let domain = fields
+            .take(4)
+            .map(|item| item.text("policy.domain").map(str::to_owned))
+            .transpose()?;
         Ok(Self {
             ceilings: Ceilings {
                 member: mode(member)?,
                 service: mode(service)?,
             },
             history,
+            domain,
             unknown: fields.unknown(),
         })
     }

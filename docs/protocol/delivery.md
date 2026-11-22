@@ -22,6 +22,7 @@ A message reaches an agent in three hops: the sending device → the server → 
 
 - Every hop is at-least-once with deduplication. There is no end-to-end exactly-once.
 - Each side keeps a message until the next one has it: the sending device in its outbox, the server in mailboxes, the recipient device in its local store, for an agent until the message expires there: [Device to agent](#device-to-agent).
+- The server does not give a channel message back to its sending device. That device hands each of its channel messages the server stored to its own agents as a recipient device does: [Device to agent](#device-to-agent).
 - Every message ends in a status the sender sees: [Receipts](#receipts).
 - `read` means handed to the agent: it shows neither that the agent acted on the message nor that it did not. Work that must be done goes through the [queue](queues.md#tasks).
 
@@ -30,7 +31,7 @@ Client and server exchange envelopes, answers and statuses as frames: CBOR items
 
 ```cddl
 frame = auth / send / stored / send-refused / sync / message / status / ack / batch / space-notice /
-        history / history-stored / history-refused
+        history / history-stored / history-refused / link-notice
 
 ; client → server
 auth = [10, challenge: bstr, device: id, signature: bstr .size 64]
@@ -44,14 +45,16 @@ stored = [2, send-key, timestamp]
 send-refused = [3, send-key, problem: tstr]
 message = [5, seq, envelope: bstr .cbor envelope]
 status = [6, seq, delivery-status]
-batch = [8, [* (message / status / space-notice)]]
+batch = [8, [* (message / status / space-notice / link-notice)]]
 space-notice = [9, space: id]
 history-stored = [12, upload: uint]
 history-refused = [13, upload: uint, problem: tstr]
+link-notice = [14]
 
 history-item = [1, link: bstr .cbor history-link] /
                [2, wrap: bstr .cbor history-wrap] /
-               [3, msg_id: id, entry: bstr .cbor history-entry]
+               [3, msg_id: id, entry: bstr .cbor history-entry] /
+               [4, queue-key: bstr .cbor queue-key]
 
 send-key = [
   msg_id: id,
@@ -72,47 +75,50 @@ timestamp = uint       ; seconds since the Unix epoch
 ```
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
-- `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
-- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)); the client fetches it over HTTPS. It is not a mailbox entry: on connecting, the client fetches what it missed.
+- `history`: an item of the channel's history, or its [queue key object](queues.md#queue-key-object), to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
+- `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)), or a member's account was deleted (`deleteAccount` in the OpenAPI spec); the client fetches it over HTTPS, and for a space it does not follow, the anchors objects ([membership.md](membership.md#anchors)). It is not a mailbox entry: on connecting, the client fetches what it missed.
+- `link-notice`: a device of the account has opened a run to be linked ([membership.md](membership.md#link-code)); the client fetches the account's waiting devices over HTTPS (`getWaitingDevices` in the OpenAPI spec). Like `space-notice`, it is not a mailbox entry. Only connections of device sessions get it.
 - The client and the server each ignore a frame of a type they do not know.
 - The server closes a connection on a frame that does not decode, with code 1007 (invalid frame payload data).
 - On each transport:
   - WebSocket: every frame, both ways, on one connection.
   - HTTPS: each request proves its device ([Connecting](#connecting)). `send` and `ack` are request bodies; the answer to a `send` is its `stored` or `send-refused`. A long-poll request's body is a `sync` with the cursor; its answer is a `batch` ([Mailbox](#mailbox)).
-  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status` or `space-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
+  - SSE: a stream that proves its device as an HTTPS request does. Its events ([Encoding](README.md#encoding)): a `message`, `status`, `space-notice` or `link-notice`, or the empty `batch` that ends catch-up ([Mailbox](#mailbox)); the event's `id` is the `seq` of a `message` or `status`. `Last-Event-ID` states the cursor. While idle, the stream sends a comment line as a keep-alive at the server's interval, so a proxy that cuts idle streams keeps it open. The client sends `send` and `ack` over HTTPS.
 - HTTPS paths and parameters belong to the OpenAPI spec, [api/openapi.json](../../api/openapi.json). A refusal of the request itself, such as an unsupported protocol version, is a problem details object: [Server answers](README.md#server-answers).
 
 ## Connecting
 A WebSocket carries other frames only once its first frame, `auth`, proves the key of the connection's device; an HTTPS request, once its proof does.
 
-- Before opening it, the client gets a challenge for its device session: `POST /session/challenge`.
+- Before opening it, the client gets a challenge for its device session, or for its service token on a `service` device: `POST /session/challenge`. A service token has permissions, `send`, `receive` and `queues`, and the channels of its device's grant: `createServiceToken` in the [OpenAPI spec](../../api/openapi.json).
 - `auth` names the device and signs, with the label `skald auth`, `["skald auth", challenge, origin]`. `origin` is the origin [[RFC 6454](https://www.rfc-editor.org/rfc/rfc6454)] of the server URL the client connects to, such as `https://skald.example`, its ASCII serialization as a byte string.
 - The server takes the connection, as the device's, only if:
   - `auth` is the first frame and comes within a few seconds of the opening;
-  - the challenge is one it issued less than a minute ago to a session that has not ended, and no connection or request has used it before; a challenge works once, used or refused;
-  - the device is a `client` device with a certificate on the server, of the challenge's session's account, and not revoked ([Revocation](membership.md#revocation));
+  - the challenge is one it issued less than a minute ago to a session or service token that has not ended, and no connection or request has used it before; a challenge works once, used or refused;
+  - the device has a certificate on the server and is not revoked ([Revocation](membership.md#revocation)), and is a `client` device of the challenge's session's account, or the `service` device of its service token;
   - `signature` verifies with the device's signing key over `origin` set to the origin of the server's public address.
 - Otherwise it closes the connection with code 1008 (policy violation) and the reason, checked in this order:
 
 | Reason | The connection |
 |---|---|
 | `auth-required` | Sends another frame first, or none in time |
-| `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session |
-| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, or a revoked one |
+| `challenge-refused` | Names a challenge that is unknown, used, expired or of an ended session or service token |
+| `device-refused` | Names a device that is not a `client` device with a certificate of the session's account, nor the service token's `service` device with a certificate, or a revoked one |
 | `signature-refused` | Carries a signature that does not verify over the server's public address |
 
-- A connection closes, with code 1008 and the reason `session-ended`, when the session of its challenge ends, and with the reason `device-refused` when its device is revoked.
+- A connection closes, with code 1008 and the reason `session-ended`, when the session or service token of its challenge ends, a token at its expiry too, with the reason `device-refused` when its device is revoked, and with the reason `account-deleted` when its device's account is deleted.
+- A connection of a service token reads and acks its device's mailbox only with the token's `receive` permission: without it, the server ignores its `sync` and `ack` and sends it no `message` or `status`. It gets the `space-notice` of the token's space only, and no `link-notice`.
 - A server that fails to check a proof, such as when its database fails, or that cannot take a proved connection yet, closes the connection with code 1011 (internal error) and the reason `server-error`.
 
-Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session:
+Over HTTPS, each request carries a proof in the header `Skald-Device-Proof`, base64url without padding, and the bearer token of a device session or a service token:
 
 ```cddl
 request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 ```
 
 - `signature` signs, with the label `skald request`, `["skald request", challenge, origin]`, `origin` as in `auth`. A different label keeps a proof from serving as `auth` and the other way round.
-- The server checks it as `auth`, and also that the challenge is of the bearer token's session. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session.
-- A waiting long-poll ends with the refusal a new request would get when its session ends or its device is revoked; an SSE stream ends.
+- The server checks it as `auth`, and also that the challenge is of the bearer token's session or service token. A request it does not take reads, acks and stores nothing: `401` with the reason as its problem, `auth-required` for a missing or malformed proof, or `not-signed-in` for a token of no device session or service token that has not ended.
+- A long-poll, an `ack` and an SSE stream of a service token without the `receive` permission are refused with `403`, reading and acking nothing.
+- A waiting long-poll ends with the refusal a new request would get when its session or service token ends or its device is revoked; an SSE stream ends.
 
 ## Send
 - The sending device keeps each envelope in its outbox and sends it, with backoff between attempts, until the server answers `stored` or `send-refused`. A retry carries the same bytes.
@@ -124,13 +130,34 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 | Problem | The envelope |
 |---|---|
 | `version-mismatch` | Has a `v` other than the version of its connection or request |
-| `not-a-member` | Comes from a device that may not send in `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
+| `not-a-member` | Comes from a device that may not send in `channel`, such as on a service token without the `send` permission or that does not list `channel`; under `mls`, holds no MLS message of `channel`, an application message from a device that is no member of the current epoch ([Envelope](README.md#envelope)), or a Commit from a device that may not commit it, a Commit the server cannot process, a proposal, or anything but the first Commit before the server has the channel's first GroupInfo ([Commit ordering](membership.md#commit-ordering)) |
 | `epoch-mismatch` | Holds a Commit for an epoch other than the channel's current one ([Commit ordering](membership.md#commit-ordering)) |
-| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
+| `unknown-recipient` | Names in `recipients` a device that cannot receive in `channel`, such as a `service` device without a token that has not ended, has the `receive` permission and lists `channel`; under `mls`, is a Welcome without `recipients`, or another envelope with them ([Envelope](README.md#envelope)) |
 | `too-large` | Has a payload over the server's limit (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 | `quota-exceeded` | Is over a limit of its space (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
+| `rate-limited` | Is a message over its sending device's rate on the server, counted as for `quota-exceeded`; never a handshake message ([Mailbox](#mailbox)) (cloud: [architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)) |
 
 - A refused envelope is not stored. The client does not retry it and tells its user.
+
+### From a stateless service agent
+A [stateless](membership.md#service-device) `service` device keeps no outbox and is in no MLS group:
+- It takes the channel's latest GroupInfo from the server and checks it as a linked browser does before it writes ([Wraps](membership.md#wraps)); every member it lists must be admitted, or nothing is sent.
+- It seals one `hpke` envelope to each member device the GroupInfo lists, with the same `msg_id`. The content carries the token's grant and no `counter`.
+- Its content has `hops` 0: it keeps no messages handed over in earlier runs, so the [limit on replies without a human](README.md#content) does not stop its loops.
+- The run fails unless the server answers `stored` to every envelope within it; nothing retries later.
+
+### Copies to service agents
+A member device's message with an `a2a` body also goes under [`hpke`](README.md#scheme-hpke), with the same `msg_id`, to each `service` device that:
+- has a `service-agent` entry in the latest revision the sending device accepted, but is not in the channel's `services` there, even one that has not joined the group yet;
+- has a valid certificate ([Device checks](membership.md#device-checks));
+- has a grant from the server that lists `channel` and passes the checks of [Service grant](README.md#service-grant);
+- and only when the content has no `to`, or `to` names that entry.
+
+- The server gives the space's members the grants of its service tokens that have not ended and have the `receive` permission: `listServiceGrants` in the [OpenAPI spec](../../api/openapi.json). This is its word; the device checks each grant itself.
+- A `service` device sends no copies: a service token gets no grants.
+- Each copy's content has the `counter` the sending device keeps for that recipient device in the channel.
+- The sending device warns its user, naming the agent and the channel, when it starts sending a channel's copies to a `service` device it sent none of them before.
+- A refused copy is not retried; the device says so, and the message itself stays sent.
 
 ## Mailbox
 - The server keeps a mailbox for each device. An entry is a `message`, an envelope for the device, or a `status`, a server status for the device as a sender.
@@ -146,7 +173,8 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
   - On HTTPS, catch-up ends at the first empty answer to a long-poll with a wait of 0.
 - **Long-poll:** a request states its cursor and a wait in seconds, cut to the server's maximum. Its answer is a `batch`:
   - the entries after the cursor in `seq` order, up to a server limit per answer;
-  - a `space-notice` of each space with a roster revision listing the device's account stored since the device's previous long-poll answer, every such space at its first, so none is lost between requests.
+  - a `space-notice` of each space with a roster revision listing the device's account stored, or a member's account deleted, since the device's previous long-poll answer, every such space at its first, so none is lost between requests;
+  - a `link-notice` if a run of a device of the account has opened since the device's previous long-poll answer and is still open.
 
   It answers at once when it has some or the wait is 0; otherwise with the first to arrive within the wait, through any server instance, or empty at the wait's end.
 - A device MAY hold several connections. The server sends each of them the entries in `seq` order.
@@ -159,6 +187,8 @@ request-proof = [challenge: bstr, device: id, signature: bstr .size 64]
 - The server deletes an expired entry and does not send it.
 - The server deletes an envelope once no mailbox entry refers to it.
 
+A stateless `service` device writes nothing: it acks an entry only once it has shown it, so a run that dies in between shows it again at the next one. It keeps no counters, so it does no [gap detection](#gap-detection) and drops a repeated `msg_id` only within a run. As a long-poll acks its cursor, such a run takes one long-poll answer.
+
 A recipient device drops, without a receipt:
 - an entry with a `seq` up to its cursor: a redelivery after a lost ack;
 - an `mls` message whose key it has already used: a replay;
@@ -166,22 +196,29 @@ A recipient device drops, without a receipt:
 
 ## Device to agent
 - A recipient device hands a message over to the agents it is for: the agent in `to` if it runs on this device; without `to`, each agent of this device in the channel. Content to a [person](agents.md#person) goes to no agent.
-- The agent's inbound mode decides first, except for an [`ask_user` answer](agents.md#ask_user):
+- The sending device does the same with each of its channel messages, once it takes the server's `stored` of it, in the same step, so a crash neither loses nor repeats it: never to the agent that sent it, and to its person unless the person sent it. Its trust level is `own`.
+  - Their `read` and `replied`: [Receipts](#receipts).
+  - In a channel whose group holds no other device, it sends a message only if one of its agents or its person gets it.
+- The agent's inbound mode decides first, when the device takes the message in, except for an [`ask_user` answer](agents.md#ask_user). The message keeps that decision when the mode changes.
+  - The agent's allowlist admits a sender whatever the mode: an agent's or a person's address, or a member's handle for all of that member's agents and its person. The device hands its messages over.
   - `accept`: the device hands the message over;
-  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`;
-  - `refuse`: the device issues `refused`.
+  - `hold`: the device issues `held` and keeps the message until a human decides; then it hands the message over or issues `refused`. A held message whose wait ends undecided gets `refused`, with a reason saying no one decided;
+  - `refuse`: the device hands the message to no agent and, for a message `to` the agent, issues `refused`.
 - The [trust level](membership.md#trust-levels) of the sending device sets how the text reaches the agent's session:
   - `own`: the device MAY put the text into the session, labelled as a request from the person's own agent;
   - `peer` and `service`: the device puts only a signal into the session, a fixed text, without the sender or the text, that tells the agent messages wait; the agent takes the text with the `inbox` tool, labelled as data from its sender.
+  - `inline`, the device user's setting per channel and level, `peer` or `service`: the device puts the text into the session at once, labelled as data from its sender, so the agent needs no `inbox` call. It counts as handed over as an `own` text does.
 - A way into the session whose text other local accounts can read carries only a signal, whatever the level.
+- What the device puts into a session at once stays within the agent CLI's limit, such as Claude Code's hook output limit of 10,000 characters. Messages that do not fit wait for the next handover; one longer than the limit is cut and ends with how to read it whole: `inbox` with its reference.
 - How a handover wakes the agent's session is the device user's setting per channel and trust level: `now` wakes it at once, `batch` once per window with every message that arrived in it, `pull` never, so messages wait for `inbox`. The default is `now`.
   - A device MUST NOT use a mode more waking than the space [policy](membership.md#policy)'s `wakes` for the level, in the order `now`, `batch`, `pull`; under `batch`, it uses `batch` with a window at least as long as the policy's, or `pull`.
   - An [`ask_user` answer](agents.md#ask_user) wakes the session at once in every mode; a task's [signal](queues.md#running-a-task) follows the mode as a message from its sender does.
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
+  - A handover into a running session counts only once the session confirms that the model got the message, or the way of handing over confirms it by construction. Until then the device hands the message over no other way; if the session reports that it did not take it, the message waits for another handover.
 - The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
 - Each handover carries the `msg_id` or its reference. An agent or adapter that keeps earlier ones drops a repeat by its `msg_id`: a later message can get an earlier one's reference. The reference is the leading characters of the base32 ([RFC 4648](https://www.rfc-editor.org/rfc/rfc4648#section-6), lowercase, without padding) of SHA-256 of the `msg_id`'s 16 bytes: at least 4, more only where two messages the device keeps would share them. Any device computes it from the `msg_id`.
-- After marking a message with `to` handed over, the device issues `read`.
+- After marking a message with `to` handed over, the device issues `read`, once.
 - Only `a2a`, [`task-result`](queues.md#results) and [`ask-answer`](agents.md#ask_user) bodies are handed over as messages; receipts are not.
 - How each agent and surface takes messages: [Delivery to agent sessions](../agent-sessions.md).
 
@@ -193,7 +230,7 @@ A recipient device drops, without a receipt:
 | `expired` | A recipient device's entry expired before its ack | Server | A `status` entry |
 | `held` | The `to` agent's inbound mode holds the message for a human | The `to` agent's device | A receipt message |
 | `refused` | The `to` agent's inbound mode or a human refused the message | The `to` agent's device | A receipt message |
-| `read` | The message was handed to the `to` agent | The `to` agent's device | A receipt message |
+| `read` | The message was handed to the `to` agent, as confirmed ([Device to agent](#device-to-agent)) | The `to` agent's device | A receipt message |
 | `replied` | The `to` agent answered | The reply itself | The reply: content from the `to` agent whose `reply_to` is the message's `msg_id` |
 
 - **Server statuses** (`stored`, `delivered`, `expired`) are per recipient device and unsigned: the sending device takes them on the server's word, over its authenticated connection.
@@ -203,6 +240,7 @@ A recipient device drops, without a receipt:
   - `from` is the `to` agent of the messages it reports on; `to` is their `from`; `hops` is 0.
   - It goes in the scheme its messages came in: under `mls` to the channel, under `hpke` to their sending device.
   - A device issues them only for messages whose `to` is an agent, not a [person](agents.md#person).
+- A device issues none for its own messages ([Device to agent](#device-to-agent)): it takes their `read` when it hands one to its `to` agent, their `refused` when that agent's mode refuses one, and their `replied` when it takes its own reply's `stored`.
 - The sending device takes a receipt or a reply as a status only from the message's `to` agent.
 - Per recipient device a message goes `stored` → `delivered` or `expired`. For the `to` agent it goes `read`, `refused`, or `held` → `read` or `refused`; `replied` follows `read`.
 - Every stored envelope sent with `report` true ends with each recipient device at `delivered` or `expired`. A refused send ends in its problem.
@@ -272,5 +310,6 @@ attachment = {
   - a sender's latest messages in a channel under a scheme, until it sends another there under it; for a message with `to`, the sender still sees no `read`;
   - under `mls`, the messages a sending device sent after the recipient joined and before the first one the recipient got;
   - content without `counter`.
+- A stateless `service` device keeps nothing between runs, so the server can give again an `hpke` envelope it acked, and the agent acts on it again.
 - Attachments carry a blob ID, not a URL. A sender, such as a malicious channel member or an agent steered by prompt injection, cannot make a recipient device fetch from a host of its choice: that would leak the device's credentials, IP address and timing, or reach internal addresses (SSRF). `digest` is checked only after the download, so it does not prevent this.
 - Everything the server sees, delivery included: [threat model, "The server sees"](../threat-model.md#the-server-sees).

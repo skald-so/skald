@@ -3,7 +3,7 @@
 use crate::gaps::{marked, second_dropped};
 use crate::kit::received;
 use crate::lines::agent_line_of;
-use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
+use crate::{Agents, CLAUDE, assert_handed_line, assert_not_handed};
 
 /// The texts Bob's device sends; none is anywhere else.
 const SAYS: [&str; 3] = [
@@ -32,8 +32,8 @@ fn message_after_a_missing_one_reaches_the_agent_marked() {
 
     let claude = agents.run_as(CLAUDE).shown();
 
-    assert_handed_once(&claude, SAYS[0], first);
-    assert_handed_once(&claude, SAYS[2], third);
+    assert_handed_line(&claude, SAYS[0], first);
+    assert_handed_line(&claude, SAYS[2], third);
     assert_not_handed(&claude, SAYS[1]);
     assert!(
         !agent_line_of(&claude, SAYS[0]).after_missing,

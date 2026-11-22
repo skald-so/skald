@@ -23,10 +23,10 @@
 //!
 //! The CLI, as these tests use it, beside the commands of the tests of roster revisions, of
 //! creating channels and of agent isolation:
-//! - `skald send <channel> <text>`: sends `<text>` to the channel whose ID is `<channel>`; it says
-//!   the message's ID and a line that says `stored` once the server has stored its envelope, or the
-//!   problem the server refused it with; as an agent, once stored, only `sent #<ref>`, as the tests
-//!   of compact output say (`compact_output/main.rs`);
+//! - `skald send --all --channel <channel> <text>`: sends `<text>` to the channel whose ID is
+//!   `<channel>`; it says the message's ID and a line that says `stored` once the server has stored
+//!   its envelope, or the problem the server refused it with; as an agent, once stored, only
+//!   `sent #<ref>`, as the tests of compact output say (`compact_output/main.rs`);
 //! - a run that is left with an envelope the server has not answered fails, its output holding the
 //!   message's ID;
 //! - with no other device in the channel's group, it fails and says `no device` can receive the
@@ -59,6 +59,8 @@ mod machine;
 mod peer;
 #[path = "../channel_groups/played.rs"]
 mod played;
+mod rate;
+mod rate_said;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 #[path = "../channel_messages/talk.rs"]

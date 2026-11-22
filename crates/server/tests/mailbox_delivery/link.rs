@@ -40,14 +40,15 @@ impl Entry {
         }
     }
 
-    /// The entry `push` carries: none for a `space-notice` or a type this version does not know.
+    /// The entry `push` carries: none for a `space-notice`, a `link-notice` or a type this version
+    /// does not know.
     pub fn of(push: Push) -> Option<Self> {
         match push {
             Push::Message { seq, envelope } => {
                 Some(Self::Message(seq.get(), envelope.bytes().to_vec()))
             }
             Push::Status { seq, status } => Some(Self::Status(seq.get(), status)),
-            Push::SpaceNotice { .. } | Push::Unknown(_) => None,
+            Push::SpaceNotice { .. } | Push::LinkNotice | Push::Unknown(_) => None,
         }
     }
 }
@@ -101,6 +102,29 @@ impl Link {
             socket: Socket::stating(server, flow, person, &person.laptop, version),
             pending: VecDeque::new(),
         }
+    }
+
+    /// `socket`'s connection, such as a `service` device's on its token. The tests of delivering a
+    /// mailbox make none.
+    #[allow(dead_code)]
+    pub fn on(socket: Socket) -> Self {
+        Link {
+            socket,
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// The connection of `person`'s certified laptop to a new instance of `flow`'s server, which
+    /// states cursor 0 in its first `sync` and gets nothing in catch-up; with the instance, which
+    /// stops once dropped. The tests of delivering a mailbox make none.
+    #[allow(dead_code)]
+    #[track_caller]
+    pub fn elsewhere(flow: &DeviceFlow, person: &Person) -> (Server, Self) {
+        let other = flow.stand.instance(&[], &[]);
+        let mut link = Self::stating(&other, flow, person, PROTOCOL_VERSION);
+        link.sync(0);
+        assert_eq!(link.catch_up(), [], "catch-up on another instance");
+        (other, link)
     }
 
     /// The connection of `person`'s certified laptop, which states `cursor` in its first `sync`

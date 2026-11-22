@@ -5,10 +5,10 @@
 use skald_proto::Role;
 
 use crate::aged::{DAY, received_ahead, with_period};
-use crate::chain::{removes_from_channel, uploads_link};
-use crate::devices::{BOB, CAROL, said_by, second_machine};
-use crate::kit::{Change, group, issue_channel, latest, received, revise};
-use crate::reading::{admits, assert_history, rotates, sends, shown_history};
+use crate::chain::removes_from_channel;
+use crate::devices::{BOB, CAROL, adds_ada_without_history, said_by, second_machine};
+use crate::kit::{group, received};
+use crate::reading::{assert_history, sends, shown_history};
 use crate::talk::Talk;
 use crate::world::ACME;
 
@@ -119,38 +119,9 @@ fn new_device_of_a_member_without_history_shows_the_messages_from_its_account_s_
         false,
         (Role::Admin, |_| {}),
     );
+    let channel = adds_ada_without_history(&mut talk, BEFORE_ADA);
     let space = talk.space.id;
-    let cloud = &talk.world.cloud;
-    let bob = &mut talk.played[BOB];
-    let channel = issue_channel(cloud, &bob.person.token, space);
     let at = (space, channel);
-    let alone = Change {
-        channels: vec![(channel, vec![&bob.person])],
-        ..Change::default()
-    };
-    revise(
-        cloud,
-        &latest(cloud, &bob.person.token, space),
-        &bob.person,
-        &alone,
-    );
-    bob.creates_alone(cloud, at);
-    bob.uploads_group_info(cloud, at);
-    said_by(&mut talk, BOB, (at, 1), BEFORE_ADA[0]);
-    let cloud = &talk.world.cloud;
-    assert_eq!(
-        rotates(cloud, &mut talk.played[BOB], at),
-        2,
-        "the epoch of Bob's empty Commit"
-    );
-    said_by(&mut talk, BOB, (at, 2), BEFORE_ADA[1]);
-    let cloud = &talk.world.cloud;
-    admits(cloud, &talk.played[BOB].person, at, (&talk.ada, false));
-    let bob = &mut talk.played[BOB];
-    bob.take_in(cloud);
-    bob.welcomes(cloud, at, &talk.ada);
-    uploads_link(cloud, bob, at, (3, 2));
-    received(&talk.ada.machine);
     let after = vec![
         said_by(
             &mut talk,

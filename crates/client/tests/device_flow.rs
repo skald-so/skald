@@ -9,14 +9,14 @@ mod common;
 #[allow(dead_code)]
 #[path = "sign_in/machine.rs"]
 mod machine;
+#[path = "sign_in/recovery.rs"]
+mod recovery;
 
 use std::fs;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::{Stub, cleartext, elsewhere, response};
-use machine::{
-    DEVICES, FIRST_DEVICE, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, YES, bare_skald,
-};
+use machine::{DEVICES, KEY_STORAGE, Machine, NAME, SERVER, SIGN_IN, STATE_DIR, bare_skald};
 
 const TOKEN: &str = "tok-stub-0123456789abcdefghijkl";
 const USERNAME: &str = "ada-stub-username";
@@ -66,14 +66,19 @@ fn registered() -> String {
     )
 }
 
-/// A stub that signs every machine in: each code is approved at its first poll, and each device's
-/// registration is taken.
+/// A stub that signs every machine in: each code is approved at its first poll, each device's
+/// registration is taken, and the account has a master key, so the device waits for linking.
 fn approving(path: &str) -> String {
     match path {
         "/auth/device" => grant(60),
         "/auth/token" => token(),
         "/session" => session(),
         "/devices" => registered(),
+        "/account/master" => response(
+            "200 OK",
+            "application/json",
+            r#"{"master":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","record":null,"backup":null}"#,
+        ),
         _ => response("404 Not Found", "text/plain", ""),
     }
 }
@@ -264,14 +269,6 @@ fn state_directory_defaults_to_the_platforms() {
     assert!(stderr.contains(STATE_DIR), "{stderr}");
 }
 
-/// The requests among `stub`'s that carry a session token.
-fn authorized(stub: &Stub) -> usize {
-    stub.requests()
-        .iter()
-        .filter(|head| head.contains("\nauthorization:"))
-        .count()
-}
-
 #[test]
 fn token_goes_only_to_the_server_it_came_from_even_when_the_state_names_another() {
     let first = Stub::start(approving);
@@ -285,16 +282,22 @@ fn token_goes_only_to_the_server_it_came_from_even_when_the_state_names_another(
         .execute("UPDATE session SET server = ?1", [&first.url])
         .unwrap();
     drop(state);
-    let before = authorized(&first);
+    let before = first.requests().len();
 
     let finished = machine.sign_in(&first.url).finish();
 
     assert!(finished.success, "{finished:?}");
-    assert_eq!(
-        authorized(&first),
-        before + 1,
-        "only the new session's token"
-    );
+    // Only the new session's token: no request with a token comes before the new code, and the
+    // device then asks for its session and the account's master key with it.
+    let since = &first.requests()[before..];
+    let path = |head: &String| head.split(' ').nth(1).unwrap_or_default().to_owned();
+    assert_eq!(since.first().map(path).as_deref(), Some("/auth/device"));
+    let paths: Vec<String> = since
+        .iter()
+        .filter(|head| head.contains("\nauthorization:"))
+        .map(path)
+        .collect();
+    assert_eq!(paths, ["/session", "/account/master"], "{since:?}");
     assert_eq!(requests_to(&first, "/auth/device").len(), 2);
 }
 
@@ -350,13 +353,14 @@ fn certifying(path: &str, devices: fn() -> String) -> String {
 
 /// Signs `machine` in on `stub` as the account's first device, which holds its certificate then.
 fn sign_in_first(machine: &Machine, stub: &Stub) {
-    let args = [SIGN_IN, SERVER, &stub.url, FIRST_DEVICE, YES];
+    let args = [SIGN_IN, SERVER, &stub.url];
     let finished = machine.start(&args).finish();
     assert!(finished.success, "{finished:?}");
     assert!(
         finished.stdout.contains("holds its certificate"),
         "{finished:?}"
     );
+    recovery::shown_if_waiting(machine, &stub.url, &finished);
 }
 
 /// Runs `skald devices` on `machine` with `args` before it; fails unless the run fails and its

@@ -5,7 +5,7 @@ use skald_proto::MessageId;
 
 use crate::agents::{Agents, CLAUDE};
 use crate::front::Answers;
-use crate::lines::{SENT, assert_says_sent};
+use crate::lines::{assert_says_sent, says_sent};
 use crate::machine::Finished;
 use crate::said::send_as;
 use crate::talk::assert_read;
@@ -17,8 +17,8 @@ const REFUSED: &str = "send test: this one the server refuses";
 /// The problem the front refuses a message with, in place of the server.
 const REFUSAL: &str = "not-a-member";
 
-/// Runs `skald --agent <CLAUDE> send <channel> <text>` in `~/work/acme`; fails unless it sent one
-/// message. Gives the run and that message's `msg_id`.
+/// Runs `skald --agent <CLAUDE> send --all --channel <channel> <text>` in `~/work/acme`; fails
+/// unless it sent one message. Gives the run and that message's `msg_id`.
 #[track_caller]
 fn claude_sends(agents: &Agents, text: &str) -> (Finished, MessageId) {
     let (finished, sent) = send_as(agents, (CLAUDE, &[]), text);
@@ -59,6 +59,5 @@ fn agent_s_send_prints_only_sent_when_stored_and_the_full_report_when_refused() 
     for part in [id.to_string(), channel, REFUSAL.to_owned()] {
         assert!(shown.contains(&part), "no {part}: {refused:?}");
     }
-    let said_sent = (shown.lines()).any(|line| line.trim().starts_with(&format!("{SENT} #")));
-    assert!(!said_sent, "{refused:?}");
+    assert!(!says_sent(&shown), "{refused:?}");
 }

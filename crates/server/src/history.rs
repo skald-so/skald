@@ -3,17 +3,24 @@
 //! session alone uploads none. The server keeps the first link per channel, epoch and `prev` and
 //! the first wrap per channel, epoch and recipient, each from a member device of its epoch, and the
 //! first entry per sending device and `msg_id`, of the channel's current or previous epoch, from a
-//! member device of the current one. It gives them, as the bytes it got, to sessions of the
-//! accounts the latest revision lists as the channel's members; to those without `history`, only
-//! from their account's join ("Access"). It refuses links and wraps of epochs before the channel's
-//! cutoff, which the history retention sets ([`crate::history_retention`]).
+//! member device of the current one, and no wrap to a deleted account's recovery key or browsers.
+//! It gives them, as the bytes it got, to sessions of the accounts the latest revision lists as the
+//! channel's members; to those without `history`, only from their account's join ("Access"). It
+//! refuses links and wraps of epochs before the channel's cutoff, which the history retention sets
+//! ([`crate::history_retention`]).
+//!
+//! Devices upload a channel's queue key objects the same way (`docs/protocol/queues.md`, "Queue key
+//! object"): the server keeps the first per channel and epoch, of an epoch the channel has had, from
+//! a member device of that epoch, and gives it, as the bytes it got, to devices that may send in the
+//! channel, each proving its key.
 
 use axum::Json;
 use axum::extract::{Path, State};
-use axum::response::IntoResponse;
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use skald_proto::{
-    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, Roster,
-    SpaceId, WrapRecipient,
+    Cbor as _, ChannelId, Frame, HistoryEntry, HistoryItem, HistoryLink, HistoryWrap, QueueKey,
+    Roster, SpaceId, WrapRecipient,
 };
 use sqlx::{PgConnection, PgPool};
 
@@ -21,7 +28,9 @@ use crate::AppState;
 use crate::devices::base64;
 use crate::groups::members_channel;
 use crate::mailboxes::{Sender, receiving};
-use crate::refusal::{Answer, Refusal, SignedIn};
+use crate::refusal::{Answer, Caller, Refusal};
+use crate::requests::{InChannel, not_a_member};
+use crate::{database_failed, problem};
 
 /// Why an upload is refused: the problems of "Uploads".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,13 +67,19 @@ enum Upload<'a> {
         msg_id: String,
         bytes: &'a [u8],
     },
+    QueueKey {
+        epoch: u64,
+        bytes: &'a [u8],
+    },
 }
 
 impl Upload<'_> {
     /// The epoch whose member devices may upload it, given the channel's current epoch.
     fn uploaders(&self, current: u64) -> u64 {
         match self {
-            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } => *epoch,
+            Self::Link { epoch, .. } | Self::Wrap { epoch, .. } | Self::QueueKey { epoch, .. } => {
+                *epoch
+            }
             Self::Entry { .. } => current,
         }
     }
@@ -77,6 +92,7 @@ impl Upload<'_> {
                 (cutoff..=current).contains(epoch)
             }
             Self::Entry { epoch, .. } => *epoch == current || *epoch + 1 == current,
+            Self::QueueKey { epoch, .. } => (1..=current).contains(epoch),
         }
     }
 }
@@ -116,6 +132,15 @@ fn decode(item: &HistoryItem, channel: ChannelId) -> Option<Upload<'_>> {
             };
             (decoded.channel, upload)
         }
+        HistoryItem::QueueKey(bytes) => {
+            let object = QueueKey::from_cbor(bytes).ok()?;
+            let body = object.body();
+            let upload = Upload::QueueKey {
+                epoch: body.epoch,
+                bytes,
+            };
+            (body.channel, upload)
+        }
     };
     (of == channel).then_some(upload)
 }
@@ -154,6 +179,10 @@ async fn keep(
     let Some(upload) = decode(item, channel) else {
         return Ok(Err(Problem::Malformed));
     };
+    // A `service` device uploads with its token only in the token's channels.
+    if (sender.token.as_ref()).is_some_and(|token| !token.lists(space, channel)) {
+        return Ok(Err(Problem::NotAMember));
+    }
     // The group's row lock makes a Commit or the retention's deletion wait for the upload, or the
     // upload see it.
     let current: Option<(i64, i64)> = sqlx::query_as(
@@ -185,6 +214,11 @@ async fn keep(
     .await?;
     // A revoked device is no member: its row lock makes a revocation wait for the upload.
     if member != Some((true,)) || receiving(tx, &[sender.device]).await?.is_empty() {
+        return Ok(Err(Problem::NotAMember));
+    }
+    if let Upload::Wrap { recipient, .. } = &upload
+        && to_deleted(tx, recipient).await?
+    {
         return Ok(Err(Problem::NotAMember));
     }
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
@@ -229,9 +263,33 @@ async fn keep(
         .bind(msg_id.as_str())
         .bind(channel)
         .bind(*bytes),
+        Upload::QueueKey { epoch: e, bytes } => sqlx::query(
+            "INSERT INTO queue_keys (channel_id, epoch, object)
+             VALUES ($1::uuid, $2, $3) ON CONFLICT DO NOTHING",
+        )
+        .bind(channel)
+        .bind(epoch(*e))
+        .bind(*bytes),
     };
     insert.execute(&mut *tx).await?;
     Ok(Ok(()))
+}
+
+/// Whether `recipient` is the recovery key or a browser of a deleted account.
+async fn to_deleted(tx: &mut PgConnection, recipient: &WrapRecipient) -> Result<bool, sqlx::Error> {
+    let (query, id) = match recipient {
+        WrapRecipient::Browser(device) => (
+            "SELECT EXISTS (SELECT 1 FROM devices d JOIN accounts a ON a.id = d.account_id
+                 WHERE d.id = $1::uuid AND a.deleted_at IS NOT NULL)",
+            device.to_string(),
+        ),
+        WrapRecipient::Recovery(account) => (
+            "SELECT EXISTS (SELECT 1 FROM accounts WHERE id = $1::uuid AND deleted_at IS NOT NULL)",
+            account.to_string(),
+        ),
+    };
+    let (deleted,): (bool,) = sqlx::query_as(query).bind(id).fetch_one(tx).await?;
+    Ok(deleted)
 }
 
 /// `epoch` as the database keeps it.
@@ -246,11 +304,12 @@ pub(crate) const ENTRIES: u8 = 2;
 
 /// `GET /spaces/<space>/channels/<channel>/history/<links|wraps|entries>`: the channel's items of
 /// `KIND`, base64url without padding, in a JSON object under the kind's name; for sessions of the
-/// channel's members in the latest revision. A member without `history` gets only the links whose
+/// channel's members in the latest revision and service tokens that list the channel. A member
+/// without `history`, and a token whose device's account is none, gets only the links whose
 /// `prev`, and the wraps and entries whose epoch, is at or after its account's join ("Access").
 pub(crate) async fn given<const KIND: u8>(
     State(state): State<AppState>,
-    SignedIn(account): SignedIn,
+    caller: Caller,
     Path(path): Path<(String, String)>,
 ) -> Answer {
     let (name, query) = match KIND {
@@ -269,7 +328,8 @@ pub(crate) async fn given<const KIND: u8>(
             "SELECT entry FROM history_entries WHERE channel_id = $1::uuid",
         ),
     };
-    let (channel, history) = members_channel(&state, &account, &path.0, &path.1).await?;
+    let (channel, history) = members_channel(&state, &caller, &path.0, &path.1).await?;
+    let account = caller.account();
     let failed = |err| Refusal::Database("read a channel's history", err);
     let from = if history {
         0
@@ -294,6 +354,49 @@ pub(crate) async fn given<const KIND: u8>(
         .map(|(bytes,)| base64(bytes))
         .collect();
     Ok(Json(serde_json::json!({ name: items })).into_response())
+}
+
+/// `GET /spaces/<space>/channels/<channel>/queue-keys/<epoch>`: the channel's queue key object of
+/// `epoch`, base64url without padding, for a device that may send in the channel.
+pub(crate) async fn queue_key(
+    State(state): State<AppState>,
+    at: InChannel,
+    Path((_, _, of)): Path<(String, String, String)>,
+) -> Response {
+    let failed = |err| database_failed("read a channel's queue key object", err);
+    match at.sends(&state.db).await {
+        Ok(true) => {}
+        Ok(false) => return not_a_member("The device may not send in the channel."),
+        Err(err) => return failed(err),
+    }
+    let Some(of) = of.parse::<i64>().ok().filter(|of| *of >= 1) else {
+        return no_queue_key();
+    };
+    let found: Result<Option<(Vec<u8>,)>, _> = sqlx::query_as(
+        "SELECT k.object FROM queue_keys k JOIN channels c ON c.id = k.channel_id
+         WHERE k.channel_id = $1::uuid AND c.space_id = $2::uuid AND k.epoch = $3",
+    )
+    .bind(at.channel.to_string())
+    .bind(at.space.to_string())
+    .bind(of)
+    .fetch_optional(&state.db)
+    .await;
+    match found {
+        Ok(Some((object,))) => {
+            Json(serde_json::json!({ "queue_key": base64(&object) })).into_response()
+        }
+        Ok(None) => no_queue_key(),
+        Err(err) => failed(err),
+    }
+}
+
+fn no_queue_key() -> Response {
+    problem(
+        StatusCode::NOT_FOUND,
+        "no-queue-key",
+        "No queue key object",
+        "The server keeps no queue key object of the epoch.",
+    )
 }
 
 /// The epoch whose Commit added `account` to `channel`: the first epoch with a device of the

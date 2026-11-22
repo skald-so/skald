@@ -7,6 +7,10 @@ use crate::id::{AccountId, DeviceId};
 pub const CERT_LABEL: &str = "skald cert";
 /// The label of a certificate's `proof`.
 pub const PROOF_LABEL: &str = "skald proof";
+/// The label of the data a certificate's `ssh` signs.
+pub const SSH_LABEL: &str = "skald ssh";
+/// The namespace of a certificate's `ssh`.
+pub const SSH_NAMESPACE: &str = "skald.so";
 
 /// The kind of a device, fixed in its certificate: `docs/protocol/README.md`, "Identifiers".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,8 +38,11 @@ pub struct CertBody {
     pub issuer: Option<DeviceId>,
     /// Seconds since the Unix epoch, for display.
     pub issued: u64,
-    /// An SSH signature of the device key.
+    /// An SSH signature of the device key, in the binary form of OpenSSH's PROTOCOL.sshsig. Set
+    /// exactly when `github` is.
     pub ssh: Option<Vec<u8>>,
+    /// GitHub's user ID of the user whose SSH key made `ssh`. Set exactly when `ssh` is.
+    pub github: Option<u64>,
     /// Set on the device, 1 to 64 bytes, for display.
     pub name: String,
     pub unknown: Unknown,
@@ -134,19 +141,20 @@ impl Codec for CertBody {
             .put(7, cbor::uint(self.issued))
             .put_some(8, self.ssh.as_deref().map(cbor::bytes))
             .put(9, cbor::text(&self.name))
+            .put_some(10, self.github.map(cbor::uint))
             .finish()
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("cert-body")?;
-        Ok(Self {
+        let body = Self {
             account: fields
                 .required(1, "cert-body.account")?
                 .id("cert-body.account")?,
             device: fields
                 .required(2, "cert-body.device")?
                 .id("cert-body.device")?,
-            kind: DeviceKind::decode(fields.required(3, "cert-body.kind")?)?,
+            kind: DeviceKind::decode(fields.required(3, "cert-body.kind")?, "cert-body.kind")?,
             signing: fields
                 .required(4, "cert-body.signing")?
                 .fixed("cert-body.signing")?,
@@ -164,20 +172,30 @@ impl Codec for CertBody {
                 .take(8)
                 .map(|item| item.bytes("cert-body.ssh").map(<[u8]>::to_vec))
                 .transpose()?,
-            name: name(fields.required(9, "cert-body.name")?)?,
+            name: device_name(fields.required(9, "cert-body.name")?, "cert-body.name")?,
+            github: fields
+                .take(10)
+                .map(|item| item.uint("cert-body.github"))
+                .transpose()?,
             unknown: fields.unknown(),
-        })
+        };
+        // `ssh` and `github` come both or neither.
+        match (&body.ssh, body.github) {
+            (Some(_), None) => Err(field_error("cert-body.github", FieldProblem::Missing)),
+            (None, Some(_)) => Err(field_error("cert-body.ssh", FieldProblem::Missing)),
+            _ => Ok(body),
+        }
     }
 }
 
-/// `name`: `tstr .size (1..64)`.
-fn name(item: &Item<'_>) -> Result<String, DecodeError> {
-    let name = item.text("cert-body.name")?;
+/// A device's `name`, `field`: `tstr .size (1..64)`.
+pub(crate) fn device_name(item: &Item<'_>, field: &'static str) -> Result<String, DecodeError> {
+    let name = item.text(field)?;
     if (1..=CERT_NAME_MAX).contains(&name.len()) {
         Ok(name.to_owned())
     } else {
         Err(field_error(
-            "cert-body.name",
+            field,
             FieldProblem::Size {
                 min: 1,
                 max: CERT_NAME_MAX,
@@ -188,13 +206,14 @@ fn name(item: &Item<'_>) -> Result<String, DecodeError> {
 }
 
 impl DeviceKind {
-    fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
-        match item.uint("cert-body.kind")? {
+    /// The `device-kind` `item` holds as `field`.
+    pub(crate) fn decode(item: &Item<'_>, field: &'static str) -> Result<Self, DecodeError> {
+        match item.uint(field)? {
             1 => Ok(Self::Client),
             2 => Ok(Self::Browser),
             3 => Ok(Self::Service),
             // 4 and 5 are reserved.
-            other => Err(field_error("cert-body.kind", FieldProblem::Value(other))),
+            other => Err(field_error(field, FieldProblem::Value(other))),
         }
     }
 }

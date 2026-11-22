@@ -67,10 +67,26 @@ impl Talk {
     ) -> Self {
         let (world, front) = fronted_with(change);
         let ada = world.sign_up(ids[0], logins[0], ADA_HOST);
+        Self::of(
+            (world, front, ada),
+            name,
+            (&ids[1..], &logins[1..]),
+            (retrying, role),
+        )
+    }
+
+    /// As [`Talk::with`], with Ada already signed up on `world`, behind `front`, and the people the
+    /// tests play GitHub users `ids` with `logins`.
+    pub fn of(
+        (world, front, ada): (World, Front, Person),
+        name: &str,
+        (ids, logins): (&[u64], &[&str]),
+        (retrying, role): (bool, Role),
+    ) -> Self {
         let cloud = &world.cloud;
-        let mut played: Vec<Played> = ids[1..]
+        let mut played: Vec<Played> = ids
             .iter()
-            .zip(&logins[1..])
+            .zip(logins)
             .zip([BOB_HOST, CAROL_HOST])
             .map(|((id, login), host)| Played::new(cloud, world.sign_up(*id, login, host)))
             .collect();
@@ -330,7 +346,8 @@ pub fn commit_sent(front: &Front, channel: ChannelId, from: usize) -> bool {
 }
 
 /// The A2A `messageId` and the text parts of the A2A message in `content`.
-fn a2a(content: &Content) -> (String, Vec<String>) {
+#[track_caller]
+pub fn a2a(content: &Content) -> (String, Vec<String>) {
     let Some(Body::A2a(json)) = &content.body else {
         panic!("not an a2a body: {content:?}");
     };

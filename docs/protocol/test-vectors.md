@@ -2,11 +2,16 @@
 
 Part of the [Skald protocol](README.md), with its conventions and status. **No external audit.**
 
-- Each vector is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
+- Each vector but [Account fingerprint](#account-fingerprint), [Link code keys](#link-code-keys), [Presence value](#presence-value), [Queue key pair](#queue-key-pair), [Sealed task](#sealed-task), [Queue key object](#queue-key-object), [Invite key](#invite-key) and [Invite link](#invite-link) is one CBOR item: its value in diagnostic notation [[RFC 8949](https://www.rfc-editor.org/rfc/rfc8949), §8] and its bytes in hex. `<< >>` marks a byte string that holds an encoded item [[RFC 8610](https://www.rfc-editor.org/rfc/rfc8610), Appendix G.3].
 - An implementation encodes each value to exactly these bytes and decodes the bytes back to the value.
-- Signatures, keys, ciphertexts and the MLS payload are placeholders: the vectors fix the encoding, not the cryptography.
-- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation and in a revocation's `keep` or `also` from "TEST 3".
-- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), and a [revocation](membership.md#revocation) by a device and by the master key. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
+- Signatures, keys, ciphertexts and the MLS payload of the CBOR vectors are placeholders: the vectors fix the encoding, not the cryptography.
+- The account record and the master backup are genuine: the record of Alice's account, revision 1, with the master key "TEST 1" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, signed by it, and the recovery HPKE key of the recovery key `0123-4567-89AB`; the backup seals that master private key with that recovery key under the nonce `000102…0b`, the 12 bytes 00 to 0b.
+- The `ssh` of the certificate with an SSH signature is genuine: by the Ed25519 SSH key of the secret key "TEST 1024" of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1, over the certificate's `account`, `device` and `signing`; the certificate's own signatures are placeholders.
+- The presence value is genuine: signed by Alice's device's key "TEST 1" and sealed under the presence key of the history key `000102…0f`, the 16 bytes 00 to 0f.
+- The queue key pair, the sealed task and the queue key object are genuine, as their sections say.
+- The invite key and the invite link are genuine: of the secret `000102…1f`, the 32 bytes 00 to 1f.
+- Device IDs are derived from the public keys of [[RFC 8032](https://www.rfc-editor.org/rfc/rfc8032)], §7.1: Alice's device from "TEST 1", Bob's from "TEST 2", the device of the service grant, of the delegation, in a revocation's `keep` or `also` and of the link object from "TEST 3".
+- The vectors cover each [envelope scheme](README.md#envelope), the [HPKE plaintext](README.md#scheme-hpke), every optional field of the header and the [content](README.md#content), and the receipts: the `receipt` body for `held`, `refused` and `read`, the server's `stored` frame and its `delivery-status` for `delivered` and `expired`, each other [frame](delivery.md#frames), the [proof of an HTTPS request](delivery.md#connecting), a [revocation](membership.md#revocation) by a device and by the master key, an [anchors object](membership.md#anchors), a [link object](membership.md#linking-a-device), the [link code](membership.md#link-code) keys of a fixed ISK, an [account record and a master backup](membership.md#account), the [fingerprint](membership.md#account-fingerprint) of that account, a [certificate](membership.md#device-certificate) with an SSH signature and its GitHub user, a [presence value](agents.md#presence), an epoch's [queue key pair](queues.md#queue-key), a sealed task and a [queue key object](queues.md#queue-key-object), and an [invite](membership.md#invite), its acceptance, the invite key of a fixed secret and an invite link. `replied` is a reply, content with `reply_to`, as in [Content with an A2A message and an attachment](#content-with-an-a2a-message-and-an-attachment).
 
 ## Contents
 - [Envelope under `mls`](#envelope-under-mls)
@@ -33,9 +38,26 @@ Part of the [Skald protocol](README.md), with its conventions and status. **No e
 - [Frame `history`](#frame-history)
 - [Frame `history-stored`](#frame-history-stored)
 - [Frame `history-refused`](#frame-history-refused)
+- [Frame `link-notice`](#frame-link-notice)
 - [HTTPS proof](#https-proof)
 - [Revocation by a device](#revocation-by-a-device)
 - [Revocation by the master key](#revocation-by-the-master-key)
+- [Account record](#account-record)
+- [Master backup](#master-backup)
+- [Account fingerprint](#account-fingerprint)
+- [Certificate with an SSH signature](#certificate-with-an-ssh-signature)
+- [Anchors object](#anchors-object)
+- [Link object](#link-object)
+- [Link code keys](#link-code-keys)
+- [Link code without a session](#link-code-without-a-session)
+- [Presence value](#presence-value)
+- [Queue key pair](#queue-key-pair)
+- [Sealed task](#sealed-task)
+- [Queue key object](#queue-key-object)
+- [Invite key](#invite-key)
+- [Invite](#invite)
+- [Acceptance](#acceptance)
+- [Invite link](#invite-link)
 
 ## Envelope under `mls`
 
@@ -588,6 +610,18 @@ c1c2c3c4c5c6c7c8c9cacbcccdcecf
 830d066e65706f63682d6d69736d61746368
 ```
 
+## Frame `link-notice`
+
+```cbor-diag
+[
+  14
+]
+```
+
+```hex
+810e
+```
+
 ## HTTPS proof
 
 ```cbor-diag
@@ -653,3 +687,443 @@ b1e1583b84bd49c7051a69127c8006815042592ce391c8869ebdf88dff1cbfc2
 5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
 5a5a5a
 ```
+
+## Account record
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+    3: h'888e5e2ea2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d00659',
+    4: 1
+  }>>,
+  h'125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06'
+]
+```
+
+```hex
+82585ba40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025820d75a980182b10a
+b7d54bfed3c964073a0ee172f3daa62325af021a68f707511a035820888e5e2e
+a2c9eed2f2f6b6ab198c639f1161f1b37ff533b05ce28f0e43d0065904015840
+125779eadeb8fae25af90b876176f57ec465c67416882c14b416e5e8bf81a9bd
+52d12c0f45756e2a515fc054660b718a14d87f1870cc7deaf9ecc308cee4bf06
+```
+
+## Master backup
+
+```cbor-diag
+[
+  h'000102030405060708090a0b',
+  h'6018c931902d0d3ae029f3b84e7e56e85d313c4f166791cd6efa885903232a04a46589aaac9da21c4761296231b759d3'
+]
+```
+
+```hex
+824c000102030405060708090a0b58306018c931902d0d3ae029f3b84e7e56e8
+5d313c4f166791cd6efa885903232a04a46589aaac9da21c4761296231b759d3
+```
+
+## Account fingerprint
+
+The fingerprint of Alice's account with the master key "TEST 1": the encoded `["skald fingerprint", account, master]`, its SHA-256 and the fingerprint. Hex, then digits.
+
+- Encoded: `8371736b616c642066696e6765727072696e7450019a6f1e2b3c7d4e8f5061a2b3c4d5e95820d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a`
+- SHA-256: `6d913e7ddf35e43b0d6477449da6bd6c9026571685819726fb31a58675522480`
+- Fingerprint: `35261 51003 87940 50380 31766 62566 34854 17568`
+
+## Certificate with an SSH signature
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: 1,
+    4: h'd75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a',
+    5: h'2222222222222222222222222222222222222222222222222222222222222222',
+    7: 1762819200,
+    8: h'53534853494700000001000000330000000b7373682d6564323535313900000020278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e00000008736b616c642e736f0000000000000006736861353132000000530000000b7373682d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43677d743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe93100f5f9c090dbbc9d0b30505',
+    9: "Laptop",
+    10: 583231
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a',
+  h'a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5'
+]
+```
+
+```hex
+83590136a90150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025019ac5f78493882
+3586a6c5809a18f6dd0301045820d75a980182b10ab7d54bfed3c964073a0ee1
+72f3daa62325af021a68f707511a055820222222222222222222222222222222
+2222222222222222222222222222222222071a69127c800858b2535348534947
+00000001000000330000000b7373682d6564323535313900000020278117fc14
+4c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e0000000873
+6b616c642e736f0000000000000006736861353132000000530000000b737368
+2d6564323535313900000040a158307e076fefc37ca656ba882d0e97be43677d
+743cc252b65c16826b28cb72df549c353286075e7d5251d36567046f94d1fe93
+100f5f9c090dbbc9d0b3050509664c6170746f700a1a0008e63f58405a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5840a5a5
+a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5
+a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5
+```
+
+## Anchors object
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e9',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+        h'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea',
+        h'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3'
+      ]
+    ],
+    4: h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea'
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+8258a1a40150019a6f1e2b3c7d4e8f5061a2b3c4d5e9025019ac5f7849388235
+86a6c5809a18f6dd03828250019a6f1e2b3c7d4e8f5061a2b3c4d5e65820a1a1
+a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a18250
+019a6f1e2b3c7d4e8f5061a2b3c4d5ea5820c3c3c3c3c3c3c3c3c3c3c3c3c3c3
+c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30450019a6f1e2b3c7d4e8f5061a2
+b3c4d5ea58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a
+```
+
+## Link object
+
+```cbor-diag
+[
+  <<{
+    1: h'42592ce391c8869ebdf88dff1cbfc25a',
+    2: h'19ac5f784938823586a6c5809a18f6dd',
+    3: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+        h'a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1'
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea',
+        h'c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3'
+      ]
+    ],
+    4: h'019a6f1e2b3c7d4e8f5061a2b3c4d5ea'
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+8258a1a4015042592ce391c8869ebdf88dff1cbfc25a025019ac5f7849388235
+86a6c5809a18f6dd03828250019a6f1e2b3c7d4e8f5061a2b3c4d5e65820a1a1
+a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a18250
+019a6f1e2b3c7d4e8f5061a2b3c4d5ea5820c3c3c3c3c3c3c3c3c3c3c3c3c3c3
+c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c30450019a6f1e2b3c7d4e8f5061a2
+b3c4d5ea58405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a
+```
+
+## Link code keys
+
+The request and grant keys of the ISK of draft-irtf-cfrg-cpace-21, Appendix B.3.5, and the plaintext `skald link test` sealed with each: ciphertext, then tag. Hex.
+
+- ISK: `b69effbf61b51d56401c0f65601abe428de8206feaaf0e32198896dcae7b35cd2b38950a39dfd5d4a79164614c2984f7daa460b588c1e80c3fa2068af7900447`
+- Request key: `34ef61cde245a794a66fb3a2a1119e06`
+- Grant key: `f59082ca8b39050a140e5a40d4bc616b`
+- Sealed with the request key: `1ac64ce7dc7b6554503c135dc7ce92240353fc905792016f23a2a16c7e79f0`
+- Sealed with the grant key: `d04b154ed6d577f0279c06f14cd70c537cc273da51bdb2cd700312b5337e81`
+
+## Link code without a session
+
+The CPace CI of a run with the pairing `PQRSTU` ([Link code](membership.md#link-code)): `["skald link code", h'505152535455']`. Hex.
+
+- CI: `826f736b616c64206c696e6b20636f646546505152535455`
+
+## Presence value
+
+The value of Alice's device in epoch 2 of the channel: an agent `busy` with a note and a runtime, one `offline`, and a queue it serves. The plaintext is the encoded `presence-plaintext` before padding. Hex.
+
+- History key: `000102030405060708090a0b0c0d0e0f`
+- Signing key: `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60`
+- Nonce: `a0a1a2a3a4a5a6a7a8a9aaab`
+- Plaintext: `8258c0a7015019ac5f784938823586a6c5809a18f6dd0250019a6f1e2b3c7d4e8f5061a2b3c4d5e703020403051a691280040682a501782361636d652f616c6963652f636c617564652d61706940736b616c642e6578616d706c650202031a69127b54046f726576696577696e67205052203132056b636c617564652d636f6465a301781e61636d652f616c6963652f636f64657840736b616c642e6578616d706c650204031a69126e7007818250019a6f1e2b3c7d4e8f5061a2b3c4d5eb83040301584094d9c45df282c6623f58e8e062a51c76c909d04201001c283cd5972a9212a74d8885b4564d41915b43127fd745f699bdb29b51d85650fa3508984fbb8e610c0b`
+
+```hex
+a5015019ac5f784938823586a6c5809a18f6dd0250019a6f1e2b3c7d4e8f5061
+a2b3c4d5e70302044ca0a1a2a3a4a5a6a7a8a9aaab05591010703906e4833433
+8b6e23c16fee1b8770e30224d5954a71358cab9e87e2cf572a310656484861d9
+4bb78325611e6704012523ecc77e0445ec1fe29406fbb154c466f91ded78a8ed
+ea542d8a7b3ae4b4619c71551a7466edfdc91d0758de20b02728acc6a2898198
+cc8530c33f2a04465f1fb43e5c2375f16a7d372a2cd092b29605f015b014482e
+c684dce0db8ee58ec2c20b0db22ea4c142b028493277e7dd9bf74e23baf4c8dd
+afdb8a919574e9ea02e8b1d50a0e70bf8608e754a8827a9ef4b150512206c73d
+bc702e6f15f52a0d63dc6e35bcfa04750e2a7b5b524909c9711b0daa8f3b0558
+aba9a639d3d95e739083675fa9e3ae1450fc2928d89000140cca9fd6411947af
+2c3ee27c2e7a438457a9a9f12189cba57fe73078537378243f71b2c7d352dc73
+5174d807d20d95bc431b7a78e4e0f4373e3ace0224d8fd89435dc90dc9aaf30d
+165b3e141aae3f6c159f041ad1d2394d3415564f687cbd5771ad9da3214f07fe
+7b85f6f9618966280d787f2cf646e04935940bbb9b15deaa6eb35f26c1536050
+2161ac1470ad368a7d9394e85fd53c2734214b0271e756d1a47f31e38d63e4d5
+5c90ae8b392b70620afd65ba50beace27708d465e42400d59467664294b797b7
+4d3ecde40c4038fe99733b0359f251a3ffc876863dcff188523220a9c7ffffb2
+8bfd53c8d2ecfe70bf271ccfbbd40843b3244bd8decb038766a2c4166876b773
+efe6179a8edf721157af9c5100e39facf63997387cb61b63f77344d827e5fff4
+7c93f6dd9b647a5a89402816090746e66c002851938e829b2abd501099b0a599
+514c065eb827dc4a5568c31d058654b4b6732fbd8b4d1f42b0480f63d3fdaaab
+cd5069e59c804769b52a6c32e911406d667575880bbce863685ed1caa4a38585
+15bb7363f1b24bb770281eeb5aea3f3b783dbdc779b4500f3279ab0e89162ba4
+89860376b738e742f2867e9c0a83d41f9b4d085121cd69be98812f1c3e400004
+29bd2c2085f6493aa5d2ba7943d1022e0f9602233a0fca3147abcca8e691f23d
+dc7dc1869863f88f137c0cd2efa7ae5cb85871e3594b2e6e6740d72082e1a04a
+5e9dd5b36bd5f8cd4c07b472b4a731c7af439462287be2767160200ef40f5acb
+77f9a6d42fcc2edf4791a7719a8699f310abfccee399fbf472c15fe20412aed8
+673f87c371efc07ad5651e39b8c2d73b9765f4100f6e3bdd2e852a92eda332d4
+7fb4a8ed76308a07366013191118fe0603c181ff068004a1f56767796ad399ae
+0caf1204f958457e97379f50dbb1ad8fcb99e985d7c6c28a54a304969277a8e5
+b9714adb50415f86c86f56ddc072ba49e1bcf24ff1a6cab5b573c319d425b4cf
+caa3e1dad9c4f38837e0a3399ea8ed338b573b678cbdc32adf193ef778dc994b
+a79453d84f2c52743d516f688f0e97194741350441fcf1f30d7eb4d5be0ff892
+91e9feaa41a84a354eb4012b5aba452054db084a1bc52fa84c502ed3d84f700e
+ded3ee8d5ddffbe31da6ea36aeffedab0b966313787bd5d6b6987a48cb145d6d
+92f172ce48ff6eb3edaa9c7a8181dda77da3c76b5015ea9278e5f7be84d51626
+36822a7f41afbc861ff80dd93b503736cf3cb8df45a54f856e179478ea1fe175
+9420065f110f1d0a9b2ff96c12f27218cfc59b168250bc257ecd5db58af8b8c9
+d676678fe8bb865b93ed9cdde0b9e481989a8fbfe6f01d945cc8a1ae5258132d
+3d0f6d6227254464cb8331f3c0cfafe828c815422e061cf02ed46037a8dc4686
+65c26f69fbcba855f6425d929326c016f4d3a223252e0615757b6c0982a362df
+91ea89113a0c36770f62df5530073dd9ce3a4a7cc2d8407925a14b742f3ea7f5
+74eb989e0122e50ff07359cb774b3cdac70be4087dbb0e50a748383ab9ddd599
+52761adfc6de92b3ebd03cb5b810d8fef6d1fc9e6fcad1eb50c9146b92517214
+f028557be86d4173b2258da1e1eb9b8eba353203f86a43e1d9b26df5439d79df
+c8dea2d13552a05a54a8bde65f776ee29621aa58e25fc4fdfd06875b7fc827cf
+f41f65b05922f92db39d41d7585fe121f0d2c21fe567fd9d1d58542a0cfef1f6
+f224817041affbf41f3649123518fda7164b8c907b52f052858acc907b7adaa8
+9d39215f6779a4d50881fa4571eed229a5ef69ba846df7000a66ee44b9ff03d5
+97fa4177b2a0a0e8625d1a1503c7ef19c8b072c1a93123fa7fd6058f37f8342b
+1be34c003c6923981906a522ffe19628b190e4ebee4d6385b63f7f68b9721cc1
+76e05635c358aa8b476bb0de783da6ee7dc2b3999ef0fdaee5d5c42d60f11ad7
+8632fd49751177e5b7df3cd54d6f8f47b5dab439449d5b779de6ce18647d3d01
+fedb615ea1da27b645d36c2be4b2b9941ae965081735c7d34ca8d6b953fdb6ff
+60a23113247514034ec2383619a666ab84df1e71fba13b3d0e4cf375f3abfc58
+a9f678398d0bb1e3f5facc28b14afa2377e8fa89f6966077a14073c278252e05
+ce2a8ad166a2f14ff86f5e8ef7a552e73979c48ac8c9e1cfb06d578fe4cf6e12
+91fd58be90180ec8f89d59d926c37eff679e08377debbbc1693f0d59fdee62d3
+46969ea0a861f7633dee9b8160d17b91e1214fe4e4c2a4331a3e287801a96040
+86baa0c356a45ede4158daedc1d4fa4616ab5adf898db26818b048830157ffdd
+bd4a11720e2b0ace6012badc6bb99ef419f092d59551c8b6cf90dd7b918e5557
+b44464c390612132ff51252e27da79968ef60bc20ffc868da9ec3f656c45ee97
+f65b3eb77ea3941bf6a8dcda2fd7c0c0ff6ebdc3818f3c92f415a185e6b42f76
+56534e91f85d3d089df00ad4d2caba1397c6154130a7af44951a5fa946e30856
+4a8b972cd45a92677222af6e7cdbb31d662a57c6f97c560b9f01c3a9cdfc40e9
+56aa077cf47b5866fb5e8d93ec6c3db6fdec350f9f991faefc95a42c0bed1c37
+c7556d755025535991993d57ba7176bdc27ae65750fe989db7a4b5191f2d4786
+14eea7a6f9300f7c13de98962898fd3074b6011ae74f9962e1e72df263c5bdf3
+db63f76e50fbdc19df18a2a8a1f22f1a0e6a721d3696740ad2fdbf391b79bdb3
+98063bfc2d4260c41c75e59a944e52b15256ed81d807057e5f28720ace7a427a
+b3177fb68e838b231d690bf7095f4cab32e10a09d753920c67c1b9352ab8bcd3
+d213b8b4b65aec0d599ae1062cac94db52a3c1d5e0fdd497dfc519ef4ce4456e
+bc672a1f79aa53d6a11ee039840a08c6fb75a8bb3d3951cb497830a8a1f8ad0d
+f771e7f55ddd78f8a0db70582b9befe77ad2468de6777dd550c400af821213fd
+0bf30a9ce2cbb64fb3580f812b48753499c3a93b9cdb293a9ee9893df94b2f90
+fd8c94e3a31c30694f965e8231a58132ae71472b46c5dc0784e7b1491f781117
+78486e3d43e370aee31b31779d54a02d93fbc9860002b56ee46f4d457827477f
+dc26e7a81da26f9aa172566121c862d0eab2224415e9059250d1d6d5036e83ad
+0f4198e4613b3a4a3f96d23a25728a76e2b72ca859d428390c6707efb3ab4741
+a2d27728c3f54f5d4b8c87f9279b4ec26379c917fc6151fec712c062613b332f
+81ad4090ae8c6a4a0c3efcc6f95a95446a90a410efc3e3d81cd04652b4ce9d98
+291362cf146d81603aabc5e3cd9115117c8139fac9937b20c7deaef00ef7a996
+c4c405f2478eb7fa64969114ac801c5ac810f73bcef14dbb7c7d805c26c8c018
+8cd38659e037777bed31035ef2cabf7f2930b870e58ab9da24ca3cf542c7abec
+e4792566f94dd26fb74008fe99c9b8ce2feaf3104360bae28b0bc4ea65f6ccda
+2437a93ce855ea9d5e9ad4fd91c1336b4612a9012d8c0a1e46a233e10c1a3dd2
+a3c14ea9bea9991f105d789bc321f295abb0f10e6f79e67d0e4c4e95310503c9
+f7d7744319e32cf23e0db0a8564c73094f5b976c1dc8dc4c91d798326e99e43d
+8fc036e15b3488331b296181b218714e7f5b0a491848490f0fb547e0e12434d0
+b7c9458548968cdcaa9e5ccf28b449562f928239a3ab89f87c6d1cb67112cb23
+c4394872a914c20d60b15456e73205c3f02996af834d73cf7b72652dbdcba1e9
+6f2449992a2024d39dd39c7d798d6d05f2e060281391309b2a6f124df218ced2
+72d39ee21e9ecd9636d1513c02603b585196b0651fc36c93972be7403dca15df
+87150eb241f51d1f9dbecccbe6cb2bdb65d91d4114fd6ede4311b760a9704589
+dd54ae4eec4eab3630c11388067b19b05c3ef6cc497cbd70513a8ad7055707bf
+296db77788905254a56d57bbcc3edde8ff23c1e16341edacc241b1341b5de0fd
+5fec4e29176f47d09ee136b1e5e94a8450024cf2a63246e6e8d88351e739256a
+730722eb314d0aeb80abf4ea88d4c86f81e769cf6c1fe7a2f523bae2776a371f
+a8aee2fb93ec950be0b971644ab8e613dcf4ecbf4a1ef3c39be1049d16fd4738
+b4a4e24016052d62cadc4cfdae4ee3964abc8ff4884bbe2badb86df707b490c0
+bbcc14e93baf7646966f6ef465772dfaf90e9ea9339fed93a11721a463cfccd8
+d4796afba23ee65eb2fee141199e7925ea49a289a5486dd7cde3070685cf648f
+bdfd643a4528c59417df13a150414281f70ddf3eb33e13f8a6204972b9d4bd34
+f1a6dc5510cc1d51691023ed8dbb1d26d38f593452b472edd03bee6e9e319c1b
+064de9f91df08b71c7442af25922edd48ec381b74971278d096649215b532798
+0c2224b028f1190a400a2242918e17b1f17d4ce8a406591de29f3c16c8fe55ad
+074e3a9fafc29fe6aa1c96f0c7c62337b6ff96c64ccd903258e8ee5600246628
+0bdeaeca958cf89d43bdee0f081ba66c6a2fa990bd1970cb9421f67b7ae17973
+318d7f39ef22889d63600914b984dbd8c25195db1a4ce8f09d4109cb49a137c2
+9d2fad353142a8b29e62901715d7be2a51632b6fca0a0e09d8ac0d2598f4b9f3
+b238a9eb3d1f3ef4f6f6e531d714c0f3a1480b324685f17a6fcb3dbb889dc131
+d2413bc5a2090ece69b343a759f3112fda1df352e9324192adbcda4ad7a36764
+ed2419325083ce9fb83c333a7dc90ca55572774f43ce48315bcfebe36438aa79
+9b68d3815152b5f4f30be333f1a7c9e6d0348515c7f88885fe8e7394a56e8ae0
+851a2059a8933079b872d67691b7256e9479825e4de58f71098804b5d9b93331
+c50fec417fc24f2e505c126d38138aeae7cf82c71960060488276591587b7ca8
+030530b7f868a6ad0533412690d48444acfa8f74b9f7e6969c0f44d1a819e757
+64d83b83c9cd7524b5d648d751189e09d498f28f025c0e4d277b747a9b3ca920
+bfa5b484baec771aa608eeccf82f9dea1561de668ab7a1526102a533a7408d3a
+0ae8642d74a4d2743600c148106ef0f5fdbd9952ff7d758f39cb171380896391
+f1c4aaa52521e916f61927b1f665e213798cbd856a57d530c8a0c4f9730f8268
+cc9f600d1e4625cd4726ebbe04490594ca77d917e2c18201bc91815ed7213a06
+0f02909e3a576814a0cb8b09cc43d1ab4004b6bd0cb71d6c68ce86580d26badc
+13f7456fcaa4e0660928f77653d9709156c85823dbabcff5498aa8225d2fb377
+953c11a6c1edd119d6f62ffb3f2881bbf1eade3d7d7f51b75a0c322e2de3d01f
+b7b7bcdb4c4a4f3eba098977fb54d6feaf5fa8a74f944b3f845e0217335ab668
+6acf9a6c259e4ef582e5cb659b0e2510d7b079a5b62af45969a2bf0650b81321
+9dbc14dff1f3de52a4f23a0c117d1a9d86a7cfa1f05d6cb520a5723898084e31
+c42616fd137fd651a2df2382a603fab22264e3fad55e8eeda5043991729e1911
+4656ffb84765bf2126
+```
+
+## Queue key pair
+
+The queue key pair of an epoch with this history key, as RFC 9180 serializes it. Hex.
+
+- History key: `000102030405060708090a0b0c0d0e0f`
+- Private key: `c857c548fcd12b2b0d5a05a950861b11f31d65872674137a8f7e6f33f0d70d47`
+- Public key: `0bc481eb256ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64`
+
+## Sealed task
+
+A task of Alice's device in epoch 2 of the channel to Bob's codex agent, with every scheduling field, in an `at-least-once` queue, sealed to the public key of [Queue key pair](#queue-key-pair) with the ephemeral key pair `DeriveKeyPair(ikmE)`, `ikmE` that of [[RFC 9180](https://www.rfc-editor.org/rfc/rfc9180)], Appendix A.1.1. The plaintext is the encoded `task-plaintext`; the block, the encoded `queued-task`. Hex.
+
+- Public key: `0bc481eb256ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64`
+- Ephemeral key: `7268600d403fce431561aef583ee1613527cff655c1343f29812e66706df3234`
+- Signing key: `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60`
+- Plaintext: `8259016ba8015019ac5f784938823586a6c5809a18f6dd0250019a6f1e2b3c7d4e8f5061a2b3c4d5e70350019a6f201c007e008c000000000000e10450019a6f201d007f008d000000000000f105a4014a6275696c642d313834320466726576696577051a691bb7000650188e6ae45b2d8247b1e1583b84bd49c70601071a69127c800858e9a401782361636d652f616c6963652f636c617564652d61706940736b616c642e6578616d706c6502781c61636d652f626f622f636f64657840736b616c642e6578616d706c6504000ba101789c7b226d6573736167654964223a2230313961366632302d316430302d376630302d386430302d303030303030303030306631222c22636f6e746578744964223a2230313961366632302d303030302d373030302d383030302d303030303030303063306465222c22726f6c65223a22524f4c455f55534552222c227061727473223a5b7b2274657874223a22526576696577205052203132227d5d7d5840061cea68432639e0d54a8d4b1bcb5f043e0a729fb12e003993b2c95b0e5834c7071828fc47a71100d6eef5770d26bd0d4bd9c5440428eaef86b760afa264d606`
+
+```hex
+a60150019a6f201d007f008d000000000000f10250019a6f201c007e008c0000
+00000000e103a4014a6275696c642d313834320466726576696577051a691bb7
+000650188e6ae45b2d8247b1e1583b84bd49c7040205582037fda3567bdbd628
+e88668c3c8d7e97d1d1253b6d4ea6d44c150f741f1bf4431065901c18984cef4
+f003a9895b924ce0477366a53107d9986b4592796d750dd7e3dc1791a82d7360
+47fe4c8c95bcfe9c366225b09c382b92f5c8c57f10f5787c8dfc50296d9ee8ba
+08fe074bea5d8293bb9d9954a6fa95cb8a9dab4416c099bc3177c314f65f9f14
+793e9974d330635315b32f2fc0c48c7c9e374305930f505764afbd8f3e455ed1
+72342cccc199a9a1a2068ef5875b3e947d054a78eda0403358b94a92cc9b15cd
+708aff7d9cff0669f7ca565e672d55f78eb928fc203e9633ac7bdd51c81c1133
+706b0d54f3fd5335ba2e2da8d20ac6ae1dec203562476964606f1dc2dec5c1a8
+0fe5b7aaa5916897019018ee1cafafc54e56e5affe88d8fdf5574cb96a526d13
+81f5017b7ca2fa8171c2b7f82cde9ce66e89316117a2e742a6f314c5b0478014
+9bef92c6e311f648c8a8502b23c534e33994105060cd170257132943cc07a3ae
+c96c319714dc829ed35d86731f845eec17e609ac1ccdd3c58ba98f93f8ba2b63
+ea2b9cdaf5aaec281786786448b96a692a28430b049e084bed51b92fa98fda0f
+d25380ddd4dd713fe5be95a1dda8d1543876977d40de8639b5bacc3c008065af
+7d89b45be9707ebc801b414ead9131fdc6286b586741943c754d00c366
+```
+
+## Queue key object
+
+The queue key object of epoch 2 of the channel, its key the public key of [Queue key pair](#queue-key-pair), signed by Alice's device. The block is the encoded `queue-key`. Hex.
+
+- Signing key: `9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60`
+
+```hex
+82584aa40150019a6f1e2b3c7d4e8f5061a2b3c4d5e702020358200bc481eb25
+6ded23459affe148091db52bd9b6f1b93edaa2b530d06ac61a3c64045019ac5f
+784938823586a6c5809a18f6dd5840d97fb267ec91c45df23544ea4a5487a86d
+b263bdb472a63f08d933cf6809bdf256043ad162417b7628c37e5ed51bc4248b
+faa92e88ce23b48c9c195e5c2c3d03
+```
+
+## Invite key
+
+The invite key pair of this secret. Hex.
+
+- Secret: `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`
+- Private key: `22a87520d8720b891e2ea1201d017e0022be6bb4cf015b5387291038819ce64b`
+- Public key: `8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a`
+
+## Invite
+
+Alice's device invites Bob as a member to two channels, reading the first one's history; its `key` is the public key of [Invite key](#invite-key).
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f1',
+    2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5e6',
+    3: h'8d214134fbf6785e26bcb5404b753ea7235410ed0eb5b17c3c651d253788859a',
+    4: 2,
+    5: [
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e7',
+        true
+      ],
+      [
+        h'019a6f1e2b3c7d4e8f5061a2b3c4d5e8',
+        false
+      ]
+    ],
+    6: h'19ac5f784938823586a6c5809a18f6dd',
+    7: 1763424000
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+82588aa70150019a6f1e2b3c7d4e8f5061a2b3c4d5f10250019a6f1e2b3c7d4e
+8f5061a2b3c4d5e60358208d214134fbf6785e26bcb5404b753ea7235410ed0e
+b5b17c3c651d253788859a040205828250019a6f1e2b3c7d4e8f5061a2b3c4d5
+e7f58250019a6f1e2b3c7d4e8f5061a2b3c4d5e8f4065019ac5f784938823586
+a6c5809a18f6dd071a691bb70058405a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Acceptance
+
+Bob accepts the invite of [Invite](#invite) with his account, his master key "TEST 2" and the handle `bob`.
+
+```cbor-diag
+[
+  <<{
+    1: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f1',
+    2: h'019a6f1e2b3c7d4e8f5061a2b3c4d5f2',
+    3: h'3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c',
+    4: "bob"
+  }>>,
+  h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a'
+]
+```
+
+```hex
+82584da40150019a6f1e2b3c7d4e8f5061a2b3c4d5f10250019a6f1e2b3c7d4e
+8f5061a2b3c4d5f20358203d4017c3e843895a92b70aa74d1b7ebc9c982ccf2e
+c4968cc0cd55f12af4660c0463626f6258405a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a
+```
+
+## Invite link
+
+The link of the invite of [Invite](#invite) with the secret of [Invite key](#invite-key).
+
+- Web address: `https://skald.example`
+- Invite: `019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1`
+- Secret: `000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f`
+- Revision: `a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1`
+- Link: `https://skald.example/invite/019a6f1e-2b3c-7d4e-8f50-61a2b3c4d5f1#AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh-hoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoaGhoQ`

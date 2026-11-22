@@ -10,8 +10,9 @@ use axum::response::{IntoResponse, Response};
 use serde::de::{DeserializeOwned, IgnoredAny};
 use sqlx::PgPool;
 
-use crate::sign_in::{not_signed_in, signed_in};
-use crate::{AppState, database_failed, problem};
+use crate::service_tokens::{self, Token};
+use crate::sign_in::{bearer, digest, not_signed_in, signed_in};
+use crate::{AppState, database_failed, deletion, problem, problem_details};
 
 /// Why the server refuses a request.
 pub(crate) enum Refusal {
@@ -36,7 +37,8 @@ pub(crate) enum Refusal {
     NoSignInMethod,
     /// The account's last sign-in method, which is never removed.
     LastSignInMethod,
-    /// The web session's sign-in is older than the server allows for what it asks.
+    /// The session's sign-in is older than the server allows for what it asks: linking or removing a
+    /// sign-in method, or deleting the account.
     SignInTooOld,
     /// A KeyPackage that fails the checks, for the reason it holds.
     KeyPackage(String),
@@ -52,13 +54,56 @@ pub(crate) enum Refusal {
     Roster(String),
     /// A revocation the server does not store, for the reason it holds.
     Revocation(String),
+    /// An anchors object the server does not store, for the reason it holds.
+    Anchors(String),
     SpaceNameTaken,
     /// The account owns as many spaces as it may: the number it holds.
     OwnedSpacesLimit(u32),
     /// The account has as many devices with a certificate as it may: the number it holds.
     DevicesLimit(u32),
+    /// A roster revision would give the space more service agents than it may: the number it holds.
+    ServiceAgentsLimit(u32),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
+    /// A link message the server does not relay there, for the reason it holds.
+    LinkMessage(String),
+    /// A hello naming a device that has a certificate.
+    DeviceCertified,
+    /// A hello whose `session` another device's run of the account holds.
+    LinkSessionTaken,
+    /// No such open run of the session's account, or of the run's token.
+    NoLinkRun,
+    /// No open run without a session that the session's account may pair has the pairing.
+    NoPairing,
+    /// The run's token sent as many later messages as it may: the number it holds.
+    TooManyLinkMessages(i32),
+    /// The account entered as many pairings the server does not hold as it may of late.
+    TooManyPairings,
+    /// A challenge for a device's session the server did not issue for the device, an expired one,
+    /// or one another request used.
+    ChallengeRefused,
+    /// A signature that does not verify with the device's signing key.
+    SignatureRefused,
+    /// A revoked device.
+    DeviceRevoked,
+    /// A grant the server does not take, for the reason it holds.
+    Grant(String),
+    /// No such service token of the space.
+    NoServiceToken,
+    /// No such invite the server holds for the session's account: never stored, ended, or with
+    /// another account's acceptance.
+    NoInvite,
+    /// An invite the server does not store, for the reason it holds.
+    Invite(String),
+    /// Another invite stored under the ID.
+    InviteTaken,
+    /// An acceptance the server does not store, for the reason it holds.
+    Acceptance(String),
+    /// Another acceptance of the invite.
+    AcceptanceTaken,
+    /// The spaces that block the account's deletion: those where it is the only admin and that have
+    /// other members.
+    DeletionBlocked(Vec<deletion::Listed>),
     /// The database failed at what it holds, such as `read a session`.
     Database(&'static str, sqlx::Error),
 }
@@ -134,7 +179,7 @@ impl IntoResponse for Refusal {
                 StatusCode::FORBIDDEN,
                 "sign-in-too-old",
                 "Sign in again",
-                "The web session's sign-in is older than the server allows for this: sign in again first.",
+                "The session's sign-in is older than the server allows for this: sign in again first.",
             ),
             Refusal::KeyPackage(detail) => {
                 problem(bad, "invalid-key-package", "Invalid KeyPackage", &detail)
@@ -163,6 +208,9 @@ impl IntoResponse for Refusal {
             Refusal::Revocation(detail) => {
                 problem(bad, "invalid-revocation", "Invalid revocation", &detail)
             }
+            Refusal::Anchors(detail) => {
+                problem(bad, "invalid-anchors", "Invalid anchors object", &detail)
+            }
             Refusal::SpaceNameTaken => problem(
                 conflict,
                 "space-name-taken",
@@ -181,11 +229,117 @@ impl IntoResponse for Refusal {
                 "Device limit reached",
                 &format!("The account has as many devices with a certificate as it may: {limit}."),
             ),
+            Refusal::ServiceAgentsLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "service-agents-limit",
+                "Service agent limit reached",
+                &format!("The space has as many service agents as it may: {limit}."),
+            ),
             Refusal::RevisionConflict(detail) => problem(
                 conflict,
                 "revision-conflict",
                 "Revision out of order",
                 &detail,
+            ),
+            Refusal::LinkMessage(detail) => {
+                problem(bad, "invalid-link-message", "Invalid link message", &detail)
+            }
+            Refusal::DeviceCertified => problem(
+                conflict,
+                "device-certified",
+                "The device has a certificate",
+                "The device has a certificate, so it links no more.",
+            ),
+            Refusal::LinkSessionTaken => problem(
+                conflict,
+                "link-session-taken",
+                "Session taken",
+                "A run of another device of the account has this session.",
+            ),
+            Refusal::NoLinkRun => problem(
+                StatusCode::NOT_FOUND,
+                "no-link-run",
+                "No such link run",
+                "No open run that this request reaches has this session: it ended or never opened.",
+            ),
+            Refusal::NoPairing => problem(
+                StatusCode::NOT_FOUND,
+                "no-link-run",
+                "No such link run",
+                "No open run that this account may pair has this pairing.",
+            ),
+            Refusal::TooManyLinkMessages(limit) => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many-link-messages",
+                "Too many link messages",
+                &format!("The run's token sent as many later messages as it may: {limit}."),
+            ),
+            Refusal::TooManyPairings => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too-many-pairings",
+                "Too many pairings",
+                "The account entered too many pairings the server does not hold: try again later.",
+            ),
+            Refusal::ChallengeRefused => problem(
+                bad,
+                "challenge-refused",
+                "Challenge refused",
+                "The server did not issue this challenge for the device, it expired, or another \
+                 request used it.",
+            ),
+            Refusal::SignatureRefused => problem(
+                bad,
+                "signature-refused",
+                "Signature refused",
+                "The signature does not verify with the device's signing key over the server's \
+                 origin.",
+            ),
+            Refusal::DeviceRevoked => problem(
+                StatusCode::FORBIDDEN,
+                "device-revoked",
+                "Device revoked",
+                "The device is revoked.",
+            ),
+            Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
+            Refusal::NoServiceToken => problem(
+                StatusCode::NOT_FOUND,
+                "no-service-token",
+                "No such service token",
+                "The space has no such service token, or it has ended.",
+            ),
+            Refusal::NoInvite => problem(
+                StatusCode::NOT_FOUND,
+                "no-invite",
+                "No such invite",
+                "The server holds no such invite for the session's account: it was never stored, \
+                 it ended, or another account accepted it.",
+            ),
+            Refusal::Invite(detail) => problem(bad, "invalid-invite", "Invalid invite", &detail),
+            Refusal::InviteTaken => problem(
+                conflict,
+                "invite-taken",
+                "Invite ID taken",
+                "The server holds another invite with this ID.",
+            ),
+            Refusal::Acceptance(detail) => {
+                problem(bad, "invalid-acceptance", "Invalid acceptance", &detail)
+            }
+            Refusal::AcceptanceTaken => problem(
+                conflict,
+                "acceptance-taken",
+                "Invite accepted",
+                "The invite has another acceptance: it admits one account.",
+            ),
+            Refusal::DeletionBlocked(spaces) => problem_details(
+                conflict,
+                serde_json::json!({
+                    "type": "https://skald.so/problems/deletion-blocked",
+                    "title": "The account is a space's only admin",
+                    "status": conflict.as_u16(),
+                    "detail": "The account is the only admin of these spaces, which have other \
+                        members: make another member an admin of each first.",
+                    "spaces": spaces,
+                }),
             ),
             Refusal::Database(doing, err) => database_failed(doing, err),
         }
@@ -210,6 +364,51 @@ pub(crate) async fn account(db: &PgPool, headers: &HeaderMap) -> Result<String, 
 
 /// The ID of the account of the request's session, as a handler's argument.
 pub(crate) struct SignedIn(pub String);
+
+/// Who a request comes from, for the requests a service token alone also makes, or whom a
+/// connection's challenge is of: a session's account, or a service token that has not ended.
+pub(crate) enum Caller {
+    /// The ID of the session's account.
+    Session(String),
+    Token(Token),
+}
+
+impl Caller {
+    /// The ID of its account: the session's, or the token's device's.
+    pub(crate) fn account(&self) -> String {
+        match self {
+            Caller::Session(account) => account.clone(),
+            Caller::Token(token) => token.account.to_string(),
+        }
+    }
+
+    /// Its service token, if it is one.
+    pub(crate) fn token(&self) -> Option<&Token> {
+        match self {
+            Caller::Session(_) => None,
+            Caller::Token(token) => Some(token),
+        }
+    }
+}
+
+impl FromRequestParts<AppState> for Caller {
+    type Rejection = Refusal;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Refusal> {
+        let failed = |err| Refusal::Database("read a session", err);
+        let headers = &parts.headers;
+        if let Some(session) = signed_in(&state.db, headers).await.map_err(failed)? {
+            return Ok(Caller::Session(session.account));
+        }
+        let Some(Some(token)) = bearer(headers) else {
+            return Err(Refusal::NotSignedIn);
+        };
+        let token = service_tokens::live(&state.db, &digest(token))
+            .await
+            .map_err(failed)?;
+        Ok(Caller::Token(token.ok_or(Refusal::NotSignedIn)?))
+    }
+}
 
 impl FromRequestParts<AppState> for SignedIn {
     type Rejection = Refusal;

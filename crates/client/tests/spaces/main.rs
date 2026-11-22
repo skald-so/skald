@@ -45,7 +45,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use browser::Browser;
 use cloud::{ASK_MASTER, Cloud};
-use machine::{FIRST_DEVICE, Finished, Machine, NO, NOT_LINKED};
+use machine::{Finished, Machine, NOT_LINKED};
 use relay::{Lose, strings_named};
 use serde_json::{Value, json};
 use skald_github_stand_in::User;
@@ -473,7 +473,7 @@ fn device_without_a_certificate_creates_nothing_and_says_it_is_not_linked() {
     );
     let laptop = Machine::new().with_host_name("ada-unlinked-laptop");
     let page = browser.page();
-    let waiting = cloud.signed_in(&page, &laptop, &ada.user, &[FIRST_DEVICE, NO]);
+    let waiting = cloud.signed_in(&page, &laptop, &ada.user, &[]);
     assert!(waiting.success, "the second machine: {waiting:?}");
     let token = cloud.last_token();
     assert_ne!(

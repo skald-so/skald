@@ -14,8 +14,11 @@
 //! space sends it again first, until the server takes it; only then does it count as accepted, and
 //! until then the space stays at its last accepted revision. When another revision came first, the
 //! device accepts the new revisions, applies its change to the latest and signs again.
+//!
+//! Each revision the device signs after revision 1 drops the `service` devices the revision before
+//! it lists that are revoked or on the account of no member of the new one.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -23,13 +26,15 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use skald_proto::{
-    AccountId, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, Member, Name,
-    NonEmpty, Role, Roster, RosterBody, SpaceId, Unknown, VersionRange,
+    AccountId, Anchors, Cbor as _, Cert, Channel, ChannelId, ChannelMember, DeviceId, DeviceKind,
+    Member, Name, NonEmpty, Role, Roster, RosterBody, ServiceAgent, SpaceId, Unknown, VersionRange,
 };
 
+use crate::anchors;
 use crate::connection::{self, Connection, Method, printable};
 use crate::device;
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
+use crate::domains;
 use crate::folders;
 use crate::follow::{self, Own, SpaceDevices};
 use crate::groups;
@@ -37,7 +42,9 @@ use crate::key_packages;
 use crate::mailbox::{Mailbox, Transport};
 use crate::revocations;
 use crate::secrets;
+use crate::service;
 use crate::sign_in;
+use crate::ssh_checks;
 use crate::state::{self, Link, State};
 
 /// What `skald create-space` says on a device without a certificate.
@@ -170,10 +177,8 @@ fn personal_warning(err: &str) {
 /// What the device says when it signed `first`, revision 1 of the account's personal space.
 fn personal_taken(first: &Roster) -> String {
     let body = first.body();
-    let handle = creator_handle(first);
     format!(
-        "This device signed revision 1 of the account's personal space {} ({}) as its admin, with \
-         the handle {handle}.",
+        "Signed the personal space {} ({}) as its admin.",
         body.name.as_str(),
         body.space
     )
@@ -181,7 +186,7 @@ fn personal_taken(first: &Roster) -> String {
 
 /// This machine's device, with the master key it pinned and its certificate, once the server took
 /// them.
-fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, String> {
+pub fn certified(state: &State) -> Result<Option<(state::Device, [u8; 32], Cert)>, String> {
     let Some(device) = state.device().map_err(text)? else {
         return Ok(None);
     };
@@ -352,8 +357,15 @@ pub struct Follower {
     pub transport: Transport,
     /// Whether the run has kept the device's KeyPackages on the server.
     kept: bool,
+    /// Whether a send of the device's anchors object failed in this run ([`anchors::keep`]).
+    anchors_unsent: bool,
     /// The revisions the server last gave of each space the run followed or synced.
     pub given: BTreeMap<SpaceId, Vec<Roster>>,
+    /// For a service agent's run ([`crate::service`]), its space and the key secret's anchor.
+    pub service: Option<service::Member>,
+    /// Whether the run covers every space the device follows ([`Scope::All`]), so its warnings of
+    /// master keys compare them ([`follow::master_warnings`]); otherwise only the synced one's.
+    every_space: bool,
 }
 
 impl Follower {
@@ -367,17 +379,19 @@ impl Follower {
         timeout: Duration,
     ) -> Result<Option<Self>, String> {
         let mut follower = Self::open(dir, storage, speaks, timeout)?;
-        if let Some(follower) = follower.as_mut()
-            && let Err(err) = follower.take_personal()
-        {
-            personal_warning(&err);
+        if let Some(follower) = follower.as_mut() {
+            follower.every_space = true;
+            if let Err(err) = follower.take_personal() {
+                personal_warning(&err);
+            }
         }
         Ok(follower)
     }
 
     /// As [`Follower::new`], without taking the personal space. Once the revocations the device
     /// signed are sent, it fails if the device is revoked ([`revocations::refuse_if_revoked`]), so
-    /// a revoked device signs and sends nothing.
+    /// a revoked device signs and sends nothing; otherwise it keeps its anchors object
+    /// ([`Follower::keep_anchors`]).
     fn open(
         dir: &Path,
         storage: secrets::Storage,
@@ -392,12 +406,35 @@ impl Follower {
                 &follower.state,
                 (&follower.own.master, &follower.cert),
             )?;
+            follower.keep_anchors();
         }
         Ok(follower)
     }
 
+    /// Keeps the device's anchors object of what the state holds on the server
+    /// ([`anchors::keep`]), unless it is a `service` device, which has none; warns of what fails.
+    fn keep_anchors(&mut self) {
+        if self.service.is_some() {
+            return;
+        }
+        match self.keys() {
+            Ok(keys) => anchors::keep(
+                &mut self.connection,
+                &self.token,
+                &self.state,
+                &anchors::Signer {
+                    account: self.own.account,
+                    device: self.this,
+                    keys: &keys,
+                },
+                &mut self.anchors_unsent,
+            ),
+            Err(err) => eprintln!("skald: warning: {err}"),
+        }
+    }
+
     /// As [`Follower::open`], without checking whether the device is revoked.
-    fn unchecked(
+    pub(crate) fn unchecked(
         dir: &Path,
         storage: secrets::Storage,
         speaks: VersionRange,
@@ -426,20 +463,146 @@ impl Follower {
             accepted: groups::Rosters::new(),
             transport: Transport::default(),
             kept: false,
+            anchors_unsent: false,
             given: BTreeMap::new(),
+            service: None,
+            every_space: false,
         }))
     }
 
+    /// The follower of `agent`, a service agent's run, whose state is in `dir`, which it creates
+    /// if it is missing, or in memory only for a stateless run ([`crate::service`]): its keys and
+    /// state key come from the key secret, its token is its session, and it follows the key
+    /// secret's space from the key secret's anchor. Fails if the device's certificate is not valid
+    /// against the pinned master key, if the state is of another device, and, for a state the
+    /// device has not run with yet, if the device has been in a group
+    /// ([`service::refuse_without_state`]), recording nothing.
+    fn service(
+        dir: &Path,
+        agent: &service::Agent,
+        speaks: VersionRange,
+        timeout: Duration,
+    ) -> Result<Self, String> {
+        let key = &agent.key;
+        let state = if agent.stateless {
+            State::in_memory().map_err(text)?
+        } else {
+            let unusable = |err: &dyn std::fmt::Display| {
+                format!("cannot use the state directory {}: {err}", dir.display())
+            };
+            state::create_dir(dir).map_err(|err| unusable(&err))?;
+            let dir = dir.canonicalize().map_err(|err| unusable(&err))?;
+            State::open(&dir).map_err(text)?
+        };
+        let keys = agent.keys();
+        let this = keys.id();
+        let held = state.device().map_err(text)?;
+        if held.as_ref().is_some_and(|held| held.id != this) {
+            return Err(format!(
+                "the state directory {} holds the state of another device than the key secret's: \
+                 give each service agent a state directory of its own",
+                dir.display()
+            ));
+        }
+        let mut connection = to_session(&key.server, speaks, timeout)?;
+        let token = agent.token.to_string();
+        let devices = follow::space_devices(&mut connection, &token, &state, key.space)?;
+        let cert = skald_crypto::check_valid_device(
+            &key.master,
+            &devices.certs,
+            &devices.revocations,
+            this,
+        )
+        .map_err(|err| {
+            format!(
+                "the service device {this} of the key secret has no valid certificate: {err}; \
+                 nothing is sent"
+            )
+        })?
+        .clone();
+        if cert.body().kind != DeviceKind::Service || cert.body().account != key.account {
+            return Err(format!(
+                "the device {this} of the key secret is no service device of its account; \
+                 nothing is sent"
+            ));
+        }
+        if held.is_none() {
+            let given = follow::given(&mut connection, &token, key.space)?;
+            let anchor = (given.iter())
+                .find(|roster| roster.hash() == key.anchor)
+                .ok_or_else(|| {
+                    format!(
+                        "the server gives no revision of the space {} that is the key secret's \
+                         anchor; nothing is sent",
+                        key.space
+                    )
+                })?;
+            if let Some(latest) = given.iter().max_by_key(|roster| roster.body().revision) {
+                service::refuse_without_state(&mut connection, &token, latest, this)?;
+            }
+            state.start_session(&key.server).map_err(text)?;
+            let account = key.account.to_string();
+            state
+                .add_device(this, &cert.body().name, &account)
+                .map_err(text)?;
+            state.set_registered().map_err(text)?;
+            state
+                .set_link(&Link::Certified {
+                    master: key.master,
+                    cert: cert.to_cbor(),
+                })
+                .map_err(text)?;
+            let name = anchor.body().name.as_str();
+            state
+                .add_linked_space(key.space, name, &anchor.to_cbor(), false)
+                .map_err(text)?;
+        }
+        let device = state
+            .device()
+            .map_err(text)?
+            .ok_or_else(|| "the local state holds no device".to_owned())?;
+        let (stored, secrets) = agent.secrets(&keys);
+        Ok(Follower {
+            state,
+            connection,
+            token,
+            stored,
+            secrets,
+            own: agent.own(),
+            this,
+            device,
+            cert,
+            timeout,
+            accepted: groups::Rosters::new(),
+            transport: Transport::default(),
+            kept: false,
+            anchors_unsent: false,
+            given: BTreeMap::new(),
+            service: Some(service::Member {
+                space: key.space,
+                anchor: key.anchor,
+                stateless: agent.stateless,
+            }),
+            every_space: false,
+        })
+    }
+
+    /// Whether the run is a stateless service agent's ([`crate::service`]).
+    pub fn stateless(&self) -> bool {
+        self.service.is_some_and(|member| member.stateless)
+    }
+
     /// A connection to the server as the device, proving its `keys` ([`Mailbox::open`]), once the
-    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once.
+    /// device kept its KeyPackages on the server, warning if it cannot; a run keeps them once. A
+    /// stateless run keeps none: it would lose their private keys.
     pub fn connect(&mut self, keys: &device::Keys) -> Result<Mailbox, String> {
-        if !self.kept {
+        if !self.kept && !self.stateless() {
             let kept = key_packages::keep(
                 &mut self.connection,
                 &self.token,
-                &self.state,
+                (&self.state, &self.secrets),
                 keys,
-                &self.secrets,
+                self.service.is_some(),
             );
             match kept {
                 Ok(()) => self.kept = true,
@@ -447,6 +610,25 @@ impl Follower {
             }
         }
         Mailbox::open(self, keys)
+    }
+
+    /// `GET /account/anchors` with the device's proof: the anchors objects of the account's
+    /// devices, as a service token reads them.
+    fn anchors_objects(&mut self) -> Result<Vec<Anchors>, String> {
+        let keys = self.keys()?;
+        let proof = self.proof(&keys)?;
+        let body = (self.connection)
+            .get_proved(anchors::PATH, (&self.token, &proof))
+            .map_err(|err| format!("the account's anchors objects are not read: {}", text(err)))?;
+        anchors::objects(&body)
+    }
+
+    /// The proof of an HTTPS request of the device, whose keys are `keys`, on a new challenge of
+    /// its session: the value of its `Skald-Device-Proof` header.
+    pub fn proof(&mut self, keys: &device::Keys) -> Result<String, String> {
+        (self.connection)
+            .request_proof(&self.token, keys.id(), keys.signing())
+            .map_err(text)
     }
 
     /// The device's keys.
@@ -511,7 +693,8 @@ impl Follower {
     /// Takes the account's personal space, unless the device pinned one already, whose revision 1
     /// it sends again while the server has not taken it. Otherwise it gets the space from the
     /// server and, unless another device stored its revision 1, signs that revision, pins the
-    /// space and stores the revision as `skald create-space` does. Gives the revision 1 it signed.
+    /// space, stores the revision as `skald create-space` does and keeps the device's anchors
+    /// object ([`Follower::keep_anchors`]). Gives the revision 1 it signed.
     fn take_personal(&mut self) -> Result<Option<Roster>, String> {
         let spaces = self.state.spaces().map_err(text)?;
         if let Some(space) = spaces.iter().find(|space| space.personal) {
@@ -540,6 +723,7 @@ impl Follower {
             .add_personal_space(id, name.as_str(), &bytes)
             .map_err(text)?;
         self.send_first((id, name.as_str()), &bytes, PERSONAL_AGAIN)?;
+        self.keep_anchors();
         Ok(Some(first))
     }
 
@@ -588,7 +772,7 @@ impl Follower {
             }
         }
         let (roster, devices, _) = self.follow(space)?;
-        match self.add_default(space, &roster) {
+        match self.add_default(space, &roster, &devices) {
             Ok(true) => self
                 .follow(space)
                 .map(|(roster, devices, _)| (roster, devices)),
@@ -604,7 +788,12 @@ impl Follower {
     /// revision of `space`, with a new default channel first, if `latest` needs one
     /// ([`needs_default`]) and no other revision of this device waits; gives whether the server
     /// took it.
-    fn add_default(&mut self, space: &state::Space, latest: &Roster) -> Result<bool, String> {
+    fn add_default(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        devices: &SpaceDevices,
+    ) -> Result<bool, String> {
         if !admin_device(latest, self.own.account, self.this) || !needs_default(latest) {
             return Ok(false);
         }
@@ -621,25 +810,34 @@ impl Follower {
         let id = issue_channel(&mut self.connection, &self.token, space.id)
             .map_err(|err| format!("the space {name} gets no default channel yet: {err}"))?;
         let default = default_channel(id, latest.body());
-        let next = self.next_with(latest, Some(default), &[])?;
+        let next = self.next_with((latest, devices), Some(default), &[])?;
         self.submit(space, latest, &next)?;
         Ok(true)
     }
 
     /// Accepts the revisions the server has of `space`: its last accepted revision, the devices of
     /// its accounts and the revisions the server gives, which it records in [`Follower::given`].
+    /// Then it keeps the device's anchors object ([`Follower::keep_anchors`]).
     fn follow(
         &mut self,
         space: &state::Space,
     ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
+        let start = match self.service {
+            Some(member) if member.space == space.id => Some(follow::Start {
+                anchor: member.anchor,
+                objects: self.anchors_objects()?,
+            }),
+            _ => None,
+        };
         let followed = follow::sync(
             &mut self.connection,
-            &self.state,
-            &self.token,
+            (&self.state, &self.token),
             space,
-            &self.own,
+            (&self.own, self.every_space),
+            start.as_ref(),
         )?;
         self.given.insert(space.id, followed.2.clone());
+        self.keep_anchors();
         Ok(followed)
     }
 
@@ -647,9 +845,9 @@ impl Follower {
     /// takes it; gives the revision it took. When another revision came first, it accepts the new
     /// revisions and signs what `pending` changes into the latest, as the next pending one
     /// ([`Change`]). It drops the pending revision when the server refuses it, when it accepts no
-    /// revision that came first, when the latest makes this device no admin's or when the change
-    /// signed into the latest fails the checks of accepting it; and, giving the latest, when
-    /// nothing of it is left to change.
+    /// revision that came first, when the latest makes this device no admin's or lacks a member
+    /// whose role the change sets, or when the change signed into the latest fails the checks of
+    /// accepting it; and, giving the latest, when nothing of it is left to change.
     pub fn store(&mut self, space: &state::Space, mut pending: Vec<u8>) -> Result<Roster, Unsent> {
         let (id, name) = (space.id, space.name.as_str());
         for _ in 0..follow::ATTEMPTS {
@@ -684,14 +882,16 @@ impl Follower {
                         .into_iter()
                         .find(|given| Some(given.hash()) == prev)
                         .unwrap_or_else(|| latest.clone());
+                    let change = Change::between(base.body(), roster.body());
                     if latest.hash() == base.hash() {
                         "the server gives no revision this device accepts in its place, or not \
                          the one it was signed on"
                             .to_owned()
                     } else if !admin_device(&latest, self.own.account, self.this) {
                         no_admin(&latest)
+                    } else if let Some(why) = change.role_gone(roster.body(), &latest) {
+                        why
                     } else {
-                        let change = Change::between(base.body(), roster.body());
                         let mut body = latest.body().clone();
                         change.onto(&mut body, needs_default(&latest));
                         if body == *latest.body() {
@@ -702,8 +902,9 @@ impl Follower {
                             return Ok(latest);
                         }
                         let next = self
-                            .next_by(&latest, |next| {
+                            .next_by((&latest, &devices), |next| {
                                 next.members = body.members;
+                                next.service_agents = body.service_agents;
                                 next.channels = body.channels;
                                 next.policy = body.policy;
                             })
@@ -772,22 +973,49 @@ impl Follower {
         latest: &Roster,
         next: &Roster,
     ) -> Result<Roster, String> {
+        self.submitted(space, latest, next)
+            .map_err(|unsent| unsent.why)
+    }
+
+    /// As [`Follower::submit`]; when the server took no revision, says whether one waits.
+    pub fn submitted(
+        &mut self,
+        space: &state::Space,
+        latest: &Roster,
+        next: &Roster,
+    ) -> Result<Roster, Unsent> {
         let next = next.to_cbor();
+        let dropped = |why: String| Unsent { waits: false, why };
         if !self
             .state
             .set_pending(space.id, &latest.to_cbor(), None, &next)
-            .map_err(text)?
+            .map_err(text)
+            .map_err(dropped)?
         {
-            return Err(CHANGED_MEANWHILE.to_owned());
+            return Err(dropped(CHANGED_MEANWHILE.to_owned()));
         }
-        self.store(space, next).map_err(|unsent| unsent.why)
+        self.store(space, next)
+    }
+
+    /// Checks `next`, the revision after `latest` that this device signed, as the members of
+    /// `space` accept it with `certs` ([`Follower::accepts`]), then sends it as
+    /// [`Follower::submit`] does; gives the revision the server took.
+    pub fn checked_submit(
+        &mut self,
+        space: &state::Space,
+        (latest, next): (&Roster, &Roster),
+        certs: &[Cert],
+    ) -> Result<Roster, String> {
+        self.accepts(latest, next, certs)
+            .map_err(|err| format!("{err}; nothing is sent"))?;
+        self.submit(space, latest, next)
     }
 
     /// The revision after `latest`, with `first` added before its channels and `channels` after
-    /// them, signed by this device.
+    /// them, signed by this device, as [`Follower::next_by`] signs it with `devices`.
     pub fn next_with(
         &self,
-        latest: &Roster,
+        latest: (&Roster, &SpaceDevices),
         first: Option<Channel>,
         channels: &[Channel],
     ) -> Result<Roster, String> {
@@ -797,10 +1025,12 @@ impl Follower {
         })
     }
 
-    /// The revision after `latest` with what `edit` changes in its body, signed by this device.
+    /// The revision after `latest` with what `edit` changes in its body, signed by this device,
+    /// without the `service` devices that `devices`, those of the space's accounts, show as stale
+    /// ([`drop_stale_services`]).
     pub fn next_by(
         &self,
-        latest: &Roster,
+        (latest, devices): (&Roster, &SpaceDevices),
         edit: impl FnOnce(&mut RosterBody),
     ) -> Result<Roster, String> {
         let keys = self.keys()?;
@@ -813,6 +1043,7 @@ impl Follower {
         body.signer = self.this;
         body.timestamp = now();
         edit(&mut body);
+        drop_stale_services(&mut body, latest, &self.own, devices);
         skald_crypto::sign_roster(&body, keys.signing())
             .map_err(|err| format!("revision {} of the space fails: {err}", body.revision))
     }
@@ -833,20 +1064,43 @@ impl Follower {
 
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it removes, the
-/// devices it bars, the members it adds to and removes from channels, and the policy's `history`
-/// it sets.
+/// devices it bars, the roles it sets, the members it adds to and removes from channels, the
+/// policy's `history` and `domain` it sets, the service agents it removes and adds, and the
+/// `service` devices it adds to channels.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
     channels: Vec<Channel>,
     removed: Vec<AccountId>,
     excluded: Vec<(AccountId, DeviceId)>,
+    roles: Vec<(AccountId, Role)>,
     joined: Vec<(ChannelId, ChannelMember)>,
     left: Vec<(ChannelId, AccountId)>,
     history: Option<u64>,
+    /// The domain it names, or `None` inside if it clears it.
+    domain: Option<Option<String>>,
+    dropped: Vec<DeviceId>,
+    agents: Vec<ServiceAgent>,
+    services: Vec<(ChannelId, DeviceId)>,
 }
 
 impl Change {
+    /// Why the change does not apply to `latest`, a later revision than `signed`, the one it made:
+    /// a member whose role it sets is in `latest` no more.
+    fn role_gone(&self, signed: &RosterBody, latest: &Roster) -> Option<String> {
+        let (account, _) =
+            (self.roles.iter()).find(|(account, _)| latest.body().member(*account).is_none())?;
+        let handle = signed.member(*account).map_or_else(
+            || account.to_string(),
+            |member| member.handle.as_str().to_owned(),
+        );
+        Some(format!(
+            "{handle}, whose role it sets, is gone from the space {} in its revision {}",
+            latest.body().name.as_str(),
+            latest.body().revision
+        ))
+    }
+
     /// What `next` changes in `base`.
     fn between(base: &RosterBody, next: &RosterBody) -> Self {
         let mut change = Change::default();
@@ -872,6 +1126,10 @@ impl Change {
                     {
                         change.left.push((channel.id, entry.account));
                     }
+                    for device in (channel.services.iter()).filter(|it| !old.services.contains(it))
+                    {
+                        change.services.push((channel.id, *device));
+                    }
                 }
             }
         }
@@ -885,22 +1143,51 @@ impl Change {
             for device in barred(kept).into_iter().filter(|id| !before.contains(id)) {
                 change.excluded.push((member.account, device));
             }
+            if kept.role != member.role {
+                change.roles.push((member.account, kept.role));
+            }
         }
         change
             .left
             .retain(|(_, account)| !change.removed.contains(account));
         change.history = Some(next.policy.history).filter(|&set| set != base.policy.history);
+        change.domain = Some(next.policy.domain.clone()).filter(|set| *set != base.policy.domain);
+        change.dropped = (base.service_agents.iter())
+            .map(|agent| agent.device)
+            .filter(|device| {
+                !next
+                    .service_agents
+                    .iter()
+                    .any(|kept| kept.device == *device)
+            })
+            .collect();
+        change.agents = (next.service_agents.iter())
+            .filter(|agent| {
+                !base
+                    .service_agents
+                    .iter()
+                    .any(|old| old.device == agent.device)
+            })
+            .cloned()
+            .collect();
         change
     }
 
     /// Makes the change in `body`, so far as it still applies: a member it removes leaves every
-    /// channel; it bars a device and adds a member to a channel only of a member of `body`; it
-    /// removes no member from the default channel, the first one, which keeps every member; and
-    /// it puts its default channel first, with every member, only if `needs_default`; it sets the
-    /// policy's `history`.
+    /// channel; it bars a device, sets a role and adds a member to a channel only of a member of
+    /// `body`; it removes no member from the default channel, the first one, which keeps every
+    /// member; and it puts its default channel first, with every member, only if `needs_default`;
+    /// it sets the policy's `history` and `domain`; it removes a service agent's entry and its
+    /// device from every channel's `services`; it adds a service agent only while `body` has
+    /// neither its device nor its address, and its owner is no member's handle; and it adds a
+    /// `service` device to a channel's `services` only while `body` has the device's service agent
+    /// entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
+        }
+        if let Some(domain) = &self.domain {
+            body.policy.domain.clone_from(domain);
         }
         // A change that would leave no member removes none.
         let _ = remove_members(body, &self.removed);
@@ -909,6 +1196,9 @@ impl Change {
             let account = member.account;
             for (_, device) in self.excluded.iter().filter(|(of, _)| *of == account) {
                 exclude(member, *device);
+            }
+            if let Some((_, role)) = self.roles.iter().find(|(of, _)| *of == account) {
+                member.role = *role;
             }
         }
         if let Some(members) = NonEmpty::from_vec(members) {
@@ -937,7 +1227,89 @@ impl Change {
             channels.insert(0, default_channel(id, body));
         }
         body.channels = channels;
+        body.service_agents
+            .retain(|agent| !self.dropped.contains(&agent.device));
+        for channel in &mut body.channels {
+            channel
+                .services
+                .retain(|device| !self.dropped.contains(device));
+        }
+        for agent in &self.agents {
+            if !address_taken(body, &agent.owner, &agent.agent)
+                && !body
+                    .service_agents
+                    .iter()
+                    .any(|old| old.device == agent.device)
+            {
+                body.service_agents.push(agent.clone());
+            }
+        }
+        for (id, device) in &self.services {
+            let listed = body
+                .service_agents
+                .iter()
+                .any(|agent| agent.device == *device);
+            if let Some(channel) = body.channels.iter_mut().find(|channel| channel.id == *id)
+                && listed
+                && !channel.services.contains(device)
+            {
+                channel.services.push(*device);
+            }
+        }
     }
+}
+
+/// Drops from `body`, a revision after `latest`, each `service` device that `latest` lists, in a
+/// service agent entry or a channel's `services`, and that is revoked or on the account of no member
+/// of `body`: by `devices`, the certificates and revocations of the space's accounts, against the
+/// master keys `own` and `latest` give (`docs/protocol/membership.md`, "Roster"). A device whose
+/// certificate is not among `devices` stays.
+pub fn drop_stale_services(
+    body: &mut RosterBody,
+    latest: &Roster,
+    own: &Own,
+    devices: &SpaceDevices,
+) {
+    let before = latest.body();
+    let listed = (before.service_agents.iter().map(|entry| entry.device)).chain(
+        before
+            .channels
+            .iter()
+            .flat_map(|it| it.services.iter().copied()),
+    );
+    let stale: Vec<DeviceId> = listed
+        .filter(|&device| {
+            let owner = before.members.iter().find_map(|member| {
+                let master = follow::master_of(latest, own, member.account)?;
+                let cert = skald_crypto::check_device(&master, &devices.certs, device).ok()?;
+                let body = cert.body();
+                (body.account == member.account && body.kind == DeviceKind::Service)
+                    .then_some((member.account, master))
+            });
+            owner.is_some_and(|(account, master)| {
+                body.member(account).is_none()
+                    || skald_crypto::check_valid_device(
+                        &master,
+                        &devices.certs,
+                        &devices.revocations,
+                        device,
+                    )
+                    .is_err()
+            })
+        })
+        .collect();
+    body.service_agents
+        .retain(|entry| !stale.contains(&entry.device));
+    for channel in &mut body.channels {
+        channel.services.retain(|device| !stale.contains(device));
+    }
+}
+
+/// Whether `body`, a revision's body, has the address `owner/agent`: a service agent's, or one of
+/// a member's agents, `owner` its handle.
+pub fn address_taken(body: &RosterBody, owner: &Name, agent: &Name) -> bool {
+    body.members.iter().any(|member| member.handle == *owner)
+        || (body.service_agents.iter()).any(|it| it.owner == *owner && it.agent == *agent)
 }
 
 /// Removes the members of `accounts` from `body`, a revision's body, and from each of its channels;
@@ -982,6 +1354,12 @@ pub fn needs_default(roster: &Roster) -> bool {
                 .any(|entry| entry.account == member.account)
         })
     })
+}
+
+/// The default channel of `roster`, its first channel, unless it needs one ([`needs_default`]).
+pub fn default_of(roster: &Roster) -> Option<ChannelId> {
+    let first = roster.body().channels.first()?;
+    (!needs_default(roster)).then_some(first.id)
 }
 
 /// The default channel `id` of the revision `body`: every member of the space, with `history`
@@ -1073,6 +1451,9 @@ fn follower(
     timeout: Duration,
     scope: Scope,
 ) -> Result<Option<Follower>, String> {
+    if let Some(agent) = service::from_env()? {
+        return Follower::service(dir, &agent, speaks, timeout).map(Some);
+    }
     match scope {
         Scope::All => Follower::new(dir, storage, speaks, timeout),
         Scope::Only(_) => Follower::open(dir, storage, speaks, timeout),
@@ -1159,6 +1540,43 @@ pub fn of_channel(
     })
 }
 
+/// The working directory's space ([`folders::working_space`]) that the device of the machine whose
+/// state is in `dir`, its secrets in `storage`, follows, synced ([`Follower::sync`]), and its
+/// default channel; within `scope`, which for an agent is that space. Fails while the space has no
+/// default channel ([`needs_default`]).
+pub fn of_working_dir(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    scope: Scope,
+) -> Result<(Synced, ChannelId), String> {
+    let mut follower = following(dir, storage, speaks, timeout, scope)?;
+    // A service agent's space is its key secret's, whatever the working directory.
+    let id = match (follower.service, scope) {
+        (Some(member), _) => member.space,
+        (None, Scope::Only(id)) => id,
+        (None, Scope::All) => folders::working_space(dir)?.id,
+    };
+    let space = (follower.state.spaces().map_err(text)?.into_iter())
+        .find(|space| space.id == id)
+        .ok_or_else(|| "this device follows no space of the working directory".to_owned())?;
+    let (roster, devices) = follower.sync(&space)?;
+    let channel = default_of(&roster).ok_or_else(|| {
+        format!(
+            "the space {} has no default channel yet; nothing is sent",
+            space.name
+        )
+    })?;
+    let synced = Synced {
+        follower,
+        space,
+        roster,
+        devices,
+    };
+    Ok((synced, channel))
+}
+
 /// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose
 /// `excluded` does not list it. The device's certificate is checked on accepting.
 pub fn admin_device(roster: &Roster, account: AccountId, device: DeviceId) -> bool {
@@ -1187,7 +1605,8 @@ pub fn no_admin(roster: &Roster) -> String {
 /// follows, each at its last accepted revision. A signed-in machine with a certified device first
 /// accepts the revisions the server has of each, and brings the groups of their channels in line
 /// ([`groups::align_accepted`]); a space it fails to follow shows as the local state holds it,
-/// saying why. Only the spaces within `scope`.
+/// saying why. Only the spaces within `scope`. Warns of each it is the only admin of
+/// ([`only_admin`]).
 pub fn list(
     dir: &Path,
     storage: secrets::Storage,
@@ -1195,7 +1614,7 @@ pub fn list(
     timeout: Duration,
     scope: Scope,
 ) -> Result<(), String> {
-    let lines = if dir.is_dir() {
+    let (lines, warnings) = if dir.is_dir() {
         let state = State::open(dir).map_err(text)?;
         let mut follower = match state.session().map_err(text)? {
             Some(_) => follower(dir, storage, speaks, timeout, scope).unwrap_or_else(|err| {
@@ -1206,6 +1625,7 @@ pub fn list(
         };
         let account = own_account(&state)?;
         let mut lines = Vec::new();
+        let mut warnings = Vec::new();
         let spaces = state.spaces().map_err(text)?;
         for space in spaces.into_iter().filter(|space| !scope.excludes(space.id)) {
             let synced = follower.as_mut().map(|follower| follower.sync(&space));
@@ -1221,13 +1641,14 @@ pub fn list(
                 None => follow::decode(&space.accepted, &space.name)?,
             };
             lines.push(line(&roster, account, space.first_waits(), space.personal));
+            warnings.extend(account.and_then(|account| only_admin(&roster, account)));
         }
         if let Some(follower) = follower.as_mut() {
             groups::align_accepted(follower);
         }
-        lines
+        (lines, warnings)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     if lines.is_empty() {
         println!("This device is in no space yet; create one with skald create-space <name>.");
@@ -1235,7 +1656,30 @@ pub fn list(
     for line in lines {
         println!("{line}");
     }
+    for warning in warnings {
+        eprintln!("skald: warning: {warning}");
+    }
     Ok(())
+}
+
+/// The warning for `account` if it is the only admin of `roster`'s space and the space has another
+/// member: nobody manages the space once the account loses all its devices and its recovery key.
+pub fn only_admin(roster: &Roster, account: AccountId) -> Option<String> {
+    let body = roster.body();
+    let mut admins = body
+        .members
+        .iter()
+        .filter(|member| member.role == Role::Admin);
+    let only =
+        admins.next().is_some_and(|admin| admin.account == account) && admins.next().is_none();
+    (only && body.members.len() > 1).then(|| {
+        let name = body.name.as_str();
+        format!(
+            "this account is the only admin of the space {name}; if it loses all its devices and \
+             its recovery key, nobody can manage the space. Add an admin: skald make-admin {name} \
+             <handle>"
+        )
+    })
 }
 
 /// The account of the device the state `state` holds, if it knows it.
@@ -1254,15 +1698,41 @@ pub fn own_account(state: &State) -> Result<Option<AccountId>, String> {
         .map_err(text)
 }
 
-/// Shows the members of `synced`, a space the device follows.
-pub fn members(synced: Synced) -> Result<(), String> {
+/// Shows the members of `synced`, a space the device follows, with what their devices' SSH
+/// signatures showed ([`ssh_checks`]), checked against its domain's records at the resolver and
+/// within the timeout `resolver` gives ([`domains::check`]); warns if the device's account is its
+/// only admin ([`only_admin`]).
+pub fn members(synced: Synced, resolver: (&str, Duration)) -> Result<(), String> {
     let Synced {
         follower,
         roster,
         devices,
         ..
     } = synced;
-    let (listing, warnings) = members_listing(&roster, &devices, &follower.own, follower.this);
+    let domain = domains::check(&follower.state, resolver, &roster, &follower.own)?;
+    let mut verified = BTreeSet::new();
+    for member in roster.body().members.iter() {
+        if member.account != follower.own.account
+            && (follower.state.verified(member.account, &member.master)).map_err(text)?
+        {
+            verified.insert(member.account);
+        }
+    }
+    let (members, mut warnings) = member_devices(&roster, &devices, &follower.own, &verified);
+    let shown: Vec<&Cert> = (members.iter().flat_map(|(_, shown)| shown))
+        .flat_map(|shown| shown.linked.iter().chain(&shown.revoked))
+        .copied()
+        .collect();
+    let (signatures, key_changes) = ssh_checks::check(&follower.state, &shown)?;
+    warnings.extend(key_changes);
+    warnings.extend(only_admin(&roster, follower.own.account));
+    let listing = members_listing(
+        &roster,
+        &members,
+        (follower.this, &signatures),
+        domain.as_ref(),
+    );
+    warnings.extend(domain.into_iter().flat_map(|domain| domain.warnings));
     print!("{listing}");
     for warning in warnings {
         eprintln!("skald: warning: {warning}");
@@ -1270,53 +1740,121 @@ pub fn members(synced: Synced) -> Result<(), String> {
     Ok(())
 }
 
-/// What `skald members` shows of `roster`, a space's last accepted revision, with `devices`, those
-/// of its accounts: each member's handle and role, and under it each device of its account with a
-/// valid certificate, then each revoked one, as `skald devices` shows them, `this` device marked;
-/// and the warnings of `skald devices` for them. A certificate is checked against the master key
-/// `own` pinned for its own account, and against the `master` the revision gives any other.
-fn members_listing(
-    roster: &Roster,
-    devices: &SpaceDevices,
+/// What `skald members` shows of one member's account.
+struct Shown<'d> {
+    /// Its fingerprint ([`fingerprint_line`]).
+    fingerprint: String,
+    /// Its devices with a valid certificate.
+    linked: Vec<&'d Cert>,
+    /// Its revoked devices whose certificates pass checks 1 and 2.
+    revoked: Vec<&'d Cert>,
+}
+
+/// Each member of `roster`, a space's last accepted revision, with what `skald members` shows of
+/// its account: its fingerprint, marked if `verified` holds the account, and the devices of it
+/// `devices` holds; none when the device has no master key for it. And the warnings of
+/// `skald devices` for them. A certificate and the fingerprint take the master key `own` pinned
+/// for its own account, and the `master` the revision gives any other.
+fn member_devices<'r, 'd>(
+    roster: &'r Roster,
+    devices: &'d SpaceDevices,
     own: &Own,
-    this: DeviceId,
-) -> (String, Vec<String>) {
-    let body = roster.body();
+    verified: &BTreeSet<AccountId>,
+) -> (Vec<(&'r Member, Option<Shown<'d>>)>, Vec<String>) {
     let mut warnings: Vec<String> = Vec::new();
-    let mut out = heading(roster);
-    for member in body.members.iter() {
-        out.push_str(&format!(
-            "  {}  {}\n",
-            member.handle.as_str(),
-            role(member.role)
-        ));
+    let mut members = Vec::new();
+    for member in roster.body().members.iter() {
         let Some(master) = follow::master_of(roster, own, member.account) else {
+            members.push((member, None));
             continue;
         };
+        let fingerprint =
+            fingerprint_line(member.account, &master, verified.contains(&member.account));
         let checked = devices::check(&master, devices);
         for warning in devices::two_bodies_warnings(&checked) {
             if !warnings.contains(&warning) {
                 warnings.push(warning);
             }
         }
-        let linked: Vec<&Cert> = checked
-            .linked
-            .iter()
-            .copied()
-            .filter(|cert| cert.body().account == member.account)
-            .collect();
-        warnings.extend(devices::shared_name_warnings(&linked));
-        if linked.is_empty() {
-            out.push_str("    no device with a valid certificate\n");
-        }
-        for cert in linked {
-            out.push_str(&format!("    {}\n", devices::linked_line(cert, this)));
-        }
-        for cert in (checked.revoked.iter()).filter(|cert| cert.body().account == member.account) {
-            out.push_str(&format!("    {}\n", devices::revoked_line(cert, this)));
+        let of = |certs: &[&'d Cert]| -> Vec<&'d Cert> {
+            (certs.iter().copied())
+                .filter(|cert| cert.body().account == member.account)
+                .collect()
+        };
+        let shown = Shown {
+            fingerprint,
+            linked: of(&checked.linked),
+            revoked: of(&checked.revoked),
+        };
+        warnings.extend(devices::shared_name_warnings(&shown.linked));
+        members.push((member, Some(shown)));
+    }
+    (members, warnings)
+}
+
+/// What `skald members` shows of `roster`, a space's last accepted revision, with `members`, its
+/// members and their accounts ([`member_devices`]): each member's handle and role, and under it its
+/// account's fingerprint, then each device of its account with a valid certificate, then each
+/// revoked one, as `skald devices` shows them, `this` device marked and each line ending with what
+/// `signatures` shows of its SSH signature. With the space's `domain`, it shows the domain first,
+/// and under each member's fingerprint whether the domain lists it.
+fn members_listing(
+    roster: &Roster,
+    members: &[(&Member, Option<Shown>)],
+    (this, signatures): (DeviceId, &ssh_checks::Results),
+    domain: Option<&domains::Checked>,
+) -> String {
+    let mut out = heading(roster);
+    if let Some(domain) = domain {
+        match &domain.listed {
+            Ok(_) => out.push_str(&format!("  domain {}\n", domain.domain)),
+            Err(why) => out.push_str(&format!("  domain {}, not checked: {why}\n", domain.domain)),
         }
     }
-    (out, warnings)
+    for (member, shown) in members {
+        out.push_str(&format!(
+            "  {}  {}\n",
+            member.handle.as_str(),
+            role(member.role)
+        ));
+        let Some(shown) = shown else {
+            continue;
+        };
+        out.push_str(&format!("    {}\n", shown.fingerprint));
+        if let Some(domain) = domain.filter(|domain| {
+            (domain.listed.as_ref()).is_ok_and(|listed| listed.contains(&member.account))
+        }) {
+            out.push_str(&format!("    listed by {}\n", domain.domain));
+        }
+        if shown.linked.is_empty() {
+            out.push_str("    no device with a valid certificate\n");
+        }
+        for cert in &shown.linked {
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!(
+                "    {}{signature}\n",
+                devices::linked_line(cert, this)
+            ));
+        }
+        for cert in &shown.revoked {
+            let signature = ssh_checks::shown(signatures, cert);
+            out.push_str(&format!(
+                "    {}{signature}\n",
+                devices::revoked_line(cert, this)
+            ));
+        }
+    }
+    out
+}
+
+/// How `skald members` shows the fingerprint of `account` with the master key `master`, marked
+/// `verified` if so.
+pub fn fingerprint_line(account: AccountId, master: &[u8; 32], verified: bool) -> String {
+    let fingerprint = skald_crypto::account_fingerprint(account, master);
+    match verified {
+        true => format!("fingerprint {fingerprint}  verified"),
+        false => format!("fingerprint {fingerprint}"),
+    }
 }
 
 /// The first line of what `skald members` and `skald channels` show of `roster`, a space's last
@@ -1448,6 +1986,7 @@ pub(crate) mod tests {
             issuer: None,
             issued: 1_800_000_000,
             ssh: None,
+            github: None,
             name: name.to_owned(),
             unknown: skald_proto::Unknown::default(),
         };
@@ -1511,8 +2050,12 @@ pub(crate) mod tests {
                 ids: certs.iter().map(|cert| cert.body().device).collect(),
                 certs: certs.to_vec(),
                 revocations,
+                records: Vec::new(),
             };
-            members_listing(roster, &devices, &self.own(), this)
+            let own = self.own();
+            let (members, warnings) = member_devices(roster, &devices, &own, &BTreeSet::new());
+            let listing = members_listing(roster, &members, (this, &Default::default()), None);
+            (listing, warnings)
         }
     }
 
@@ -1543,7 +2086,8 @@ pub(crate) mod tests {
 
         assert!(
             shown.ends_with(&format!(
-                "  bob  member\n    {}\n    {}\n",
+                "  bob  member\n    {}\n    {}\n    {}\n",
+                fingerprint_line(pair.bob, &pair.bob_master.public_key(), false),
                 devices::linked_line(&certs[1], this),
                 devices::revoked_line(&certs[0], this)
             )),
@@ -1572,11 +2116,14 @@ pub(crate) mod tests {
 
         let shown = pair.listing(&roster, &certs, this);
 
+        let ada_fingerprint = fingerprint_line(ada, &pair.ada_master.public_key(), false);
+        let bob_fingerprint = fingerprint_line(bob, &pair.bob_master.public_key(), false);
         assert_eq!(
             shown,
             (
                 format!(
-                    "The space acme ({}), revision 2:\n  ada  admin\n    {}\n  bob  member\n    {}\n",
+                    "The space acme ({}), revision 2:\n  ada  admin\n    {ada_fingerprint}\n    \
+                     {}\n  bob  member\n    {bob_fingerprint}\n    {}\n",
                     body.space,
                     devices::linked_line(&certs[0], this),
                     devices::linked_line(&certs[1], this)
@@ -1588,12 +2135,39 @@ pub(crate) mod tests {
             pair.listing(&roster, &[], this),
             (
                 format!(
-                    "The space acme ({}), revision 2:\n  ada  admin\n    no device with a valid \
-                     certificate\n  bob  member\n    no device with a valid certificate\n",
+                    "The space acme ({}), revision 2:\n  ada  admin\n    {ada_fingerprint}\n    \
+                     no device with a valid certificate\n  bob  member\n    {bob_fingerprint}\n    \
+                     no device with a valid certificate\n",
                     body.space
                 ),
                 vec![]
             )
+        );
+    }
+
+    #[test]
+    fn members_mark_only_the_verified_accounts_fingerprints() {
+        let pair = Pair::new();
+        let (roster, this) = (pair.roster(), DeviceId::from_bytes([7; 16]));
+        let devices = SpaceDevices::default();
+        let verified = BTreeSet::from([pair.bob]);
+
+        let (members, _) = member_devices(&roster, &devices, &pair.own(), &verified);
+        let shown = members_listing(&roster, &members, (this, &Default::default()), None);
+
+        let ada = fingerprint_line(pair.ada, &pair.ada_master.public_key(), false);
+        let bob = fingerprint_line(pair.bob, &pair.bob_master.public_key(), true);
+        assert!(
+            shown.contains(&format!("  ada  admin\n    {ada}\n")),
+            "{shown}"
+        );
+        assert!(
+            shown.contains(&format!("  bob  member\n    {bob}\n")),
+            "{shown}"
+        );
+        assert!(
+            bob.ends_with("  verified") && !ada.contains("verified"),
+            "{shown}"
         );
     }
 
@@ -1632,9 +2206,100 @@ pub(crate) mod tests {
         );
     }
 
+    /// A next revision drops the `service` devices the revision before it lists, in entries and in
+    /// `services`, that are revoked or of an account it removes; it keeps the others, and a device
+    /// whose certificate the space's devices lack.
+    #[test]
+    fn next_revisions_drop_revoked_and_removed_accounts_service_devices() {
+        let pair = Pair::new();
+        let keys: Vec<SigningKey> = (0..5).map(|_| SigningKey::generate()).collect();
+        let laptops = [
+            cert(pair.ada, &pair.ada_master, &keys[0], "ada-laptop"),
+            cert(pair.bob, &pair.bob_master, &keys[1], "bob-laptop"),
+        ];
+        let service = |account, issuer: &SigningKey, key: &SigningKey| {
+            let body = skald_proto::CertBody {
+                account,
+                device: DeviceId::from_signing_key(&key.public_key()),
+                kind: DeviceKind::Service,
+                signing: key.public_key(),
+                hpke: [4; 32],
+                issuer: Some(DeviceId::from_signing_key(&issuer.public_key())),
+                issued: 1_800_000_000,
+                ssh: None,
+                github: None,
+                name: "ci/bot".to_owned(),
+                unknown: Unknown::default(),
+            };
+            skald_crypto::issue(&body, issuer, key).expect("a certificate")
+        };
+        let services = [
+            service(pair.ada, &keys[0], &keys[2]),
+            service(pair.ada, &keys[0], &keys[3]),
+            service(pair.bob, &keys[1], &keys[4]),
+        ];
+        let [revoked, kept, bobs] = services.each_ref().map(|cert| cert.body().device);
+        let uncertified = DeviceId::from_signing_key(&[7; 32]);
+        let revocation = skald_crypto::sign_revocation(
+            &skald_proto::RevocationBody {
+                account: pair.ada,
+                device: revoked,
+                keep: None,
+                signer: Some(laptops[0].body().device),
+                timestamp: 1_800_000_000,
+                also: None,
+                unknown: Unknown::default(),
+            },
+            &keys[0],
+        )
+        .unwrap();
+        let devices = SpaceDevices {
+            ids: Vec::new(),
+            certs: laptops.iter().chain(&services).cloned().collect(),
+            revocations: vec![revocation],
+            records: Vec::new(),
+        };
+        let mut body = pair.roster().body().clone();
+        let entry = |device, name: &str| ServiceAgent {
+            device,
+            owner: "ci".parse().unwrap(),
+            agent: name.parse().unwrap(),
+            unknown: Unknown::default(),
+        };
+        body.service_agents = vec![
+            entry(revoked, "old-bot"),
+            entry(kept, "deploy-bot"),
+            entry(bobs, "bob-bot"),
+            entry(uncertified, "lost-bot"),
+        ];
+        let mut general = channel(ChannelId::generate(), &[pair.ada, pair.bob]);
+        general.services = vec![revoked, bobs, uncertified];
+        body.channels = vec![general];
+        let latest = skald_crypto::sign_roster(&body, &SigningKey::generate()).unwrap();
+        let listed = |body: &RosterBody| {
+            let entries: Vec<DeviceId> = body.service_agents.iter().map(|it| it.device).collect();
+            (entries, body.channels[0].services.clone())
+        };
+
+        let mut next = latest.body().clone();
+        drop_stale_services(&mut next, &latest, &pair.own(), &devices);
+        assert_eq!(
+            listed(&next),
+            (vec![kept, bobs, uncertified], vec![bobs, uncertified])
+        );
+
+        let mut without_bob = latest.body().clone();
+        remove_members(&mut without_bob, &[pair.bob]).unwrap();
+        drop_stale_services(&mut without_bob, &latest, &pair.own(), &devices);
+        assert_eq!(
+            listed(&without_bob),
+            (vec![kept, uncertified], vec![uncertified])
+        );
+    }
+
     /// A space needs a default channel while it has no channel or its first channel lacks a
     /// member; a later channel with every member does not count. A default channel holds every
-    /// member with `history` true.
+    /// member with `history` true; once there, it is the space's default channel.
     #[test]
     fn space_needs_a_default_channel_until_its_first_channel_has_every_member() {
         let (ada, bob) = (AccountId::generate(), AccountId::generate());
@@ -1643,6 +2308,7 @@ pub(crate) mod tests {
             skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
         };
         assert!(needs_default(&sign(&body)), "no channel");
+        assert_eq!(default_of(&sign(&body)), None, "no channel");
         body.channels = vec![default_channel(ChannelId::generate(), &body)];
         let ada_in = ChannelMember {
             account: ada,
@@ -1659,8 +2325,9 @@ pub(crate) mod tests {
             needs_default(&sign(&body)),
             "every member in a later channel"
         );
-        body.channels
-            .insert(0, default_channel(ChannelId::generate(), &body));
+        assert_eq!(default_of(&sign(&body)), None, "a later channel");
+        let default = ChannelId::generate();
+        body.channels.insert(0, default_channel(default, &body));
         let bob_in = ChannelMember {
             account: bob,
             history: true,
@@ -1668,6 +2335,7 @@ pub(crate) mod tests {
         assert_eq!(body.channels[0].members, [ada_in, bob_in]);
         assert!(body.channels[0].services.is_empty());
         assert!(!needs_default(&sign(&body)));
+        assert_eq!(default_of(&sign(&body)), Some(default));
     }
 
     #[test]
@@ -1723,6 +2391,28 @@ pub(crate) mod tests {
         }
     }
 
+    /// The service agent `owner/agent` on the device of the signing key of `byte` repeated.
+    pub(crate) fn agent(owner: &str, agent: &str, byte: u8) -> ServiceAgent {
+        ServiceAgent {
+            device: DeviceId::from_signing_key(&[byte; 32]),
+            owner: owner.parse().unwrap(),
+            agent: agent.parse().unwrap(),
+            unknown: Unknown::default(),
+        }
+    }
+
+    /// Gives `account` the role `role` in `body`.
+    fn make(body: &mut RosterBody, account: AccountId, role: Role) {
+        let mut members = body.members.clone().into_vec();
+        for member in members
+            .iter_mut()
+            .filter(|member| member.account == account)
+        {
+            member.role = role;
+        }
+        body.members = NonEmpty::from_vec(members).unwrap();
+    }
+
     /// Bars `device` of `account` in `body`.
     fn bar(body: &mut RosterBody, account: AccountId, device: DeviceId) {
         let mut members = body.members.clone().into_vec();
@@ -1736,20 +2426,27 @@ pub(crate) mod tests {
     }
 
     /// A revision that removes Carol from the space, bars a device of Bob's, removes Bob from a
-    /// channel, adds Dave to it, adds a channel and sets the history period changes the same in a
-    /// later revision that added Eve, who stays in every channel she is in.
+    /// channel, adds Dave to it, makes Dave an admin and Ada a member, adds a channel, sets the
+    /// history period and adds a service agent, listed in a channel's `services`, changes the same
+    /// in a later revision that added Eve, who stays in every channel she is in, and another
+    /// service agent; a service agent all of them list stays once.
     #[test]
     fn change_is_made_again_in_a_later_revision() {
         let [ada, bob, carol, dave, eve] = [(); 5].map(|()| AccountId::generate());
         let [default, team, new] = [(); 3].map(|()| ChannelId::generate());
         let barred = DeviceId::from_signing_key(&[9; 32]);
-        let base = acme(
+        // A service agent every revision lists, and one the change removes.
+        let watch = agent("ops", "watch-bot", 5);
+        let old = agent("ci", "old-bot", 6);
+        let mut base = acme(
             &[ada, bob, carol, dave],
             &[
                 (default, &[ada, bob, carol, dave]),
                 (team, &[ada, bob, carol]),
             ],
         );
+        base.service_agents = vec![watch.clone(), old.clone()];
+        base.channels[1].services.push(old.device);
         let mut next = acme(
             &[ada, bob, dave],
             &[
@@ -1760,7 +2457,13 @@ pub(crate) mod tests {
         );
         next.channels[1].members[1].history = false;
         next.policy.history = 2 * HISTORY_MIN;
+        next.policy.domain = Some("corp.example".to_owned());
         bar(&mut next, bob, barred);
+        make(&mut next, dave, Role::Admin);
+        make(&mut next, ada, Role::Member);
+        let (deploy, release) = (agent("ci", "deploy-bot", 7), agent("ci", "release-bot", 8));
+        next.service_agents = vec![watch.clone(), deploy.clone()];
+        next.channels[1].services.push(deploy.device);
 
         let change = Change::between(&base, &next);
 
@@ -1775,9 +2478,14 @@ pub(crate) mod tests {
                 channels: vec![next.channels[2].clone()],
                 removed: vec![carol],
                 excluded: vec![(bob, barred)],
+                roles: vec![(ada, Role::Member), (dave, Role::Admin)],
                 joined: vec![(team, dave_in)],
                 left: vec![(team, bob)],
                 history: Some(2 * HISTORY_MIN),
+                domain: Some(Some("corp.example".to_owned())),
+                dropped: vec![old.device],
+                agents: vec![deploy.clone()],
+                services: vec![(team, deploy.device)],
             }
         );
         let mut latest = acme(
@@ -1787,6 +2495,8 @@ pub(crate) mod tests {
                 (team, &[ada, bob, carol, eve]),
             ],
         );
+        latest.service_agents = vec![watch.clone(), release.clone(), old.clone()];
+        latest.channels[1].services.push(old.device);
         let (space, signer) = (latest.space, latest.signer);
         change.onto(&mut latest, false);
         let mut expected = acme(
@@ -1798,16 +2508,48 @@ pub(crate) mod tests {
             ],
         );
         expected.channels[1].members.push(dave_in);
+        expected.channels[1].services.push(deploy.device);
         expected.policy.history = 2 * HISTORY_MIN;
+        expected.policy.domain = Some("corp.example".to_owned());
         bar(&mut expected, bob, barred);
+        make(&mut expected, dave, Role::Admin);
+        make(&mut expected, ada, Role::Member);
+        expected.service_agents = vec![watch, release, deploy];
         (expected.space, expected.signer) = (space, signer);
         assert_eq!(latest, expected);
     }
 
+    /// A revision that clears the domain clears it in a later revision, and one that changes
+    /// nothing of it leaves a later revision's domain as it is.
+    #[test]
+    fn change_clears_the_domain_in_a_later_revision() {
+        let [ada, bob] = [(); 2].map(|()| AccountId::generate());
+        let default = ChannelId::generate();
+        let named = |domain: Option<&str>| {
+            let mut body = acme(&[ada, bob], &[(default, &[ada, bob])]);
+            body.policy.domain = domain.map(str::to_owned);
+            body
+        };
+        let cleared = Change::between(&named(Some("corp.example")), &named(None));
+        assert_eq!(cleared.domain, Some(None));
+        let mut latest = named(Some("other.example"));
+        cleared.onto(&mut latest, false);
+        assert_eq!(latest.policy.domain, None);
+
+        let unchanged = Change::between(&named(None), &named(None));
+        assert_eq!(unchanged.domain, None);
+        let mut latest = named(Some("other.example"));
+        unchanged.onto(&mut latest, false);
+        assert_eq!(latest.policy.domain.as_deref(), Some("other.example"));
+    }
+
     /// Of a change, what no longer applies to a later revision is left out: a removed or barred
     /// member that is gone, a member added to a channel who left the space or is in it already, a
-    /// member removed from the default channel, and a default channel the revision does not need.
-    /// One that needs it gets it first, with every member.
+    /// member removed from the default channel, a default channel the revision does not need, and a
+    /// service agent whose device or address the revision has or whose owner is a member's handle,
+    /// a removed service agent the revision does not list, and a `service` device in a channel the
+    /// revision lacks, or without the device's entry. One that needs it gets it first, with every
+    /// member.
     #[test]
     fn change_leaves_out_what_no_longer_applies() {
         let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
@@ -1821,11 +2563,25 @@ pub(crate) mod tests {
             channels: Vec::new(),
             removed: vec![carol],
             excluded: vec![(carol, DeviceId::from_signing_key(&[9; 32]))],
+            roles: Vec::new(),
             joined: vec![(team, entry(carol)), (team, entry(ada))],
             left: vec![(default, bob)],
             history: None,
+            domain: None,
+            // An agent the revision does not list.
+            dropped: vec![agent("ops", "gone-bot", 10).device],
+            agents: vec![
+                agent("ci", "deploy-bot", 7),
+                agent("ops", "other-bot", 8),
+                agent("ada", "deploy-bot", 9),
+            ],
+            services: vec![
+                (ChannelId::generate(), agent("ops", "bot", 8).device),
+                (team, agent("ada", "deploy-bot", 9).device),
+            ],
         };
-        let latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
+        let mut latest = acme(&[ada, bob], &[(default, &[ada, bob]), (team, &[ada])]);
+        latest.service_agents = vec![agent("ci", "deploy-bot", 6), agent("ops", "bot", 8)];
 
         let mut kept = latest.clone();
         change.onto(&mut kept, false);
@@ -1836,6 +2592,60 @@ pub(crate) mod tests {
         let mut expected = latest.clone();
         expected.channels.insert(0, default_channel(added, &latest));
         assert_eq!(needing, expected);
+    }
+
+    /// A change that sets the role of a member a later revision lacks does not apply to it, saying
+    /// the member is gone, by its handle, and naming that revision; one whose members are all in
+    /// it does.
+    #[test]
+    fn role_change_of_a_member_gone_from_a_later_revision_does_not_apply() {
+        let [ada, bob, carol] = [(); 3].map(|()| AccountId::generate());
+        let base = acme(&[ada, bob, carol], &[]);
+        let mut handed = base.clone();
+        make(&mut handed, bob, Role::Admin);
+        make(&mut handed, ada, Role::Member);
+        let change = Change::between(&base, &handed);
+        let later = |removed: AccountId| {
+            let mut body = base.clone();
+            remove_members(&mut body, &[removed]).unwrap();
+            body.revision = 7;
+            skald_crypto::sign_roster(&body, &SigningKey::generate()).expect("a revision")
+        };
+
+        let why = change.role_gone(&handed, &later(bob)).expect("refused");
+
+        let handle = handed.member(bob).unwrap().handle.as_str();
+        assert!(
+            why.contains(handle) && why.contains("gone") && why.contains("revision 7"),
+            "{why}"
+        );
+        assert_eq!(change.role_gone(&handed, &later(carol)), None);
+    }
+
+    /// Only the only admin of a space with another member is warned, naming the command that makes
+    /// a member an admin; not a member, nor an admin alone or with another admin.
+    #[test]
+    fn only_admin_of_a_space_with_another_member_is_warned() {
+        let [ada, bob] = [(); 2].map(|()| AccountId::generate());
+        let signed = |body: &RosterBody| {
+            skald_crypto::sign_roster(body, &SigningKey::generate()).expect("a revision")
+        };
+        let alone = first(ada);
+        let with_bob = signed(&acme(&[ada, bob], &[]));
+        let mut two = acme(&[ada, bob], &[]);
+        make(&mut two, bob, Role::Admin);
+        let two = signed(&two);
+
+        let warning = only_admin(&with_bob, ada).expect("a warning");
+
+        assert!(
+            warning.contains("recovery key") && warning.contains("skald make-admin acme <handle>"),
+            "{warning}"
+        );
+        assert_eq!(only_admin(&with_bob, bob), None);
+        assert_eq!(only_admin(&alone, ada), None);
+        assert_eq!(only_admin(&two, ada), None);
+        assert_eq!(only_admin(&two, bob), None);
     }
 
     #[test]
@@ -1890,6 +2700,7 @@ pub(crate) mod tests {
             issuer: None,
             issued: 0,
             ssh: None,
+            github: None,
             name: "Laptop".to_owned(),
             unknown: skald_proto::Unknown::default(),
         };
@@ -1942,6 +2753,8 @@ pub(crate) mod tests {
                 Link::Sent {
                     master: [7; 32],
                     cert: vec![0x80],
+                    record: vec![0x81],
+                    backup: vec![0x82],
                 },
             ),
         ] {

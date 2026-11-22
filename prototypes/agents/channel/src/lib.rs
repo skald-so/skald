@@ -2,13 +2,18 @@
 //! through Channels: a `notifications/claude/channel` event per message, marked handed over once
 //! the event is written to the CLI and put back if the write fails, as `docs/protocol/delivery.md`,
 //! "Device to agent", says. When a push fails, the server stops: ending its process frees its
-//! claim, so the next take in any process puts back what the claim still holds.
+//! claim, so the next take in any process puts back what the claim still holds. With a
+//! permission log, it also declares the permission relay and records each notification Claude Code
+//! sends it, such as a relayed permission prompt, never answering one.
 
 use std::borrow::Cow;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_source::{Message, Source};
+use agent_source::{Message, Source, now_ms};
 use rmcp::model::{
     CustomNotification, ExperimentalCapabilities, JsonObject, ProtocolVersion, ServerCapabilities,
     ServerConfig, ServerNotification,
@@ -23,6 +28,16 @@ pub const CAPABILITY: &str = "claude/channel";
 
 /// The method of a channel event.
 pub const METHOD: &str = "notifications/claude/channel";
+
+/// The capability that asks Claude Code to relay its tool approval prompts to the channel.
+pub const PERMISSION_CAPABILITY: &str = "claude/channel/permission";
+
+/// The method of a relayed tool approval prompt.
+pub const PERMISSION_REQUEST: &str = "notifications/claude/channel/permission_request";
+
+/// The method of the client's notification that ends the MCP handshake: the permission log records
+/// it, so a check knows when Claude Code can relay prompts to the channel.
+pub const INITIALIZED: &str = "notifications/initialized";
 
 /// How often the server looks for waiting messages.
 pub const POLL: Duration = Duration::from_millis(100);
@@ -41,6 +56,8 @@ const INSTRUCTIONS: &str = "Messages other agents send you arrive as <channel so
 pub struct ChannelServer {
     source: Arc<Source>,
     stopped: Arc<Notify>,
+    /// Where the notifications Claude Code sends go; `None` declares no relay.
+    permission_log: Option<Arc<PathBuf>>,
 }
 
 impl ChannelServer {
@@ -48,6 +65,16 @@ impl ChannelServer {
         Self {
             source: Arc::new(source),
             stopped: Arc::new(Notify::new()),
+            permission_log: None,
+        }
+    }
+
+    /// The server that also declares the permission relay and appends each notification Claude
+    /// Code sends it to `log` ([`record_notification`]), the end of the handshake among them.
+    pub fn with_permission_log(source: Source, log: PathBuf) -> Self {
+        Self {
+            permission_log: Some(Arc::new(log)),
+            ..Self::new(source)
         }
     }
 
@@ -60,10 +87,12 @@ impl ChannelServer {
 impl ServerHandler for ChannelServer {
     fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::default();
-        capabilities.experimental = Some(ExperimentalCapabilities::from([(
-            CAPABILITY.to_owned(),
-            JsonObject::new(),
-        )]));
+        let mut experimental =
+            ExperimentalCapabilities::from([(CAPABILITY.to_owned(), JsonObject::new())]);
+        if self.permission_log.is_some() {
+            experimental.insert(PERMISSION_CAPABILITY.to_owned(), JsonObject::new());
+        }
+        capabilities.experimental = Some(experimental);
         ServerConfig::new(capabilities)
             .with_protocol_version(PROTOCOL)
             .with_instructions(INSTRUCTIONS)
@@ -74,6 +103,12 @@ impl ServerHandler for ChannelServer {
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        if let Some(log) = &self.permission_log {
+            let initialized = CustomNotification::new(INITIALIZED, None);
+            if let Err(error) = record_notification(log, &initialized, now_ms()) {
+                eprintln!("agent-channel: cannot record the initialization: {error}");
+            }
+        }
         let (source, stopped) = (self.source.clone(), self.stopped.clone());
         tokio::spawn(async move {
             if let Err(error) = push_forever(&source, &context.peer, POLL).await {
@@ -82,6 +117,34 @@ impl ServerHandler for ChannelServer {
             stopped.notify_one();
         });
     }
+
+    async fn on_custom_notification(
+        &self,
+        notification: CustomNotification,
+        _context: NotificationContext<RoleServer>,
+    ) {
+        if let Some(log) = &self.permission_log
+            && let Err(error) = record_notification(log, &notification, now_ms())
+        {
+            eprintln!("agent-channel: cannot record a notification: {error}");
+        }
+    }
+}
+
+/// Appends `notification` to `log` as a JSON line with its method, its params and `at_ms`, when it
+/// came.
+pub fn record_notification(
+    log: &Path,
+    notification: &CustomNotification,
+    at_ms: u64,
+) -> std::io::Result<()> {
+    let line = json!({
+        "at_ms": at_ms,
+        "method": notification.method,
+        "params": notification.params,
+    });
+    let mut log = OpenOptions::new().create(true).append(true).open(log)?;
+    log.write_all(format!("{line}\n").as_bytes())
 }
 
 /// The channel event of `message`: its text, with its `msg_id` and sender label as the `<channel>`
@@ -301,6 +364,54 @@ mod tests {
                 "meta": { "msg_id": "0190", "from": "reviewer of alice" },
             }))
         );
+    }
+
+    #[test]
+    fn records_each_notification_with_when_it_came() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("permission.jsonl");
+        let params = json!({ "request_id": "abcde", "tool_name": "Bash" });
+        let prompt = CustomNotification::new(PERMISSION_REQUEST, Some(params.clone()));
+        record_notification(&log, &prompt, 7).unwrap();
+        record_notification(
+            &log,
+            &CustomNotification::new("notifications/other", None),
+            8,
+        )
+        .unwrap();
+        let text = fs::read_to_string(&log).unwrap();
+        let records: Vec<serde_json::Value> = text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(
+            records,
+            [
+                json!({ "at_ms": 7, "method": PERMISSION_REQUEST, "params": params }),
+                json!({ "at_ms": 8, "method": "notifications/other", "params": null }),
+            ]
+        );
+    }
+
+    #[test]
+    fn declares_the_permission_relay_only_with_a_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = || Source::open(dir.path()).unwrap();
+        let relay = ChannelServer::with_permission_log(source(), dir.path().join("log"))
+            .get_info()
+            .capabilities
+            .experimental
+            .unwrap();
+        assert_eq!(
+            relay.keys().collect::<Vec<_>>(),
+            [CAPABILITY, PERMISSION_CAPABILITY]
+        );
+        let plain = ChannelServer::new(source())
+            .get_info()
+            .capabilities
+            .experimental
+            .unwrap();
+        assert!(!plain.contains_key(PERMISSION_CAPABILITY));
     }
 
     #[test]

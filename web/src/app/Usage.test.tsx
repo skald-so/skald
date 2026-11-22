@@ -32,6 +32,7 @@ const usage = (messages: number): SpaceUsage => ({
   message_size: { limit: 65_536 },
   mailbox_retention: { limit: 604_800 },
   history_retention: { limit: 7_776_000 },
+  service_agents: { count: 2, limit: 10 },
 });
 
 /** How each space's usage is answered, by space ID: held until released, or failed. */

@@ -3,7 +3,12 @@
 //! `script/test` does not run them.
 
 mod app;
+mod before_run;
+mod codex_before_run;
+mod codex_permission_run;
 mod gui_run;
+mod permission_gui;
+mod permission_run;
 mod pty;
 mod read_run;
 mod run;
@@ -14,6 +19,9 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
+use agent_live::before::Before;
+use agent_live::codex_before;
+use agent_live::codex_permission::Candidate;
 use agent_live::gui::{GuiPath, Surface};
 use agent_live::hook::{self, Hook};
 use agent_live::wake::Wake;
@@ -38,13 +46,28 @@ fn main() -> ExitCode {
         ),
         ["inbox", agent, options @ ..] => agent_check(agent, options, run::inbox),
         ["channel", "claude", options @ ..] => check(options, pty::channel),
+        ["permission", "claude", options @ ..] => check(options, permission_run::permission),
         ["queue", "codex", options @ ..] => check(options, pty::queue),
+        [name, "codex", options @ ..] if Candidate::parse(name).is_some() => {
+            let (Some(candidate), Some(options)) =
+                (Candidate::parse(name), Options::parse(options))
+            else {
+                return usage();
+            };
+            if options.real && !candidate.takes_real() {
+                return usage();
+            }
+            ended(codex_permission_run::permission(candidate, &options))
+        }
         ["app-server", "codex", options @ ..] => check(options, app::app_server),
         [path, "claude", options @ ..] if Wake::parse(path).is_some() => {
             let (Some(wake), Some(options)) = (Wake::parse(path), Options::parse(options)) else {
                 return usage();
             };
             ended(wake_run::wake(wake, &options))
+        }
+        [name, agent, options @ ..] if Before::parse(name).is_some() => {
+            before_check(name, agent, options)
         }
         ["ack", agent, options @ ..] => agent_check(agent, options, read_run::ack),
         ["transcript", agent, options @ ..] => agent_check(agent, options, read_run::transcript),
@@ -72,6 +95,12 @@ fn main() -> ExitCode {
             };
             ended(subscription::status_line(&options))
         }
+        ["gui", "permission-hook", surface] => match Surface::parse(surface) {
+            Some(surface @ (Surface::CodexDesktop | Surface::CodexVsCode)) => {
+                ended(permission_gui::codex_gui(surface))
+            }
+            _ => usage(),
+        },
         ["gui", path, surface, flags @ ..] => {
             let (Some(path), Some(surface)) = (GuiPath::parse(path), Surface::parse(surface))
             else {
@@ -94,6 +123,14 @@ fn main() -> ExitCode {
             };
             ended(gui_run::socket(Path::new(work), auth, listen))
         }
+        ["gui-permission", surface] => match Surface::parse(surface) {
+            Some(surface @ (Surface::ClaudeDesktop | Surface::ClaudeVsCode)) => {
+                ended(permission_gui::gui(surface))
+            }
+            _ => usage(),
+        },
+        ["gui-permission-link", work] => ended(permission_gui::gui_link(Path::new(work))),
+        ["gui-permission-result", work] => ended(permission_gui::gui_result(Path::new(work))),
         ["gui-add", work] => ended(gui_run::add(Path::new(work))),
         ["gui-link", work] => ended(gui_run::link(Path::new(work))),
         ["gui-queue", work, cli @ ..] => {
@@ -104,7 +141,11 @@ fn main() -> ExitCode {
             };
             ended(gui_run::queue(Path::new(work), cli))
         }
+        ["gui-result", work, "--keep"] => {
+            ended(permission_gui::codex_gui_result(Path::new(work), true))
+        }
         ["gui-result", work, token] => ended(gui_run::result(Path::new(work), token)),
+        ["gui-result", work] => ended(permission_gui::codex_gui_result(Path::new(work), false)),
         ["timed-hook", log, handler, args @ ..] => {
             let mut command = std::process::Command::new(handler);
             command.args(args);
@@ -151,6 +192,21 @@ fn check(options: &[&str], run: impl FnOnce(&Options) -> Result<bool>) -> ExitCo
     }
 }
 
+/// The check before implementation `name` on the agent named `agent` with `options`; the usage
+/// for an option the check does not take or another agent.
+fn before_check(name: &str, agent: &str, options: &[&str]) -> ExitCode {
+    let (Some(check), Some(options)) = (Before::parse(name), Options::parse(options)) else {
+        return usage();
+    };
+    match Agent::parse(agent) {
+        Some(Agent::Claude) if !options.all => ended(before_run::run(check, &options)),
+        Some(Agent::Codex) if codex_before::takes(check, &options) => {
+            ended(codex_before_run::run_check(check, &options))
+        }
+        _ => usage(),
+    }
+}
+
 /// The check `run` of the agent named `agent` with `options`; the usage for anything else.
 fn agent_check(
     agent: &str,
@@ -184,6 +240,9 @@ fn usage() -> ExitCode {
         "usage: live-check add <source-dir> <sender> <text>\n       \
          live-check inbox <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check channel claude [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check permission claude [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check <permission-remote|permission-hook|permission-notification> codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check permission-daemon codex [--all] [--model <model>] [--keep]\n       \
          live-check <post-tool-use|stop> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check user-prompt-submit codex [--all] [--real] [--model <model>] [--keep]\n       \
          live-check queue codex [--all] [--real] [--model <model>] [--keep]\n       \
@@ -191,6 +250,9 @@ fn usage() -> ExitCode {
          live-check <socket|rewake|mod|loop> claude [--all] [--real] [--model <model>] [--keep]\n       \
          live-check <ack|transcript> <claude|codex> [--all] [--real] [--model <model>] [--keep]\n       \
          live-check resend claude [--all] [--model <model>] [--keep]\n       \
+         live-check <signal|own-text|executor-read-only|executor-full|executor-clean> claude [--real] [--model <model>] [--keep]\n       \
+         live-check signal codex [--all] [--real] [--model <model>] [--keep]\n       \
+         live-check <executor-read-only|executor-full|executor-clean> codex [--model <model>] [--keep]\n       \
          live-check limits <claude|codex> [--keep]\n       \
          live-check status-line claude [--model <model>] [--keep]\n       \
          live-check gui <inbox|post-tool-use|stop> <claude-desktop|claude-vscode> [--busy]\n       \
@@ -201,11 +263,15 @@ fn usage() -> ExitCode {
          live-check gui <socket|rewake|mod|loop> <claude-desktop|claude-vscode> [--busy]\n       \
          live-check gui socket <claude-desktop|claude-vscode> --bypass\n       \
          live-check gui read <codex-desktop|codex-vscode> [--busy]\n       \
+         live-check gui permission-hook <codex-desktop|codex-vscode>\n       \
          live-check gui-socket <check-dir> [--no-auth] [--listen <seconds>]\n       \
          live-check gui-add <check-dir>\n       \
          live-check gui-link <check-dir>\n       \
          live-check gui-queue <check-dir> [--cli]\n       \
-         live-check gui-result <check-dir> <token>\n       \
+         live-check gui-result <check-dir> [<token>|--keep]\n       \
+         live-check gui-permission <claude-desktop|claude-vscode>\n       \
+         live-check gui-permission-link <check-dir>\n       \
+         live-check gui-permission-result <check-dir>\n       \
          live-check timed-hook <log> <handler> [<arg>...]"
     );
     ExitCode::from(2)

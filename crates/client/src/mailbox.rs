@@ -8,6 +8,10 @@
 //! A one-shot run's long-poll asks with a wait of 0 until an answer is empty: the end of its
 //! catch-up. `history` frames go over a WebSocket only.
 //!
+//! A stateless service agent's run acks nothing during catch-up: it acks what it wrote only once
+//! it has shown it ([`Mailbox::ack`]), so a run that dies in between shows it again at the next
+//! one. As each long-poll acks what its cursor covers, such a run takes one long-poll answer.
+//!
 //! A WebSocket or an event stream a run is done with is kept for its next connection as the same
 //! device, and the helper's for its next operations ([`crate::helper`]). Catch-up on a WebSocket
 //! after its first takes the entries it pushed since, which the client reads as they come; on an
@@ -19,6 +23,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use skald_proto::{Cbor as _, DeviceId, Frame, Push, SpaceId};
@@ -94,12 +99,22 @@ struct Kept {
     transport: Transport,
 }
 
+/// Whether a `link-notice` came on a connection a wait watches, on any thread: the long-poll that
+/// watches has its own.
+static LINKING: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
     /// The connection kept.
     static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
     /// Whether a run of this thread read and dropped what came on its connection, which a later
     /// run gets: a run that waits for what comes, and ran before it, missed it.
     static MISSED: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a `link-notice` came on a connection a wait watches ([`Came::add`]) since this was last
+/// asked: each waiting session runs `skald recv` again, which says which devices wait for linking.
+pub fn linking_came() -> bool {
+    LINKING.swap(false, Ordering::SeqCst)
 }
 
 /// Whether a run of this thread dropped what came on its connection since this was last asked.
@@ -131,31 +146,56 @@ fn miss() {
 pub enum Came {
     #[default]
     Nothing,
-    /// Only messages and `space-notice`s, of these spaces.
-    In(BTreeSet<SpaceId>),
-    /// Anything else too, such as a status, or the connection's end.
+    /// Only messages and `space-notice`s, of these spaces, and statuses if `statuses`.
+    In {
+        spaces: BTreeSet<SpaceId>,
+        statuses: bool,
+    },
+    /// Anything else too, such as a `link-notice`, or the connection's end.
     Anything,
 }
 
 impl Came {
     /// Adds what `frame`, what a frame from the server gives, brings.
     pub fn add(&mut self, frame: &Got) {
+        if let Got::Entries(entries) = frame
+            && entries.contains(&Push::LinkNotice)
+        {
+            LINKING.store(true, Ordering::SeqCst);
+        }
+        let mut status = false;
         let spaces = match frame {
             Got::Entries(entries) => (entries.iter())
-                .map(|push| match push {
-                    Push::Message { envelope, .. } => Some(envelope.envelope().header.space),
-                    Push::SpaceNotice { space } => Some(*space),
-                    Push::Status { .. } | Push::Unknown(_) => None,
+                .filter_map(|push| match push {
+                    Push::Message { envelope, .. } => Some(Some(envelope.envelope().header.space)),
+                    Push::SpaceNotice { space } => Some(Some(*space)),
+                    Push::Status { .. } => {
+                        status = true;
+                        None
+                    }
+                    Push::LinkNotice | Push::Unknown(_) => Some(None),
                 })
                 .collect::<Option<Vec<_>>>(),
             Got::End | Got::Nothing => None,
         };
         *self = match (std::mem::take(self), spaces) {
             (Came::Anything, _) | (_, None) => Came::Anything,
-            (Came::Nothing, Some(spaces)) => Came::In(spaces.into_iter().collect()),
-            (Came::In(mut all), Some(spaces)) => {
-                all.extend(spaces);
-                Came::In(all)
+            (Came::Nothing, Some(spaces)) => Came::In {
+                spaces: spaces.into_iter().collect(),
+                statuses: status,
+            },
+            (
+                Came::In {
+                    mut spaces,
+                    statuses,
+                },
+                Some(more),
+            ) => {
+                spaces.extend(more);
+                Came::In {
+                    spaces,
+                    statuses: statuses || status,
+                }
             }
         };
     }
@@ -165,7 +205,19 @@ impl Came {
     pub fn concerns(&self, space: Option<SpaceId>) -> bool {
         match self {
             Came::Nothing => false,
-            Came::In(spaces) => space.is_none_or(|space| spaces.contains(&space)),
+            Came::In { spaces, statuses } => {
+                *statuses || space.is_none_or(|space| spaces.contains(&space))
+            }
+            Came::Anything => true,
+        }
+    }
+
+    /// Whether it may hold a message or a `space-notice` within the space `space`: statuses alone
+    /// do not.
+    pub fn brings_messages(&self, space: SpaceId) -> bool {
+        match self {
+            Came::Nothing => false,
+            Came::In { spaces, .. } => spaces.contains(&space),
             Came::Anything => true,
         }
     }
@@ -418,7 +470,10 @@ impl Mailbox {
                     frames.push(frame);
                 }
             }
-            Some(Link::Https(None)) if follower.transport == Transport::LongPoll => {
+            // A long-poll acks its cursor, which a stateless run states only once it has shown it.
+            Some(Link::Https(None))
+                if follower.transport == Transport::LongPoll && !follower.stateless() =>
+            {
                 if let Ok(cursor) = follower.state.cursor()
                     && let Ok(frame) = poll(follower, keys, cursor)
                 {
@@ -444,6 +499,24 @@ impl Mailbox {
             }
         }
         spaces
+    }
+
+    /// Acks every entry up to the device's cursor, as a stateless run does once it has shown them:
+    /// on a WebSocket in an `ack`, otherwise in an HTTPS request.
+    pub fn ack(&mut self, follower: &mut Follower, keys: &Keys) -> Result<(), String> {
+        let cursor = follower.state.cursor().map_err(text)?;
+        let Some(seq) = std::num::NonZeroU64::new(cursor) else {
+            return Ok(());
+        };
+        let ack = Frame::Ack { seq }.to_cbor();
+        match self.link.as_mut() {
+            Some(Link::WebSocket(socket)) => socket
+                .send(Message::Binary(ack.into()))
+                .map_err(|err| format!("the ack of what this run showed is not sent: {err}")),
+            _ => request(follower, keys, ACK, &ack, Duration::ZERO)
+                .map(drop)
+                .map_err(|err| failed(&err)),
+        }
     }
 }
 
@@ -593,7 +666,9 @@ fn over_websocket(
             Err(_) => return Err(Stop::Next),
         };
         let written = write(follower, entries, cursor).map_err(Stop::Failed)?;
-        if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| written > cursor) {
+        if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| written > cursor)
+            && !follower.stateless()
+        {
             send(socket, &Frame::Ack { seq })?;
         }
         cursor = written;
@@ -639,6 +714,9 @@ fn over_sse(
     let Some(seq) = std::num::NonZeroU64::new(cursor).filter(|_| cursor > opened) else {
         return Ok(());
     };
+    if follower.stateless() {
+        return Ok(());
+    }
     let ack = Frame::Ack { seq }.to_cbor();
     request(follower, keys, ACK, &ack, Duration::ZERO)
         .map(drop)
@@ -657,14 +735,15 @@ fn from_pushed(
     write: Write<'_>,
 ) -> Result<(), Stop> {
     let written = write(follower, pushed, cursor).map_err(Stop::Failed)?;
-    if let Some(seq) = std::num::NonZeroU64::new(written) {
+    if let Some(seq) = std::num::NonZeroU64::new(written).filter(|_| !follower.stateless()) {
         let _ = socket.send(Message::Binary(Frame::Ack { seq }.to_cbor().into()));
     }
     Ok(())
 }
 
 /// Catch-up over long-poll: asks with a wait of 0 after the cursor, which acks what it covers, and
-/// writes each answer's entries with `write`, until an answer is empty.
+/// writes each answer's entries with `write`, until an answer is empty; a stateless run, after its
+/// first answer.
 fn over_long_poll(
     follower: &mut Follower,
     keys: &Keys,
@@ -677,6 +756,9 @@ fn over_long_poll(
             Ok(Frame::Batch(entries)) if entries.is_empty() => return Ok(()),
             Ok(Frame::Batch(entries)) => {
                 cursor = write(follower, entries, cursor).map_err(Stop::Failed)?;
+                if follower.stateless() {
+                    return Ok(());
+                }
             }
             _ => {
                 return Err(Stop::Failed(
@@ -691,6 +773,30 @@ fn over_long_poll(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `link-notice` after a status in one `batch` still asks each waiting session to run
+    /// `skald recv` again.
+    #[test]
+    fn a_link_notice_after_a_status_in_a_batch_comes() {
+        let status = Push::Status {
+            seq: std::num::NonZeroU64::MIN,
+            status: skald_proto::DeliveryStatus {
+                msg_id: skald_proto::MessageId::from_bytes([1; 16]),
+                device: DeviceId::from_bytes([2; 16]),
+                status: skald_proto::ServerStatus::Delivered,
+                timestamp: 1,
+                unknown: skald_proto::Unknown::default(),
+            },
+        };
+        linking_came();
+        let mut came = Came::Nothing;
+
+        came.add(&Got::Entries(vec![status, Push::LinkNotice]));
+
+        assert_eq!(came, Came::Anything);
+        assert!(linking_came(), "no link-notice came");
+        assert!(!linking_came(), "the link-notice came twice");
+    }
 
     /// A request that got no answer in time says the server sent nothing in time; any other
     /// failure says what it was.
@@ -721,6 +827,7 @@ mod tests {
                 status: 503,
                 kind: "https://skald.so/problems/server-error".to_owned(),
                 detail: "down".to_owned(),
+                task: None,
             },
             connection::Error::TooOld {
                 supported: vec![9],
@@ -734,8 +841,8 @@ mod tests {
         assert!(!other.iter().any(blocked));
     }
 
-    /// What came is the spaces of the messages and notices that came, or anything once a status, a
-    /// frame that does not decode or a frame of another kind came.
+    /// What came is the spaces of the messages and notices that came and whether a status came, or
+    /// anything once a frame that does not decode or a frame of another kind came.
     #[test]
     fn what_came_is_its_spaces_or_anything() {
         use skald_proto::{
@@ -777,9 +884,17 @@ mod tests {
             &Frame::Batch(vec![Push::SpaceNotice { space: second }]).to_cbor(),
         );
         add(&mut came, &notice);
-        assert_eq!(came, Came::In([first, second].into()));
+        let spaces = BTreeSet::from([first, second]);
+        assert_eq!(
+            came,
+            Came::In {
+                spaces: spaces.clone(),
+                statuses: false
+            }
+        );
         assert!(came.concerns(Some(first)) && came.concerns(Some(second)) && came.concerns(None));
-        assert!(!came.concerns(Some(other)));
+        assert!(!came.concerns(Some(other)) && !came.brings_messages(other));
+        assert!(came.brings_messages(first) && came.brings_messages(second));
 
         let status = DeliveryStatus {
             msg_id: MessageId::generate(),
@@ -788,16 +903,27 @@ mod tests {
             timestamp: 1_800_000_000,
             unknown: Unknown::default(),
         };
-        for frame in [
-            Frame::Push(Push::Status { seq, status }).to_cbor(),
-            vec![0xff],
-            Frame::Batch(Vec::new()).to_cbor(),
-        ] {
-            let mut came = Came::In([first].into());
+        let status = Frame::Push(Push::Status { seq, status }).to_cbor();
+        let mut came = Came::default();
+        add(&mut came, &status);
+        assert!(came.concerns(Some(other)) && came.concerns(None));
+        assert!(!came.brings_messages(other));
+        add(&mut came, &message(first));
+        add(&mut came, &notice);
+        let statuses = Came::In {
+            spaces,
+            statuses: true,
+        };
+        assert_eq!(came, statuses);
+        assert!(came.concerns(Some(other)) && came.brings_messages(first));
+        assert!(!came.brings_messages(other));
+
+        for frame in [vec![0xff], Frame::Batch(Vec::new()).to_cbor()] {
+            let mut came = statuses.clone();
             add(&mut came, &frame);
             assert_eq!(came, Came::Anything);
             add(&mut came, &message(first));
-            assert!(came.concerns(Some(other)));
+            assert!(came.concerns(Some(other)) && came.brings_messages(other));
         }
     }
 

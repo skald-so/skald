@@ -10,6 +10,9 @@ use crate::cbor::{
 use crate::id::{BlobId, ChannelId, DeviceId, MessageId};
 use crate::receipt::Receipt;
 
+/// The label of a [`Grant`]'s signature.
+pub const GRANT_LABEL: &str = "skald grant";
+
 /// What an application message carries inside its payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Content {
@@ -108,7 +111,7 @@ pub struct Attachment {
 const A2A: u64 = 6;
 const RECEIPT: u64 = 9;
 pub(crate) const TASK: u64 = 11;
-const TASK_RESULT: u64 = 12;
+pub(crate) const TASK_RESULT: u64 = 12;
 const ASK: u64 = 13;
 const ASK_ANSWER: u64 = 14;
 const BODIES: [u64; 6] = [A2A, RECEIPT, TASK, TASK_RESULT, ASK, ASK_ANSWER];

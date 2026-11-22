@@ -22,8 +22,11 @@ use super::world::{
     ACME, CREATE_CHANNEL, HOST, Person, World, create, next_by, next_with, now, run, store,
 };
 
-/// The command that sends a message.
+/// The command that sends a message, and its flags.
 pub const SEND: &str = "send";
+pub const TO: &str = "--to";
+pub const ALL: &str = "--all";
+pub const CHANNEL: &str = "--channel";
 
 /// The setting of the request timeout, and the one the tests give a run that retries.
 pub const TIMEOUT_SETTING: &str = "SKALD_TIMEOUT";
@@ -56,14 +59,15 @@ pub fn retrying_for_the_timeout(mut person: Person) -> Person {
     person
 }
 
-/// Runs `skald send <channel> <text>` on `machine`.
+/// Runs `skald send --all --channel <channel> <text>` on `machine`.
 pub fn send(machine: &Machine, channel: ChannelId, text: &str) -> Finished {
     machine.start(&strs(&send_args(channel, text))).finish()
 }
 
-/// The arguments of `skald send <channel> <text>`.
+/// The arguments of `skald send --all --channel <channel> <text>`.
 pub fn send_args(channel: ChannelId, text: &str) -> Vec<String> {
-    vec![SEND.to_owned(), channel.to_string(), text.to_owned()]
+    let args = [SEND, ALL, CHANNEL, &channel.to_string(), text];
+    args.map(str::to_owned).to_vec()
 }
 
 /// `args` as arguments.
@@ -80,12 +84,7 @@ pub struct Keyed {
 
 /// The certificate of `person`'s machine's device, as the server holds it.
 pub fn cert_of(cloud: &Cloud, person: &Person) -> Cert {
-    cloud
-        .devices(&person.token)
-        .into_iter()
-        .find(|device| device.id == person.device)
-        .and_then(|device| device.cert)
-        .expect("the device's certificate")
+    (cloud.cert(&person.token, person.device)).expect("the device's certificate")
 }
 
 /// `person`'s machine's device, its keys read from its secrets file.
@@ -141,6 +140,7 @@ pub fn add_device_of_kind(
         issuer,
         issued: now(),
         ssh: None,
+        github: None,
         name: name.to_owned(),
         unknown: Unknown::default(),
     };

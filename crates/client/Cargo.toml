@@ -13,12 +13,24 @@ dist = true
 name = "skald"
 path = "src/main.rs"
 
+# Its binary also stands in for the `codex` command, whose arguments libtest would refuse, so it
+# runs a harness of its own (tests/codex_wakes/main.rs).
+[[test]]
+name = "codex_wakes"
+path = "tests/codex_wakes/main.rs"
+harness = false
+
 [dependencies]
 base64 = "0.23"
 clap = { version = "4.6", features = ["derive", "env"] }
 flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 gethostname = "1"
+# The local page's secret.
+getrandom = "0.4"
+# Parses an RFC 3339 expiry; no time zone database.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
+rmcp = { version = "3.11", default-features = false, features = ["server", "transport-io"] }
 rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
@@ -29,6 +41,8 @@ sha2 = { version = "0.11", default-features = false }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
+# The MCP server's runtime, which rmcp needs.
+tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "sync"] }
 toml = { version = "1.2", default-features = false, features = ["parse", "serde", "std"] }
 # rustls for WSS. The client hands tungstenite its own TLS stream, so tungstenite never loads the
 # native roots this feature brings.
@@ -39,18 +53,27 @@ zip = { version = "9.5", default-features = false, features = ["deflate-flate2"]
 
 [dev-dependencies]
 # History entries a compromised device seals as skald-crypto never would, such as one whose body
-# names another channel.
+# names another channel; the master backup opened with the recovery key a run shows, apart from the
+# code under test, with argon2 and hpke.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
+argon2 = { version = "0.6", default-features = false, features = ["alloc"] }
 axum = "0.8.9"
 curve25519-dalek = "5"
+hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "x25519"] }
 # A device the members do not admit, which joins a channel's group by an external Commit.
 mls-rs = "0.57.1"
 mls-rs-crypto-rustcrypto = "0.23"
+# Runs `skald` in a pseudo-terminal on Unix and a pseudo-console (ConPTY) on Windows, as a person at
+# a terminal does.
+portable-pty = "0.9"
 # `trace` lets a state test run another connection in the middle of a read.
 rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 skald-server = { path = "../server" }
+socket2 = "0.6"
+# SSH signatures of device keys the tests make, as a GitHub user's key would.
+ssh-key = { version = "=0.7.0-rc.12", default-features = false, features = ["alloc", "ed25519"] }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1.54", features = ["net", "rt-multi-thread", "test-util", "time"] }
 toml = "1.2"
@@ -62,7 +85,15 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }
 # The helper's socket: AF_UNIX, which std offers on Unix only.
 uds_windows = "1.2"
 windows-native-keyring-store = "1"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
+# The console's mode; the process that runs a hook, and whether it runs; the helper's start.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Console",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
 
 [target.'cfg(unix)'.dependencies]
 # setsid, which detaches the helper from the terminal of the command that starts it.

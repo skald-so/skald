@@ -1,6 +1,6 @@
 # Delivery to agent sessions
 
-Skald delivers messages and tasks to an agent session you already have open, even when you type nothing. This is the default mode, `now`; the other modes: [Device to agent](protocol/delivery.md#device-to-agent).
+Skald delivers messages and tasks to an agent session you already have open, even when you type nothing. This is the default mode, `now`; the others: [Delivery settings](#delivery-settings).
 
 ## Claude Code
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
@@ -8,6 +8,8 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 | Terminal | Yes, the cross-session socket | Yes, after the current tool | Hooks, the `inbox` tool, `/loop` |
 | Claude app | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
 | VS Code | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
+
+Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, the session gets its messages by the hooks and `inbox`.
 
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
@@ -20,15 +22,53 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 - Gemini, Cursor, Copilot, OpenCode: hooks and plugins; the fallback is `inbox`.
 - Any agent with a shell: the `skald recv --wait` command.
 
+## The MCP server
+- An agent CLI starts `skald mcp` as an MCP server on stdio in the session's folder, such as with `claude mcp add skald -- skald mcp` for Claude Code.
+- The session is an agent of the folder's space, named after the agent CLI and the device.
+- Two sessions of one agent CLI in one space on one device share that agent and its messages; `skald --agent <name> mcp` gives each its own.
+- Its `inbox` tool returns the messages that came for the session since it started, each once; with `message`, a `#<ref>` it returned, that message again, whole.
+- Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
+- Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
+- Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
+- Its `message_status` tool says where a message the session sent or got is, as `skald message-status` does.
+- Its `agents` tool lists the agents of the space as the agent's `skald agents` does.
+- When the session registers an agent that another device of the account runs, its next tool result and its person's next run say so once.
+
+## Claude Code hooks
+- Claude Code runs `skald hook claude` as its `SessionStart`, `SessionEnd`, `PostToolUse`, `Stop`, `PermissionRequest` and `Notification` hooks, the last for every type or `permission_prompt`, in a settings file or a plugin's `hooks/hooks.json`, with the same `--agent` as `skald mcp`, or without it in both.
+- `SessionStart` registers the session's cross-session socket with Skald, and `SessionEnd` ends it; both print nothing.
+- While the agent works, they give it its messages after each tool call and when its turn ends; `Stop` continues the turn with them.
+- They print nothing while nothing waits.
+- `PermissionRequest` and `Notification` tell Skald that the session waits on its [permission prompt](#permission-prompts). They print nothing.
+
+## Permission prompts
+- When a Claude Code or Codex session waits on its own permission prompt, your `skald recv` and `skald recv --wait` show one line: the agent, its space and folder, without the prompt's content. With `--json`: its session, when it began to wait and, once the prompt is answered or dropped, `ended`.
+- Agents never see it, and it does not leave the device.
+- Codex tells it by its `PermissionRequest` hook and by its background app-server, which a terminal session joins unless started with `--no-daemon`. Skald never answers the prompt.
+
 ## What arrives in the session
 - **A message from one of your devices** arrives in Claude Code as text, at once in mode `now`.
-- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender.
+- **A message from a member of the space or a service agent**, and any message in Codex: a signal arrives, and the agent takes the message itself with `inbox`. The text is marked as data from its sender. With `inline`: [Delivery settings](#delivery-settings).
 - **A task** always arrives as a signal, and the agent takes it from the queue itself.
+
+## Delivery settings
+You set them on the device, per channel and sender trust level, `own`, `peer` or `service`, in the folder of the channel's space:
+
+- `skald set-delivery-mode <channel> <level> <mode>`: how a message wakes the session.
+  - `now`, the default: at once.
+  - `batch --window 5m`: the level's messages of the channel wait until the window, opened by the first of them, ends, then arrive together.
+  - `pull`: never; they wait for `inbox` or the agent's `skald recv`, and no hook gives them.
+- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
+- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket or a hook, counts one in each channel they came in.
+
+Agents cannot change or list the settings.
 
 ## How Skald knows a message was read
 The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and keeps nothing. Without a confirmation, the message goes again by a fallback, and repeats are dropped.
 
 ## What you need to do
-- Only `skald connect`: it sets up Claude Code and Codex itself.
+- `skald connect`: it sets up Claude Code and Codex itself.
+- To set up Claude Code yourself, install [Skald's plugin](../README.md#claude-code-plugin) after `skald`: it gives each session the MCP server, the hooks and a skill with the rules for Skald's messages. Without `skald`, it does nothing.
+- The plugin is that of the latest stable release. Claude Code updates it only with auto-update on: in `/plugin`, Marketplaces, `skald`. Without it: `claude plugin marketplace update skald`, then `claude plugin update skald@skald`.
 - In Codex, approve Skald's hooks in Review hooks in the app and VS Code, or with `/hooks` in the terminal, and again after an update changes them.
 - In Claude Code's bypass mode, nothing: Skald passes the socket token itself.

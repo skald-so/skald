@@ -3,7 +3,9 @@
 //! relay; and the person who approves or denies a machine's code on its verification page in
 //! headless Chrome, signing in there with GitHub or Google.
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,11 +22,13 @@ use skald_server::{
 use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_GITHUB, SIGN_IN_GOOGLE, SUBMIT, Visit};
 use super::common::Server;
 use super::machine::{self, Finished, Machine, Run};
-use super::relay::{Relay, strings_named};
+use super::relay::{Relay, count_heads, strings_named};
 
 #[path = "../../../server/tests/common/agent.rs"]
 mod agent;
 pub use agent::{agent, get};
+#[path = "recovery.rs"]
+mod recovery;
 
 /// How long a test waits for the server to see what it expects.
 pub const WAIT: Duration = Duration::from_secs(60);
@@ -86,6 +90,84 @@ pub fn unb64(text: &str) -> Vec<u8> {
         .unwrap_or_else(|err| panic!("{text:?} is not base64url without padding: {err}"))
 }
 
+/// What the clouds of a test target share and a test that times the client takes alone
+/// ([`alone`]). Under `cargo test`, the tests of a target are threads of one process: no cloud of
+/// another test then runs beside the timed one. Under nextest, each test is a process of its own:
+/// `.config/nextest.toml` runs such a test alone.
+static BESIDE: RwLock<()> = RwLock::new(());
+
+thread_local! {
+    /// What this test's thread holds of [`BESIDE`].
+    static HELD: RefCell<Held> = const { RefCell::new(Held::Nothing) };
+}
+
+/// What a test's thread holds of [`BESIDE`]: nothing; all of it; or a share, for this many of its
+/// clouds, taken once so that a test waiting to be alone holds back no cloud of its thread.
+enum Held {
+    Nothing,
+    Alone(RwLockWriteGuard<'static, ()>),
+    Shared(RwLockReadGuard<'static, ()>, usize),
+}
+
+/// Waits until no cloud of another test of the target runs, and keeps any from starting until
+/// dropped; the test's own clouds start as before.
+pub fn alone() -> Alone {
+    let guard = BESIDE.write().unwrap_or_else(PoisonError::into_inner);
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        assert!(
+            matches!(*held, Held::Nothing),
+            "a cloud runs, or the test is alone already"
+        );
+        *held = Held::Alone(guard);
+    });
+    Alone
+}
+
+/// A test alone among the target's clouds ([`alone`]) until dropped.
+pub struct Alone;
+
+impl Drop for Alone {
+    fn drop(&mut self) {
+        HELD.with(|held| *held.borrow_mut() = Held::Nothing);
+    }
+}
+
+/// A cloud's share of [`BESIDE`], held by its thread until dropped.
+struct Share;
+
+impl Share {
+    /// Waits while a test is alone, unless it is this thread's.
+    fn take() -> Self {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            match &mut *held {
+                Held::Nothing => {
+                    let guard = BESIDE.read().unwrap_or_else(PoisonError::into_inner);
+                    *held = Held::Shared(guard, 1);
+                }
+                Held::Shared(_, clouds) => *clouds += 1,
+                Held::Alone(_) => {}
+            }
+        });
+        Share
+    }
+}
+
+impl Drop for Share {
+    fn drop(&mut self) {
+        HELD.with(|held| {
+            let mut held = held.borrow_mut();
+            if let Held::Shared(_, clouds) = &mut *held {
+                *clouds -= 1;
+                if *clouds == 0 {
+                    *held = Held::Nothing;
+                }
+            }
+        });
+    }
+}
+
 pub struct Cloud {
     /// Where machines reach the server, and the tests' own requests too: the relay, or the plain
     /// HTTP front before it. Behind a TLS front, the relay; machines reach the server at
@@ -99,6 +181,8 @@ pub struct Cloud {
     /// The server's public address, e.g. `http://skald.test:41234`.
     pub public: String,
     server: Server,
+    /// Dropped last, once the server has stopped.
+    _share: Share,
 }
 
 impl Cloud {
@@ -187,6 +271,7 @@ impl Cloud {
         (lifetime, interval): (u64, u64),
         change: impl FnOnce(&mut Settings),
     ) -> Self {
+        let share = Share::take();
         let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
@@ -248,6 +333,7 @@ impl Cloud {
             google,
             public: public_url,
             server,
+            _share: share,
         }
     }
 
@@ -284,6 +370,23 @@ impl Cloud {
                 verification_uri,
             })
             .collect()
+    }
+
+    /// Waits until device authorization has given a grant after the `before` it gave earlier, for
+    /// up to [`WAIT`], and gives it; meanwhile `running` fails if the run that asked for it ended,
+    /// and gives what that run printed.
+    #[track_caller]
+    pub fn next_grant(&self, before: usize, mut running: impl FnMut() -> String) -> Grant {
+        let deadline = Instant::now() + WAIT;
+        while self.grants().len() <= before {
+            let shown = running();
+            assert!(
+                Instant::now() < deadline,
+                "no device authorization: {shown}"
+            );
+            thread::sleep(Duration::from_millis(50));
+        }
+        self.last_grant()
     }
 
     /// The last grant device authorization gave; fails if it gave none.
@@ -353,6 +456,14 @@ impl Cloud {
         }
     }
 
+    /// The devices of the account of the session the server gave last, which fails unless the
+    /// account has a master key.
+    pub fn devices_under_a_master_key(&self) -> Vec<Device> {
+        let token = self.last_token();
+        assert!(self.master(&token).is_some(), "no master key");
+        self.devices(&token)
+    }
+
     /// The account's devices, from the server, for a session with `token`, each with its
     /// certificate as the device sent it.
     pub fn devices(&self, token: &str) -> Vec<Device> {
@@ -373,6 +484,22 @@ impl Cloud {
                 }),
             })
             .collect()
+    }
+
+    /// The certificate the server holds of `device`, for a session with `token`, if any.
+    pub fn cert(&self, token: &str, device: DeviceId) -> Option<Cert> {
+        (self.devices(token).into_iter())
+            .find(|held| held.id == device)
+            .and_then(|held| held.cert)
+    }
+
+    /// The one device of the account that is not among `known`, for a session with `token`.
+    #[track_caller]
+    pub fn new_device(&self, token: &str, known: &[DeviceId]) -> DeviceId {
+        let mut new = ids(&self.devices(token));
+        new.retain(|device| !known.contains(device));
+        assert_eq!(new.len(), 1, "not one new device: {new:?}");
+        new[0]
     }
 
     /// The revisions of `space` the server holds, for the session `token`, straight from the
@@ -418,12 +545,7 @@ impl Cloud {
 
     /// How many requests whose line starts with `request` the machines sent from `since` on.
     pub fn count_sent(&self, since: Instant, request: &str) -> usize {
-        let request = request.to_lowercase();
-        self.relay
-            .sent_since(since)
-            .iter()
-            .filter(|sent| sent.head.starts_with(&request))
-            .count()
+        count_heads(&self.relay.sent_since(since), request)
     }
 
     /// Starts `skald sign-in --server <this server> <extra>` on `machine`, approves the code it
@@ -454,7 +576,8 @@ impl Cloud {
     }
 
     /// Starts `skald sign-in --server <this server> <extra>` on `machine`, runs `approve` on the
-    /// grant it shows, and waits for the run to finish.
+    /// grant it shows, and waits for the run to finish; then shows the recovery key it leaves
+    /// waiting, as the person does at a terminal.
     fn approved(
         &self,
         machine: &Machine,
@@ -467,15 +590,16 @@ impl Cloud {
         let mut run = machine.start(&args);
         let grant = shown_grant(self, &mut run, before);
         approve(&grant);
-        run.finish()
+        let finished = run.finish();
+        recovery::shown_if_waiting(machine, &self.url, &finished);
+        finished
     }
 
     /// A new machine with the host name `host`, signed in as the first device of `user`'s account
     /// as [`Cloud::signed_in`] signs it in; gives it and what its sign-in printed.
     pub fn first_machine(&self, page: &Page, user: &User, host: &str) -> (Machine, Finished) {
         let machine = Machine::new().with_host_name(host);
-        let first = [machine::FIRST_DEVICE, machine::YES];
-        let finished = self.signed_in(page, &machine, user, &first);
+        let finished = self.signed_in(page, &machine, user, &[]);
         (machine, finished)
     }
 
@@ -590,17 +714,10 @@ fn loaded(visit: Visit) {
 /// Waits until device authorization has given `run` its grant after the `before` it gave earlier
 /// and `run` shows its verification page's address and code; gives the grant.
 pub fn shown_grant(cloud: &Cloud, run: &mut Run, before: usize) -> Grant {
-    let deadline = Instant::now() + WAIT;
-    while cloud.grants().len() <= before {
+    let grant = cloud.next_grant(before, || {
         run.assert_running();
-        assert!(
-            Instant::now() < deadline,
-            "no device authorization: {}",
-            run.shown()
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
-    let grant = cloud.last_grant();
+        run.shown()
+    });
     run.wait_to_show(&[&grant.verification_uri, &grant.user_code]);
     grant
 }

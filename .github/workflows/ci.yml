@@ -1,19 +1,21 @@
 name: CI
 
 on:
+  # Not on a draft: every job is skipped until the PR is ready for review.
   pull_request:
     branches: [dev]
-  # After every merge, every part: a check that a PR's selection missed fails on dev.
+    types: [opened, synchronize, reopened, ready_for_review]
+  # A run on dev checks every part: a check that a PR's selection missed fails there.
   push:
     branches: [dev]
 
 permissions:
   contents: read
 
-# A PR's new push cancels the PR's older run; a push to dev has a group of its own, its commit, so
-# no run of another push or of a PR cancels it.
+# A PR's new push cancels the PR's older run. Pushes to dev share a group that cancels no running
+# run: a newer push replaces only a waiting one.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # On a PR, each job runs its part of script/test only when the PR changes it: see
@@ -22,6 +24,8 @@ concurrency:
 jobs:
   changes:
     name: Changed parts
+    # A draft PR skips it, and so every job after it.
+    if: github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     outputs:
       workspace: ${{ steps.parts.outputs.workspace }}
@@ -188,11 +192,12 @@ jobs:
 
   # The check Rust that dev requires: it passes only when every job of the Rust code passed or was
   # skipped, its part unchanged. It runs whatever they end with, a failure or a cancelled run too:
-  # a required check that is skipped counts as passed.
+  # a required check that is skipped counts as passed. Skipped only on a draft PR, which cannot be
+  # merged; marking it ready runs it.
   rust:
     name: Rust
     needs: [changes, rust-workspace, rust-wasm, rust-image, rust-self-host, rust-mls, rust-agents, rust-edits, rust-repository]
-    if: always()
+    if: always() && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - shell: bash
@@ -218,7 +223,25 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
+      # Every build of the job takes .cargo/windows-tests.toml, also the server binary a test builds
+      # with cargo; its build is cached apart from the unoptimized one it replaced.
+      - name: Optimize the crates the tests spend their CPU in
+        run: Copy-Item -Path .cargo/windows-tests.toml -Destination .cargo/config.toml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: windows-tests
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Build the client's tests
+        run: cargo nextest run -p skald-client --locked --no-run
+      # The temporary directory of the next steps on D:, where the workspace is, not under the
+      # user's profile on C:: the tests keep their state, databases and browser profiles there.
+      - name: Move the temporary directory to D
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
       # The sign-in tests drive Chrome Headless Shell, installed by the playwright-core of web/ on a
       # cache miss.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -237,24 +260,63 @@ jobs:
       - name: Install Chrome Headless Shell
         working-directory: web
         run: node node_modules/playwright-core/cli.js install chromium-headless-shell
-      # The image's PostgreSQL, stopped and disabled until started.
+      # The image's PostgreSQL, stopped and disabled until started, set as script/lib/postgres.sh
+      # sets the tests' one: it flushes nothing to the disk, which the client's state shares, and
+      # takes the tests' connections.
       - name: Start PostgreSQL
         shell: pwsh
         run: |
+          Add-Content -Path "$env:PGDATA\postgresql.conf" -Value 'fsync = off', 'max_connections = 500'
           $service = Get-Service -Name 'postgresql*'
           Set-Service -InputObject $service -StartupType Manual
           Start-Service -InputObject $service
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
-      # PGUSER and PGPASSWORD of the image name its superuser. Every failing test target shows. A
-      # fresh runner's Credential Manager is the one key storage a test may use.
+      # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
+      # unknown. A process started here samples, about every 10 s, the ephemeral ports in use, by
+      # state and owner, and the non-paged pool; a retry of such a connect prints the last sample.
+      - name: Sample the ephemeral ports in use
+        shell: pwsh
+        run: |
+          $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
+          Set-Content -Path $sampler -Value @'
+          $start = (Get-NetTCPSetting -SettingName Internet).DynamicPortRangeStartPort
+          while ($true) {
+            $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
+              Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
+            $ports = @($used | Sort-Object -Property LocalPort -Unique).Count
+            $pool = [int]((Get-Counter '\Memory\Pool Nonpaged Bytes').CounterSamples[0].CookedValue / 1MB)
+            $states = ($used | Group-Object State | Sort-Object Count -Descending |
+              ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
+            $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
+              Sort-Object Count -Descending | Select-Object -First 3 |
+              ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }) -join ' '
+            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners" |
+              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt')
+            Start-Sleep -Seconds 10
+          }
+          '@
+          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
+      # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
+      # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
+      # tests of all the client's test binaries at once, each in a process of its own.
       - name: Test the client
         shell: pwsh
         env:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
-          cargo test -p skald-client --locked --no-fail-fast
+          $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
+          cargo nextest run -p skald-client --locked --no-fail-fast --test-threads 8
+      - name: Show the most ephemeral ports in use
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $samples = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool:"
+          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
+          $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
+            Select-Object -Last 1
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

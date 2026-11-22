@@ -27,6 +27,7 @@ use skald_proto::{
 use crate::connection::{self, Connection, Method};
 use crate::devices::{self, signed_in_with_secrets, text, to_session};
 use crate::follow::SpaceDevices;
+use crate::person;
 use crate::secrets;
 use crate::spaces::now;
 use crate::state::{self, Link, State};
@@ -94,22 +95,12 @@ pub fn run(
     let keys = crate::device::known_keys(&stored, device.as_ref())
         .map_err(text)?
         .ok_or_else(|| crate::device::Error::MissingKeys.to_string())?;
-    let body = RevocationBody {
-        account: own,
-        device: target,
-        keep: NonEmpty::from_vec(kept.clone()),
-        signer: Some(this),
-        timestamp: now(),
-        also: None,
-        unknown: Unknown::default(),
-    };
-    let signed = sign_revocation(&body, keys.signing())
-        .map_err(|err| format!("the revocation does not encode: {err}"))?;
-    let revocation = signed.to_cbor();
-    state
-        .add_revocations(std::slice::from_ref(&revocation), true)
-        .map_err(text)?;
-    store(&mut connection, &token, &state, &revocation)?;
+    let signed = signed_and_stored(
+        (&mut connection, &token, &state),
+        (own, this, &keys),
+        target,
+        &kept,
+    )?;
     println!("Revoked the device {target} ({name}).");
     let mut revocations = devices.revocations;
     revocations.push(signed);
@@ -125,6 +116,34 @@ pub fn run(
     Ok(())
 }
 
+/// Revokes `target`, a device of `account`, keeping `kept`, by a revocation that `this`, a device
+/// of the account whose keys are `keys`, signs without `also`: it waits in `state` until the server
+/// has taken it, which it then asks, as the session `token`. Gives the revocation.
+pub fn signed_and_stored(
+    (connection, token, state): (&mut Connection, &str, &State),
+    (account, this, keys): (AccountId, DeviceId, &crate::device::Keys),
+    target: DeviceId,
+    kept: &[DeviceId],
+) -> Result<Revocation, String> {
+    let body = RevocationBody {
+        account,
+        device: target,
+        keep: NonEmpty::from_vec(kept.to_vec()),
+        signer: Some(this),
+        timestamp: now(),
+        also: None,
+        unknown: Unknown::default(),
+    };
+    let signed = sign_revocation(&body, keys.signing())
+        .map_err(|err| format!("the revocation does not encode: {err}"))?;
+    let revocation = signed.to_cbor();
+    state
+        .add_revocations(std::slice::from_ref(&revocation), true)
+        .map_err(text)?;
+    store(connection, token, state, &revocation)?;
+    Ok(signed)
+}
+
 /// The device ID `given` names, as the command takes it.
 fn device_id(given: &str) -> Result<DeviceId, String> {
     given
@@ -135,7 +154,11 @@ fn device_id(given: &str) -> Result<DeviceId, String> {
 /// The devices of `certs` that `issuer` certified, with a certificate that passes checks 1 and 2
 /// against the pinned `master` key, each once with its certificate's `name`, in the order of
 /// `certs`.
-fn certified_by(master: &[u8; 32], certs: &[Cert], issuer: DeviceId) -> Vec<(DeviceId, String)> {
+pub fn certified_by(
+    master: &[u8; 32],
+    certs: &[Cert],
+    issuer: DeviceId,
+) -> Vec<(DeviceId, String)> {
     let mut certified: Vec<(DeviceId, String)> = Vec::new();
     for cert in certs {
         let device = cert.body().device;
@@ -190,23 +213,30 @@ pub fn ask_keep(
     output: &mut impl Write,
     certified: &[DeviceId],
 ) -> io::Result<Option<Vec<DeviceId>>> {
+    ask_ids(input, output, "Which of them stay valid?", certified)
+}
+
+/// Asks `question` on `output`, reading the answer from `input`: IDs of `shown`, separated by
+/// spaces or commas, each kept once, or nothing for none; asks again after an answer that names
+/// anything else. None if `input` ends first.
+pub fn ask_ids(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    question: &str,
+    shown: &[DeviceId],
+) -> io::Result<Option<Vec<DeviceId>>> {
     loop {
-        write!(
-            output,
-            "Which of them stay valid? Their IDs, separated by spaces, or nothing for none: "
-        )?;
-        output.flush()?;
-        let mut line = String::new();
-        if input.read_line(&mut line)? == 0 {
+        let prompt = format!("{question} Their IDs, separated by spaces, or nothing for none: ");
+        let Some(line) = person::read(input, output, &prompt)? else {
             writeln!(output)?;
             return Ok(None);
-        }
+        };
         let named: Result<Vec<DeviceId>, String> = line
             .split(|c: char| c.is_whitespace() || c == ',')
             .filter(|word| !word.is_empty())
             .map(device_id)
             .collect();
-        match named.and_then(|named| kept_of(&named, certified)) {
+        match named.and_then(|named| kept_of(&named, shown)) {
             Ok(kept) => return Ok(Some(kept)),
             Err(_) => writeln!(
                 output,
@@ -228,6 +258,23 @@ fn store(
     state: &State,
     revocation: &[u8],
 ) -> Result<(), String> {
+    store_or(
+        connection,
+        token,
+        state,
+        revocation,
+        "the next skald command that connects",
+    )
+}
+
+/// [`store`], saying that `later` sends a revocation the server has not taken.
+pub fn store_or(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    revocation: &[u8],
+    later: &str,
+) -> Result<(), String> {
     let request =
         serde_json::json!({ "revocation": URL_SAFE_NO_PAD.encode(revocation) }).to_string();
     connection
@@ -238,10 +285,7 @@ fn store(
             request.as_bytes(),
         )
         .map_err(|err| {
-            format!(
-                "{err}; the revocation waits for the server to take it: the next skald command \
-                 that connects sends it again"
-            )
+            format!("{err}; the revocation waits for the server to take it: {later} sends it again")
         })?;
     state.revocation_taken(revocation).map_err(text)
 }
@@ -397,23 +441,36 @@ pub fn learned(
 }
 
 /// Fails, saying so, if this device, of `cert` on the account of the pinned `master` key, is revoked
-/// by the revocations the server gives with its account's devices, as the session `token`, or
-/// those `state` holds; keeps those the server gives that count.
+/// ([`revoked`]).
 pub fn refuse_if_revoked(
     connection: &mut Connection,
     token: &str,
     state: &State,
     (master, cert): (&[u8; 32], &Cert),
 ) -> Result<(), String> {
+    match revoked(connection, token, state, (master, cert))? {
+        true => Err(format!(
+            "this device {} is revoked: it sends and receives nothing; sign in on a device that \
+             is not",
+            cert.body().device
+        )),
+        false => Ok(()),
+    }
+}
+
+/// Whether this device, of `cert` on the account of the pinned `master` key, is revoked by the
+/// revocations the server gives with its account's devices, as the session `token`, or those
+/// `state` holds; keeps those the server gives that count.
+pub fn revoked(
+    connection: &mut Connection,
+    token: &str,
+    state: &State,
+    (master, cert): (&[u8; 32], &Cert),
+) -> Result<bool, String> {
     let this = cert.body().device;
     let devices = devices::own(connection, token, state, master)?;
-    match check_valid_device(master, &devices.certs, &devices.revocations, this) {
-        Err(DeviceCheckError::Revoked { .. }) => Err(format!(
-            "this device {this} is revoked: it sends and receives nothing; sign in on a device \
-             that is not"
-        )),
-        _ => Ok(()),
-    }
+    let checked = check_valid_device(master, &devices.certs, &devices.revocations, this);
+    Ok(matches!(checked, Err(DeviceCheckError::Revoked { .. })))
 }
 
 #[cfg(test)]
@@ -450,6 +507,7 @@ mod tests {
                     issuer: issuer.map(|at| device(&keys[at])),
                     issued: 1_800_000_000,
                     ssh: None,
+                    github: None,
                     name: "laptop".to_owned(),
                     unknown: Unknown::default(),
                 };
@@ -495,6 +553,7 @@ mod tests {
                 ids: (0..3).map(|at| self.device(at)).collect(),
                 certs: self.certs.clone(),
                 revocations: revocations.iter().map(|&one| one.clone()).collect(),
+                records: Vec::new(),
             }
         }
 
@@ -520,6 +579,7 @@ mod tests {
             issuer: Some(ada.device(0)),
             issued: 1_800_000_000,
             ssh: None,
+            github: None,
             name: "forged".to_owned(),
             unknown: Unknown::default(),
         };

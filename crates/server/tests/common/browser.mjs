@@ -27,6 +27,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { extname, join, normalize, sep } from "node:path";
 import { createInterface } from "node:readline";
+import { setTimeout as sleep } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -182,13 +183,17 @@ function page(id) {
 /**
  * Runs `navigate`, which navigates `tab` and resolves to the last response, if any; gives the final
  * URL, the status of that response, the URLs the main frame requested on the way, redirects
- * included, and the navigation error, if any.
+ * included, and the navigation error, if any. Whether each of those requests was a `GET` is the
+ * visit's `gets`, which the driver's answer leaves out.
  */
 async function navigation(tab, navigate) {
   const navigations = [];
+  let gets = true;
   const record = (request) => {
-    if (request.isNavigationRequest() && request.frame() === tab.mainFrame())
+    if (request.isNavigationRequest() && request.frame() === tab.mainFrame()) {
       navigations.push(request.url());
+      gets &&= request.method() === "GET";
+    }
   };
   const failures = [];
   const fail = (request) => {
@@ -208,8 +213,19 @@ async function navigation(tab, navigate) {
     tab.off("request", record);
     tab.off("requestfailed", fail);
   }
-  return { url: tab.url(), status, navigations, error };
+  const visit = { url: tab.url(), status, navigations, error };
+  // Not enumerable: JSON leaves it out.
+  Object.defineProperty(visit, "gets", { value: gets });
+  return visit;
 }
+
+/**
+ * The error of a navigation that Chrome on GitHub's Windows runners now and then gets for a local
+ * connection, Windows' WSAENOBUFS; and the waits before each next try of such a navigation. The
+ * harness's browser fails, not the server under test.
+ */
+const NO_BUFFER_SPACE = "net::ERR_NO_BUFFER_SPACE";
+const NO_BUFFER_SPACE_WAITS = [250, 500, 1000, 2000];
 
 /** How long `followRefreshes` waits in all, as long as playwright-core waits for a navigation. */
 const REFRESH_TIMEOUT = 30_000;
@@ -399,9 +415,15 @@ function forwardUpgrade(target, request, socket, head, upgraded) {
 }
 
 const ops = {
-  /** Opens a page in a new browser context: a browser with no cookies and no storage. */
-  async newPage({ session }) {
-    const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  /**
+   * Opens a page in a new browser context: a browser with no cookies and no storage, its window
+   * `width` CSS pixels wide if given, as a phone's.
+   */
+  async newPage({ session, width }) {
+    const context = await browser.newContext({
+      ignoreHTTPSErrors: true,
+      ...(width === undefined ? {} : { viewport: { width, height: 800 } }),
+    });
     opened(session).contexts.push(context);
     const id = nextPage++;
     pages.set(id, { session, context, page: await context.newPage() });
@@ -444,18 +466,25 @@ const ops = {
    * frame requested on the way, redirects and refreshes included, and the navigation error, if any.
    */
   async goto({ page: id, url, settle = false }) {
-    // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
-    // error response, such as a 404 without a body, after goto gave up on it, and that commit
-    // would interrupt the next navigation in the same tab.
-    const found = page(id);
-    const tab = await found.context.newPage();
-    found.page.close().catch(() => {});
-    found.page = tab;
-    return navigation(tab, async () => {
-      const response = await tab.goto(url, { waitUntil: "load" });
-      if (settle) await followRefreshes(tab);
-      return response;
-    });
+    // A navigation that fails with NO_BUFFER_SPACE goes again, after each of NO_BUFFER_SPACE_WAITS;
+    // any other error, or the last try's, is the visit's.
+    for (const wait of [...NO_BUFFER_SPACE_WAITS, null]) {
+      // Each navigation gets a new tab of the browser: Chrome commits its error page for an empty
+      // error response, such as a 404 without a body, after goto gave up on it, and that commit
+      // would interrupt the next navigation in the same tab.
+      const found = page(id);
+      const tab = await found.context.newPage();
+      found.page.close().catch(() => {});
+      found.page = tab;
+      const visit = await navigation(tab, async () => {
+        const response = await tab.goto(url, { waitUntil: "load" });
+        if (settle) await followRefreshes(tab);
+        return response;
+      });
+      if (wait === null || !visit.error?.includes(NO_BUFFER_SPACE)) return visit;
+      console.error(`browser: ${url}: ${NO_BUFFER_SPACE}; navigating again in ${wait} ms`);
+      await sleep(wait);
+    }
   },
 
   /**
@@ -464,7 +493,18 @@ const ops = {
    * load; with `settle`, as `goto` does. Gives what `goto` gives.
    */
   async click({ page: id, selector, settle = false }) {
-    return click(page(id).page, selector, settle);
+    const tab = page(id).page;
+    const from = tab.url();
+    const visit = await click(tab, selector, settle);
+    // A navigation by a link to the clicked page's own origin, every request of it a GET, that
+    // fails with NO_BUFFER_SPACE goes again from the link's URL, as `goto` goes, which tries it
+    // again too. A typed URL sends the cookies a click from another site does not, so a link to
+    // another origin is not tried again.
+    const [link] = visit.navigations;
+    const own = link && URL.canParse(from) && new URL(link).origin === new URL(from).origin;
+    if (!visit.error?.includes(NO_BUFFER_SPACE) || !visit.gets || !own) return visit;
+    console.error(`browser: ${link}: ${NO_BUFFER_SPACE}; navigating to it again`);
+    return ops.goto({ page: id, url: link, settle });
   },
 
   /** Clicks each `{page, selector}` of `clicks` at once, as `click` does; gives their visits. */

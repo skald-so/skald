@@ -8,7 +8,7 @@ use skald_proto::{Cbor as _, Envelope, RawEnvelope};
 use crate::gaps::sends;
 use crate::kit::received;
 use crate::talk::{BOB_HOST, Line, assert_shows_once};
-use crate::{Agents, CLAUDE, assert_handed_once, assert_not_handed};
+use crate::{Agents, CLAUDE, assert_handed_line, assert_not_handed};
 
 /// The `ttl` of the message that waits shortly, in seconds.
 const TTL: u64 = 10;
@@ -48,6 +48,6 @@ fn agent_that_has_not_run_since_a_message_came_gets_it_but_not_once_its_wait_end
 
     let claude = agents.run_as(CLAUDE).shown();
 
-    assert_handed_once(&claude, KEPT, kept);
+    assert_handed_line(&claude, KEPT, kept);
     assert_not_handed(&claude, SHORT);
 }

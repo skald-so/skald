@@ -2,7 +2,6 @@
 //! answers, and long-polls that wait in a thread of their own.
 
 use std::num::NonZeroU64;
-use std::sync::OnceLock;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -12,16 +11,17 @@ use skald_proto::{
     Cbor, DeviceId, Frame, Header, PROTOCOL_VERSION, SpaceId, Stored, VERSION_HEADER,
 };
 
-use crate::common::spec::{operation_violations, spec};
+use crate::api::{Person, the_spec};
+use crate::common::spec::operation_violations;
 use crate::common::{Response, Server, send};
 use crate::common::{
     cbor::{array_of, byte_item, uint},
     device_flow::{DeviceFlow, json, text},
     devices::{CHALLENGE, Device, b64, unb64},
 };
+use crate::fixture::Fixture;
 use crate::link::{Entry, Sent};
 use crate::wire::{Answer, assert_stored_at, envelope, key_of, now, send_frame};
-use crate::{api::Person, fixture::Fixture};
 
 /// Sends an envelope: `POST`, the body a `send` frame.
 pub const SEND: &str = "/mailbox/send";
@@ -58,12 +58,6 @@ pub const EARLY: Duration = Duration::from_millis(100);
 pub const SETTLE: Duration = Duration::from_millis(700);
 /// The wait of a long-poll that something else must end first.
 pub const LONG: u64 = 20;
-
-/// The spec, read once.
-fn the_spec() -> &'static Value {
-    static SPEC: OnceLock<Value> = OnceLock::new();
-    SPEC.get_or_init(spec)
-}
 
 /// Checks that `response` to `POST <path>` conforms to the spec.
 #[track_caller]

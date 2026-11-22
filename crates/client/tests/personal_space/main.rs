@@ -46,7 +46,7 @@ use std::time::Duration;
 
 use browser::APPROVE;
 use cloud::{Cloud, GIVE_MASTER, shown_grant};
-use machine::{FIRST_DEVICE, Machine, NO, SERVER, SIGN_IN, YES};
+use machine::{Machine, SERVER, SIGN_IN};
 use relay::Lose;
 use skald_crypto::{check_device, check_roster};
 use skald_proto::{Cbor as _, ROSTER_LABEL, RosterBody, SpaceId};
@@ -166,7 +166,7 @@ fn new_accounts_first_machine_is_in_its_personal_space_as_its_admin() {
 
     let laptop = Machine::new().with_host_name("ada-second-laptop");
     let page = world.browser.page();
-    let waiting = cloud.signed_in(&page, &laptop, &ada.user, &[FIRST_DEVICE, NO]);
+    let waiting = cloud.signed_in(&page, &laptop, &ada.user, &[]);
     assert!(waiting.success, "the second machine: {waiting:?}");
     let listed = spaces(&laptop);
     assert!(
@@ -191,7 +191,7 @@ fn recovers_from_a_lost_answer(request: &str, how: Lose, user: (u64, &str)) {
     let machine = Machine::new().with_host_name("ada-flaky-network");
     cloud.relay.lose_answer(request, how);
 
-    let mut signing_in = machine.start(&[SIGN_IN, SERVER, cloud.url.as_str(), FIRST_DEVICE, YES]);
+    let mut signing_in = machine.start(&[SIGN_IN, SERVER, cloud.url.as_str()]);
     let grant = shown_grant(cloud, &mut signing_in, 0);
     cloud.decide(&world.browser.page(), &ada, &grant, APPROVE);
     match how {
@@ -287,8 +287,8 @@ fn existing_accounts_machine_signs_revision_1_of_its_personal_space_on_its_next_
 /// What a run says when it could not set up the account's personal space.
 const NOT_SET_UP: &str = "the account's personal space is not set up yet";
 
-/// The first machine's sign-in says it signed revision 1 of the account's personal space, with the
-/// space's name and ID and the machine's handle.
+/// The first machine's sign-in says it signed the account's personal space as its admin, with the
+/// space's name and ID.
 #[test]
 fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let world = World::start();
@@ -301,9 +301,7 @@ fn first_machines_sign_in_says_it_signed_revision_1_of_the_personal_space() {
     let (space, _) = assert_personal(cloud, &ada, ada.handle.as_str(), false);
 
     let said = format!(
-        "This device signed revision 1 of the account's personal space {} ({space}) as its admin, \
-         with the handle {}.",
-        ada.handle.as_str(),
+        "Signed the personal space {} ({space}) as its admin.",
         ada.handle.as_str()
     );
     assert!(signed_in.stdout.contains(&said), "{signed_in:?}");
