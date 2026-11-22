@@ -504,6 +504,20 @@ pub struct TaskOutgoing {
     pub record: Vec<u8>,
 }
 
+/// A task the device enqueued, as its results are checked against it ([`crate::results`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Enqueued {
+    pub space: SpaceId,
+    /// Its channel and queue, and its content's `from`; none for a task an older client kept.
+    pub channel: Option<ChannelId>,
+    pub queue: Option<QueueId>,
+    pub author: Option<String>,
+    /// Its content's `to`, if any.
+    pub addressee: Option<String>,
+    /// The `msg_id` of the `done` result the device took as the task's, once it took one.
+    pub result: Option<MessageId>,
+}
+
 /// A claim the device holds ([`crate::claims`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskClaim {
@@ -4095,9 +4109,15 @@ impl State {
     }
 
     /// Keeps `outgoing`, a task enqueued as `agent`, if any, until the server answers it, and
-    /// whose it is for good; the agent's next message or task counts only the `hops` of what is
-    /// handed to it from now on, as a message it sends does.
-    pub fn keep_task(&self, outgoing: &TaskOutgoing, agent: Option<&str>) -> Result<(), Error> {
+    /// whose it is for good, with its content's `from` and `to`, if any; the agent's next message
+    /// or task counts only the `hops` of what is handed to it from now on, as a message it sends
+    /// does.
+    pub fn keep_task(
+        &self,
+        outgoing: &TaskOutgoing,
+        agent: Option<&str>,
+        (author, addressee): (&str, Option<&str>),
+    ) -> Result<(), Error> {
         let tx = self.write()?;
         let space = outgoing.space.to_string();
         tx.execute(
@@ -4112,8 +4132,17 @@ impl State {
             ],
         )?;
         tx.execute(
-            "INSERT INTO enqueued_task (task, space, agent) VALUES (?1, ?2, ?3)",
-            params![outgoing.task.to_string(), space, agent],
+            "INSERT INTO enqueued_task (task, space, agent, channel, queue, author, addressee)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                outgoing.task.to_string(),
+                space,
+                agent,
+                outgoing.channel.to_string(),
+                outgoing.queue.to_string(),
+                author,
+                addressee
+            ],
         )?;
         if let Some(agent) = agent {
             tx.execute(
@@ -4159,6 +4188,56 @@ impl State {
             row.get::<_, String>(0)
         })?;
         tasks.map(|task| id("task ID", &task?)).collect()
+    }
+
+    /// The task `task`, if the device enqueued it.
+    pub fn enqueued(&self, task: TaskId) -> Result<Option<Enqueued>, Error> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT space, channel, queue, author, addressee, result FROM enqueued_task
+                 WHERE task = ?1",
+                params![task.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        [row.get::<_, Option<String>>(1)?, row.get(2)?],
+                        [row.get::<_, Option<String>>(3)?, row.get(4)?],
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((space, [channel, queue], [author, addressee], result)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(Enqueued {
+            space: id("space ID", &space)?,
+            channel: channel.map(|it| id("channel ID", &it)).transpose()?,
+            queue: queue.map(|it| id("queue ID", &it)).transpose()?,
+            author,
+            addressee,
+            result: result.map(|it| id("message ID", &it)).transpose()?,
+        }))
+    }
+
+    /// Takes the `done` result `msg_id` as the result of the task `task` the device enqueued,
+    /// unless it took another one: whether it is the task's result.
+    pub fn take_result(&self, task: TaskId, msg_id: MessageId) -> Result<bool, Error> {
+        let (task, msg_id) = (task.to_string(), msg_id.to_string());
+        self.db.execute(
+            "UPDATE enqueued_task SET result = ?2 WHERE task = ?1 AND result IS NULL",
+            params![task, msg_id],
+        )?;
+        let taken: Option<Option<String>> = self
+            .db
+            .query_row(
+                "SELECT result FROM enqueued_task WHERE task = ?1",
+                params![task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(taken.flatten() == Some(msg_id))
     }
 
     /// Takes the task `task` out of the outbox: the server answered it.
@@ -5880,12 +5959,16 @@ pub(crate) mod tests {
         let (first, second, third) = (task(1), task(2), task(3));
         assert_eq!(state.task_outbox().unwrap(), []);
 
-        state.keep_task(&first, None).unwrap();
+        let from = ("acme/ada@skald.test", None);
+        state.keep_task(&first, None, from).unwrap();
         assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(3));
-        state.keep_task(&second, Some("claude")).unwrap();
+        state.keep_task(&second, Some("claude"), from).unwrap();
         assert_eq!(state.handed_hops(space, "claude").unwrap(), None);
-        state.keep_task(&third, Some("codex")).unwrap();
-        assert!(state.keep_task(&first, None).is_err(), "a task kept twice");
+        state.keep_task(&third, Some("codex"), from).unwrap();
+        assert!(
+            state.keep_task(&first, None, from).is_err(),
+            "a task kept twice"
+        );
         state.remove_task(second.task).unwrap();
 
         let state = State::open(&dir).unwrap();
@@ -5897,6 +5980,50 @@ pub(crate) mod tests {
         assert_eq!(own("gemini"), BTreeSet::new());
         let elsewhere = state.enqueued_by(SpaceId::generate(), "claude").unwrap();
         assert_eq!(elsewhere, BTreeSet::new());
+    }
+
+    /// A task the device enqueued keeps its channel, queue, `from` and `to` after it leaves the
+    /// outbox; the first `done` result taken is its result, again when taken again, and no other
+    /// one is. A task the device did not enqueue has none.
+    #[test]
+    fn enqueued_task_keeps_where_and_whose_it_is_and_its_first_taken_result() {
+        let dir = TestDir::new("state-task-result");
+        let state = State::open(&dir).unwrap();
+        let outgoing = TaskOutgoing {
+            task: TaskId::generate(),
+            space: SpaceId::generate(),
+            channel: ChannelId::generate(),
+            queue: QueueId::generate(),
+            record: vec![1; 3],
+        };
+        let (author, addressee) = ("acme/ada/claude@skald.test", "acme/ada/codex@skald.test");
+        state
+            .keep_task(&outgoing, Some("claude"), (author, Some(addressee)))
+            .unwrap();
+        state.remove_task(outgoing.task).unwrap();
+        let (first, second) = (MessageId::generate(), MessageId::generate());
+        let expected = |result| Enqueued {
+            space: outgoing.space,
+            channel: Some(outgoing.channel),
+            queue: Some(outgoing.queue),
+            author: Some(author.to_owned()),
+            addressee: Some(addressee.to_owned()),
+            result,
+        };
+        assert_eq!(state.enqueued(outgoing.task).unwrap(), Some(expected(None)));
+
+        assert!(state.take_result(outgoing.task, first).unwrap());
+        assert!(!state.take_result(outgoing.task, second).unwrap());
+        assert!(state.take_result(outgoing.task, first).unwrap());
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.enqueued(outgoing.task).unwrap(),
+            Some(expected(Some(first)))
+        );
+        let other = TaskId::generate();
+        assert_eq!(state.enqueued(other).unwrap(), None);
+        assert!(!state.take_result(other, first).unwrap());
     }
 
     /// The highest `hops` handed over to an agent in a space counts until the device sends a
