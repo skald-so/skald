@@ -88,6 +88,7 @@
   - folders compare as canonical paths, so a symlink binds as its target.
 - **Invite:**
   - an admin's device signs it: [protocol spec](../protocol/membership.md#invite);
+  - it admits one person;
   - its secret travels only in the link's fragment and never reaches the server;
   - the admin's device admits the newcomer by itself, after checking the newcomer's devices.
 - Formats, checks, and how changes reach the MLS groups: [protocol spec](../protocol/membership.md#roster).
@@ -104,7 +105,7 @@
 - Push over WebSocket; SSE and long-poll are fallbacks. A long-poll waits at most the server setting `--long-poll-max-wait` (`SKALD_LONG_POLL_MAX_WAIT`), 30 seconds by default. An idle SSE stream sends a keep-alive every `--sse-keep-alive` (`SKALD_SSE_KEEP_ALIVE`), 15 seconds by default.
 - The client falls back to SSE, then long-poll, when the transport before does not open, such as when a proxy refuses it, or breaks or sends nothing for the request timeout before its catch-up ends. Over both it sends and acks in HTTPS requests. A run keeps the transport that worked and its connection, and the helper keeps it between commands; a catch-up on a WebSocket after its first takes the entries it pushed since, and on an SSE stream goes over long-poll. A dropped connection tries WebSocket first again; so do the helper and a one-shot `skald recv --wait` on SSE or long-poll after a minute. History items wait for a run over WebSocket ([delivery](../protocol/delivery.md#frames)).
 - Multiple server instances wake each other via PostgreSQL `LISTEN/NOTIFY`:
-  - a notification names a mailbox with new entries, a stored roster revision, an ended session, a revoked device, a deleted account's device or a space with a member's account deleted, never an envelope;
+  - a notification names a mailbox with new entries, a stored roster revision, an ended session, a revoked device, a deleted account's device, a space with a member's account deleted or a space with a new acceptance, never an envelope;
   - an instance takes no device connection before it first listens;
   - an instance whose listening connection drops or goes silent listens again, then sends its connections what they missed;
   - each instance takes up to 11 PostgreSQL connections: 10 in its pool and 1 that listens; a replaced listening connection can stay open for a while after its replacement.

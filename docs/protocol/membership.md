@@ -479,7 +479,8 @@ acceptance-body = {
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
 - **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
-- The server stores the invite and the acceptance. Revoking an invite deletes it on the server.
+- The server stores the invite and the acceptance. An invite admits one account: the server keeps its first acceptance and refuses others. `expires` is at most 30 days after the server stores the invite.
+- An invite ends when it expires, is revoked or a stored revision lists a member with it; the server then deletes it with its acceptance.
 
 The newcomer's device MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
@@ -701,6 +702,7 @@ A reader MUST drop an entry unless:
 - A device linked with the recovery key trusts the revisions anchored by its account's `client` devices other than those its user names as stolen. A stolen device the user does not name counts as honest: in a space no other device anchored, it can make the device start from a revision the server forged. Where other devices anchored the space, its anchor off their chain only stops the device from joining. The server can withhold anchors objects: the device then starts from older revisions, or joins no space.
 - A linked `client` device trusts the revisions anchored by its account's other `client` devices with a valid certificate. Until a stolen one is revoked, in a space no other device anchored, it can make the device start from a revision the server forged. The server can withhold anchors objects: the device then stays out of a space another device of its account created or joined.
 - A newcomer trusts the roster revision named in the invite link; the link's integrity rests on the channel it was sent over.
+- Whoever names an invite's ID reads its space's roster until the invite has an acceptance.
 - A channel member whose `history` is false holds the key of every epoch from its join on, and each opens that epoch's link: the join epoch's link, or a later one whose uploader judged the epochs between unclean, gives a key from before the join. Only the server withholding those links keeps it from earlier history.
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
