@@ -12,6 +12,8 @@
 //!   output says so.
 //! - The agent shows `busy` while it holds a claim with `started`, `waiting` with
 //!   `awaiting-approval`, and `available` again once it holds none.
+//! - A command on a claim waits for an extend of it the heartbeat sent and the server has not
+//!   answered, and works on the claim as the heartbeat left it.
 //!
 //! As the tests of claims (`task_claims/main.rs`): Ada's first machine, whose agent claude
 //! enqueues in `~/work/acme`, her second machine, whose agent `codex-v5d8tm` claims in its
@@ -31,6 +33,7 @@
 mod scene;
 
 mod one_shot;
+mod races;
 mod sessions;
 mod statuses;
 mod unheld;

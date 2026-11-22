@@ -655,16 +655,17 @@ pub fn extend(
     agent: Option<&Name>,
 ) -> Result<(), String> {
     recv::holding_warnings(run.dir, agent.is_some(), || {
-        let (mut held, synced, _) = located(run, given, agent)?;
+        let (held, synced, _) = located(run, given, agent)?;
         let mut follower = synced.follower;
         let reference = reference(&follower.state, held.row.task);
+        let _changing = changing();
+        let mut held = again(&follower, held, &reference)?;
         if held.record.end.is_some() {
             return Err(format!(
                 "the task #{reference} waits for the server to take its complete or fail; skald \
                  recv repeats it, and nothing extends its claim"
             ));
         }
-        let _changing = changing();
         found_lost(&follower.state, &held, &reference)?;
         lapsed(&follower.state, &held, &reference)?;
         let sent = state::unix_now();
@@ -726,6 +727,7 @@ pub fn end(
         let earlier = held.record.end.is_some();
         if !earlier {
             let _changing = changing();
+            held = again(&follower, held, &reference)?;
             found_lost(&follower.state, &held, &reference)?;
             lapsed(&follower.state, &held, &reference)?;
             held.record.end = Some(End {
@@ -1044,6 +1046,20 @@ fn located(run: &Run, given: &str, agent: Option<&Name>) -> Result<(Held, Synced
     let synced = spaces::of_channel(run.dir, run.storage, speaks, timeout, row.channel, scope)?;
     let mut held = opened_all(&synced.follower, vec![row])?;
     Ok((held.remove(0), synced, scope))
+}
+
+/// `held`, the claim of the task `reference` names, as the local state keeps it now: read again
+/// once a run holds [`changing`], as the heartbeat may have extended it or found it lost since.
+fn again(follower: &Follower, held: Held, reference: &str) -> Result<Held, String> {
+    let task = held.row.task;
+    let row = (follower
+        .state
+        .claims(Some(held.row.space))
+        .map_err(text)?
+        .into_iter())
+    .find(|row| row.task == task)
+    .ok_or_else(|| format!("the task #{reference} is no longer claimed on this device"))?;
+    Ok(opened_all(follower, vec![row])?.remove(0))
 }
 
 /// Each of `rows` with what the device sealed of it opened.
