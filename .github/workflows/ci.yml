@@ -208,8 +208,8 @@ jobs:
           jq --exit-status '.changes.result == "success"
             and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
-  # The tests of the client, the one crate whose behavior depends on the OS, on Windows; script/test
-  # runs them on Linux. Outside script/test, with the workspace part.
+  # The tests of the client and the adapters, the crates whose behavior depends on the OS, on
+  # Windows; script/test runs them on Linux. Outside script/test, with the workspace part.
   client-windows:
     name: Client on Windows
     needs: changes
@@ -281,14 +281,14 @@ jobs:
           Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test target shows. A
       # fresh runner's Credential Manager is the one key storage a test may use.
-      - name: Test the client
+      - name: Test the client and the adapters
         shell: pwsh
         env:
           SKALD_TEST_REAL_KEY_STORAGE: '1'
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
-          cargo test -p skald-client --locked --no-fail-fast
+          cargo test -p skald-client -p skald-adapters --locked --no-fail-fast
       - name: Show the most ephemeral ports in use
         if: ${{ !cancelled() }}
         shell: pwsh

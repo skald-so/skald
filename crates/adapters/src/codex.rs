@@ -10,7 +10,7 @@ use std::process::{Command, Output};
 
 use serde_json::Value;
 
-use crate::executor::{self, Device, Mode, Outcome, Refused, Request, Run, Scratch};
+use crate::executor::{self, After, Device, Mode, Outcome, Refused, Request, Run, Scratch, unique};
 
 /// The flags that leave a session none of the user's config, with its MCP servers, plugins and
 /// hooks, rules and skills' instructions, and save no session.
@@ -72,15 +72,16 @@ impl Executor {
     executor::builders!("Codex");
 
     /// Starts `request` in a new session in `folder` at `mode`, in a config home of its own that
-    /// holds only a copy of the user's sign-in. Refuses `read-only`, which Codex does not enforce
-    /// here, before anything runs.
+    /// holds only a copy of the user's sign-in, which goes back to the user's config home once the
+    /// run ends if Codex changed it ([`SignIn::give_back`]). Refuses `read-only`, which Codex does
+    /// not enforce here, before anything runs.
     pub fn start(&self, folder: &Path, mode: Mode, request: &Request) -> Result<Run, Refused> {
         if mode == Mode::ReadOnly {
             return Err(Refused(format!(
                 "Codex runs no read-only session: {READ_ONLY_REFUSED}"
             )));
         }
-        let home = self.own_home().map_err(|error| {
+        let (home, sign_in) = self.own_home().map_err(|error| {
             Refused(format!(
                 "cannot make a config home for the Codex session: {error}"
             ))
@@ -92,7 +93,14 @@ impl Executor {
             .envs(self.device.kept(kept))
             .env("CODEX_HOME", home.path())
             .args(arguments(folder, mode));
-        Run::start(command, request.labelled(), outcome, Some(home)).map_err(|error| {
+        let after: After = Box::new(move || {
+            if let Some(sign_in) = sign_in {
+                // Nothing more to do if it fails: the user's sign-in stays as it was.
+                let _ = sign_in.give_back(&home.path().join(AUTH));
+            }
+            drop(home);
+        });
+        Run::start(command, request.labelled(), outcome, Some(after)).map_err(|error| {
             Refused(format!(
                 "cannot run Codex at {}: {error}",
                 self.program.display()
@@ -113,17 +121,51 @@ impl Executor {
         Some(Path::new(&home).join(".codex"))
     }
 
-    /// A config home of a run's own with a copy of the user's sign-in, if there is one.
-    fn own_home(&self) -> io::Result<Scratch> {
+    /// A config home of a run's own with a copy of the user's sign-in, if there is one, and that
+    /// sign-in.
+    fn own_home(&self) -> io::Result<(Scratch, Option<SignIn>)> {
         let home = Scratch::new("skald-codex-home")?;
-        if let Some(user) = self.user_home() {
-            match fs::copy(user.join(AUTH), home.path().join(AUTH)) {
-                Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+        let Some(user) = self.user_home() else {
+            return Ok((home, None));
+        };
+        let user = user.join(AUTH);
+        let copied = match fs::read(&user) {
+            Ok(copied) => copied,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((home, None)),
+            Err(error) => return Err(error),
+        };
+        fs::write(home.path().join(AUTH), &copied)?;
+        Ok((home, Some(SignIn { user, copied })))
+    }
+}
+
+/// The user's sign-in a run got a copy of: Codex rewrites the copy when it refreshes a ChatGPT
+/// sign-in's tokens, and the refresh token it used no longer works.
+struct SignIn {
+    /// The user's `auth.json`.
+    user: PathBuf,
+    /// What it held when the run copied it.
+    copied: Vec<u8>,
+}
+
+impl SignIn {
+    /// Puts `copy`, the run's `auth.json`, in place of the user's, at once, if Codex changed it to
+    /// a JSON object and the user's still holds what the run copied.
+    fn give_back(&self, copy: &Path) -> io::Result<()> {
+        let changed = fs::read(copy)?;
+        let object = serde_json::from_slice::<Value>(&changed).is_ok_and(|json| json.is_object());
+        if changed == self.copied || !object || fs::read(&self.user)? != self.copied {
+            return Ok(());
         }
-        Ok(home)
+        let name = unique(".auth.json.skald");
+        let temporary = self.user.with_file_name(name);
+        let written = fs::copy(copy, &temporary)
+            .and_then(|_| fs::set_permissions(&temporary, fs::metadata(&self.user)?.permissions()))
+            .and_then(|()| fs::rename(&temporary, &self.user));
+        if written.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        written
     }
 }
 
@@ -241,6 +283,7 @@ mod tests {
             &message("First."),
             command,
             &message("Done."),
+            command,
             COMPLETED,
         ];
         assert_eq!(ended(0, &events.join("\n"), ""), well("Done."));
@@ -341,42 +384,131 @@ mod tests {
         assert!(refused.contains("read-only sandbox"), "{refused}");
     }
 
-    /// The run's config home, with its copy of the sign-in, is gone once the run ends.
+    /// A user's config home with `auth` as its `auth.json`, if any, and a stand-in `codex` that
+    /// runs `script`, `{user}` in it the user's `auth.json`, then answers with what `$CODEX_HOME/auth.json` holds and its config home, on
+    /// a device whose `CODEX_HOME` is that user's: the scratch they are in, the executor, and the
+    /// user's `auth.json`.
     #[cfg(unix)]
-    #[test]
-    fn a_run_s_config_home_outlives_it_not() {
+    fn signed_in(auth: Option<&str>, script: &str) -> (Scratch, Executor, PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
 
         let scratch = Scratch::new("skald-codex-test").unwrap();
         let user = scratch.path().join("user");
         fs::create_dir(&user).unwrap();
-        fs::write(user.join(AUTH), "{}").unwrap();
+        if let Some(auth) = auth {
+            fs::write(user.join(AUTH), auth).unwrap();
+        }
         let codex = scratch.path().join("codex");
-        let script = r#"#!/bin/sh
-cat "$CODEX_HOME/auth.json" >/dev/null || exit 1
-printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$CODEX_HOME"
+        let answer = r#"
+auth=$(cat "$CODEX_HOME/auth.json" 2>/dev/null || printf none)
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s %s"}}\n' \
+  "$CODEX_HOME" "$(printf %s "$auth" | tr -d '"')"
 printf '{"type":"turn.completed"}\n'
 "#;
-        fs::write(&codex, script).unwrap();
+        let script = script.replace("{user}", &user.join(AUTH).to_string_lossy());
+        fs::write(&codex, format!("#!/bin/sh\n{script}\n{answer}")).unwrap();
         fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
         let executor = Executor::new(&codex).environment([
             ("PATH", OsString::from("/usr/bin:/bin")),
-            ("CODEX_HOME", user.into_os_string()),
+            ("CODEX_HOME", user.clone().into_os_string()),
         ]);
+        (scratch, executor, user.join(AUTH))
+    }
+
+    /// Runs a request on `executor` to its end: the run's config home and what its `auth.json`
+    /// held, as the stand-in of [`signed_in`] answers them.
+    #[cfg(unix)]
+    #[track_caller]
+    fn run_on(executor: &Executor, folder: &Path) -> (PathBuf, String) {
         let request = Request {
             from: "acme/alice/reviewer@skald.example".parse().unwrap(),
             level: skald_proto::TrustLevel::Own,
             text: "Say done.".to_owned(),
         };
-
-        let run = executor
-            .start(scratch.path(), Mode::Full, &request)
-            .unwrap();
-        let outcome = run.wait();
-
+        let outcome = executor.start(folder, Mode::Full, &request).unwrap().wait();
         assert!(outcome.finished, "{outcome:?}");
-        let home = PathBuf::from(&outcome.answer);
-        assert!(home.is_absolute(), "{outcome:?}");
+        let (home, auth) = outcome
+            .answer
+            .split_once(' ')
+            .expect("the stand-in's answer");
+        (PathBuf::from(home), auth.to_owned())
+    }
+
+    /// The run's config home, with its copy of the sign-in, is gone once the run ends.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_s_config_home_outlives_it_not() {
+        let (scratch, executor, _) = signed_in(Some("{}"), "");
+        let (home, auth) = run_on(&executor, scratch.path());
+        assert!(home.is_absolute(), "{home:?}");
+        assert_eq!(auth, "{}");
         assert!(!home.exists(), "the run's config home outlived it");
+    }
+
+    /// Without the user's `auth.json`, as with a sign-in by a variable, a run starts with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_starts_without_the_user_s_sign_in() {
+        let (scratch, executor, user) = signed_in(None, "");
+        let (_, auth) = run_on(&executor, scratch.path());
+        assert_eq!(auth, "none");
+        assert!(!user.exists(), "the run made the user an auth.json");
+    }
+
+    /// A user's `auth.json` that cannot be read refuses the run, and no Codex starts.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_sign_in_refuses_the_run() {
+        let (scratch, executor, user) = signed_in(None, "");
+        fs::create_dir(&user).unwrap();
+        let request = Request {
+            from: "acme/alice/reviewer@skald.example".parse().unwrap(),
+            level: skald_proto::TrustLevel::Own,
+            text: "Say done.".to_owned(),
+        };
+        let refused = executor.start(scratch.path(), Mode::Full, &request);
+        let refused = refused.unwrap_err().0;
+        assert!(refused.contains("config home"), "{refused}");
+    }
+
+    /// Tokens Codex refreshed in the run's copy go back to the user's `auth.json`.
+    #[cfg(unix)]
+    #[test]
+    fn a_refreshed_sign_in_goes_back_to_the_user() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let refreshed = r#"{"tokens":{"refresh_token":"new"}}"#;
+        let script = format!("printf '%s' '{refreshed}' > \"$CODEX_HOME/auth.json\"");
+        let (scratch, executor, user) =
+            signed_in(Some(r#"{"tokens":{"refresh_token":"old"}}"#), &script);
+        fs::set_permissions(&user, fs::Permissions::from_mode(0o600)).unwrap();
+
+        run_on(&executor, scratch.path());
+
+        assert_eq!(fs::read_to_string(&user).unwrap(), refreshed);
+        let mode = fs::metadata(&user).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the user's auth.json lost its permissions");
+        let left: Vec<_> = fs::read_dir(user.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 1, "the give-back left a file behind");
+    }
+
+    /// A copy the user's own sign-in changed meanwhile, or one that is not a JSON object, does not
+    /// go back.
+    #[cfg(unix)]
+    #[test]
+    fn a_sign_in_goes_back_only_over_what_was_copied() {
+        let refreshed = r#"{"tokens":{"refresh_token":"new"}}"#;
+        let theirs = r#"{"tokens":{"refresh_token":"theirs"}}"#;
+        let script = format!(
+            "printf '%s' '{refreshed}' > \"$CODEX_HOME/auth.json\"\nprintf '%s' '{theirs}' > '{{user}}'"
+        );
+        let (scratch, executor, user) = signed_in(Some("{}"), &script);
+        run_on(&executor, scratch.path());
+        assert_eq!(fs::read_to_string(&user).unwrap(), theirs);
+
+        let (scratch, executor, user) =
+            signed_in(Some("{}"), "printf 'not json' > \"$CODEX_HOME/auth.json\"");
+        run_on(&executor, scratch.path());
+        assert_eq!(fs::read_to_string(&user).unwrap(), "{}");
     }
 }

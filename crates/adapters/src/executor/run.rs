@@ -1,56 +1,78 @@
-//! A run of an executor's agent: its prompt on stdin, which then closes, so no person answers it;
-//! the agent and every process it starts in a process group on Unix and a job object on Windows,
-//! which stopping the run ends, as does the agent's own end.
+//! A run of an executor's agent: its prompt on stdin, which then closes, so no person answers it.
+//! Stopping the run, the agent's own end and dropping the run end every process the agent started
+//! ([`tree`](super::tree)).
 
+use std::fmt;
 use std::fs;
+use std::hash::{BuildHasher, RandomState};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::{self, JoinHandle};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::Outcome;
+use super::tree::{self, Tree};
 
 /// What a stopped run gives as its answer.
 const STOPPED: &str = "stopped before it ended";
 
-/// A running agent of an executor. Dropping it ends the agent with every process it started.
-#[derive(Debug)]
+/// What runs once a run's agent and every process it started have ended.
+pub(crate) type After = Box<dyn FnOnce() + Send>;
+
+/// A running agent of an executor. One thread may [`Run::stop`] it while another waits for it.
+/// Dropping it ends the agent with every process it started.
 pub struct Run {
-    child: Option<Child>,
-    tree: tree::Tree,
-    streams: Option<Streams>,
+    tree: Tree,
+    agent: Mutex<Agent>,
+    /// Taken by the one thread that waits; holds the outcome once the run has ended.
+    ended: Mutex<Option<Outcome>>,
     stopped: AtomicBool,
     outcome: fn(&Output) -> Outcome,
-    /// Removed once the run ends.
-    _scratch: Option<Scratch>,
+}
+
+/// The agent's process, and what lasts while it runs.
+struct Agent {
+    child: Child,
+    /// Whether `child` is reaped: from then on its ID may name another process.
+    reaped: bool,
+    streams: Option<Streams>,
+    after: Option<After>,
 }
 
 /// The threads that write the prompt and read the agent's output.
-#[derive(Debug)]
 struct Streams {
     stdin: JoinHandle<()>,
     stdout: JoinHandle<Vec<u8>>,
     stderr: JoinHandle<Vec<u8>>,
 }
 
+impl fmt::Debug for Run {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Run")
+            .field("tree", &self.tree)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Run {
     /// Starts `command` with `prompt` on its stdin; [`Run::wait`] reads how it ended from its
-    /// output with `outcome`. `scratch` lasts as long as the run.
+    /// output with `outcome`. `after` runs once the agent and every process it started have ended.
     pub(crate) fn start(
         mut command: Command,
         prompt: String,
         outcome: fn(&Output) -> Outcome,
-        scratch: Option<Scratch>,
+        after: Option<After>,
     ) -> io::Result<Run> {
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        tree::prepare(&mut command);
+        let marker = unique("run");
+        tree::prepare(&mut command, &marker);
         let mut child = command.spawn()?;
-        let tree = match tree::Tree::of(&child) {
+        let tree = match Tree::new(&child, &marker) {
             Ok(tree) => tree,
             Err(error) => {
                 let _ = child.kill();
@@ -70,50 +92,90 @@ impl Run {
             stderr: read(child.stderr.take()),
         };
         Ok(Run {
-            child: Some(child),
             tree,
-            streams: Some(streams),
+            agent: Mutex::new(Agent {
+                child,
+                reaped: false,
+                streams: Some(streams),
+                after,
+            }),
+            ended: Mutex::new(None),
             stopped: AtomicBool::new(false),
             outcome,
-            _scratch: scratch,
         })
     }
 
-    /// Ends the agent and every process it started; [`Run::wait`] then gives the run as unfinished.
+    /// Ends the agent and every process it started, unless it has ended; [`Run::wait`] then gives
+    /// the run as unfinished.
     pub fn stop(&self) {
-        self.stopped.store(true, Ordering::SeqCst);
-        self.tree.end();
+        let agent = locked(&self.agent);
+        if !agent.reaped {
+            self.stopped.store(true, Ordering::SeqCst);
+            self.tree.end();
+        }
     }
 
-    /// Waits for the agent to end, ends every process it left, and gives how the run ended.
-    pub fn wait(mut self) -> Outcome {
-        let mut child = self.child.take().expect("a run is waited for once");
-        let status = self.tree.ended(&mut child);
-        let streams = self.streams.take().expect("a run is waited for once");
-        let _ = streams.stdin.join();
-        let stdout = streams.stdout.join().unwrap_or_default();
-        let stderr = streams.stderr.join().unwrap_or_default();
-        if self.stopped.load(Ordering::SeqCst) {
-            return unfinished(STOPPED.to_owned());
+    /// Waits for the agent to end, ends every process it left, and gives how the run ended; the
+    /// same each time once it has.
+    pub fn wait(&self) -> Outcome {
+        let mut ended = locked(&self.ended);
+        if let Some(outcome) = &*ended {
+            return outcome.clone();
         }
-        match status {
+        // Without the agent's lock, so that `stop` works meanwhile; the agent stays unreaped.
+        let exited = self.tree.exited();
+        let (status, streams, after) = {
+            let mut agent = locked(&self.agent);
+            let status = exited.and_then(|()| reap(&self.tree, &mut agent));
+            (status, agent.streams.take(), agent.after.take())
+        };
+        let (stdout, stderr) = match streams {
+            Some(streams) => {
+                let _ = streams.stdin.join();
+                let stdout = streams.stdout.join().unwrap_or_default();
+                (stdout, streams.stderr.join().unwrap_or_default())
+            }
+            None => Default::default(),
+        };
+        if let Some(after) = after {
+            after();
+        }
+        let outcome = match status {
+            _ if self.stopped.load(Ordering::SeqCst) => unfinished(STOPPED.to_owned()),
             Ok(status) => (self.outcome)(&Output {
                 status,
                 stdout,
                 stderr,
             }),
             Err(error) => unfinished(format!("cannot wait for the agent to end: {error}")),
-        }
+        };
+        *ended = Some(outcome.clone());
+        outcome
     }
+}
+
+/// Ends whatever the agent left, then reaps it.
+fn reap(tree: &Tree, agent: &mut Agent) -> io::Result<ExitStatus> {
+    tree.end();
+    let status = agent.child.wait();
+    agent.reaped = true;
+    status
 }
 
 impl Drop for Run {
     fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            self.tree.end();
-            let _ = child.wait();
+        let agent = self.agent.get_mut().unwrap_or_else(PoisonError::into_inner);
+        if !agent.reaped {
+            let _ = reap(&self.tree, agent);
+        }
+        if let Some(after) = agent.after.take() {
+            after();
         }
     }
+}
+
+fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn unfinished(answer: String) -> Outcome {
@@ -134,6 +196,16 @@ fn read(stream: Option<impl Read + Send + 'static>) -> JoinHandle<Vec<u8>> {
     })
 }
 
+/// A name no other of this process's names shares, nor, most likely, another process's: `prefix`,
+/// the process ID, a random number and a count.
+pub(crate) fn unique(prefix: &str) -> String {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let next = NEXT.fetch_add(1, Ordering::Relaxed);
+    // Each `RandomState` has keys of its own, from the OS's random generator.
+    let random = RandomState::new().hash_one(next);
+    format!("{prefix}-{}-{random:016x}-{next}", std::process::id())
+}
+
 /// A directory of a run's own in this process's temporary directory, which only this user opens on
 /// Unix; removed on drop.
 #[derive(Debug)]
@@ -142,14 +214,8 @@ pub(crate) struct Scratch(PathBuf);
 impl Scratch {
     /// A new one whose name starts with `prefix`.
     pub fn new(prefix: &str) -> io::Result<Self> {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let nanos = (SystemTime::now().duration_since(UNIX_EPOCH))
-            .map(|since| since.as_nanos())
-            .unwrap_or_default();
         loop {
-            let next = NEXT.fetch_add(1, Ordering::Relaxed);
-            let name = format!("{prefix}-{}-{nanos:x}-{next}", std::process::id());
-            let path = std::env::temp_dir().join(name);
+            let path = std::env::temp_dir().join(unique(prefix));
             #[cfg(unix)]
             let made = {
                 use std::os::unix::fs::DirBuilderExt as _;
@@ -176,139 +242,10 @@ impl Drop for Scratch {
     }
 }
 
-/// The agent's process group, which it leads: every process it starts joins it unless it leaves.
-#[cfg(unix)]
-mod tree {
-    use std::io;
-    use std::os::unix::process::CommandExt as _;
-    use std::process::{Child, Command, ExitStatus};
-
-    #[derive(Debug)]
-    pub struct Tree(libc::pid_t);
-
-    pub fn prepare(command: &mut Command) {
-        command.process_group(0);
-    }
-
-    impl Tree {
-        pub fn of(child: &Child) -> io::Result<Tree> {
-            let pid = libc::pid_t::try_from(child.id())
-                .map_err(|_| io::Error::other("the agent's process ID does not fit pid_t"))?;
-            Ok(Tree(pid))
-        }
-
-        /// Kills every process of the group. Until the agent is reaped, its ID, and so the
-        /// group's, names no other process.
-        pub fn end(&self) {
-            // SAFETY: kill takes any process group ID; an empty group fails with ESRCH.
-            unsafe {
-                libc::kill(-self.0, libc::SIGKILL);
-            }
-        }
-
-        /// Waits for the agent to exit, kills what is left of its group before reaping it, then
-        /// reaps it.
-        pub fn ended(&self, child: &mut Child) -> io::Result<ExitStatus> {
-            loop {
-                // SAFETY: siginfo_t is plain data that waitid fills.
-                let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-                let options = libc::WEXITED | libc::WNOWAIT;
-                // SAFETY: `info` outlives the call; WNOWAIT leaves the agent to `child.wait`.
-                let waited =
-                    unsafe { libc::waitid(libc::P_PID, self.0 as libc::id_t, &mut info, options) };
-                if waited == 0 {
-                    break;
-                }
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-            }
-            self.end();
-            child.wait()
-        }
-    }
-}
-
-/// A job object that holds the agent and every process it starts, unless one breaks away; closing
-/// it kills what is left.
-#[cfg(windows)]
-mod tree {
-    use std::io;
-    use std::os::windows::io::AsRawHandle as _;
-    use std::process::{Child, Command, ExitStatus};
-    use std::ptr;
-
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-        SetInformationJobObject, TerminateJobObject,
-    };
-
-    #[derive(Debug)]
-    pub struct Tree(HANDLE);
-
-    // SAFETY: a job object's handle may be used and closed from any thread.
-    unsafe impl Send for Tree {}
-    unsafe impl Sync for Tree {}
-
-    pub fn prepare(_command: &mut Command) {}
-
-    impl Tree {
-        pub fn of(child: &Child) -> io::Result<Tree> {
-            // SAFETY: an unnamed job object with the default security.
-            let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
-            if job.is_null() {
-                return Err(io::Error::last_os_error());
-            }
-            let tree = Tree(job);
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `limits` outlives the call and has the size given.
-            let set = unsafe {
-                SetInformationJobObject(
-                    job,
-                    JobObjectExtendedLimitInformation,
-                    (&raw const limits).cast(),
-                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-            };
-            // SAFETY: the child's handle is open while `child` lives.
-            if set == 0 || unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) } == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(tree)
-        }
-
-        /// Kills every process of the job.
-        pub fn end(&self) {
-            // SAFETY: the handle is open until drop.
-            unsafe {
-                TerminateJobObject(self.0, 1);
-            }
-        }
-
-        /// Waits for the agent to exit, then kills what is left of the job.
-        pub fn ended(&self, child: &mut Child) -> io::Result<ExitStatus> {
-            let status = child.wait();
-            self.end();
-            status
-        }
-    }
-
-    impl Drop for Tree {
-        fn drop(&mut self) {
-            // SAFETY: the handle is open and closed only here.
-            unsafe {
-                CloseHandle(self.0);
-            }
-        }
-    }
-}
-
 #[cfg(all(test, unix))]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     use super::*;
@@ -326,20 +263,69 @@ mod tests {
         command
     }
 
+    fn start(script: &str) -> Run {
+        Run::start(shell(script), String::new(), told, None).expect("start the shell")
+    }
+
+    /// Waits for `run` on a thread of its own; fails unless it ends within 30 s.
+    #[track_caller]
+    fn finish(run: Arc<Run>) -> Outcome {
+        let (done, ended) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = done.send(run.wait());
+        });
+        (ended.recv_timeout(Duration::from_secs(30))).expect("the run did not end within 30 s")
+    }
+
+    /// A shell command that starts, in a session of its own, as Codex starts its commands, a
+    /// process that appends to `beat` every 100 ms, and leaves it.
+    fn beating_in_its_own_session(beat: &Path) -> String {
+        let beating = format!(
+            "while :; do printf x >> '{}'; sleep 0.1; done",
+            beat.display()
+        );
+        format!(
+            "perl -MPOSIX -e 'POSIX::setsid() or die; exec \"/bin/sh\", \"-c\", $ARGV[0]' \
+             \"{beating}\" < /dev/null > /dev/null 2>&1 &"
+        )
+    }
+
+    fn size(path: &Path) -> u64 {
+        fs::metadata(path).map_or(0, |meta| meta.len())
+    }
+
+    /// Waits until `beat` has grown to 2 bytes, runs `end`, then fails unless `beat` stays still.
+    #[track_caller]
+    fn assert_end_stops(beat: &Path, end: impl FnOnce()) {
+        let start = Instant::now();
+        while size(beat) < 2 {
+            assert!(start.elapsed() < Duration::from_secs(20), "no beat");
+            thread::sleep(Duration::from_millis(50));
+        }
+        end();
+        thread::sleep(Duration::from_millis(300));
+        let stopped = size(beat);
+        thread::sleep(Duration::from_millis(1000));
+        assert_eq!(
+            size(beat),
+            stopped,
+            "a process the agent started still runs"
+        );
+    }
+
     #[test]
     fn a_run_gets_its_prompt_and_gives_its_outcome() {
         let run = Run::start(shell("cat; exit 3"), "prompt".to_owned(), told, None).unwrap();
+        assert_eq!(run.wait(), unfinished("prompt".to_owned()));
         assert_eq!(run.wait(), unfinished("prompt".to_owned()));
     }
 
     /// A process the agent left behind, holding its output open, does not keep the run waiting.
     #[test]
     fn a_run_ends_what_its_agent_left() {
-        let script = "sleep 60 & echo done";
-        let start = Instant::now();
-        let run = Run::start(shell(script), String::new(), told, None).unwrap();
-        let outcome = run.wait();
-        assert!(start.elapsed() < Duration::from_secs(30), "{outcome:?}");
+        let begun = Instant::now();
+        let outcome = finish(Arc::new(start("sleep 60 & echo done")));
+        assert!(begun.elapsed() < Duration::from_secs(30), "{outcome:?}");
         assert_eq!(
             outcome,
             Outcome {
@@ -349,18 +335,99 @@ mod tests {
         );
     }
 
+    /// Stopping a run ends a process its agent started in a session of its own.
     #[test]
-    fn a_stopped_run_is_unfinished() {
-        let run = Run::start(shell("sleep 60"), String::new(), told, None).unwrap();
+    fn stopping_a_run_ends_a_process_in_a_session_of_its_own() {
+        let scratch = Scratch::new("skald-run-test").unwrap();
+        let beat = scratch.path().join("beat");
+        let script = format!("{}\nsleep 60", beating_in_its_own_session(&beat));
+        let run = Arc::new(start(&script));
+        assert_end_stops(&beat, || {
+            run.stop();
+            assert_eq!(finish(run), unfinished(STOPPED.to_owned()));
+        });
+    }
+
+    /// The agent's end ends a process it started in a session of its own.
+    #[test]
+    fn the_agent_s_end_ends_a_process_in_a_session_of_its_own() {
+        let scratch = Scratch::new("skald-run-test").unwrap();
+        let beat = scratch.path().join("beat");
+        let script = format!(
+            "{}\nwhile [ ! -s '{}' ]; do sleep 0.05; done",
+            beating_in_its_own_session(&beat),
+            beat.display()
+        );
+        let run = Arc::new(start(&script));
+        assert_end_stops(&beat, || assert!(finish(run).finished));
+    }
+
+    /// One thread stops a run while another waits for it.
+    #[test]
+    fn a_run_stops_while_another_thread_waits() {
+        let run = Arc::new(start("sleep 60"));
+        let (done, ended) = mpsc::channel();
+        let waiting = Arc::clone(&run);
+        thread::spawn(move || {
+            let _ = done.send(waiting.wait());
+        });
+        thread::sleep(Duration::from_millis(200));
+        assert!(ended.try_recv().is_err(), "the run ended before the stop");
         run.stop();
-        assert_eq!(run.wait(), unfinished(STOPPED.to_owned()));
+        let outcome = (ended.recv_timeout(Duration::from_secs(30))).expect("the run did not end");
+        assert_eq!(outcome, unfinished(STOPPED.to_owned()));
+    }
+
+    /// A stop once the run has ended changes nothing.
+    #[test]
+    fn a_stop_after_the_end_changes_nothing() {
+        let run = start("echo done");
+        let outcome = run.wait();
+        run.stop();
+        assert_eq!(run.wait(), outcome);
+        assert!(outcome.finished);
     }
 
     #[test]
-    fn a_scratch_lasts_as_long_as_its_run() {
+    fn dropping_a_run_ends_its_agent_and_runs_what_follows() {
+        let scratch = Scratch::new("skald-run-test").unwrap();
+        let pid_file = scratch.path().join("pid");
+        let script = format!("echo $$ > '{}'; exec sleep 60", pid_file.display());
+        let followed = Arc::new(AtomicBool::new(false));
+        let follows = Arc::clone(&followed);
+        let after: After = Box::new(move || follows.store(true, Ordering::SeqCst));
+        let run = Run::start(shell(&script), String::new(), told, Some(after)).unwrap();
+        let begun = Instant::now();
+        while !fs::read_to_string(&pid_file).is_ok_and(|pid| pid.ends_with('\n')) {
+            assert!(
+                begun.elapsed() < Duration::from_secs(20),
+                "the agent did not start"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+        let pid: libc::pid_t = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+
+        drop(run);
+
+        assert!(
+            followed.load(Ordering::SeqCst),
+            "what follows the run did not run"
+        );
+        // SAFETY: signal 0 only checks that the process exists.
+        let alive = unsafe { libc::kill(pid, 0) } == 0;
+        assert!(!alive, "the agent outlived its run");
+    }
+
+    #[test]
+    fn what_follows_a_run_runs_once_it_ends() {
         let scratch = Scratch::new("skald-run-test").unwrap();
         let path = scratch.path().to_owned();
-        let run = Run::start(shell("true"), String::new(), told, Some(scratch)).unwrap();
+        let after: After = Box::new(move || drop(scratch));
+        let run = Run::start(shell("true"), String::new(), told, Some(after)).unwrap();
         assert!(path.is_dir());
         run.wait();
         assert!(!path.exists());

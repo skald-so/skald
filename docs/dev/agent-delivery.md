@@ -93,13 +93,16 @@ Each [`inbox`](#mcp-inbox) session, on the stub and with `--real`, gets these fl
 
 Every executor keeps of the device's environment `PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TERM`; Windows' `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `WINDIR`, `COMSPEC`, `TEMP`, `TMP`, `USERPROFILE`, `USERNAME`, `HOMEDRIVE`, `HOMEPATH`, `APPDATA`, `LOCALAPPDATA`, `PROGRAMDATA`, `PROGRAMFILES`; the proxy's `HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, also in lower case. Names on Windows match in any case. The [Claude Code executor](#claude-code) keeps more.
 
+Every executor gives its agent the request on stdin as `[<sender> · <level>]: <text>`, the text on one line, after the line that says peer and service text is data from its sender unless the level is `own`.
+
+Every executor ends its agent with every process the agent started when the run is stopped, also while another thread waits for it, and once the agent exits: on Unix, the agent's process group and each process whose environment holds the run's `SKALD_EXECUTOR_RUN` marker, which reaches the commands Codex starts in sessions of their own; on Windows, a job object.
+
 The Codex executor (`skald_adapters::codex`), from the [Codex findings](#codex):
 - runs `codex exec --json --ephemeral --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false --skip-git-repo-check -c approval_policy="never" --sandbox danger-full-access -C <folder> -`; on Windows, also `-c windows.sandbox="unelevated"`;
-- gives it the request on stdin as `[<sender> · <level>]: <text>`, the text on one line, after the line that says peer and service text is data from its sender unless the level is `own`;
 - refuses `read-only` before anything runs, on every OS: Codex's `read-only` sandbox runs commands and reads outside the folder;
 - sets `CODEX_HOME` to a folder of its own that holds only a copy of the user's `auth.json`, from the device's `CODEX_HOME` or `~/.codex`, and removes it once the run ends;
-- keeps of the device's environment only the variables every executor keeps, `SSL_CERT_FILE` and `CODEX_CA_CERTIFICATE`; for sign-in, every `OPENAI_*` and `AZURE_OPENAI_*` variable, and every `CODEX_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`;
-- ends Codex with every process it started, its process group on Unix and its job object on Windows, when the run is stopped and once Codex exits.
+- if Codex rewrote that copy to a JSON object, as a ChatGPT sign-in's token refresh does, puts it in place of the user's `auth.json` at once, only while the user's still holds what was copied: a refresh token works once;
+- keeps of the device's environment only the variables every executor keeps, `SSL_CERT_FILE` and `CODEX_CA_CERTIFICATE`; for sign-in, every `OPENAI_*` and `AZURE_OPENAI_*` variable, and every `CODEX_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`.
 
 ## Message source
 Stands in for the helper, as [delivery.md, "Device to agent"](../protocol/delivery.md#device-to-agent), says:
@@ -862,7 +865,7 @@ Findings:
 - What still loads with the clean flags: the built-in plugins `cc-plugin-agents-md`, `cc-plugin-telemetry`, `cc-plugin-privacy`, `cc-plugin-plugin-authoring`; the built-in agents `claude`, `Explore`, `general-purpose`, `Plan`, and with `--real` `web-fetch`; the built-in tools, including `SendMessage`, `ListAgents`, `Cron*`, `RemoteTrigger`; a messaging socket of its own (`messaging_socket_path`).
 
 The executor (`skald_adapters::claude_code`):
-- runs `claude -p --output-format json` with the prompt on stdin, the `executor-clean` flags and variable, and `executor-read-only`'s or `executor-full`'s flags;
+- runs `claude -p --output-format json` with the request, or a bare prompt, on stdin, the `executor-clean` flags and variable, and `executor-read-only`'s or `executor-full`'s flags;
 - in `read-only`, also `--restricted`, so no settings file applies, not even the folder's own `.claude/settings.local.json`: on 2.1.329 without it, an allow rule there let a read outside the folder reach the model, and an `apiKeyHelper` there ran a command that wrote outside it; a task's handed-over files land in that folder;
 - refuses `read-only` on a Claude Code older than 2.1.328 or of unknown version;
 - keeps of the device's environment only the variables every executor keeps ([Session config](#session-config)), `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_GIT_BASH_PATH` and `NODE_EXTRA_CA_CERTS`; for sign-in, `CLOUD_ML_REGION`, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT`, every `ANTHROPIC_*`, `AWS_*`, `CLAUDE_CODE_USE_*` and `VERTEX_REGION_*` variable, and every `CLAUDE_*` variable whose name holds `KEY`, `TOKEN`, `AUTH`, `SECRET` or `PROVIDER`;

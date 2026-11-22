@@ -1,14 +1,12 @@
 //! Claude Code's executor sessions (`docs/protocol/queues.md`, "Running a task"), by the flags the
 //! live checks confirmed (`docs/dev/agent-delivery.md`, "Checks before implementation").
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
 
 use serde_json::Value;
 
-use crate::executor::{self, Device, Mode, Outcome, Refused};
+use crate::executor::{self, Device, Mode, Outcome, Refused, Request, Run};
 
 /// The Claude Code version the live checks of `read-only` ran on: an older one gets no `read-only`.
 pub const CHECKED: [u64; 3] = [2, 1, 328];
@@ -61,29 +59,24 @@ impl Executor {
     /// Runs `prompt` in a new session in `folder` at `mode` and waits for it to end. Refuses
     /// `read-only` on a Claude Code older than [`CHECKED`] or of unknown version.
     pub fn run(&self, folder: &Path, mode: Mode, prompt: &str) -> Result<Outcome, Refused> {
+        Ok(self.started(folder, mode, prompt.to_owned())?.wait())
+    }
+
+    /// Starts `request` in a new session in `folder` at `mode`, refusing `read-only` as
+    /// [`Executor::run`] does.
+    pub fn start(&self, folder: &Path, mode: Mode, request: &Request) -> Result<Run, Refused> {
+        self.started(folder, mode, request.labelled())
+    }
+
+    fn started(&self, folder: &Path, mode: Mode, prompt: String) -> Result<Run, Refused> {
         if mode == Mode::ReadOnly {
             let output = self.command(folder).arg("--version").output();
             let output = output.map_err(|error| self.not_run(error))?;
             read_only_runs_on(&output)?;
         }
-        let mut child = (self.command(folder).args(arguments(mode)))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| self.not_run(error))?;
-        // The prompt goes in on stdin, which then closes: no person answers the session.
-        let stdin = child.stdin.take();
-        let prompt = prompt.to_owned();
-        let writer = thread::spawn(move || {
-            if let Some(mut stdin) = stdin {
-                // A session that ends without reading it closes the pipe.
-                let _ = stdin.write_all(prompt.as_bytes());
-            }
-        });
-        let output = child.wait_with_output();
-        let _ = writer.join();
-        Ok(outcome(&output.map_err(|error| self.not_run(error))?))
+        let mut command = self.command(folder);
+        command.args(arguments(mode));
+        Run::start(command, prompt, outcome, None).map_err(|error| self.not_run(error))
     }
 
     /// Claude Code in `folder` with only the variables of the device's environment it keeps and
@@ -382,5 +375,57 @@ mod tests {
         assert_eq!(ended(0, failed), badly("No."));
         assert_eq!(ended(0, capped), badly(""));
         assert_eq!(ended(1, "not JSON"), badly("it broke"));
+    }
+
+    /// A started session gets the request labelled, and stops when told.
+    #[cfg(unix)]
+    #[test]
+    fn a_started_session_gets_the_labelled_request_and_stops() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::executor::Scratch;
+        use crate::label::DATA_WARNING;
+
+        let scratch = Scratch::new("skald-claude-test").unwrap();
+        let prompt = scratch.path().join("prompt");
+        let claude = scratch.path().join("claude");
+        let script = format!(
+            "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\
+             \"is_error\":false,\"result\":\"Done.\"}}'\n[ \"$CLAUDE_CODE_USE_LINGER\" ] && sleep 60\nexit 0\n",
+            prompt.display()
+        );
+        fs::write(&claude, script).unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        let request = Request {
+            from: "acme/bob/ci@skald.example".parse().unwrap(),
+            level: skald_proto::TrustLevel::Peer,
+            text: "Review it.".to_owned(),
+        };
+        let executor = Executor::new(&claude).environment([("PATH", "/usr/bin:/bin")]);
+
+        let run = executor
+            .start(scratch.path(), Mode::Full, &request)
+            .unwrap();
+        assert_eq!(
+            run.wait(),
+            Outcome {
+                answer: "Done.".to_owned(),
+                finished: true
+            }
+        );
+        let given = fs::read_to_string(&prompt).unwrap();
+        assert_eq!(
+            given,
+            format!("{DATA_WARNING}\n[bob/ci · peer]: Review it.")
+        );
+
+        let lingering = Executor::new(&claude)
+            .environment([("PATH", "/usr/bin:/bin"), ("CLAUDE_CODE_USE_LINGER", "1")]);
+        let run = lingering
+            .start(scratch.path(), Mode::Full, &request)
+            .unwrap();
+        run.stop();
+        assert!(!run.wait().finished);
     }
 }

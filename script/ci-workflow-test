@@ -22,10 +22,10 @@
 //     web/kit-diff/ and site/references-diff/, after their tests fail;
 //   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
 //     checkout keeps no credentials, and a job's token reads contents at most.
-// And the job that runs the client's tests on Windows:
-//   - one job of a PR into dev runs `cargo test -p skald-client --locked --no-fail-fast` on a
-//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
-//     client, none left out;
+// And the job that runs the client's and the adapters' tests on Windows:
+//   - one job of a PR into dev runs `cargo test -p skald-client -p skald-adapters --locked
+//     --no-fail-fast` on a windows-2025 runner, in a step that may run and whose failure fails the
+//     job: every test of the client and the adapters, none left out;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
 //   - it is gated like the job that runs script/test's workspace part: it needs the job of
@@ -415,14 +415,15 @@ if (testStep.if !== undefined) fail(`the test step of job ${key} has a condition
 const tests = commands(testStep.run).filter((line) => cargoTest(line));
 if (tests.length !== 1) fail(`the test step of job ${key} runs cargo test ${tests.length} times, not once`);
 const args = cargoTest(tests[0] ?? '') ?? [];
-if (args.join(' ') !== '-p skald-client --locked --no-fail-fast') {
-  fail(`job ${key} runs cargo test ${args.join(' ')}, not cargo test -p skald-client --locked --no-fail-fast: every test of the client, from the lockfile`);
+const command = 'cargo test -p skald-client -p skald-adapters --locked --no-fail-fast';
+if (`cargo test ${args.join(' ')}` !== command) {
+  fail(`job ${key} runs cargo test ${args.join(' ')}, not ${command}: every test of the client and the adapters, from the lockfile`);
 }
 const last = commands(testStep.run)
   .map((line) => line.trim())
   .filter((line) => line !== '' && !line.startsWith('#'))
   .at(-1);
-if (last !== 'cargo test -p skald-client --locked --no-fail-fast') {
+if (last !== command) {
   fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo test: its exit code is the step's last command's, so a failing test would not fail the step`);
 }
 // A custom shell, {0} for the script, decides the exit code itself.
