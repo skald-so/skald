@@ -258,8 +258,8 @@ enum Command {
     /// A device that issues its own certificate, as the account's first or with the recovery key,
     /// first signs its key with an SSH key GitHub lists for the GitHub user, through OpenSSH's
     /// ssh-keygen 8.1 or later, so that other devices check it there and show the GitHub login.
-    /// Unless run by its person at a terminal, it uses no encrypted key file, so nothing asks for a
-    /// passphrase. Without a key, ssh-keygen or GitHub, it says why and goes on without one.
+    /// Unless run by its person at a terminal, only a key ssh-agent holds signs, so nothing asks for
+    /// a passphrase. Without a key, ssh-keygen or GitHub, it says why and goes on without one.
     ///
     /// With --browser, as its person or as an agent, it shows its person a local page it opens in
     /// the browser instead: the sign-in link, the link codes or the recovery key. Its output holds

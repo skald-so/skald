@@ -17,7 +17,7 @@ fn a_device_linked_with_the_recovery_key_signs_its_key_too() {
     let api = Api::start();
     let first = machine(ADA_HOST, &api.url());
     let identity = (ADA_GITHUB, ADA_LOGIN);
-    let (person, key, _) = sign_up_at_terminal(&world, identity, (first, ADA_HOST), false);
+    let (person, key, _) = sign_up_at_terminal(&world, identity, (first, ADA_HOST), (false, &[]));
     let ada = Ada {
         person,
         key: key.expect("the recovery key"),

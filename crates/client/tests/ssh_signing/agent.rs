@@ -123,7 +123,7 @@ fn as_an_agent_a_key_ssh_agent_holds_signs_and_an_encrypted_key_file_is_not_used
     let file = setup.key.clone();
     let (setup, held) = holding(&agent, setup, &[&file]);
 
-    let signed = setup.sign_up_at_terminal(true);
+    let signed = setup.sign_up_at_terminal(true, &[]);
 
     signed.assert_signed((ADA_GITHUB, ADA_LOGIN), &held, &[&file]);
     assert_asks_nothing(&signed.shown);

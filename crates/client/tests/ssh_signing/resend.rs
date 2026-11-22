@@ -1,12 +1,15 @@
 //! The signature goes to the local state with the certificate before it is sent: a run killed
 //! after that leaves the next run the same certificate to send.
 
+use std::thread;
+use std::time::{Duration, Instant};
+
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_proto::Cbor as _;
 
-use crate::browser::APPROVE;
-use crate::cloud::{GIVE_MASTER, shown_grant};
+use crate::at_terminal::first_at_terminal;
+use crate::cloud::{GIVE_MASTER, WAIT};
 use crate::machine::{SERVER, SIGN_IN};
 use crate::relay::Lose;
 use crate::{ADA_GITHUB, ADA_LOGIN, Kind, Setup, assert_signed_by};
@@ -20,8 +23,8 @@ fn count(haystack: &[u8], needle: &[u8]) -> usize {
 }
 
 /// A listed ECDSA key in Ada's SSH directory, whose signatures differ each time it signs. The relay
-/// withholds the server's answer to her first machine's master key and certificate, and the run is
-/// killed. With the key's files gone, the next run sends the certificate again, the same bytes,
+/// withholds the server's answer to her first machine's master key and certificate, and the run at
+/// her terminal is killed. With the key's files gone, the next run sends the certificate again, the same bytes,
 /// which carry the signature by that key, and the server holds that one certificate.
 #[test]
 fn killed_after_writing_its_certificate_the_next_run_sends_the_same_one() {
@@ -33,11 +36,17 @@ fn killed_after_writing_its_certificate_the_next_run_sends_the_same_one() {
     let since = cloud.relay.mark();
     cloud.relay.lose_answer(GIVE_MASTER, Lose::Withhold);
 
-    let before = cloud.grants().len();
-    let mut run = machine.start(&[SIGN_IN, SERVER, cloud.url.as_str()]);
-    let grant = shown_grant(cloud, &mut run, before);
-    cloud.decide(&world.browser.page(), &user, &grant, APPROVE);
-    cloud.kill_once_lost(run, GIVE_MASTER);
+    let run = first_at_terminal(cloud, &world.browser.page(), machine, &user, &[]);
+    let deadline = Instant::now() + WAIT;
+    while cloud.relay.lost() == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "no {GIVE_MASTER}: {}",
+            run.shown()
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+    run.kill();
     assert_eq!(
         cloud.relay.lost(),
         1,

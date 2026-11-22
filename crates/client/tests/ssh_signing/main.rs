@@ -80,8 +80,9 @@ use skald_crypto::{SshCheck, check_ssh_signature};
 use skald_github_stand_in::{App, GitHub, SshKeys, User};
 use skald_proto::{Cert, DeviceId};
 
-use at_terminal::{as_agent, first_at_terminal, shown_key};
+use at_terminal::{approve, as_agent, shown_key};
 use machine::{Finished, Machine};
+use terminal::Terminal;
 use world::{ACME, Person, World, create_with_member, words};
 
 /// The hidden setting of the GitHub API's address.
@@ -184,8 +185,31 @@ pub fn with_ssh_keygen(machine: Machine) -> Machine {
         let dir = tool.parent().expect("ssh-keygen's directory");
         let path =
             std::env::join_paths([machine.root().join("bin"), dir.to_path_buf()]).expect("a PATH");
-        machine.with_env("PATH", path)
+        windows_system()
+            .into_iter()
+            .fold(machine.with_env("PATH", path), |machine, (name, value)| {
+                machine.with_env(name, value)
+            })
     }
+}
+
+/// The settings of the machine running the tests that Windows sets in every session and its
+/// OpenSSH needs, such as `ProgramData`, where it keeps its configuration; none names a home.
+#[cfg(windows)]
+pub fn windows_system() -> Vec<(&'static str, OsString)> {
+    const NAMES: [&str; 8] = [
+        "SystemRoot",
+        "SystemDrive",
+        "windir",
+        "ProgramData",
+        "ALLUSERSPROFILE",
+        "ProgramFiles",
+        "COMPUTERNAME",
+        "USERNAME",
+    ];
+    (NAMES.into_iter())
+        .filter_map(|name| Some((name, std::env::var_os(name)?)))
+        .collect()
 }
 
 /// The OpenSSH program `name` of the machine running the tests: on its `PATH`, or where its system
@@ -216,9 +240,7 @@ pub fn openssh(name: &str) -> Command {
     let mut command = Command::new(openssh_tool(name));
     command.env_clear();
     #[cfg(windows)]
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        command.env("SystemRoot", root);
-    }
+    command.envs(windows_system());
     command
 }
 
@@ -357,12 +379,15 @@ pub fn sign_up_at_terminal(
     world: &World,
     (id, login): (u64, &str),
     (machine, host): (Machine, &'static str),
-    agent: bool,
+    (agent, extra): (bool, &[&str]),
 ) -> (Person, Option<String>, String) {
     let user = world.cloud.user(id, login);
     let page = world.browser.page();
     let before = if agent { as_agent(&[]) } else { Vec::new() };
-    let mut run = first_at_terminal(&world.cloud, &page, &machine, &user, &before);
+    let args = [&before[..], &at_terminal::sign_in(&world.cloud, extra)[..]].concat();
+    let grants = world.cloud.grants().len();
+    let mut run = Terminal::start(&machine, &args);
+    approve(&world.cloud, &page, &user, &mut run, grants);
     let key = (!agent).then(|| shown_key(&mut run));
     if key.is_some() {
         run.enter();
@@ -444,12 +469,13 @@ impl Setup {
         }
     }
 
-    /// Ada signs up on the machine at a terminal, as [`sign_up_at_terminal`] does.
+    /// Ada signs up on the machine at a terminal, with the options `extra`, as
+    /// [`sign_up_at_terminal`] does.
     #[track_caller]
-    pub fn sign_up_at_terminal(self, agent: bool) -> Signed {
+    pub fn sign_up_at_terminal(self, agent: bool, extra: &[&str]) -> Signed {
         let identity = (ADA_GITHUB, ADA_LOGIN);
         let machine = (self.machine, ADA_HOST);
-        let (ada, _, shown) = sign_up_at_terminal(&self.world, identity, machine, agent);
+        let (ada, _, shown) = sign_up_at_terminal(&self.world, identity, machine, (agent, extra));
         Signed {
             world: self.world,
             api: self.api,

@@ -5,10 +5,11 @@
 //! sign-in method, or the one `--github` names; the device takes its ID and SSH keys from GitHub's
 //! API ([`crate::ssh_checks`]). It signs with the key `--ssh-key` names, or with a listed key that
 //! ssh-agent holds or whose private key file is in the person's SSH directory with its public key,
-//! `<file>.pub`, beside it. Unless the run is its person's at a terminal, nothing asks for a
-//! passphrase: an encrypted key file is not used. Without a signature, the certificate goes without
-//! `ssh`, the run says why, and the sign-in goes on.
+//! `<file>.pub`, beside it. Unless the run is its person's at a terminal, only ssh-agent signs: no
+//! key file is used, and nothing asks for a passphrase. Without a signature, the certificate goes
+//! without `ssh`, the run says why, and the sign-in goes on.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -22,12 +23,17 @@ use skald_crypto::{SshCheck, check_ssh_signature};
 use skald_proto::{CertBody, SSH_LABEL, SSH_NAMESPACE, signed_data};
 
 use crate::connection::{Connection, printable};
-use crate::person;
 use crate::ssh_checks::{self, ByLogin};
+use crate::{page, person};
 
 /// The armor of an SSH signature `ssh-keygen -Y sign` writes.
 const BEGIN: &str = "-----BEGIN SSH SIGNATURE-----";
 const END: &str = "-----END SSH SIGNATURE-----";
+
+/// The file of the data `ssh-keygen` signs at the person's terminal, and the file of the signature
+/// it writes beside it.
+const DATA: &str = "data";
+const SIGNATURE: &str = "data.sig";
 
 /// How a device that issues its own certificate signs its key.
 #[derive(Clone, Debug, Default)]
@@ -38,7 +44,8 @@ pub struct Options {
     pub off: bool,
     /// The GitHub user `--github` names, in place of the account's GitHub sign-in method's.
     pub github: Option<String>,
-    /// Whether `ssh-keygen` may ask for a passphrase: the run is its person's at a terminal.
+    /// Whether the run is its person's at a terminal: only then may key files sign, `ssh-keygen`
+    /// asking there for a passphrase.
     pub may_ask: bool,
 }
 
@@ -77,8 +84,8 @@ impl Options {
         token: &str,
         body: &mut CertBody,
     ) -> Result<(String, String), String> {
-        let program =
-            program("ssh-keygen").ok_or("ssh-keygen of OpenSSH 8.1 or later is not on the PATH")?;
+        let program = page::program(Path::new("ssh-keygen"))
+            .ok_or("ssh-keygen of OpenSSH 8.1 or later is not on the PATH")?;
         let login = match &self.github {
             Some(login) => login.clone(),
             None => connection
@@ -103,21 +110,32 @@ impl Options {
         };
         let login = user.login;
         let listed: Vec<&str> = user.keys.iter().map(String::as_str).collect();
-        // The key named, or the listed keys ssh-agent holds, then the listed key files.
-        let held = (self.key.is_none() && agent_reachable())
-            .then(|| Held::write(&listed).ok())
-            .flatten();
-        let candidates: Vec<PathBuf> = match &self.key {
-            Some(file) => vec![file.clone()],
-            None => (held.iter().flat_map(Held::files))
-                .chain(
-                    ssh_dir().map_or_else(Vec::new, |dir| key_files(&dir, &listed, self.may_ask)),
-                )
-                .collect(),
+        // At the person's terminal, the key named, or the listed keys ssh-agent holds, then the
+        // listed key files; otherwise the listed keys ssh-agent holds, of the key named if any.
+        let agent_keys: Vec<&str> = match (&self.key, self.may_ask) {
+            (Some(_), true) => Vec::new(),
+            (Some(file), false) => {
+                let public = fs::read_to_string(public_file(file)).unwrap_or_default();
+                (listed.iter().copied())
+                    .filter(|line| blob(&public).is_some_and(|key| blob(line) == Some(key)))
+                    .collect()
+            }
+            (None, _) => listed.clone(),
         };
-        let signer = Signer {
+        let held = (!agent_keys.is_empty() && agent_reachable())
+            .then(|| Held::write(&agent_keys).ok())
+            .flatten();
+        let held = held.iter().flat_map(Held::files);
+        let candidates: Vec<PathBuf> = match (&self.key, self.may_ask) {
+            (Some(file), true) => vec![file.clone()],
+            (None, true) => held
+                .chain(ssh_dir().map_or_else(Vec::new, |dir| key_files(&dir, &listed)))
+                .collect(),
+            (_, false) => held.collect(),
+        };
+        let signer = Signer::new(
             program,
-            data: signed_data(
+            signed_data(
                 SSH_LABEL,
                 &[
                     body.account.as_bytes(),
@@ -125,8 +143,9 @@ impl Options {
                     &body.signing,
                 ],
             ),
-            may_ask: self.may_ask,
-        };
+            self.may_ask,
+        )
+        .map_err(|err| format!("cannot write a temporary file: {err}"))?;
         body.github = Some(user.id);
         let fingerprint = candidates.iter().find_map(|file| {
             body.ssh = Some(signer.sign(file)?);
@@ -135,48 +154,89 @@ impl Options {
                 _ => None,
             }
         });
-        let fingerprint = fingerprint.ok_or_else(|| match &self.key {
-            Some(file) => format!(
-                "{} did not sign, or is not a key GitHub lists for {login}",
-                printable(&file.display().to_string())
-            ),
-            None => format!(
-                "no SSH key GitHub lists for {login} is in ssh-agent or{} in the SSH directory",
-                if self.may_ask { "" } else { ", unencrypted," }
-            ),
+        let fingerprint = fingerprint.ok_or_else(|| {
+            let file = (self.key.as_ref()).map(|file| printable(&file.display().to_string()));
+            match (file, self.may_ask) {
+                (Some(file), true) => {
+                    format!("{file} did not sign, or is not a key GitHub lists for {login}")
+                }
+                (Some(file), false) => format!(
+                    "ssh-agent holds no key of {file} that GitHub lists for {login}; without its \
+                     person at a terminal, only ssh-agent signs"
+                ),
+                (None, true) => format!(
+                    "no SSH key GitHub lists for {login} is in ssh-agent or in the SSH directory"
+                ),
+                (None, false) => format!(
+                    "no SSH key GitHub lists for {login} is in ssh-agent; without its person at a \
+                     terminal, only ssh-agent signs"
+                ),
+            }
         })?;
         Ok((fingerprint, login))
     }
 }
 
-/// `ssh-keygen -Y sign` over `data`, by the program at `program`; a passphrase only if `may_ask`.
+/// `ssh-keygen -Y sign` over `data`, by the program at `program`: at the person's terminal, over a
+/// file in a directory of its own, `ssh-keygen` taking the terminal as its standard input and error
+/// to ask for a passphrase or a security key's touch, as git runs it; otherwise over its standard
+/// input, asking nothing.
 struct Signer {
     program: PathBuf,
     data: Vec<u8>,
-    may_ask: bool,
+    /// At the person's terminal, the directory of the data's file.
+    at_terminal: Option<Scratch>,
 }
 
 impl Signer {
+    /// A signer at the person's terminal if `at_terminal`.
+    fn new(program: PathBuf, data: Vec<u8>, at_terminal: bool) -> io::Result<Self> {
+        let at_terminal = at_terminal.then(Scratch::new).transpose()?;
+        if let Some(scratch) = &at_terminal {
+            fs::write(scratch.join(DATA), &data)?;
+        }
+        Ok(Signer {
+            program,
+            data,
+            at_terminal,
+        })
+    }
+
     /// The signature, in its binary form, by the key of the private key file `key`, or of the
     /// public key file `key` whose private key ssh-agent holds; `None` if `ssh-keygen` gives none.
     fn sign(&self, key: &Path) -> Option<Vec<u8>> {
         let mut command = Command::new(&self.program);
         command
             .args(["-Y", "sign", "-n", SSH_NAMESPACE, "-f"])
-            .arg(key)
+            .arg(key);
+        let Some(scratch) = &self.at_terminal else {
+            return self.sign_input(command);
+        };
+        let signature = scratch.join(SIGNATURE);
+        let _ = fs::remove_file(&signature);
+        // It reads the terminal, not the thread reading its person's lines.
+        let _held_off = person::hold_off();
+        let status = (command.arg(scratch.join(DATA)))
+            .stdout(Stdio::null())
+            .status()
+            .ok()?;
+        status
+            .success()
+            .then(|| fs::read(&signature).ok())
+            .flatten()
+            .and_then(|text| armored(&text))
+    }
+
+    /// [`Signer::sign`] over the standard input of `command`, with an empty passphrase, so that it
+    /// asks for none, there or through a program.
+    fn sign_input(&self, mut command: Command) -> Option<Vec<u8>> {
+        command
+            .args(["-P", ""])
+            .env_remove("SSH_ASKPASS")
+            .env_remove("SSH_ASKPASS_REQUIRE")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        if !self.may_ask {
-            // An empty passphrase, so that it asks for none, there or through a program.
-            command
-                .args(["-P", ""])
-                .env_remove("SSH_ASKPASS")
-                .env_remove("SSH_ASKPASS_REQUIRE");
-        }
-        // At the person's terminal, it reads the passphrase there, not the thread reading its
-        // person's lines.
-        let _held_off = self.may_ask.then(person::hold_off);
         let mut child = command.spawn().ok()?;
         let written = (child.stdin.take()).map(|mut stdin| stdin.write_all(&self.data));
         let output = child.wait_with_output().ok()?;
@@ -186,23 +246,38 @@ impl Signer {
     }
 }
 
+/// A directory of the command's own in the system's temporary directory, removed on drop.
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new() -> io::Result<Self> {
+        let dir = std::env::temp_dir().join(format!("skald-ssh-{}", page::random_name()?));
+        fs::create_dir(&dir)?;
+        Ok(Scratch(dir))
+    }
+
+    fn join(&self, name: &str) -> PathBuf {
+        self.0.join(name)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
 /// Each of a list of public key lines in a file of its own, with no private key beside it, in a
-/// directory of its own in the system's temporary directory, removed on drop: `ssh-keygen` signs
-/// with such a key only if ssh-agent holds it.
+/// directory of its own: `ssh-keygen` signs with such a key only if ssh-agent holds it.
 struct Held {
-    dir: PathBuf,
+    dir: Scratch,
     count: usize,
 }
 
 impl Held {
     fn write(listed: &[&str]) -> io::Result<Self> {
-        let mut name = [0; 8];
-        getrandom::fill(&mut name).map_err(io::Error::other)?;
-        let name: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
-        let dir = std::env::temp_dir().join(format!("skald-ssh-{name}"));
-        fs::create_dir(&dir)?;
         let held = Held {
-            dir,
+            dir: Scratch::new()?,
             count: listed.len(),
         };
         for (at, line) in listed.iter().enumerate() {
@@ -212,7 +287,7 @@ impl Held {
     }
 
     fn file(&self, at: usize) -> PathBuf {
-        self.dir.join(format!("{at}.pub"))
+        self.dir.join(&format!("{at}.pub"))
     }
 
     /// The files, in the list's order.
@@ -221,22 +296,11 @@ impl Held {
     }
 }
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// The program `name` on the `PATH`.
-fn program(name: &str) -> Option<PathBuf> {
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_owned()
-    };
-    std::env::split_paths(&std::env::var_os("PATH")?)
-        .map(|dir| dir.join(&file))
-        .find(|path| path.is_file())
+/// The public key file of the private key file `file`: `<file>.pub`.
+fn public_file(file: &Path) -> PathBuf {
+    let mut name = OsString::from(file.as_os_str());
+    name.push(".pub");
+    PathBuf::from(name)
 }
 
 /// Whether ssh-agent may be reached: on Windows, its service always may; elsewhere, through
@@ -252,9 +316,8 @@ fn ssh_dir() -> Option<PathBuf> {
 }
 
 /// The private key files in `dir` whose public key, `<file>.pub` beside each, is one of `listed`,
-/// public key lines, by name; security keys only if `may_ask`, as they may ask for a touch or a
-/// PIN.
-fn key_files(dir: &Path, listed: &[&str], may_ask: bool) -> Vec<PathBuf> {
+/// public key lines, by name. Only those public key files are read.
+fn key_files(dir: &Path, listed: &[&str]) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -262,13 +325,15 @@ fn key_files(dir: &Path, listed: &[&str], may_ask: bool) -> Vec<PathBuf> {
         .filter_map(|entry| {
             let public = entry.path();
             let private = public.with_extension("");
+            if public.extension()? != "pub" || !private.is_file() {
+                return None;
+            }
             let text = fs::read_to_string(&public).ok()?;
             let key = blob(&text)?;
-            let usable = public.extension()? == "pub"
-                && private.is_file()
-                && listed.iter().any(|line| blob(line) == Some(key))
-                && (may_ask || !key.0.starts_with("sk-"));
-            usable.then_some(private)
+            listed
+                .iter()
+                .any(|line| blob(line) == Some(key))
+                .then_some(private)
         })
         .collect();
     files.sort();
@@ -332,8 +397,7 @@ mod tests {
         assert_eq!(armored(format!("{BEGIN}\n!!\n{END}").as_bytes()), None);
     }
 
-    /// Only private key files whose `.pub` beside them is listed count, in order of name; security
-    /// keys only where something may ask.
+    /// Only private key files whose `.pub` beside them is listed count, in order of name.
     #[test]
     fn key_files_are_those_whose_listed_public_key_is_beside_them() {
         let dir = TestDir::new("ssh-signing-key-files");
@@ -356,12 +420,36 @@ mod tests {
         fs::write(dir.join("config"), ED25519).unwrap();
         let listed = [ED25519, sk];
 
-        let names = |may_ask| -> Vec<PathBuf> { key_files(&dir, &listed, may_ask) };
+        let expected: Vec<PathBuf> = ["a_listed", "b_listed", "security"]
+            .iter()
+            .map(|name| dir.join(name))
+            .collect();
+        assert_eq!(key_files(&dir, &listed), expected);
+        assert!(key_files(&dir.join("missing"), &listed).is_empty());
+    }
 
-        let expected =
-            |names: &[&str]| -> Vec<PathBuf> { names.iter().map(|name| dir.join(name)).collect() };
-        assert_eq!(names(false), expected(&["a_listed", "b_listed"]));
-        assert_eq!(names(true), expected(&["a_listed", "b_listed", "security"]));
-        assert!(key_files(&dir.join("missing"), &listed, true).is_empty());
+    /// No file but a public key file with a private key file beside it is read: not a FIFO, which
+    /// a read waits on until something writes to it.
+    #[cfg(unix)]
+    #[test]
+    fn key_files_read_no_other_file() {
+        use std::os::unix::ffi::OsStrExt as _;
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let dir = TestDir::new("ssh-signing-other-files");
+        for name in ["id_ed25519", "lone.pub"] {
+            let path = std::ffi::CString::new(dir.join(name).as_os_str().as_bytes()).unwrap();
+            // SAFETY: a NUL-terminated path, for the time of the call.
+            assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        }
+        let path = dir.to_path_buf();
+        let (found, files) = mpsc::channel();
+        thread::spawn(move || found.send(key_files(&path, &[ED25519])));
+
+        let files = files.recv_timeout(Duration::from_secs(10));
+
+        assert_eq!(files, Ok(Vec::new()));
     }
 }

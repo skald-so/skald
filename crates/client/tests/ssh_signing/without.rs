@@ -4,9 +4,11 @@
 use skald_github_stand_in::Fault;
 use skald_proto::Cert;
 
-use crate::browser::Browser;
+use crate::at_terminal::{self, shown_key};
+use crate::browser::{APPROVE, Browser};
 use crate::cloud::{Cloud, Providers};
-use crate::machine::Finished;
+use crate::grants::shown_grant;
+use crate::terminal::Terminal;
 use crate::world::World;
 use crate::{
     ADA_GITHUB, ADA_LOGIN, Api, GITHUB, Kind, Setup, assert_says_signed, assert_says_unsigned,
@@ -63,31 +65,46 @@ const DAVE: (&str, &str, &str) = (
 
 /// The person `(subject, email, host)` signs a new machine on `host`, with `ssh-keygen` and a key
 /// in the person's SSH directory, in with Google as the first device of a new account, with the
-/// options `extra`; fails unless the run succeeds. Gives the key, what the run printed and the
+/// options `extra`, at the person's terminal if `at_terminal`, pressing Enter once it shows the
+/// recovery key; fails unless the run succeeds. Gives the key, what the run printed and the
 /// device's certificate.
 #[track_caller]
 fn sign_up_with_google(
     (world, api): (&World, &Api),
     (subject, email, host): (&str, &str, &str),
-    extra: &[&str],
-) -> (crate::SshKey, Finished, Cert) {
+    (extra, at_terminal): (&[&str], bool),
+) -> (crate::SshKey, String, Cert) {
     let cloud = &world.cloud;
     let machine = with_ssh_keygen(machine(host, &api.url()));
     let key = new_key(&ssh_dir(&machine).join("id_ed25519"), Kind::Ed25519, "");
     api.list((ADA_GITHUB, ADA_LOGIN), &[&key], &[]);
     let person = cloud.person(subject, email);
-    let signed_in = cloud.signed_in_with_google(&world.browser.page(), &machine, &person, extra);
-    assert!(signed_in.success, "the sign-in failed: {signed_in:?}");
+    let page = world.browser.page();
+    let shown = if at_terminal {
+        let before = cloud.grants().len();
+        let mut run = Terminal::start(&machine, &at_terminal::sign_in(cloud, extra));
+        let grant = shown_grant(cloud, &mut run, before);
+        cloud.decide_with_google(&page, &person, &grant, APPROVE);
+        shown_key(&mut run);
+        run.enter();
+        let shown = run.finish();
+        assert!(shown.success, "the sign-in failed: {shown:?}");
+        shown.text
+    } else {
+        let signed_in = cloud.signed_in_with_google(&page, &machine, &person, extra);
+        assert!(signed_in.success, "the sign-in failed: {signed_in:?}");
+        signed_in.shown()
+    };
     let devices = cloud.devices(&cloud.last_token());
     assert_eq!(devices.len(), 1, "the account's devices: {devices:?}");
     let cert = devices[0].cert.clone().expect("the device's certificate");
-    (key, signed_in, cert)
+    (key, shown, cert)
 }
 
 /// On a server with Google sign-in only, Carol's account has no GitHub sign-in method: with a key
 /// in her SSH directory that GitHub lists for a GitHub user, her certificate goes without `ssh`,
 /// the run says no GitHub user is known, and the sign-in succeeds. Dave, with the same setup and
-/// the option naming that GitHub user, signs with his key.
+/// the option naming that GitHub user, at his terminal, signs with his key.
 #[test]
 fn without_a_github_sign_in_method_only_the_option_naming_a_github_user_signs() {
     let world = World {
@@ -96,11 +113,12 @@ fn without_a_github_sign_in_method_only_the_option_naming_a_github_user_signs() 
     };
     let api = Api::start();
 
-    let (_, signed_in, cert) = sign_up_with_google((&world, &api), CAROL, &[]);
+    let (_, shown, cert) = sign_up_with_google((&world, &api), CAROL, (&[], false));
     assert_unsigned(&cert);
-    assert_says_unsigned(&signed_in.shown(), "GitHub");
+    assert_says_unsigned(&shown, "GitHub");
 
-    let (key, signed_in, cert) = sign_up_with_google((&world, &api), DAVE, &[GITHUB, ADA_LOGIN]);
+    let named = [GITHUB, ADA_LOGIN];
+    let (key, shown, cert) = sign_up_with_google((&world, &api), DAVE, (&named, true));
     assert_signed_by(&cert, ADA_GITHUB, &key, &[]);
-    assert_says_signed(&signed_in.shown(), &key, ADA_LOGIN);
+    assert_says_signed(&shown, &key, ADA_LOGIN);
 }

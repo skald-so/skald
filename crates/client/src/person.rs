@@ -209,15 +209,45 @@ fn input_waits(timeout: Duration) -> bool {
     polled != 0
 }
 
-/// Whether the standard input has input waiting, or its end or an error, within `timeout`.
+/// Whether the standard input has a line waiting, or its end or an error, within `timeout`. On a
+/// console, a line waits once its input records hold a press of Enter: any record, such as a key's
+/// release or a change of focus, signals the console, and reading a line then would block and take
+/// the next line typed, even one another program asks for.
 #[cfg(windows)]
 fn input_waits(timeout: Duration) -> bool {
     use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
-    use windows_sys::Win32::System::Console::{GetStdHandle, STD_INPUT_HANDLE};
+    use windows_sys::Win32::System::Console::{
+        GetConsoleMode, GetNumberOfConsoleInputEvents, GetStdHandle, INPUT_RECORD, KEY_EVENT,
+        PeekConsoleInputW, STD_INPUT_HANDLE,
+    };
     use windows_sys::Win32::System::Threading::WaitForSingleObject;
     let timeout = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-    // SAFETY: the process's standard input handle, which it does not close.
-    unsafe { WaitForSingleObject(GetStdHandle(STD_INPUT_HANDLE), timeout) != WAIT_TIMEOUT }
+    // SAFETY: the process's standard input handle, which it does not close; the records peeked
+    // fit the buffer, and a key event's record is read as one.
+    unsafe {
+        let input = GetStdHandle(STD_INPUT_HANDLE);
+        if WaitForSingleObject(input, timeout) == WAIT_TIMEOUT {
+            return false;
+        }
+        let mut mode = 0;
+        let mut count = 0;
+        if GetConsoleMode(input, &raw mut mode) == 0
+            || GetNumberOfConsoleInputEvents(input, &raw mut count) == 0
+        {
+            return true;
+        }
+        let mut records = vec![INPUT_RECORD::default(); count as usize];
+        let mut peeked = 0;
+        if PeekConsoleInputW(input, records.as_mut_ptr(), count, &raw mut peeked) == 0 {
+            return true;
+        }
+        records.iter().take(peeked as usize).any(|record| {
+            u32::from(record.EventType) == KEY_EVENT && {
+                let key = record.Event.KeyEvent;
+                key.bKeyDown != 0 && key.uChar.UnicodeChar == u16::from(b'\r')
+            }
+        })
+    }
 }
 
 /// Forgets the lines its person entered so far, if a thread reads them.
