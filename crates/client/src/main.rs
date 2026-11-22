@@ -31,16 +31,19 @@ mod admin;
 mod agents;
 mod anchors;
 mod channels;
+mod claims;
 #[cfg(unix)]
 mod claude_relay;
 mod claude_socket;
 mod clock;
+mod codex;
 mod connection;
 mod copies;
 mod delivery;
 mod device;
 mod devices;
 mod events;
+mod fingerprints;
 mod folders;
 mod follow;
 mod forms;
@@ -87,6 +90,7 @@ mod set_username;
 mod sign_in;
 mod sign_out;
 mod spaces;
+mod ssh_checks;
 mod state;
 mod stateless;
 mod tasks;
@@ -111,7 +115,7 @@ use clap::{Parser, Subcommand};
 use connection::{Connection, TIMEOUT};
 use person::Person;
 use serde::{Deserialize, Serialize};
-use skald_proto::{DeviceId, VersionRange};
+use skald_proto::{DeviceId, Name, VersionRange};
 use spaces::Scope;
 
 /// Message broker and task queue for AI agents.
@@ -206,6 +210,18 @@ struct Cli {
         hide = true
     )]
     websocket_retry: Option<NonZeroU64>,
+
+    /// The base URL of GitHub's REST API, for tests: skald update takes releases from it, and
+    /// commands check devices' SSH signatures against it.
+    #[arg(
+        long,
+        env = "SKALD_GITHUB_API_URL",
+        value_name = "URL",
+        global = true,
+        hide = true,
+        default_value = update::GITHUB_API_URL
+    )]
+    github_api_url: String,
 
     #[command(subcommand)]
     command: Command,
@@ -355,6 +371,23 @@ enum Command {
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
     },
+    /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
+    /// Compare it with the one the other person's device shows, in person or on a call. Run by its
+    /// person at a terminal for a member, it then asks whether they match, and a yes marks the
+    /// account verified on this device, as skald members shows; a later change of its master key
+    /// warns and ends that. As an agent or through a pipe, it marks nothing.
+    Fingerprint {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true, requires = "handle")]
+        space: Option<String>,
+        /// The member's handle, as skald members shows it.
+        #[arg(value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: Option<String>,
+    },
+    /// A step of skald fingerprint around its person's answer, which skald fingerprint hands to
+    /// the helper.
+    #[command(skip)]
+    FingerprintStep { step: fingerprints::Step },
     /// Adds a channel to a space this device follows, on a device of an admin of it: the device
     /// signs the space's next roster revision with the channel, its account the channel's member.
     /// It first accepts the revisions the server has; when another revision comes first, it signs
@@ -712,6 +745,67 @@ enum Command {
         #[arg(value_name = "TASK")]
         task: String,
     },
+    /// Claims one task from a queue of a channel, by default the default queue of the default
+    /// channel of the working directory's space; as an agent, only in the space of the agent's
+    /// folder. It first accepts the space's latest roster revisions and goes through the mailbox
+    /// as skald send does, then claims a task of the trust level own without a template. Runs a
+    /// task only once its checks pass: one for another device or agent, or whose sender's trust
+    /// level or template the claim did not state, it hands back; one that fails another check it
+    /// fails without retry, with a warning. Extends the claim at once with started, then shows the
+    /// task in one line with its #<ref>, as skald recv shows a message; with no task, says so in
+    /// one line.
+    Claim {
+        /// The channel's ID, as skald channels shows it [default: the default channel of the
+        /// working directory's space].
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The queue's name.
+        #[arg(long, value_name = "NAME", default_value = queues::DEFAULT)]
+        queue: String,
+        /// Shows the task as a JSON object, with every field: task, ref, space, channel, queue,
+        /// queue_name, from, to, device, device_name, level, text, hops, claim_id, generation,
+        /// attempt and lease.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extends the claim of a task this device holds, as an agent only its own in the space of its
+    /// folder, for one more lease, stating its progress. Fails, saying the claim is lost, once
+    /// another device may hold the task: the server answered claim-lost, or the lease passed on
+    /// this device's clock without an answered extend.
+    Extend {
+        /// The task's progress.
+        #[arg(long, value_enum, default_value = "started")]
+        progress: claims::Progress,
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+    },
+    /// Completes a task this device holds a claim of, as an agent only its own in the space of its
+    /// folder, then sends its result, with the text, to the task's sender. Fails, saying the claim
+    /// is lost, as skald extend does; no result is sent then. The local state keeps the complete
+    /// before its request: a run that ends before the server answers it or before the result is
+    /// sent leaves them to the next skald recv, which sends the result once.
+    Complete {
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+        /// The text of the result.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+    },
+    /// Fails a task this device holds a claim of, as skald complete completes it; with --retry,
+    /// the queue hands the task out again while its attempts last.
+    Fail {
+        /// The queue may hand the task out again.
+        #[arg(long)]
+        retry: bool,
+        /// The task's #<ref>, as skald claim shows it, or its ID.
+        #[arg(value_name = "TASK", allow_hyphen_values = true)]
+        task: String,
+        /// The text of the result: why it failed.
+        #[arg(value_name = "TEXT", allow_hyphen_values = true)]
+        text: String,
+    },
     /// Replies to a message, in its channel, to its sender, a person included: as skald send
     /// sends, with the message's ID as its reply_to; as with --to, the reply is handed only to its
     /// sender, but it is not private: every member of the channel gets it. The person replies to a
@@ -970,17 +1064,7 @@ enum Command {
     /// with it. A beta or an older release is never installed; a skald installed from npm is left
     /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
     /// rate limit.
-    Update {
-        /// The base URL of GitHub's REST API, for tests.
-        #[arg(
-            long,
-            env = "SKALD_GITHUB_API_URL",
-            value_name = "URL",
-            hide = true,
-            default_value = update::GITHUB_API_URL
-        )]
-        github_api_url: String,
-    },
+    Update,
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
     /// its config; the session's folder is the working directory. Once the client initializes or
     /// discovers the server, the session registers as its agent in the folder's space: the messages
@@ -1006,20 +1090,24 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// SessionStart, SessionEnd, PostToolUse and Stop. It reads the hook input on standard input
-    /// and runs in its folder, as the agent --agent names or, without it, the agent the session's
-    /// skald mcp registers by default. SessionStart registers the session with the helper, which
-    /// writes the agent's messages into the session's cross-session socket as they come, and
-    /// SessionEnd ends that. PostToolUse and Stop give the agent's waiting messages to the session
-    /// as additional context, each once, within the CLI's hook output limit, 10,000 characters: a
-    /// message from the person's own devices as its line, as skald recv shows it; for those from
-    /// others, only a line that tells the agent to call inbox, or their lines under inline. Both
-    /// follow the delivery settings, skald delivery-modes. A message longer than the limit is
-    /// cut, and skald recv #<ref> shows it whole. Stop continues the turn with them, up to the
-    /// CLI's cap of continuations in a row. It prints nothing while nothing waits, and on a
-    /// failure, which exits with 1. A message the socket, a channel event of skald mcp, the
-    /// --wait hook or the mod took, which the session does not confirm within 30 seconds, or
-    /// SKALD_RESEND_AFTER seconds, goes by the next of them, then by these hooks and inbox.
+    /// SessionStart, SessionEnd, PostToolUse and Stop; Codex's SessionStart, PostToolUse,
+    /// UserPromptSubmit and Stop. It reads the hook input on standard input and runs in its
+    /// folder, as the agent --agent names or, without it, the agent the session's skald mcp
+    /// registers by default. SessionStart registers the session with the helper, starting one if
+    /// none runs. On Claude Code, the helper writes the agent's messages into the session's
+    /// cross-session socket as they come, and SessionEnd ends that; PostToolUse and Stop give the
+    /// agent's waiting messages to the session as additional context, each once, within the CLI's
+    /// hook output limit, 10,000 characters: a message from the person's own devices as its line,
+    /// as skald recv shows it; for those from others, only a line that tells the agent to call
+    /// inbox, or their lines under inline. Both follow the delivery settings, skald
+    /// delivery-modes. A message longer than the limit is cut, and skald recv #<ref> shows it
+    /// whole. Stop continues the turn with them, up to the CLI's cap of continuations in a row. A
+    /// message the socket, a channel event of skald mcp, the --wait hook or the mod took, which
+    /// the session does not confirm within 30 seconds, or SKALD_RESEND_AFTER seconds, goes by the
+    /// next of them, then by these hooks and inbox. On Codex, every message goes in only as that
+    /// line, once for the new ones, to the session whose hook ran last, and the hooks never wait
+    /// on the network. It prints nothing while nothing waits, and on a failure, which exits with
+    /// 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -1049,8 +1137,8 @@ enum Command {
     /// device, such as skald send or skald recv, starts in the background. While it runs, it holds
     /// the device's connection and the local state's lock, and each command that changes the local
     /// state goes through it, and each skald recv --wait waits through it. Only this OS account
-    /// reaches it. It exits after an idle time with no command, wait or registered Claude Code
-    /// session, on sign-out, and for a command of a newer skald.
+    /// reaches it. It exits after an idle time with no command, wait, registered Claude Code
+    /// session or live Codex session, on sign-out, and for a command of a newer skald.
     Helper {
         /// How long it waits idle before it exits, in seconds, for tests [default: 600].
         #[arg(long, env = "SKALD_HELPER_IDLE", value_name = "SECONDS", hide = true)]
@@ -1093,6 +1181,7 @@ impl Command {
             Command::SetDeliveryText { .. } => Some("set-delivery-text"),
             Command::DeliveryModes { .. } => Some("delivery-modes"),
             Command::Held | Command::HeldStep { .. } => Some("held"),
+            Command::FingerprintStep { .. } => Some("fingerprint"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
             _ => None,
         }
@@ -1112,6 +1201,10 @@ impl Command {
                 | Command::Tasks { .. }
                 | Command::RestartTask { .. }
                 | Command::CancelTask { .. }
+                | Command::Claim { .. }
+                | Command::Extend { .. }
+                | Command::Complete { .. }
+                | Command::Fail { .. }
                 | Command::Reply { .. }
                 | Command::MessageStatus { .. }
                 | Command::Recv { .. }
@@ -1119,6 +1212,7 @@ impl Command {
                 | Command::Agents { .. }
                 | Command::Spaces
                 | Command::Members { .. }
+                | Command::Fingerprint { space: Some(_), .. }
                 | Command::Channels { .. }
                 | Command::CreateSpace { .. }
                 | Command::CreateChannel { .. }
@@ -1142,6 +1236,9 @@ impl Command {
                     | Command::RevokeDevice { .. }
                     | Command::SetUsername { .. }
                     | Command::History { .. }
+                    | Command::FingerprintStep {
+                        step: fingerprints::Step::Sync { .. }
+                    }
             )
     }
 
@@ -1188,7 +1285,7 @@ impl Command {
             | Command::InboundModes
             | Command::DeliveryModes { .. }
             | Command::Folder { .. }
-            | Command::Update { .. }
+            | Command::Update
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
@@ -1300,6 +1397,7 @@ fn main() -> ExitCode {
         state_dir: cli.state_dir,
         key_storage: cli.key_storage,
         agent: cli.agent,
+        github_api: cli.github_api_url,
         command: cli.command,
         said: link_prompt::Said::default(),
     };
@@ -1333,13 +1431,26 @@ fn main() -> ExitCode {
         return link(operation, !one_shot, browser);
     }
     if let Command::Hook { cli, mods, .. } = operation.command {
-        return match mods {
-            true => mod_poll(operation, one_shot),
-            false => run_hook(operation, cli, one_shot),
+        return match (mods, cli) {
+            (true, _) => mod_poll(operation, one_shot),
+            (false, hook::Cli::Claude) => run_hook(operation, cli, one_shot, None),
+            (false, hook::Cli::Codex) => {
+                patiently(move |gate| run_hook(operation, cli, one_shot, Some(gate)))
+            }
         };
     }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
+    }
+    if let Command::Fingerprint {
+        space: Some(space),
+        handle: Some(handle),
+    } = &operation.command
+        && operation.agent.is_none()
+        && link_code::at_terminal()
+    {
+        let (space, handle) = (space.clone(), handle.clone());
+        return fingerprint(operation, !one_shot, &space, &handle);
     }
     let Some(create) = operation.command.locks() else {
         return exit(here(operation));
@@ -1367,19 +1478,25 @@ fn routed(route: Result<helper::Route, String>, operation: Operation) -> ExitCod
     }
 }
 
-/// Runs `operation` as a service agent's run ([`service`]): only `skald send` and `skald recv`, as
-/// no agent, in this process, without a helper, holding the lock of the state directory, which it
-/// creates if it is missing. Without a state directory the run is stateless: it takes no lock and
-/// does not wait.
+/// Runs `operation` as a service agent's run ([`service`]): only `skald send`, `skald recv` and the
+/// commands of tasks a member runs ([`claims`]), as no agent, in this process, without a helper,
+/// holding the lock of the state directory, which it creates if it is missing. Without a state
+/// directory the run is stateless: it takes no lock and does not wait.
 fn as_service(operation: Operation) -> ExitCode {
     if !matches!(
         operation.command,
-        Command::Send { .. } | Command::Recv { .. }
+        Command::Send { .. }
+            | Command::Recv { .. }
+            | Command::Claim { .. }
+            | Command::Extend { .. }
+            | Command::Complete { .. }
+            | Command::Fail { .. }
     ) || operation.agent.is_some()
     {
         return exit(Err(format!(
             "with {} and {} set, skald runs as the service agent of the key secret, which only \
-             sends and receives: skald send and skald recv, without --agent",
+             sends and receives, and as a member runs tasks: skald send, skald recv, skald claim, \
+             skald extend, skald complete and skald fail, without --agent",
             service::KEY_VARIABLE,
             service::TOKEN_VARIABLE
         )));
@@ -1465,10 +1582,16 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 }
 
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
-/// folder, through the helper that runs, or one it starts unless `one_shot`, or here. Prints only
-/// what the run gives the session, and exits with 1 on a failure; 2 only as the `asyncRewake`
-/// hook ([`rewake`]).
-fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCode {
+/// folder, through the helper that runs, or one it starts unless `one_shot`, or here; a Codex hook
+/// runs here ([`codex_here`]). Prints only what the run gives the session, unless `gate` says the
+/// hook no longer waits for it, and exits with 1 on a failure; 2 only as the `asyncRewake` hook
+/// ([`rewake`]).
+fn run_hook(
+    mut operation: Operation,
+    cli: hook::Cli,
+    one_shot: bool,
+    gate: Option<Gate>,
+) -> ExitCode {
     let wait = match operation.command {
         Command::Hook { wait, .. } => wait,
         _ => None,
@@ -1477,14 +1600,19 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
     };
-    let waits_on = matches!(
-        input.event,
-        Some(hook::Event::SessionStart | hook::Event::Stop { .. })
-    );
-    if input.event.is_none() || (wait.is_some() && !waits_on) {
+    let Some(event) = input.event.filter(|event| cli.handles(*event)) else {
+        return ExitCode::SUCCESS;
+    };
+    let waits_on = matches!(event, hook::Event::SessionStart | hook::Event::Stop { .. });
+    if wait.is_some() && !waits_on {
         return ExitCode::SUCCESS;
     }
-    if input.event == Some(hook::Event::SessionStart) {
+    if cli == hook::Cli::Codex {
+        input.session.home = std::env::var_os(hook::CODEX_HOME)
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
+        input.session.process = codex::parent();
+    } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
         input.session.token =
@@ -1500,6 +1628,15 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     if !dir.join(state::FILE).is_file() {
         return ExitCode::SUCCESS;
     }
+    // A Codex session starts the helper only in a folder in a space; its other hooks start none.
+    let starts = !one_shot
+        && match cli {
+            hook::Cli::Claude => true,
+            hook::Cli::Codex => {
+                event == hook::Event::SessionStart
+                    && output::into(|_, _| Ok(()), || folders::working_space(&dir).is_ok())
+            }
+        };
     operation.command = Command::Hook {
         cli,
         input: Some(input),
@@ -1510,25 +1647,28 @@ fn run_hook(mut operation: Operation, cli: hook::Cli, one_shot: bool) -> ExitCod
     if let Some(seconds) = wait {
         return rewake(operation, &dir, Duration::from_secs(seconds), one_shot);
     }
-    given_only(operation, &dir, one_shot)
+    if cli == hook::Cli::Codex && state::current(&dir) {
+        return codex_here(operation, &dir, starts, gate);
+    }
+    hooked(operation, &dir, starts, gate)
 }
 
-/// Runs the hook's `operation` by the state in `dir`, through the helper that runs, or one it
-/// starts unless `one_shot`, or here: only the run's output goes to the agent CLI; what else it
-/// says, such as its error, does not. Exits with 1 on a failure.
-fn given_only(operation: Operation, dir: &Path, one_shot: bool) -> ExitCode {
-    let given = |stream, bytes: &[u8]| match stream {
-        output::Stream::Out => output::direct(stream, bytes),
-        output::Stream::Err => Ok(()),
+/// Runs `operation`, a hook's, by the state in `dir` through the helper that runs, or one it
+/// starts if `starts`, or here, printing what [`given`] lets through; exits with 1 on a failure.
+fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
+    let failed = |code| match code == ExitCode::SUCCESS {
+        true => code,
+        false => ExitCode::FAILURE,
     };
-    match helper::route_into(dir, &operation, (false, !one_shot, false), &mut { given }) {
-        Ok(helper::Route::Helped(code)) if code == ExitCode::SUCCESS => code,
-        Ok(helper::Route::Helped(_)) | Err(_) => ExitCode::FAILURE,
+    let mut sink = given(gate.clone());
+    match helper::route_into(dir, &operation, (false, starts, false), &mut sink) {
+        Ok(helper::Route::Helped(code)) => failed(code),
         // Held until the run exits.
-        Ok(helper::Route::Here(_lock)) => match output::into(given, || here(operation)) {
+        Ok(helper::Route::Here(_lock)) => match output::into(given(gate), || here(operation)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(_) => ExitCode::FAILURE,
         },
+        Err(_) => ExitCode::FAILURE,
     }
 }
 
@@ -1607,7 +1747,70 @@ fn mod_poll(mut operation: Operation, one_shot: bool) -> ExitCode {
         return ExitCode::SUCCESS;
     };
     operation.agent = Some(agent);
-    given_only(operation, &dir, one_shot)
+    hooked(operation, &dir, !one_shot, None)
+}
+
+/// Runs `operation`, a Codex hook's, here by the state in `dir`, which has this client's schema,
+/// without the lock, so it never waits behind a run that holds it on the network: it only reads
+/// and writes the local state, whose WAL checkpoint waits for it. Then starts the helper, without
+/// waiting for it, if `starts`. Prints what [`given`] lets through; exits with 1 on a failure.
+fn codex_here(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) -> ExitCode {
+    let timeout = operation.timeout;
+    let ran = output::into(given(gate), || here(operation));
+    if starts {
+        helper::start(dir, timeout);
+    }
+    match ran {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(_) => ExitCode::FAILURE,
+    }
+}
+
+/// What a hook's run gives the agent CLI: its output, unless `gate` says the hook no longer waits
+/// for it; not what else it says, such as its error.
+fn given(gate: Option<Gate>) -> impl FnMut(output::Stream, &[u8]) -> std::io::Result<()> + Clone {
+    move |stream, bytes: &[u8]| match (stream, &gate) {
+        (output::Stream::Err, _) => Ok(()),
+        (output::Stream::Out, None) => output::direct(stream, bytes),
+        (output::Stream::Out, Some(gate)) => {
+            let waits = gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match *waits {
+                true => output::direct(stream, bytes),
+                false => Err(std::io::Error::other("the hook no longer waits")),
+            }
+        }
+    }
+}
+
+/// Whether a hook still waits for its run's output.
+type Gate = std::sync::Arc<std::sync::Mutex<bool>>;
+
+/// Runs `run`, the whole of a Codex hook, its input's read included, on a thread of its own and
+/// waits for it at most [`codex::PATIENCE`], or as [`codex::PATIENCE_SETTING`] sets; then the run
+/// writes nothing more, and the hook exits
+/// with success, having printed what it wrote.
+fn patiently(run: impl FnOnce(Gate) -> ExitCode + Send + 'static) -> ExitCode {
+    let gate: Gate = std::sync::Arc::new(std::sync::Mutex::new(true));
+    let (done, finished) = std::sync::mpsc::channel();
+    let given = std::sync::Arc::clone(&gate);
+    std::thread::spawn(move || {
+        let _ = done.send(run(given));
+    });
+    let patience = (std::env::var(codex::PATIENCE_SETTING).ok())
+        .and_then(|seconds| seconds.trim().parse().ok())
+        .map_or(codex::PATIENCE, Duration::from_secs);
+    match finished.recv_timeout(patience) {
+        Ok(code) => code,
+        Err(_) => {
+            // A write under way ends first.
+            *gate
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = false;
+            ExitCode::SUCCESS
+        }
+    }
 }
 
 /// `skald held` as `operation` says ([`held::run`]): each step goes through the helper that runs,
@@ -1623,6 +1826,22 @@ fn held(operation: Operation, starts: bool) -> ExitCode {
     let mut starts = starts;
     held::run(&dir, |step| {
         let operation = operation.step(Command::HeldStep { step });
+        let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
+        routed(route, operation)
+    })
+}
+
+/// `skald fingerprint <space> <handle>` as `operation` says, by its person at a terminal
+/// ([`fingerprints::run`]): each step goes through the helper that runs, or one it starts if
+/// `starts`; otherwise it runs here, holding the lock for the step.
+fn fingerprint(operation: Operation, starts: bool, space: &str, handle: &str) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let mut starts = starts;
+    fingerprints::run(&dir, space, handle, |step| {
+        let operation = operation.step(Command::FingerprintStep { step });
         let route = helper::route(&dir, &operation, false, std::mem::take(&mut starts));
         routed(route, operation)
     })
@@ -1645,11 +1864,19 @@ struct Operation {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     agent: Option<String>,
+    /// The base URL of GitHub's REST API.
+    #[serde(default = "github_api")]
+    github_api: String,
     command: Command,
     /// The devices waiting for linking its runs said ([`link_prompt`]): a `skald recv --wait`
     /// runs `skald recv` again and again, and says each once.
     #[serde(skip)]
     said: link_prompt::Said,
+}
+
+/// The base URL of GitHub's REST API by default.
+fn github_api() -> String {
+    update::GITHUB_API_URL.to_owned()
 }
 
 impl Operation {
@@ -1662,6 +1889,7 @@ impl Operation {
             state_dir: self.state_dir.clone(),
             key_storage: self.key_storage,
             agent: None,
+            github_api: self.github_api.clone(),
             command,
             said: link_prompt::Said::default(),
         }
@@ -1689,9 +1917,17 @@ impl Operation {
 /// helper does. Out of the helper, a run as an agent then checks the device's presence
 /// ([`uploads::keep`]), but an MCP server's own: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
+    // A Codex hook never waits on the network.
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
-        && !matches!(operation.command, Command::Mcp { call: None, .. });
+        && !matches!(
+            operation.command,
+            Command::Mcp { call: None, .. }
+                | Command::Hook {
+                    cli: hook::Cli::Codex,
+                    ..
+                }
+        );
     let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
     let ran = performed(operation);
@@ -1705,11 +1941,13 @@ fn perform(operation: Operation) -> Result<(), String> {
 fn performed(operation: Operation) -> Result<(), String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
+    ssh_checks::set(&operation.github_api, operation.timeout);
     let Operation {
         speaks,
         timeout,
         state_dir,
         key_storage,
+        github_api,
         command,
         said,
         ..
@@ -1734,6 +1972,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                     | Command::Queues { json: true, .. }
                     | Command::Enqueue { json: true, .. }
                     | Command::Tasks { json: true, .. }
+                    | Command::Claim { json: true, .. }
             );
             link_prompt::show(&dir, key_storage, (speaks, timeout), json, &said);
         }
@@ -1744,6 +1983,9 @@ fn performed(operation: Operation) -> Result<(), String> {
                 | Command::Helper { .. }
                 | Command::LinkStep { .. }
                 | Command::HeldStep { .. }
+                | Command::FingerprintStep {
+                    step: fingerprints::Step::Verify { .. }
+                }
                 | Command::Mcp { .. }
         ) {
             recovery::say_if_waiting(&dir);
@@ -1844,6 +2086,23 @@ fn performed(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(spaces::members),
+        Command::Fingerprint { space: None, .. } => {
+            state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
+        }
+        Command::Fingerprint {
+            space: Some(space),
+            handle,
+        } => synced(
+            state_dir,
+            key_storage,
+            speaks,
+            timeout,
+            &space,
+            agent.is_some(),
+        )
+        .and_then(|synced| fingerprints::show(&synced, handle.as_deref().unwrap_or_default())),
+        Command::FingerprintStep { step } => state::dir(state_dir)
+            .and_then(|dir| fingerprints::step(&dir, key_storage, (speaks, timeout), step)),
         Command::CreateChannel { space } => synced(
             state_dir,
             key_storage,
@@ -2041,6 +2300,36 @@ fn performed(operation: Operation) -> Result<(), String> {
             (key_storage, (speaks, timeout)),
             (channel, task),
         ),
+        Command::Claim {
+            channel,
+            queue,
+            json,
+        } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (channel.as_deref(), agent.is_some()),
+            |run| claims::claim(run, &queue, agent.as_ref(), json),
+        ),
+        Command::Extend { progress, task } => queue_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (None, agent.is_some()),
+            |run| claims::extend(run, &task, progress, agent.as_ref()),
+        ),
+        Command::Complete { task, text } => end_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (&task, &text),
+            claims::Ending::Complete,
+            agent.as_ref(),
+        ),
+        Command::Fail { retry, task, text } => end_command(
+            state_dir,
+            (key_storage, (speaks, timeout)),
+            (&task, &text),
+            claims::Ending::Fail(retry),
+            agent.as_ref(),
+        ),
         Command::Reply {
             message,
             text,
@@ -2081,17 +2370,24 @@ fn performed(operation: Operation) -> Result<(), String> {
             // Without the helper, no path gives the mod its prompt.
             resend::mod_poll(&dir, &agent, false)
         }
-        Command::Hook { input, .. } => {
+        Command::Hook { cli, input, .. } => {
             let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
                 return Err("skald hook runs only as itself".to_owned());
             };
             let Some(event) = input.event else {
                 return Ok(());
             };
+            let client = match cli {
+                hook::Cli::Claude => hook::CLAUDE_CODE,
+                hook::Cli::Codex => hook::CODEX,
+            };
             // Without --agent, the agent the session's skald mcp registers by default.
-            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, hook::CLAUDE_CODE)) else {
+            let Some(agent) = agent.or_else(|| mcp::default_agent(&dir, client)) else {
                 return Ok(());
             };
+            if cli == hook::Cli::Codex {
+                return codex::hook(&dir, &agent, (event, &input.session));
+            }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
                 hook::Event::SessionEnd => claude_socket::end(&dir, &agent, &input.session),
@@ -2183,7 +2479,7 @@ fn performed(operation: Operation) -> Result<(), String> {
                     })
                 })
             }),
-        Command::Update { github_api_url } => update::run(&github_api_url, timeout),
+        Command::Update => update::run(&github_api, timeout),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),
@@ -2197,6 +2493,7 @@ fn performed(operation: Operation) -> Result<(), String> {
 fn received(operation: &Operation) -> Result<bool, String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
+    ssh_checks::set(&operation.github_api, operation.timeout);
     let dir = state::dir(operation.state_dir.clone())?;
     let settings = (operation.speaks, operation.timeout);
     let shown = recv::run(
@@ -2253,6 +2550,23 @@ impl tasks::Change {
             |run| tasks::change(run, &task, self),
         )
     }
+}
+
+/// Ends the claim of `task` with `text` as `ending` says ([`claims::end`]), on the state in
+/// `state_dir`, its secrets in `storage`, with `settings`, as `agent` if given.
+fn end_command(
+    state_dir: Option<PathBuf>,
+    (storage, settings): (secrets::Storage, (VersionRange, Duration)),
+    (task, text): (&str, &str),
+    ending: claims::Ending,
+    agent: Option<&Name>,
+) -> Result<(), String> {
+    queue_command(
+        state_dir,
+        (storage, settings),
+        (None, agent.is_some()),
+        |run| claims::end(run, (task, text), ending, agent),
+    )
 }
 
 /// The space named `space`, synced, by the state in `state_dir`, its secrets in `storage`; for an

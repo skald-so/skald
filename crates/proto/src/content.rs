@@ -111,7 +111,7 @@ pub struct Attachment {
 const A2A: u64 = 6;
 const RECEIPT: u64 = 9;
 pub(crate) const TASK: u64 = 11;
-const TASK_RESULT: u64 = 12;
+pub(crate) const TASK_RESULT: u64 = 12;
 const ASK: u64 = 13;
 const ASK_ANSWER: u64 = 14;
 const BODIES: [u64; 6] = [A2A, RECEIPT, TASK, TASK_RESULT, ASK, ASK_ANSWER];

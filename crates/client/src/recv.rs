@@ -8,7 +8,8 @@
 //! then goes through the Welcomes, Commits and `mls` application messages it wrote, decrypting
 //! each message in its channel's group, and brings the group of each channel of those spaces in
 //! line ([`crate::groups`]), uploading the links of their key chains the server lacks
-//! ([`crate::key_chain`]). It then shows the other entries it
+//! ([`crate::key_chain`]), and repeats the completes and fails of claims that wait, sending their
+//! results ([`crate::claims`]). It then shows the other entries it
 //! wrote: a `message` only if it passes the checks of `docs/protocol/README.md`, "Envelope",
 //! "Scheme `mls`" and "Scheme `hpke`", with the space's latest revisions accepted
 //! first, the sending device's certificate valid and the channel's members taken from its group:
@@ -64,6 +65,7 @@ use skald_proto::{
 };
 
 use crate::agents::server_name;
+use crate::claims;
 use crate::claude_socket;
 use crate::connection::printable;
 use crate::delivery;
@@ -391,6 +393,8 @@ fn received(
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
+    // Completes and fails that wait, and their results, go out before what the run shows.
+    claims::finish_waiting(&mut follower, scope, &synced);
     let mut checks = Checks::new(&follower, synced);
     let shown = match checks.as_mut() {
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
@@ -1192,9 +1196,7 @@ fn hand_over_hook(
         for position in &given.statuses {
             state.status_taken_by_agent(*position).map_err(text)?;
         }
-        for seq in &given.signalled {
-            state.signal_given(*seq, agent.as_str()).map_err(text)?;
-        }
+        (state.signals_given(&given.signalled, agent.as_str())).map_err(text)?;
         let woken: BTreeSet<String> = (given.handed.iter().chain(&given.signalled))
             .filter_map(|seq| channels.get(seq).cloned().flatten())
             .collect();

@@ -362,6 +362,26 @@ pub struct ClaudeSession {
     pub file: PathBuf,
 }
 
+/// A Codex session a hook registered ([`crate::codex`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexSession {
+    /// Its thread, Codex's session ID.
+    pub thread: String,
+    pub space: SpaceId,
+    pub agent: String,
+    /// The agent's folder, where the session runs.
+    pub folder: PathBuf,
+    /// Its session file and config home, if its hooks gave them.
+    pub file: Option<PathBuf>,
+    pub home: Option<PathBuf>,
+    /// The ID of the Codex process that runs it, if known.
+    pub process: Option<u32>,
+    /// Whether a turn of it runs: from a hook of the turn until the `Stop` that ends it.
+    pub busy: bool,
+    /// The place of its last hook's run in the order of the sessions' hooks.
+    pub hooked: u64,
+}
+
 /// A kept message that waits for the person's decision for the agent `agent`, by its entry's
 /// `seq`, with its space, when the device took it in, in Unix seconds, and its sealed line.
 #[derive(Debug, Clone, PartialEq)]
@@ -454,6 +474,22 @@ pub struct TaskOutgoing {
     pub record: Vec<u8>,
 }
 
+/// A claim the device holds ([`crate::claims`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskClaim {
+    pub task: TaskId,
+    pub space: SpaceId,
+    pub channel: ChannelId,
+    pub queue: QueueId,
+    /// The agent that holds it; none for the person.
+    pub agent: Option<String>,
+    /// When the device sent the last request the server answered that started its lease, in Unix
+    /// seconds by its clock.
+    pub since: u64,
+    /// The rest of it, sealed under the state key.
+    pub sealed: Vec<u8>,
+}
+
 /// What a step on the MLS state writes with the state it saves, in the same transaction.
 #[derive(Debug, Default)]
 pub struct MlsChanges {
@@ -500,6 +536,8 @@ pub struct MlsChanges {
     /// Where the channel messages of [`MlsChanges::messages`] go, which the device keeps until
     /// their wait ends.
     pub tracked: Vec<Tracked>,
+    /// The tasks whose claims end: their results are in [`MlsChanges::messages`].
+    pub ended: Vec<TaskId>,
 }
 
 /// Where a channel message of the device's own goes: the devices it goes to, and how long the
@@ -573,6 +611,7 @@ impl MlsChanges {
             && self.own.is_empty()
             && self.recovered.is_empty()
             && self.tracked.is_empty()
+            && self.ended.is_empty()
     }
 }
 
@@ -639,6 +678,13 @@ impl State {
         db.pragma_update(None, "temp_store", "memory")?;
         migrate(&mut db)?;
         Ok(State { db })
+    }
+
+    /// A transaction that takes the write lock as it begins, waiting for another writer up to the
+    /// busy timeout. A deferred one that reads before it writes fails at once if another
+    /// connection wrote meanwhile, as a Codex hook does without the lock.
+    fn write(&self) -> Result<Transaction<'_>, rusqlite::Error> {
+        Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)
     }
 
     /// The session, if the machine has one.
@@ -835,7 +881,7 @@ impl State {
         };
         let (master, cert) = pinned.unzip();
         let (record, backup) = sealed.unzip();
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         match link {
             Link::Granted { master, cert, link } => tx.execute(
                 "INSERT OR REPLACE INTO link_grant (id, master, cert, link) VALUES (1, ?1, ?2, ?3)",
@@ -1050,6 +1096,12 @@ impl State {
             for tracked in &changes.tracked {
                 add_tracked(&tx, tracked)?;
             }
+            for task in &changes.ended {
+                tx.execute(
+                    "DELETE FROM task_claim WHERE task = ?1",
+                    params![task.to_string()],
+                )?;
+            }
             Ok(())
         };
         save().map_err(failed)?;
@@ -1129,6 +1181,36 @@ impl State {
              ON CONFLICT (account) DO UPDATE SET record = excluded.record",
             params![account.to_string(), record],
         )?;
+        Ok(())
+    }
+
+    /// Whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn verified(&self, account: AccountId, master: &[u8; 32]) -> Result<bool, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT 1 FROM verified_account WHERE account = ?1 AND master = ?2",
+                params![account.to_string(), master.as_slice()],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Records whether the person verified `account` by fingerprint for the master key `master`.
+    pub fn set_verified(
+        &self,
+        account: AccountId,
+        master: &[u8; 32],
+        verified: bool,
+    ) -> Result<(), Error> {
+        let sql = if verified {
+            "INSERT INTO verified_account (account, master) VALUES (?1, ?2) ON CONFLICT DO NOTHING"
+        } else {
+            "DELETE FROM verified_account WHERE account = ?1 AND master = ?2"
+        };
+        self.db
+            .execute(sql, params![account.to_string(), master.as_slice()])?;
         Ok(())
     }
 
@@ -1355,7 +1437,7 @@ impl State {
 
     /// Forgets the space `id`.
     pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let id = id.to_string();
         tx.execute(
             "DELETE FROM accepted_revision WHERE space = ?1",
@@ -1370,7 +1452,7 @@ impl State {
     /// hashes of the earlier ones, read in one transaction, so another run's accepting is in both
     /// or in neither.
     pub fn accepted(&self, id: SpaceId) -> Result<Option<Accepted>, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let id = id.to_string();
         let Some(last) = tx
             .query_row(
@@ -1412,7 +1494,7 @@ impl State {
         hashes: &[(u64, [u8; 32])],
         last: &[u8],
     ) -> Result<bool, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let id = id.to_string();
         let changed = tx.execute(
             "UPDATE space SET accepted = ?3 WHERE space = ?1 AND accepted = ?2",
@@ -1452,7 +1534,7 @@ impl State {
     /// Records the rule that binds `folder`, a canonical path, and everything below it to the
     /// space named `space`, in place of the folder's earlier rule; gives that rule's space.
     pub fn set_rule(&self, folder: &str, space: &str) -> Result<Option<String>, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let earlier = tx
             .query_row(
                 "SELECT space FROM folder_rule WHERE folder = ?1",
@@ -1616,7 +1698,7 @@ impl State {
         status: &str,
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "INSERT INTO kept_status (seq, msg_id, space, status, person, agent)
              VALUES (?1, ?2, ?3, ?4, 1, ?5) ON CONFLICT DO NOTHING",
@@ -1714,7 +1796,7 @@ impl State {
     /// Keeps `lines`, warnings an agent's run gave, each a full line, for the person's run, after
     /// those kept already; a line kept already is kept once.
     pub fn keep_warnings(&self, lines: &[String]) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for line in lines {
             tx.execute(
                 "INSERT INTO kept_warning (line) SELECT ?1 \
@@ -1805,7 +1887,7 @@ impl State {
     /// Takes the lines kept for the next tool result of the agent `agent` in the space `space`, in
     /// order: none is given again.
     pub fn take_notices(&self, space: SpaceId, agent: &str) -> Result<Vec<String>, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let lines = {
             let mut query = tx.prepare(
                 "SELECT line FROM agent_notice WHERE space = ?1 AND agent = ?2 ORDER BY position",
@@ -1830,7 +1912,7 @@ impl State {
     /// Keeps `revocations`, as their CBOR bytes, among those the device holds; those it signed
     /// wait for the server if `pending`.
     pub fn add_revocations(&self, revocations: &[Vec<u8>], pending: bool) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for revocation in revocations {
             add_revocation(&tx, revocation, pending)?;
         }
@@ -1855,7 +1937,7 @@ impl State {
         &self,
         devices: &[(DeviceId, bool)],
     ) -> Result<Vec<(DeviceId, StatusChange)>, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let mut changed = Vec::new();
         let (mut known, mut added) = (false, Vec::new());
         for &(device, revoked) in devices {
@@ -1931,7 +2013,7 @@ impl State {
                 .execute("DELETE FROM swapped_cert WHERE device = ?1", params![id])?;
             return Ok(false);
         };
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let held: Option<Vec<u8>> = tx
             .query_row(
                 "SELECT cert FROM swapped_cert WHERE device = ?1",
@@ -1958,6 +2040,34 @@ impl State {
             params![masters],
         )?;
         Ok(added == 1)
+    }
+
+    /// The result of the check of the certificate whose body has the SHA-256 `body` against
+    /// GitHub's API at `api` ([`crate::ssh_checks`]), if it was checked: the login GitHub gave if
+    /// it passed, `None` if it failed.
+    pub fn ssh_check(&self, api: &str, body: &[u8; 32]) -> Result<Option<Option<String>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT login FROM ssh_check WHERE api = ?1 AND body = ?2",
+                params![api, body],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Keeps the result of that check, `login` if it passed, unless it holds one.
+    pub fn keep_ssh_check(
+        &self,
+        api: &str,
+        body: &[u8; 32],
+        login: Option<&str>,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT OR IGNORE INTO ssh_check (api, body, login) VALUES (?1, ?2, ?3)",
+            params![api, body, login],
+        )?;
+        Ok(())
     }
 
     /// The `seq` the device's next own message takes ([`OwnMessage`]).
@@ -2008,7 +2118,7 @@ impl State {
     /// the new cursor and when it wrote them, all at once; gives the cursor.
     pub fn write_entries(&self, entries: &[(u64, Vec<u8>)]) -> Result<u64, Error> {
         let written = i64::try_from(unix_now()).unwrap_or(i64::MAX);
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let read: i64 = tx.query_row("SELECT mailbox_cursor FROM device", [], |row| row.get(0))?;
         let mut cursor = read;
         for (seq, entry) in entries {
@@ -2072,7 +2182,7 @@ impl State {
         (sender, msg_id): (DeviceId, MessageId),
         kept: &Kept,
     ) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "INSERT INTO received (sender, msg_id) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
             params![sender.to_string(), msg_id.to_string()],
@@ -2352,7 +2462,7 @@ impl State {
             .prepare("SELECT channel, level, mode, window, text FROM delivery_setting")?;
         let rows = query.query_map([], |row| {
             Ok((
-                [row.get::<_, String>(0)?, row.get(1)?, row.get(2)?],
+                texts::<3>(row, 0)?,
                 row.get::<_, Option<i64>>(3)?,
                 row.get::<_, String>(4)?,
             ))
@@ -2374,7 +2484,7 @@ impl State {
 
     /// Counts one wake in each of `channels`.
     pub fn count_wakes(&self, channels: &BTreeSet<String>) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for channel in channels {
             tx.execute(
                 "INSERT INTO channel_wakes (channel, wakes) VALUES (?1, 1)
@@ -2396,7 +2506,7 @@ impl State {
         channels: &BTreeSet<String>,
     ) -> Result<(), Error> {
         let write = MessageId::generate().to_string();
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for line in lines {
             tx.execute(
                 "INSERT OR REPLACE INTO socket_line (line, session, write) VALUES (?1, ?2, ?3)",
@@ -2458,7 +2568,7 @@ impl State {
     /// agent's next send under [`SERVICE_AGENT`].
     pub fn shown_to_person(&self, seq: u64, service: bool) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         if service {
             count_hops(&tx, seq, SERVICE_AGENT)?;
         }
@@ -2498,7 +2608,7 @@ impl State {
     /// Drops the kept messages whose wait ended by `now`, in Unix seconds, for every agent.
     fn drop_ended(&self, now: u64) -> Result<(), Error> {
         let now = i64::try_from(now).unwrap_or(i64::MAX);
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "DELETE FROM handover WHERE seq IN (SELECT seq FROM kept WHERE expires <= ?1)",
             params![now],
@@ -2569,7 +2679,7 @@ impl State {
         agent: &str,
         (path, due): (&str, Option<i64>),
     ) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for seq in seqs.iter().chain(signalled) {
             let signal = match path {
                 HOOKS => 0,
@@ -2676,7 +2786,7 @@ impl State {
     /// `seqs` that wait for the agent `agent` going to the model: no path takes them again, and
     /// they wait for the model's own entry, or for the session's end.
     pub fn shown(&self, session: &str, seqs: &[u64], agent: &str) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for seq in seqs {
             tx.execute(
                 "UPDATE handover SET written = ?3, due = ?4 WHERE seq = ?1 AND agent = ?2
@@ -2694,7 +2804,7 @@ impl State {
     /// that it is `read`, at once.
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         if add_target(&tx, seq)? {
             tx.execute(
                 "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
@@ -2725,24 +2835,10 @@ impl State {
         Ok(signalled.into_iter().map(|(seq, _)| seq).collect())
     }
 
-    /// Records that the hook of the agent `agent` gave the signal of the kept message `seq`.
-    pub fn signal_given(&self, seq: u64, agent: &str) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
-            params![sql_seq(seq)?, agent],
-        )?;
-        Ok(())
-    }
-
     /// Registers the Claude Code session `session`, after every other, in place of its earlier
     /// registration, if any.
     pub fn register_claude(&self, session: &ClaudeSession) -> Result<(), Error> {
-        let text = |path: &Path| {
-            path.to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
-        };
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "DELETE FROM claude_session WHERE session = ?1",
             params![session.session],
@@ -2754,10 +2850,10 @@ impl State {
                 session.session,
                 session.space.to_string(),
                 session.agent,
-                text(&session.folder)?,
-                text(&session.socket)?,
+                path_text(&session.folder)?,
+                path_text(&session.socket)?,
                 session.token,
-                text(&session.file)?,
+                path_text(&session.file)?,
             ],
         )?;
         tx.commit()?;
@@ -2799,7 +2895,7 @@ impl State {
     /// Ends the registration of the Claude Code session `session`: what its socket took and its
     /// file did not confirm waits for the other paths.
     pub fn end_claude(&self, session: &str) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "UPDATE handover SET failed = 1, due = ?2 WHERE written = ?1",
             params![session, unix_ms()],
@@ -2820,6 +2916,124 @@ impl State {
         Ok(())
     }
 
+    /// Registers the Codex session `session`, or updates its registration, as the one whose hook
+    /// ran last: a session file or config home it does not give stays as registered.
+    pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
+        let file = session.file.as_deref().map(path_text).transpose()?;
+        let home = session.home.as_deref().map(path_text).transpose()?;
+        self.db.execute(
+            "INSERT INTO codex_session
+                 (thread, space, agent, folder, file, home, process, busy, hooked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 (SELECT COALESCE(MAX(hooked), 0) + 1 FROM codex_session))
+             ON CONFLICT (thread) DO UPDATE SET
+                 space = excluded.space, agent = excluded.agent, folder = excluded.folder,
+                 file = COALESCE(excluded.file, file), home = COALESCE(excluded.home, home),
+                 process = COALESCE(excluded.process, process), busy = excluded.busy,
+                 hooked = excluded.hooked",
+            params![
+                session.thread,
+                session.space.to_string(),
+                session.agent,
+                path_text(&session.folder)?,
+                file,
+                home,
+                session.process,
+                session.busy,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The registered Codex sessions, the one whose hook ran last first.
+    pub fn codex_sessions(&self) -> Result<Vec<CodexSession>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT thread, space, agent, folder, file, home, process, busy, hooked
+             FROM codex_session ORDER BY hooked DESC",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                texts::<4>(row, 0)?,
+                [row.get::<_, Option<String>>(4)?, row.get(5)?],
+                row.get::<_, Option<i64>>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, i64>(8)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let ([thread, space, agent, folder], [file, home], process, busy, hooked) = row?;
+            let malformed = || Error::Malformed(format!("the Codex session {thread}"));
+            Ok(CodexSession {
+                space: space.parse().map_err(|_| malformed())?,
+                agent,
+                folder: folder.into(),
+                file: file.map(PathBuf::from),
+                home: home.map(PathBuf::from),
+                process: process
+                    .map(|process| u32::try_from(process).map_err(|_| malformed()))
+                    .transpose()?,
+                busy,
+                hooked: u64::try_from(hooked).map_err(|_| malformed())?,
+                thread,
+            })
+        })
+        .collect()
+    }
+
+    /// Ends the registration of the Codex session `thread`: the signals that went to it go to
+    /// another session of their agent.
+    pub fn end_codex(&self, thread: &str) -> Result<(), Error> {
+        let tx = self.write()?;
+        tx.execute(
+            "UPDATE handover SET thread = NULL WHERE thread = ?1",
+            params![thread],
+        )?;
+        tx.execute(
+            "DELETE FROM codex_session WHERE thread = ?1",
+            params![thread],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The `seq` of each kept message that waits for the agent `agent` whose signal goes to a
+    /// Codex session, and that session's thread.
+    pub fn codex_signals(&self, agent: &str) -> Result<Vec<(u64, String)>, Error> {
+        self.lines(
+            "SELECT seq, thread FROM handover WHERE agent = ?1 AND thread IS NOT NULL
+             ORDER BY seq",
+            params![agent],
+        )
+    }
+
+    /// Records that a hook of the agent `agent` gave the signal of each of the kept messages
+    /// `seqs`.
+    pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        let tx = self.write()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records that the signal of each of the kept messages `seqs` that wait for the agent `agent`
+    /// goes to the Codex session `thread`.
+    pub fn signal_to(&self, seqs: &[u64], agent: &str, thread: &str) -> Result<(), Error> {
+        let tx = self.write()?;
+        for seq in seqs {
+            tx.execute(
+                "UPDATE handover SET thread = ?3 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, thread],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Records that the socket of the Claude Code session `session` takes the kept messages
     /// `messages` that wait for the agent `agent`, and the signal of `signalled` in its line
     /// `signal`, before they are written to it; each waits for its confirmation until `due`, in
@@ -2831,7 +3045,7 @@ impl State {
         (signalled, signal): (&[u64], &str),
         due: i64,
     ) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for seq in messages {
             tx.execute(
                 "UPDATE handover SET written = ?3, failed = 0, path = 'socket', due = ?4,
@@ -2855,7 +3069,7 @@ impl State {
     /// Records that a write of the kept messages `seqs` that wait for the agent `agent`, or of
     /// their signal, to a session's socket failed: they wait as before it.
     pub fn socket_failed(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for seq in seqs {
             tx.execute(
                 "UPDATE handover SET written = NULL, failed = 0, signalled = 0, signal = NULL,
@@ -2873,7 +3087,7 @@ impl State {
     /// line of a write, the write's wakes are taken back ([`State::socket_wakes`]).
     pub fn not_taken(&self, session: &str, line: &str) -> Result<(), Error> {
         let now = unix_ms();
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let write: Option<String> = tx
             .query_row(
                 "SELECT write FROM socket_line WHERE session = ?1 AND line = ?2",
@@ -3006,7 +3220,7 @@ impl State {
     /// other. Gives whether it waited.
     pub fn accept_held(&self, seq: u64, agent: &str, now: u64) -> Result<bool, Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let waited = tx.execute(
             "DELETE FROM held_message WHERE seq = ?1 AND agent = ?2
              AND seq IN (SELECT seq FROM kept WHERE expires > ?3)",
@@ -3032,7 +3246,7 @@ impl State {
         reason: Option<&str>,
         now: u64,
     ) -> Result<bool, Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         let waited: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM held_message JOIN kept ON kept.seq = held_message.seq
                  WHERE held_message.seq = ?1 AND agent = ?2 AND kept.expires > ?3)",
@@ -3049,7 +3263,7 @@ impl State {
     /// Refuses, for `reason`, each kept message that waits for the person's decision for an agent
     /// and whose wait ended by `now`, in Unix seconds, as [`refuse_held`] does.
     pub fn end_held_waits(&self, now: u64, reason: &str) -> Result<(), Error> {
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         for (seq, agent, ..) in held_rows(&tx, now, true)? {
             refuse_held(&tx, seq, &agent, Some(reason))?;
         }
@@ -3088,7 +3302,7 @@ impl State {
         now: u64,
     ) -> Result<Vec<MessageId>, Error> {
         let now = sql_u64(now)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute(
             "DELETE FROM sent_status WHERE stored + wait <= ?1",
             params![now],
@@ -3201,7 +3415,7 @@ impl State {
         now: u64,
     ) -> Result<Vec<Target>, Error> {
         let now = sql_u64(now)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         tx.execute("DELETE FROM reply_target WHERE expires <= ?1", params![now])?;
         tx.execute(
             "DELETE FROM reply_agent WHERE seq NOT IN (SELECT seq FROM reply_target)",
@@ -3310,7 +3524,7 @@ impl State {
         kept: &Kept,
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         add_counters(&tx, seq, source, counters)?;
         add_kept(&tx, seq, kept)?;
         tx.execute("DELETE FROM inbox WHERE seq = ?1", params![seq])?;
@@ -3332,7 +3546,7 @@ impl State {
         (held, reads): (bool, &[(MessageId, String)]),
     ) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
-        let tx = self.db.unchecked_transaction()?;
+        let tx = self.write()?;
         match counted {
             Some((source, counters)) => add_counters(&tx, seq, source, counters)?,
             None => {
@@ -3462,7 +3676,7 @@ impl State {
         recipient: Option<DeviceId>,
         refused: Option<&str>,
     ) -> Result<(), Error> {
-        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         tx.execute(
             "DELETE FROM outbox WHERE msg_id = ?1 AND recipient IS ?2",
             params![
@@ -3533,7 +3747,7 @@ impl State {
     /// whose it is for good; the agent's next message or task counts only the `hops` of what is
     /// handed to it from now on, as a message it sends does.
     pub fn keep_task(&self, outgoing: &TaskOutgoing, agent: Option<&str>) -> Result<(), Error> {
-        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let tx = self.write()?;
         let space = outgoing.space.to_string();
         tx.execute(
             "INSERT INTO task_outbox (task, space, channel, queue, record)
@@ -3604,6 +3818,100 @@ impl State {
         )?;
         Ok(())
     }
+
+    /// Keeps `claim`, a claim the device now holds, or its new time and sealed part; with `hops`,
+    /// the agent, by the name it counts under ([`State::handed_hops`]), and the task's `hops`, the
+    /// task counts for that agent's next send as a message handed over to it does.
+    pub fn keep_claim(&self, claim: &TaskClaim, hops: Option<(&str, u64)>) -> Result<(), Error> {
+        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate)?;
+        let space = claim.space.to_string();
+        tx.execute(
+            "INSERT INTO task_claim (task, space, channel, queue, agent, since, sealed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT (task) DO UPDATE SET since = excluded.since, sealed = excluded.sealed",
+            params![
+                claim.task.to_string(),
+                space,
+                claim.channel.to_string(),
+                claim.queue.to_string(),
+                claim.agent,
+                sql_u64(claim.since)?,
+                claim.sealed
+            ],
+        )?;
+        if let Some((agent, hops)) = hops {
+            // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
+            tx.execute(
+                "INSERT INTO agent_hops (space, agent, highest) VALUES (?1, ?2, ?3)
+                 ON CONFLICT DO UPDATE SET highest = max(highest, excluded.highest)",
+                params![space, agent, i64::try_from(hops).unwrap_or(i64::MAX)],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The claims the device holds, of the space `space` if given, in the order of their tasks'
+    /// IDs.
+    pub fn claims(&self, space: Option<SpaceId>) -> Result<Vec<TaskClaim>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT task, space, channel, queue, agent, since, sealed FROM task_claim
+             WHERE ?1 IS NULL OR space = ?1 ORDER BY task",
+        )?;
+        let rows = query.query_map(params![space.map(|space| space.to_string())], |row| {
+            Ok((
+                [
+                    row.get::<_, String>(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                ],
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, Vec<u8>>(6)?,
+            ))
+        })?;
+        let rows: Vec<_> = rows.collect::<Result<_, _>>()?;
+        rows.into_iter()
+            .map(|([task, space, channel, queue], agent, since, sealed)| {
+                Ok(TaskClaim {
+                    task: id("task ID", &task)?,
+                    space: id("space ID", &space)?,
+                    channel: id("channel ID", &channel)?,
+                    queue: id("queue ID", &queue)?,
+                    agent,
+                    since: u64::try_from(since)
+                        .map_err(|_| Error::Malformed(format!("the time {since}")))?,
+                    sealed,
+                })
+            })
+            .collect()
+    }
+
+    /// Takes the claim of the task `task` out of those the device holds: it ended or is lost.
+    pub fn remove_claim(&self, task: TaskId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM task_claim WHERE task = ?1",
+            params![task.to_string()],
+        )?;
+        Ok(())
+    }
+}
+
+/// The `N` text columns of `row` from `first` on.
+fn texts<const N: usize>(row: &rusqlite::Row, first: usize) -> rusqlite::Result<[String; N]> {
+    let mut texts: [String; N] = std::array::from_fn(|_| String::new());
+    for (at, text) in texts.iter_mut().enumerate() {
+        *text = row.get(first + at)?;
+    }
+    Ok(texts)
+}
+
+/// `path` as the state keeps it: text; fails on one that is not UTF-8.
+fn path_text(path: &Path) -> Result<String, Error> {
+    path.to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Malformed(format!("the path {}", path.display())))
 }
 
 /// `seq` as SQLite holds it.
@@ -4238,6 +4546,17 @@ fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<
         params![revocation, pending],
     )?;
     Ok(())
+}
+
+/// Whether the state in `dir` has the schema of this client's last migration, read without
+/// migrating it.
+pub fn current(dir: &Path) -> bool {
+    let latest = MIGRATIONS.len();
+    let version = Connection::open(dir.join(FILE)).and_then(|db| {
+        db.busy_timeout(std::time::Duration::from_secs(1))?;
+        db.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
+    });
+    version.is_ok_and(|version| usize::try_from(version) == Ok(latest))
 }
 
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
@@ -5295,6 +5614,36 @@ pub(crate) mod tests {
     /// The space of [`kept`].
     fn space_of_kept() -> SpaceId {
         "0190b6a2-1f3c-7d4e-8a5b-6c7d8e9f0a1b".parse().unwrap()
+    }
+
+    /// A write while another connection, as a Codex hook's, holds the write lock waits for it and
+    /// then succeeds.
+    #[test]
+    fn write_waits_for_another_connection_that_writes() {
+        let dir = TestDir::new("state-write-waits");
+        let state = State::open(&dir).unwrap();
+        let other = State::open(&dir).unwrap();
+        (state.add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")).unwrap();
+        other.db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let session = CodexSession {
+            thread: "thread".to_owned(),
+            space: SpaceId::generate(),
+            agent: "web".to_owned(),
+            folder: PathBuf::from("/w"),
+            file: None,
+            home: None,
+            process: None,
+            busy: false,
+            hooked: 0,
+        };
+        other.register_codex(&session).unwrap();
+        let committed = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            other.db.execute_batch("COMMIT").unwrap();
+        });
+
+        assert_eq!(state.write_entries(&[(1, vec![1])]).unwrap(), 1);
+        committed.join().unwrap();
     }
 
     /// The state keeps each agent's status: what it set, what the device last gave it and its
@@ -7004,6 +7353,50 @@ pub(crate) mod tests {
             BTreeSet::from([(1, browser), (2, browser), (2, recovery)])
         );
         assert_eq!(state.settled_wraps(other).unwrap(), BTreeSet::new());
+    }
+
+    /// A claim is kept by its task, its time and sealed part updated in place, and raises the hops
+    /// handed to its agent; it goes once removed, or with the step that puts its result in the
+    /// outbox.
+    #[test]
+    fn claims_are_kept_by_task_and_end_with_their_result() {
+        let dir = TestDir::new("state-claims");
+        let state = State::open(&dir).unwrap();
+        let space = SpaceId::generate();
+        let claim = |since| TaskClaim {
+            task: TaskId::generate(),
+            space,
+            channel: ChannelId::generate(),
+            queue: QueueId::generate(),
+            agent: Some("codex".to_owned()),
+            since,
+            sealed: vec![1],
+        };
+        let (first, second) = (claim(5), claim(6));
+        state.keep_claim(&first, Some(("codex", 3))).unwrap();
+        state.keep_claim(&second, None).unwrap();
+        let first = TaskClaim {
+            since: 9,
+            sealed: vec![2],
+            ..first
+        };
+        state.keep_claim(&first, Some(("codex", 1))).unwrap();
+        assert_eq!(state.handed_hops(space, "codex").unwrap(), Some(3));
+        let mut both = vec![first.clone(), second.clone()];
+        both.sort_by_key(|claim| claim.task.to_string());
+        assert_eq!(state.claims(Some(space)).unwrap(), both);
+        assert_eq!(state.claims(Some(SpaceId::generate())).unwrap(), []);
+        state.remove_claim(first.task).unwrap();
+        state
+            .mls_change(|_| {
+                let changes = MlsChanges {
+                    ended: vec![second.task],
+                    ..MlsChanges::default()
+                };
+                Ok((None, changes, ()))
+            })
+            .unwrap();
+        assert_eq!(state.claims(None).unwrap(), []);
     }
 
     #[test]

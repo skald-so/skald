@@ -8,7 +8,8 @@
 #   - One package for every platform: npx installs it with no npm registry reachable, so it needs no
 #     other package, and it downloads this machine's archive, and no other.
 #   - npx skald-so prints the release's version with --version, passes skald its arguments and
-#     exits with skald's exit status, also when run again.
+#     exits with skald's exit status, also when run again; SKALD_LAUNCHER gives skald the launcher's
+#     process ID and its parent's.
 #   - Beside the skald it unpacks, the file installed-by-npm, so skald update leaves that copy to
 #     npm; with the release workflow's files, skald update run through npx says so and fails.
 #   - On a checksum that does not match the archive, an archive replaced under its checksum, and a
@@ -198,6 +199,11 @@ if $standin; then
   status=0
   npx_run "$run" "$url" exit-with 7 || status=$?
   [[ $status == 7 ]] || fail "npx skald-so exits with $status, not with skald's exit status, 7"
+  # SKALD_LAUNCHER names the launcher, skald's parent, and a parent of its own.
+  npx_run "$run" "$url" launcher || true
+  output=$(stdout "$run")
+  [[ $output =~ ^launcher:\ ([0-9]+)\ ([0-9]+)\ ([0-9]+)$ && ${BASH_REMATCH[1]} == "${BASH_REMATCH[2]}" ]] ||
+    fail "npx skald-so gives skald no SKALD_LAUNCHER of its parent and the parent's: '$output'"
   status=0
   npx_run "$run" "$url" --version || status=$?
   output=$(stdout "$run")

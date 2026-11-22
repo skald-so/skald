@@ -370,13 +370,13 @@ export function runsFor(workflow, event) {
   return true;
 }
 
-// event <name> <ref>: an event of skald-so/skald on <ref>. A PR is one from a branch named like a
-// release tag, v1.2.3, into dev.
-export function event(name, ref) {
+// event <name> <ref> [{draft}]: an event of skald-so/skald on <ref>. A PR is one from a branch named
+// like a release tag, v1.2.3, into dev, ready for review unless draft is true.
+export function event(name, ref, { draft = false } = {}) {
   const refName = ref.replace(/^refs\/(heads|tags|pull)\//, '');
   const pr = name === 'pull_request' || name === 'pull_request_target';
   const payload = pr
-    ? open({ pull_request: open({ head: open({ ref: 'v1.2.3' }), base: open({ ref: 'dev' }) }), number: 7 })
+    ? open({ pull_request: open({ head: open({ ref: 'v1.2.3' }), base: open({ ref: 'dev' }), draft }), number: 7 })
     : open({ pull_request: null, ...(name === 'push' ? { ref } : {}), ...(name === 'workflow_dispatch' ? { ref } : {}) });
   const github = open({
     event_name: name,

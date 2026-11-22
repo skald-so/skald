@@ -90,6 +90,17 @@ pub(crate) enum Refusal {
     Grant(String),
     /// No such service token of the space.
     NoServiceToken,
+    /// No such invite the server holds for the session's account: never stored, ended, or with
+    /// another account's acceptance.
+    NoInvite,
+    /// An invite the server does not store, for the reason it holds.
+    Invite(String),
+    /// Another invite stored under the ID.
+    InviteTaken,
+    /// An acceptance the server does not store, for the reason it holds.
+    Acceptance(String),
+    /// Another acceptance of the invite.
+    AcceptanceTaken,
     /// The spaces that block the account's deletion: those where it is the only admin and that have
     /// other members.
     DeletionBlocked(Vec<deletion::Listed>),
@@ -295,6 +306,29 @@ impl IntoResponse for Refusal {
                 "no-service-token",
                 "No such service token",
                 "The space has no such service token, or it has ended.",
+            ),
+            Refusal::NoInvite => problem(
+                StatusCode::NOT_FOUND,
+                "no-invite",
+                "No such invite",
+                "The server holds no such invite for the session's account: it was never stored, \
+                 it ended, or another account accepted it.",
+            ),
+            Refusal::Invite(detail) => problem(bad, "invalid-invite", "Invalid invite", &detail),
+            Refusal::InviteTaken => problem(
+                conflict,
+                "invite-taken",
+                "Invite ID taken",
+                "The server holds another invite with this ID.",
+            ),
+            Refusal::Acceptance(detail) => {
+                problem(bad, "invalid-acceptance", "Invalid acceptance", &detail)
+            }
+            Refusal::AcceptanceTaken => problem(
+                conflict,
+                "acceptance-taken",
+                "Invite accepted",
+                "The invite has another acceptance: it admits one account.",
             ),
             Refusal::DeletionBlocked(spaces) => problem_details(
                 conflict,

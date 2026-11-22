@@ -37,7 +37,9 @@ use crate::mailbox::{self, Came, Transport, Watched};
 use crate::mcp::Call;
 use crate::recv::{self, Got};
 use crate::state::State;
-use crate::{Command, Operation, claude_socket, connection, folders, output, resend, uploads};
+use crate::{
+    Command, Operation, claude_socket, codex, connection, folders, output, resend, uploads,
+};
 
 /// How long a connection on SSE or long-poll waits before it tries WebSocket again.
 pub const RETRY: Duration = Duration::from_secs(60);
@@ -262,13 +264,15 @@ fn poll(mut watched: Watched, polled: Arc<Mutex<Polled>>) -> (Arc<AtomicBool>, J
 
 /// The helper's sessions: the `skald recv --wait` commands that wait through it, the sessions MCP
 /// servers hold of it ([`hold`]), the `asyncRewake` hooks that wait through it ([`rewakes`]), the
-/// mods that poll it ([`Sessions::polled`]), and the Claude Code sessions it serves
-/// ([`claude_socket`]), whose paths those are ([`crate::resend`]).
+/// mods that poll it ([`Sessions::polled`]), the Claude Code sessions it serves
+/// ([`claude_socket`]), whose paths those are ([`crate::resend`]), and the Codex sessions it serves
+/// ([`codex`]).
 #[derive(Default)]
 pub struct Sessions {
     waiting: Vec<Waiting>,
     watch: Watch,
     claude: Option<claude_socket::Served>,
+    codex: Option<codex::Served>,
     /// The mods that polled within [`MOD_POLLS`], by agent and space.
     mods: BTreeMap<(String, SpaceId), Mod>,
     /// When the last `skald recv --wait` of each agent that ended did, as an [`Instant`] and in
@@ -329,9 +333,10 @@ pub enum Ran {
 }
 
 impl Sessions {
-    /// Serves the registered Claude Code sessions too, its runs with `settings`.
-    pub fn serve_claude(&mut self, settings: claude_socket::Settings) {
+    /// Serves the registered Claude Code and Codex sessions too, its runs with `settings`.
+    pub fn serve_agents(&mut self, settings: claude_socket::Settings) {
         self.claude = Some(claude_socket::Served::new(settings));
+        self.codex = Some(codex::Served::new(settings));
     }
 
     /// Runs `session`'s `skald recv` with the state in `dir`; it waits on unless the run showed what
@@ -547,14 +552,17 @@ impl Sessions {
         if let Some(claude) = &mut self.claude {
             claude.ran();
         }
+        if let Some(codex) = &mut self.codex {
+            codex.ran();
+        }
     }
 
-    /// Drops the sessions whose command went away; serves the Claude Code sessions with what
-    /// came ([`claude_socket::Served::look`]); runs `skald recv` again, with the state in `dir`,
-    /// for each other one that a command ran since, or for each once a `link-notice` came, and
-    /// takes in what came for each one it may concern, handing each its own. Gives whether a
-    /// session waits or a Claude Code session is served, which after a run or a handover the next
-    /// look tells; `None` once a run or the intake panicked.
+    /// Drops the sessions whose command went away; serves the Claude Code and Codex sessions with
+    /// what came ([`claude_socket::Served::look`], [`codex::Served::look`]); runs `skald recv`
+    /// again, with the state in `dir`, for each other one that a command ran since, or for each
+    /// once a `link-notice` came, and takes in what came for each one it may concern, handing each
+    /// its own. Gives whether a session waits or a Claude Code or Codex session is served, which
+    /// after a run or a handover the next look tells; `None` once a run or the intake panicked.
     pub fn look(&mut self, dir: &Path) -> Option<bool> {
         let mut before = self.agents(true);
         let looked = self.looked(dir, &mut before);
@@ -567,8 +575,9 @@ impl Sessions {
     fn looked(&mut self, dir: &Path, before: &mut BTreeSet<uploads::Running>) -> Option<bool> {
         self.waiting.retain(|waiting| open(&waiting.session.stream));
         let holders = self.holders();
-        let claude =
-            (self.claude.as_ref()).is_some_and(claude_socket::Served::looks) || !holders.is_empty();
+        let claude = (self.claude.as_ref()).is_some_and(claude_socket::Served::looks)
+            || !holders.is_empty()
+            || (self.codex.as_mut()).is_some_and(|codex| codex.looks(dir));
         if self.waiting.is_empty() && !claude {
             let mut idle = Watch::default();
             idle.retry_at = self.watch.retry_at;
@@ -591,8 +600,16 @@ impl Sessions {
             }
             self.deliver(pushes, dir)?;
         }
+        if let Some(codex) = &mut self.codex
+            && codex.look(dir, &came)?
+        {
+            self.watch.start();
+        }
         if self.waiting.is_empty() {
-            return Some((self.claude.as_ref()).is_some_and(claude_socket::Served::serving));
+            return Some(
+                (self.claude.as_ref()).is_some_and(claude_socket::Served::serving)
+                    || (self.codex.as_ref()).is_some_and(codex::Served::serving),
+            );
         }
         let seen = SystemTime::now();
         let (noticed, retry) = (self.watch.noticed(), self.watch.retried());

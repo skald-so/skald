@@ -34,7 +34,7 @@ impl HistoryKey {
         Hkdf::<Sha256>::new(Some(b""), self.to_bytes().as_ref())
             .expand(QUEUE_INFO, ikm.as_mut())
             .expect("32 bytes of HKDF-SHA256");
-        QueueKeyPair(HpkeKey::derived(&ikm))
+        QueueKeyPair(HpkeKey::from_ikm(&ikm))
     }
 }
 
