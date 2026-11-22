@@ -11,6 +11,7 @@ use std::process::{Command, Output};
 use serde_json::Value;
 
 use crate::executor::{self, After, Device, Mode, Outcome, Refused, Request, Run, Scratch, unique};
+use crate::file::write_private;
 
 /// The flags that leave a session none of the user's config, with its MCP servers, plugins and
 /// hooks, rules and skills' instructions, and save no session.
@@ -134,7 +135,7 @@ impl Executor {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok((home, None)),
             Err(error) => return Err(error),
         };
-        fs::write(home.path().join(AUTH), &copied)?;
+        write_private(&home.path().join(AUTH), &copied)?;
         Ok((home, Some(SignIn { user, copied })))
     }
 }
@@ -159,8 +160,8 @@ impl SignIn {
         }
         let name = unique(".auth.json.skald");
         let temporary = self.user.with_file_name(name);
-        let written = fs::copy(copy, &temporary)
-            .and_then(|_| fs::set_permissions(&temporary, fs::metadata(&self.user)?.permissions()))
+        let written = write_private(&temporary, &changed)
+            .and_then(|()| fs::set_permissions(&temporary, fs::metadata(&self.user)?.permissions()))
             .and_then(|()| fs::rename(&temporary, &self.user));
         if written.is_err() {
             let _ = fs::remove_file(&temporary);
@@ -378,16 +379,20 @@ mod tests {
             level: skald_proto::TrustLevel::Own,
             text: "Read it.".to_owned(),
         };
-        let executor = Executor::new("/nonexistent/codex");
+        let scratch = Scratch::new("skald-codex-test").unwrap();
+        let executor = Executor::new("/nonexistent/codex").environment([
+            ("HOME", scratch.path().join("home")),
+            ("CODEX_HOME", scratch.path().join("codex")),
+        ]);
         let refused = executor.start(Path::new("/nonexistent"), Mode::ReadOnly, &request);
         let refused = refused.unwrap_err().0;
         assert!(refused.contains("read-only sandbox"), "{refused}");
     }
 
-    /// A user's config home with `auth` as its `auth.json`, if any, and a stand-in `codex` that
-    /// runs `script`, `{user}` in it the user's `auth.json`, then answers with what `$CODEX_HOME/auth.json` holds and its config home, on
-    /// a device whose `CODEX_HOME` is that user's: the scratch they are in, the executor, and the
-    /// user's `auth.json`.
+    /// A user's config home with `auth` as its `auth.json`, if any, and a stand-in `codex` that runs
+    /// `script`, where `{user}` stands for the user's `auth.json`, then answers with its config home
+    /// and what `$CODEX_HOME/auth.json` holds, on a device whose `CODEX_HOME` is that user's: the
+    /// scratch they are in, the executor, and the user's `auth.json`.
     #[cfg(unix)]
     fn signed_in(auth: Option<&str>, script: &str) -> (Scratch, Executor, PathBuf) {
         use std::os::unix::fs::PermissionsExt as _;
@@ -443,6 +448,17 @@ printf '{"type":"turn.completed"}\n'
         assert!(home.is_absolute(), "{home:?}");
         assert_eq!(auth, "{}");
         assert!(!home.exists(), "the run's config home outlived it");
+    }
+
+    /// The run's copy of the sign-in is readable only by the user, whatever the user's file allows.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_s_copy_of_the_sign_in_is_the_user_s_alone() {
+        let script = r#"ls -ln "$CODEX_HOME/auth.json" | cut -c1-10 > '{user}.mode'"#;
+        let (scratch, executor, user) = signed_in(Some("{}"), script);
+        run_on(&executor, scratch.path());
+        let mode = fs::read_to_string(user.with_extension("json.mode")).unwrap();
+        assert_eq!(mode.trim(), "-rw-------");
     }
 
     /// Without the user's `auth.json`, as with a sign-in by a variable, a run starts with none.
