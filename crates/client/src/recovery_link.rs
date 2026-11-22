@@ -39,6 +39,7 @@ use crate::revocations::{self, certified_by};
 use crate::secrets::Secrets;
 use crate::sign_in;
 use crate::spaces::now;
+use crate::ssh_signing;
 use crate::state::{self, Link, State};
 
 /// The devices its person names, by the options of `skald sign-in`; with none, it asks.
@@ -74,6 +75,8 @@ pub struct NewDevice<'a> {
     pub account: AccountId,
     pub device: &'a state::Device,
     pub keys: &'a Keys,
+    /// How it signs its key ([`ssh_signing`]).
+    pub ssh: &'a ssh_signing::Options,
 }
 
 /// The run that sends again what a run with the recovery key signed and did not send.
@@ -261,16 +264,18 @@ fn account_master(
 
 impl NewDevice<'_> {
     /// The device's certificate, issued with `master`, the master private key: the one an earlier
-    /// run issued, so that the device has one certificate, or a new one, checked.
-    fn own_cert(&self, master: &SigningKey) -> Result<Cert, sign_in::Error> {
+    /// run issued, so that the device has one certificate, or a new one, signed with an SSH key
+    /// ([`ssh_signing`]) and checked.
+    fn own_cert(&mut self, master: &SigningKey) -> Result<Cert, sign_in::Error> {
         if let Link::Recovering { cert, .. } = &self.device.link {
             return Cert::from_cbor(cert)
                 .map_err(|err| state::Error::Malformed(format!("the issued certificate: {err}")))
                 .map_err(Into::into);
         }
-        let body = self
+        let mut body = self
             .keys
             .master_cert_body(self.account, self.device.name.clone());
+        self.ssh.sign(self.connection, self.token, &mut body);
         let cert = skald_crypto::issue(&body, master, self.keys.signing())
             .map_err(|err| device::Error::Cert(err.to_string()))?;
         check_device(

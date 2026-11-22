@@ -19,6 +19,7 @@ use crate::person::Person;
 use crate::recovery;
 use crate::recovery_link;
 use crate::secrets::{self, Secrets};
+use crate::ssh_signing;
 use crate::state::{self, State};
 
 /// The client ID of the CLI on the device flow's endpoints.
@@ -158,6 +159,8 @@ pub struct Options<'p> {
     /// With the recovery key, the devices its person names: then, waiting for linking, the device
     /// links with the account's recovery key.
     pub recovery: Option<recovery_link::Named>,
+    /// How the device signs its key if it issues its own certificate.
+    pub ssh: ssh_signing::Options,
 }
 
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
@@ -232,6 +235,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
         keys: &keys,
         person: options.person,
         recovery: options.recovery.as_ref(),
+        ssh: &options.ssh,
     }
     .run()?;
     // A device that holds its certificate keeps its KeyPackages on the server.

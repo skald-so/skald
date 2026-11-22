@@ -136,6 +136,7 @@ Agents that run without a person, such as in CI: [service agents](docs/service-a
 - The server keeps the master key only sealed to the account's recovery key. The first device shows the recovery key once, at `skald sign-in` in a terminal or on its local page, never in an agent's output, then deletes it; until then every other command says it waits. Write it down: it is the only way back to the account and its history when no linked device is left.
 - A new device links with a link code: `skald sign-in` on it shows the code, and `skald link` on a linked device takes it. With `--browser`, both take their steps on a local page they open in the browser, so an agent can start them while you answer there.
 - With the recovery key, a new device links itself: `skald sign-in --with-recovery-key` in a terminal, where you type or paste the key. It revokes the devices you name stolen or lost; `skald sign-in --help` explains how. Accounts made before recovery keys have none.
+- A device that issues its own certificate, the account's first or one linked with the recovery key, signs its key with your SSH key that GitHub lists, from ssh-agent or `~/.ssh`, through OpenSSH's `ssh-keygen` 8.1 or later; other devices check it there and show your GitHub login. `skald sign-in --ssh-key`, `--github` and `--no-ssh` choose the key, the GitHub user or none.
 
 ## Security
 

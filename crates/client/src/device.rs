@@ -18,6 +18,7 @@ use crate::recovery_link;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
 use crate::spaces::now;
+use crate::ssh_signing;
 use crate::state::{self, Link, State};
 
 /// The secrets that hold the device's private keys: its Ed25519 signing key and its X25519 HPKE
@@ -339,6 +340,8 @@ pub struct Setup<'a> {
     /// With the recovery key, the devices its person names: then, waiting for linking, it links
     /// with the account's recovery key instead.
     pub recovery: Option<&'a recovery_link::Named>,
+    /// How it signs its key if it issues its own certificate.
+    pub ssh: &'a ssh_signing::Options,
 }
 
 /// What setting up the device gives.
@@ -452,6 +455,7 @@ impl Setup<'_> {
                 account: self.account,
                 device: &self.device,
                 keys: self.keys,
+                ssh: self.ssh,
             },
             &named,
         )
@@ -460,7 +464,7 @@ impl Setup<'_> {
     /// Asks the server whether the account has a master key, and acts on it as "Linking a device"
     /// says: without one, the device is the account's first, unless it is to link with the
     /// recovery key; with one, it waits for linking.
-    fn link(self) -> Done {
+    fn link(mut self) -> Done {
         let master = master_key(self.connection, self.token)?;
         match master.master {
             None if self.recovery.is_some() => Err(Error::NoMasterKey.into()),
@@ -494,12 +498,14 @@ impl Setup<'_> {
         }
     }
 
-    /// Creates the account's master key, issues the device's certificate with it, issued now, and
-    /// checks it, as [`own_certificate`] does. The master private key is gone once it returns.
-    fn create_master(&self) -> Result<Created, Error> {
-        let body = self
+    /// Creates the account's master key, issues the device's certificate with it, issued now and
+    /// signed with an SSH key ([`ssh_signing`]), and checks it, as [`own_certificate`] does. The
+    /// master private key is gone once it returns.
+    fn create_master(&mut self) -> Result<Created, Error> {
+        let mut body = self
             .keys
             .master_cert_body(self.account, self.device.name.clone());
+        self.ssh.sign(self.connection, self.token, &mut body);
         own_certificate(&body, self.keys)
     }
 
