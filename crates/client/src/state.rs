@@ -2683,21 +2683,10 @@ impl State {
         .collect()
     }
 
-    /// When the device kept each kept message in the space `space`, by `seq`, in Unix
-    /// milliseconds; 0 for one an older client kept.
-    pub fn kept_came(&self, space: SpaceId) -> Result<BTreeMap<u64, u64>, Error> {
-        let came: Vec<(u64, i64)> = self.lines(
-            "SELECT seq, COALESCE(came, 0) FROM kept WHERE space = ?1",
-            params![space.to_string()],
-        )?;
-        Ok((came.into_iter())
-            .map(|(seq, came)| (seq, u64::try_from(came).unwrap_or(0)))
-            .collect())
-    }
-
     /// Each kept message in the space `space`, by `seq`, as a push path plans it
     /// ([`crate::delivery::Settings::plan`]): its channel, if kept, its sender's trust level,
-    /// `peer` for one an older client kept from another device, and when the device kept it.
+    /// `peer` for one an older client kept from another device, and when the device kept it, in
+    /// Unix milliseconds, 0 for one an older client kept.
     pub fn kept_waiting(
         &self,
         space: SpaceId,

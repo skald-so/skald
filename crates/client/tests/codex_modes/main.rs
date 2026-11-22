@@ -27,6 +27,7 @@
 #![allow(dead_code)]
 
 mod batched;
+mod failed;
 mod inline;
 mod modes;
 mod now;
@@ -80,6 +81,10 @@ const TESTS: &[(&str, fn())] = &[
     (
         "restarted::settings_and_wakes_survive_the_helper_s_restart",
         restarted::settings_and_wakes_survive_the_helper_s_restart,
+    ),
+    (
+        "failed::a_failed_codex_queue_counts_no_wake_and_the_next_hook_counts_one",
+        failed::a_failed_codex_queue_counts_no_wake_and_the_next_hook_counts_one,
     ),
 ];
 

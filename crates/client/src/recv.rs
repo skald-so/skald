@@ -1258,7 +1258,7 @@ fn pushed(
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
-    let came = state.kept_came(space).map_err(text)?;
+    let came = state.kept_waiting(space).map_err(text)?;
     let (mut opened, mut unopened) = (Vec::new(), Vec::new());
     for (seq, sealed) in kept {
         let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
@@ -1272,7 +1272,7 @@ fn pushed(
             seq,
             channel: record.map(|record| record.channel),
             level,
-            came: came.get(&seq).copied().unwrap_or(0),
+            came: came.get(&seq).map_or(0, |kept| kept.came),
         };
         opened.push((waiting, open, msg_id));
     }
