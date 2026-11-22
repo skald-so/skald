@@ -55,12 +55,11 @@ const OPENER_WAIT: Duration = Duration::from_secs(2);
 const ACCEPT_POLL: Duration = Duration::from_millis(20);
 
 /// What a command says without a browser to open.
-pub const NO_BROWSER: &str = "there is no browser to open the local page in: BROWSER names no \
-                              program, or this system has no default browser. Run the command at \
-                              a terminal instead, without --browser; nothing is sent";
+pub const NO_BROWSER: &str =
+    "no browser for the local page: run this at a terminal, without --browser";
 /// What a command says once the program that opens the browser failed.
-pub const NOT_OPENED: &str = "the browser did not open the local page. Run the command at a \
-                              terminal instead, without --browser";
+pub const NOT_OPENED: &str =
+    "the browser did not open the local page: run this at a terminal, without --browser";
 
 /// The program that opens a file in the browser.
 pub struct Opener {
@@ -359,8 +358,7 @@ impl Page {
         // Not on the page: it is the agent's to read.
         let _ = output::direct(
             Stream::Out,
-            b"skald opened a local page in the browser; its person answers there, and this command \
-              waits for them.\n",
+            b"skald opened a local page in the browser: its person answers there.\n",
         );
         Ok(server)
     }
@@ -848,6 +846,24 @@ function paragraph(parent, text) {
   parent.append(p);
 }
 
+// A line of the command's output, each http or https link in it a link.
+function line(parent, text) {
+  const p = document.createElement("p");
+  let at = 0;
+  for (const found of text.matchAll(/https?:\/\/[^\s"<>]+/g)) {
+    p.append(text.slice(at, found.index));
+    const a = document.createElement("a");
+    a.href = found[0];
+    a.rel = "noreferrer noopener";
+    a.target = "_blank";
+    a.textContent = found[0];
+    p.append(a);
+    at = found.index + found[0].length;
+  }
+  p.append(text.slice(at));
+  parent.append(p);
+}
+
 function disable() {
   for (const e of byId("question").querySelectorAll("button, input")) e.disabled = true;
 }
@@ -884,7 +900,7 @@ function show(view) {
   shown.textContent = view.shown ?? "";
   shown.hidden = !view.shown;
   const log = byId("log");
-  for (let at = log.childElementCount; at < view.lines.length; at++) paragraph(log, view.lines[at]);
+  for (let at = log.childElementCount; at < view.lines.length; at++) line(log, view.lines[at]);
   const question = view.ended ? null : view.question;
   if ((question?.id ?? null) !== (asked?.id ?? null)) ask(question);
   if (view.ended) {

@@ -2,12 +2,10 @@
 //! stored its certificate stores the certificate at its next run; the linked device killed once
 //! the certificate is stored still gets the new device into the account's channels at a later run.
 
-use std::thread;
-use std::time::{Duration, Instant};
-
-use crate::cloud::{Cloud, WAIT};
-use crate::kit::{assert_members, group, received};
-use crate::linking::{NewDevice, STORE_CERT, YES, start_link, typed};
+use crate::channels::assert_channels_have;
+use crate::cloud::Cloud;
+use crate::kit::received;
+use crate::linking::{NewDevice, STORE_CERT, YES, start_link, typed, until};
 use crate::machine::{DEVICES, NOT_LINKED};
 use crate::revocations::account_certs;
 use crate::talk::Talk;
@@ -22,16 +20,6 @@ fn certified(cloud: &Cloud, first: &Person, device: skald_proto::DeviceId) -> bo
         .devices(&first.token)
         .into_iter()
         .any(|held| held.id == device && held.cert.is_some())
-}
-
-/// Waits until `done` holds, which it must within [`WAIT`].
-#[track_caller]
-fn until(what: &str, done: impl Fn() -> bool) {
-    let deadline = Instant::now() + WAIT;
-    while !done() {
-        assert!(Instant::now() < deadline, "{what} after {WAIT:?}");
-        thread::sleep(Duration::from_millis(50));
-    }
 }
 
 /// `skald link` on Ada's first machine, typed the new machine's code, confirms it; the relay
@@ -102,9 +90,5 @@ fn a_linked_device_killed_after_the_certificate_adds_the_new_one_at_a_later_run(
     let laptop = new.into_person(cloud, ada);
     received(&laptop.machine);
     received(&ada.machine);
-    let at = talk.at();
-    let devices = [ada.device, talk.played[0].device(), laptop.device];
-    for channel in [talk.space.default, at.1] {
-        assert_members(&group(cloud, &ada.token, at.0, channel).members, &devices);
-    }
+    assert_channels_have(&talk, &[laptop.device]);
 }

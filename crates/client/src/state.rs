@@ -117,6 +117,14 @@ pub enum Link {
         cert: Vec<u8>,
         link: Vec<u8>,
     },
+    /// Waiting without a session, it took a grant as [`Link::Granted`] holds one, whose issuer and
+    /// link object it checks only once it has a session: until they pass, it neither stores nor
+    /// pins it.
+    Unchecked {
+        master: [u8; 32],
+        cert: Vec<u8>,
+        link: Vec<u8>,
+    },
     /// Waiting, it links with the recovery key: it pinned the master public key `master` and
     /// issued its certificate `cert` with the master key, in CBOR; it has not finished linking.
     Recovering { master: [u8; 32], cert: Vec<u8> },
@@ -792,6 +800,16 @@ impl State {
         Ok(())
     }
 
+    /// Records the machine's own device, new and not registered yet, of no account so far: it
+    /// learns its account from the session it gets.
+    pub fn add_device_of_no_account(&self, id: DeviceId, name: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO device (id, device, name) VALUES (1, ?1, ?2)",
+            params![id.to_string(), name],
+        )?;
+        Ok(())
+    }
+
     /// Records the account of a device that has none recorded.
     pub fn set_device_account(&self, account: &str) -> Result<(), Error> {
         self.db.execute(
@@ -811,19 +829,28 @@ impl State {
     fn granted(&self) -> Result<Option<Link>, Error> {
         let row = self
             .db
-            .query_row("SELECT master, cert, link FROM link_grant", [], |row| {
-                Ok((
-                    row.get::<_, Vec<u8>>(0)?,
-                    row.get::<_, Vec<u8>>(1)?,
-                    row.get::<_, Vec<u8>>(2)?,
-                ))
-            })
+            .query_row(
+                "SELECT master, cert, link, checked FROM link_grant",
+                [],
+                |row| {
+                    Ok((
+                        row.get::<_, Vec<u8>>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                        row.get::<_, bool>(3)?,
+                    ))
+                },
+            )
             .optional()?;
-        row.map(|(master, cert, link)| {
+        row.map(|(master, cert, link, checked)| {
             let master = master
                 .try_into()
                 .map_err(|_| Error::Malformed("the granted master key".to_owned()))?;
-            Ok(Link::Granted { master, cert, link })
+            Ok(if checked {
+                Link::Granted { master, cert, link }
+            } else {
+                Link::Unchecked { master, cert, link }
+            })
         })
         .transpose()
     }
@@ -857,19 +884,26 @@ impl State {
                 backup,
             } => ("sent", Some((master, cert)), Some((record, backup))),
             Link::Certified { master, cert } => ("certified", Some((master, cert)), None),
-            Link::Waiting | Link::Granted { .. } | Link::Recovering { .. } => {
-                ("waiting", None, None)
-            }
+            Link::Waiting
+            | Link::Granted { .. }
+            | Link::Unchecked { .. }
+            | Link::Recovering { .. } => ("waiting", None, None),
         };
         let (master, cert) = pinned.unzip();
         let (record, backup) = sealed.unzip();
         let tx = self.write()?;
-        match link {
-            Link::Granted { master, cert, link } => tx.execute(
-                "INSERT OR REPLACE INTO link_grant (id, master, cert, link) VALUES (1, ?1, ?2, ?3)",
-                params![master.as_slice(), cert, link],
+        let grant = match link {
+            Link::Granted { master, cert, link } => Some((master, cert, link, true)),
+            Link::Unchecked { master, cert, link } => Some((master, cert, link, false)),
+            _ => None,
+        };
+        match grant {
+            Some((master, cert, link, checked)) => tx.execute(
+                "INSERT OR REPLACE INTO link_grant (id, master, cert, link, checked) \
+                 VALUES (1, ?1, ?2, ?3, ?4)",
+                params![master.as_slice(), cert, link, checked],
             )?,
-            _ => tx.execute("DELETE FROM link_grant", [])?,
+            None => tx.execute("DELETE FROM link_grant", [])?,
         };
         match link {
             Link::Recovering { master, cert } => tx.execute(
@@ -4564,6 +4598,11 @@ pub(crate) mod tests {
                 cert: cert.clone(),
             },
             Link::Waiting,
+            Link::Unchecked {
+                master,
+                cert: cert.clone(),
+                link: vec![4, 5],
+            },
             Link::Granted {
                 master,
                 cert: cert.clone(),
