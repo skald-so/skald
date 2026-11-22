@@ -220,22 +220,29 @@ enum Command {
         #[arg(long, value_name = "URL")]
         server: String,
     },
-    /// Signs this machine in to the server: it opens the server's sign-in page with its code filled
-    /// in, in the browser BROWSER names or the system's default, and prints the page's link for a
-    /// browser on any device; its person approves the code there. Run again, checks the session
-    /// with the server and says which account it is signed in to.
+    /// Signs this machine in to the server, or links its device with no sign-in. Run again, checks
+    /// the session with the server and says which account it is signed in to.
+    ///
+    /// Run by its person, a machine without a session and a linked device shows two ways at once.
+    /// One is the server's sign-in page: it opens it with its code filled in, in the browser BROWSER
+    /// names or the system's default, and prints its link for a browser on any device; its person
+    /// approves the code there. The other is a link code to type into skald link on a linked device
+    /// of the account: the code alone links the device, with no sign-in, and the device then gets
+    /// a session by its own key. Whichever finishes first wins. A code works for 5 minutes and up
+    /// to 3 runs; a failed run of a 12-character code changes its first 6 characters; Enter asks
+    /// for a fresh one. Without its person, it shows only the sign-in page.
     ///
     /// At its first sign-in, the machine generates its device's keys, which never leave it, and
     /// registers the device. On an account the server reports no master key for, the device is the
     /// account's first: it creates the account's master key, issues its own certificate with it and
     /// signs the account's personal space as its admin; on any other, the device waits for
-    /// linking. Run by its person at a terminal, it shows a link code to type into
-    /// skald link on a linked device of the account, and exits once that device linked it; Enter
-    /// asks for a fresh code. A device that holds its certificate keeps its KeyPackages, with which
-    /// others add it to channels, on the server, here and on each skald send and skald recv.
+    /// linking: run by its person, it shows a link code and exits once a linked device linked it.
+    /// A device that holds its certificate keeps its KeyPackages, with which others add it to
+    /// channels, on the server, here and on each skald send and skald recv.
     ///
-    /// With --browser, as its person or as an agent, it asks its person on a local page it opens in
-    /// the browser instead: the link codes or the recovery key it shows. Its output holds neither.
+    /// With --browser, as its person or as an agent, it shows its person a local page it opens in
+    /// the browser instead: the sign-in link, the link codes or the recovery key. Its output holds
+    /// neither code nor key.
     ///
     /// With --with-recovery-key, a device that waits for linking links with the account's recovery
     /// key instead, only as its person at a terminal, who types the key there without echo. It

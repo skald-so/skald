@@ -132,7 +132,7 @@ Anyone who reaches the server: with no session, or with a session of an account 
 **Defenses:**
 - A run's token takes only that run's messages; it is no session ([Link code](protocol/membership.md#link-code)).
 - The new device counts its runs whoever answers them, and the issuing device counts its own ([Link code](protocol/membership.md#link-code)).
-- A pairing holds 30 bits, unique among the open runs, and an account enters at most 10 pairings the server does not hold per 15 minutes; a run's token sends at most 8 later messages of at most 4096 bytes each ([Link code](protocol/membership.md#link-code)).
+- A pairing holds 30 bits, which the server picks unique among the open runs and gives only to the run's device, and an account enters at most 10 pairings the server does not hold per 15 minutes; a run's token sends at most 8 later messages of at most 4096 bytes each ([Link code](protocol/membership.md#link-code)).
 - A session by a device's key takes the key's signature over a fresh challenge and a certificate from a linked `client` device of the account, which the server checks against the account's master key ([Device key session](protocol/membership.md#device-key-session)).
 
 ### A stolen device

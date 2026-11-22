@@ -59,15 +59,14 @@ const ATTEMPTS: u32 = 3;
 /// How long a side waits between its reads of a run's messages.
 const POLL: Duration = Duration::from_millis(200);
 
-/// Where a run's hello goes, and its later messages: with a session, and without one.
+/// Where a run's hello goes, and its later messages: with a session; without one, where the run
+/// opens, and its messages, its hello first.
 const HELLO_PATH: &str = "/account/links";
 const MESSAGES_PATH: &str = "/account/links/messages";
 const SESSIONLESS_PATH: &str = "/links";
 const SESSIONLESS_MESSAGES_PATH: &str = "/links/messages";
 /// Where the issuing device takes the hello of a pairing its person entered.
 const PAIRING_PATH: &str = "/account/links/pairing";
-/// The problem of a pairing another run holds.
-const PAIRING_TAKEN: &str = "https://skald.so/problems/pairing-taken";
 
 /// Whether its person runs this at a terminal: both its input and its output are one.
 pub fn at_terminal() -> bool {
@@ -89,6 +88,7 @@ struct PairedHello {
 /// `SessionlessLinkRun` in the API spec.
 #[derive(Deserialize)]
 struct SessionlessRun {
+    pairing: String,
     token: String,
 }
 
@@ -214,7 +214,7 @@ struct OpenRun {
 pub enum Shown {
     /// A run linked the device with its session: the server stored its certificate.
     Linked,
-    /// A run granted the device, which had no session, its certificate, kept as granted: the
+    /// A run granted the device, which had no session, its certificate, kept as unchecked: the
     /// device then got the token of a device session by its key, which stored the certificate.
     ByKey(String),
     /// `tick` stopped it, or its person's input ended with no code left.
@@ -293,11 +293,11 @@ pub fn show(
                         code_left = false;
                         continue;
                     }
-                    run = new.open(&code)?;
+                    run = reopen(new, person, &code, &run)?;
                 }
                 Some(Run::Ended) => {
                     thread::sleep(POLL);
-                    run = new.open(&code)?;
+                    run = reopen(new, person, &code, &run)?;
                 }
             }
         }
@@ -307,11 +307,31 @@ pub fn show(
     }
 }
 
+/// Opens the next run of `code` after `ended`, showing `person` the code again if it changed: a run
+/// without a session has a pairing of its own.
+fn reopen(
+    new: &mut NewDevice<'_>,
+    person: Person<'_>,
+    code: &LinkCode,
+    ended: &OpenRun,
+) -> Result<OpenRun, sign_in::Error> {
+    let run = new.open(code)?;
+    if run.shown != ended.shown {
+        println!("{NEW_CODE}");
+        person
+            .show(Some(&format!("  {}", run.shown)))
+            .map_err(sign_in::Error::Io)?;
+    }
+    Ok(run)
+}
+
 /// What the new device says while it waits for linking.
 pub const NOT_LINKED: &str =
     "Not linked yet. Run skald link on a linked device and type this code there:";
 /// What it says once a code expired, and after its third failed run.
 const EXPIRED: &str = "The link code expired.";
+/// What it says before the code of a run without a session that replaced an ended one.
+const NEW_CODE: &str = "The link code is now:";
 const THREE_TIMES: &str = "The code failed 3 times; if not all were you, someone else tried.";
 /// What it says once its person's input ended with no code left.
 const NO_FRESH_CODE: &str = "No fresh code asked for. Run skald sign-in again for one.";
@@ -331,30 +351,23 @@ fn failed_line(failed: u32) -> String {
 }
 
 impl NewDevice<'_> {
-    /// The body of a hello of the run `session` with the share `share`, and its `pairing`, if any.
-    fn hello(&self, session: [u8; 16], share: [u8; 32], pairing: Option<&LinkPairing>) -> String {
-        let hello = LinkMessage::Hello { session, share }.to_cbor();
-        let mut request = serde_json::json!({
-            "device": self.device.id.to_string(),
-            "hello": URL_SAFE_NO_PAD.encode(hello),
-        });
-        if let Some(pairing) = pairing {
-            request["pairing"] = pairing.as_str().into();
-        }
-        request.to_string()
-    }
-
-    /// Opens a run of `code` with a fresh `session`: with a session, its hello as its account's;
-    /// without one, its hello with a fresh pairing, drawn again while another run holds one.
+    /// Opens a run of `code` with a fresh `session`: with a session, by its hello as its account's;
+    /// without one, by asking the server for the run, whose pairing it then sends its hello with.
     fn open(&mut self, code: &LinkCode) -> Result<OpenRun, sign_in::Error> {
         let session = link_session();
+        let device = self.device.id.to_string();
         if !self.sessionless {
             let token = self.token.clone().unwrap_or_default();
             let account = self.account.ok_or_else(|| {
                 sign_in::Error::Unexpected("a run with a session of no account".to_owned())
             })?;
             let (initiator, share) = code.initiate(account, &session);
-            let request = self.hello(session, share, None);
+            let hello = LinkMessage::Hello { session, share }.to_cbor();
+            let request = serde_json::json!({
+                "device": device,
+                "hello": URL_SAFE_NO_PAD.encode(hello),
+            })
+            .to_string();
             self.connection
                 .send_json_as(Method::Post, HELLO_PATH, &token, request.as_bytes())?;
             return Ok(OpenRun {
@@ -365,33 +378,32 @@ impl NewDevice<'_> {
                 shown: code.to_string(),
             });
         }
-        loop {
-            let pairing = LinkPairing::generate();
-            let (initiator, share) = code.initiate_paired(&pairing, &session);
-            let request = self.hello(session, share, Some(&pairing));
-            let opened = match self
-                .connection
-                .post_json(SESSIONLESS_PATH, request.as_bytes())
-            {
-                Ok(opened) => opened,
-                Err(connection::Error::Refused { kind, .. }) if kind == PAIRING_TAKEN => continue,
-                Err(err) => return Err(err.into()),
-            };
-            let run: SessionlessRun = serde_json::from_slice(&opened).map_err(|_| {
-                sign_in::Error::Unexpected("a link run without its token".to_owned())
+        let request = serde_json::json!({ "device": device }).to_string();
+        let opened = (self.connection).post_json(SESSIONLESS_PATH, request.as_bytes())?;
+        let run: Option<SessionlessRun> = serde_json::from_slice(&opened).ok();
+        let (pairing, token) = run
+            .and_then(|run| Some((LinkPairing::from_entry(&run.pairing).ok()?, run.token)))
+            .ok_or_else(|| {
+                sign_in::Error::Unexpected("a link run without its pairing and token".to_owned())
             })?;
-            return Ok(OpenRun {
-                session,
-                way: Way::Token(run.token),
-                initiator: Some(initiator),
-                isk: None,
-                shown: code.shown_with(&pairing),
-            });
-        }
+        let (initiator, share) = code.initiate_paired(&pairing, &session);
+        let way = Way::Token(token);
+        send(
+            self.connection,
+            &way,
+            &LinkMessage::Hello { session, share },
+        )?;
+        Ok(OpenRun {
+            session,
+            way,
+            initiator: Some(initiator),
+            isk: None,
+            shown: code.shown_with(&pairing),
+        })
     }
 
     /// Takes the checked grant of `master`, `cert` and `link`, in CBOR: with a session, stores it
-    /// ([`store`]); without one, keeps it as granted and gets a device session by its key, which
+    /// ([`store`]); without one, keeps it as unchecked and gets a device session by its key, which
     /// has the server store the certificate.
     fn granted(
         &mut self,
@@ -403,7 +415,7 @@ impl NewDevice<'_> {
             store(self.connection, self.state, &token, master, cert, link)?;
             return Ok(Shown::Linked);
         }
-        self.state.set_link(&Linked::Granted {
+        self.state.set_link(&Linked::Unchecked {
             master,
             cert: cert.clone(),
             link,
@@ -557,12 +569,21 @@ pub fn check_granted(
     state: &State,
     token: &str,
     keys: &Keys,
+    grant: (&[u8; 32], &[u8], &[u8]),
+) -> Result<(), String> {
+    let certs = devices::fetch(connection, "/devices", token, state)?.certs;
+    check_listed(certs, keys, grant)
+}
+
+/// [`check_granted`] against `certs`, the certificates the account's device list gives.
+pub fn check_listed(
+    mut certs: Vec<Cert>,
+    keys: &Keys,
     (master, cert, link): (&[u8; 32], &[u8], &[u8]),
 ) -> Result<(), String> {
     let cert = Cert::from_cbor(cert).map_err(text)?;
     let link = Link::from_cbor(link).map_err(text)?;
     let account = cert.body().account;
-    let mut certs = devices::fetch(connection, "/devices", token, state)?.certs;
     certs.push(cert);
     check_device(master, &certs, keys.id()).map_err(text)?;
     let issuer = check_device(master, &certs, link.body().issuer)

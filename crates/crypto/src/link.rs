@@ -28,8 +28,8 @@ const GRANT_LABEL: &[u8] = b"skald link grant";
 #[derive(Clone, PartialEq, Eq)]
 pub struct LinkCode([u8; LEN]);
 
-/// A run's pairing: 6 characters of the base32 alphabet, in uppercase ASCII, which a new device
-/// without a session draws for its run and the run's CI binds.
+/// A run's pairing: 6 characters of the base32 alphabet, in uppercase ASCII, which the server picks
+/// for a run of a new device without a session and the run's CI binds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkPairing([u8; LEN]);
 

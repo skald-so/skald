@@ -23,6 +23,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use crate::connection::{self, Connection, printable};
 use crate::device::{self, Keys, Setup};
+use crate::devices;
 use crate::key_packages;
 use crate::link_code::{self, NewDevice, Shown};
 use crate::page;
@@ -83,8 +84,12 @@ pub enum Error {
     Unexpected(String),
     /// Linking with the recovery key stopped, for this reason.
     Recovery(String),
-    /// A grant taken without a session fails its checks once the device has one.
-    Grant(String),
+    /// A grant taken without a session fails its checks once the device has one, for `why`: the
+    /// device dropped it and ended its session, unless `unended` says why the server did not.
+    Grant {
+        why: String,
+        unended: Option<connection::Error>,
+    },
     /// The person who approved the code signed in to another account than the one the device
     /// belongs to, the account with `username`; `unended` is why the server did not end that
     /// session, if it did not.
@@ -111,19 +116,33 @@ impl std::fmt::Display for Error {
             }
             Error::Unexpected(answer) => write!(f, "unexpected answer from the server: {answer}"),
             Error::Recovery(why) => f.write_str(why),
-            Error::Grant(why) => write!(f, "the link failed its checks: {why}"),
+            Error::Grant { why, unended } => {
+                write!(
+                    f,
+                    "the link failed its checks, so it is dropped and signed out: {why}"
+                )?;
+                not_ended(f, unended.as_ref())
+            }
             Error::OtherAccount { username, unended } => {
                 write!(
                     f,
                     "account {}, which is not this device's, signed in: run skald sign-in again",
                     printable(username)
                 )?;
-                match unended {
-                    Some(err) => write!(f, ". Its session is not ended: {err}"),
-                    None => Ok(()),
-                }
+                not_ended(f, unended.as_ref())
             }
         }
+    }
+}
+
+/// Says why the server did not end a session, if `unended` holds that.
+fn not_ended(
+    f: &mut std::fmt::Formatter<'_>,
+    unended: Option<&connection::Error>,
+) -> std::fmt::Result {
+    match unended {
+        Some(err) => write!(f, ". Its session is not ended: {err}"),
+        None => Ok(()),
     }
 }
 
@@ -221,17 +240,20 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
     let (token, account) = match (kept, link, options.person) {
         (Some(session), _, _) => session,
         // A run that took its grant stopped before its device had a session.
-        (None, Some(state::Link::Granted { master, cert, link }), _) => {
+        (
+            None,
+            Some(state::Link::Granted { cert, .. } | state::Link::Unchecked { cert, .. }),
+            _,
+        ) => {
+            // Its certificate registered the device.
             let token = link_code::by_key(connection, &keys, &cert)?;
-            let at = (&state, &secrets);
-            by_key(
+            state.set_registered()?;
+            keep(
                 connection,
-                at,
+                (&state, &secrets),
                 &mut stored,
                 belongs.as_deref(),
                 token,
-                &keys,
-                (&master, &cert, &link),
             )?
         }
         (None, None | Some(state::Link::New | state::Link::Waiting), Some(person)) => {
@@ -262,6 +284,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
             )?
         }
     };
+    check_grant(connection, (&state, &secrets), &mut stored, &token, &keys)?;
     let device = match state.device()? {
         Some(device) => {
             state.set_device_account(&account.to_string())?;
@@ -348,23 +371,33 @@ fn keep(
     take(connection, state, secrets, stored, belongs, token, &body)
 }
 
-/// Keeps the device session `token` the device of `keys` got by its key for its granted
-/// certificate, which registered it, then checks the grant of `master`, `cert` and `link`, in
-/// CBOR, with it ([`link_code::check_granted`]).
-fn by_key(
+/// Checks a grant the device of `keys` keeps unchecked with its session `token`
+/// ([`link_code::check_listed`]): one that passes is kept as granted, to be stored and pinned. One
+/// that fails is dropped, and the session ends and is forgotten in `stored`, the secrets. A device
+/// list the server does not give leaves the grant unchecked for the next run.
+fn check_grant(
     connection: &mut Connection,
     (state, secrets): (&State, &Secrets),
     stored: &mut secrets::Map,
-    belongs: Option<&str>,
-    token: String,
+    token: &str,
     keys: &Keys,
-    grant: (&[u8; 32], &[u8], &[u8]),
-) -> Result<(String, AccountId), Error> {
-    state.set_registered()?;
-    let (token, account) = keep(connection, (state, secrets), stored, belongs, token)?;
-    state.set_device_account(&account.to_string())?;
-    link_code::check_granted(connection, state, &token, keys, grant).map_err(Error::Grant)?;
-    Ok((token, account))
+) -> Result<(), Error> {
+    let Some(state::Link::Unchecked { master, cert, link }) =
+        state.device()?.map(|device| device.link)
+    else {
+        return Ok(());
+    };
+    let certs = devices::fetch(connection, "/devices", token, state)
+        .map_err(|err| Error::Io(format!("not linked yet: {err}")))?
+        .certs;
+    if let Err(why) = link_code::check_listed(certs, keys, (&master, &cert, &link)) {
+        state.set_link(&state::Link::Waiting)?;
+        let unended = connection.delete_as("/session", token).err();
+        forget(state, secrets, stored)?;
+        return Err(Error::Grant { why, unended });
+    }
+    state.set_link(&state::Link::Granted { master, cert, link })?;
+    Ok(())
 }
 
 /// Both ways at once for the machine's device, recorded in `state` without a session: the device
@@ -480,21 +513,14 @@ impl Both<'_> {
         match shown {
             Shown::Linked => Ok(session),
             Shown::ByKey(token) => {
-                let Some(state::Link::Granted { master, cert, link }) =
-                    state.device()?.map(|device| device.link)
-                else {
-                    return Err(Error::Unexpected("a grant that is not kept".to_owned()));
-                };
-                let at = (state, secrets);
-                let grant = (&master, cert.as_slice(), link.as_slice());
-                by_key(
+                // Its certificate registered the device.
+                state.set_registered()?;
+                keep(
                     connection,
-                    at,
+                    (state, secrets),
                     stored,
                     belongs.as_deref(),
                     token,
-                    keys,
-                    grant,
                 )
                 .map(Some)
             }

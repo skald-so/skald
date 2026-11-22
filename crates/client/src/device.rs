@@ -395,6 +395,10 @@ impl Setup<'_> {
                 link_code::store(self.connection, self.state, self.token, master, cert, link)?;
                 Ok(())
             }
+            // Checked once the device has a session, before it sets up.
+            Link::Unchecked { .. } => Err(sign_in::Error::Unexpected(
+                "a grant not checked yet".to_owned(),
+            )),
             Link::Sent {
                 master,
                 cert,

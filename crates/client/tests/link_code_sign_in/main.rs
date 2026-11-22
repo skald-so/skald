@@ -46,7 +46,7 @@
 //!   one.
 //!
 //! The server's API, as these tests use it besides that of the tests of linking with a link code:
-//! `POST /links` answers a new device's hello with `{"pairing": <text>, "token": <text>}`, and `GET
+//! `POST /links` answers a new device's run with `{"pairing": <text>, "token": <text>}`, and `GET
 //! /links/messages` with that token as bearer answers `401` once the run is over.
 
 // Each test target uses a part of the shared modules.
