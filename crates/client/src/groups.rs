@@ -16,9 +16,10 @@
 //!   they revoke, before it judges the new epoch.
 //! - Outside a group the server has, it joins by itself from the GroupInfo of the current epoch
 //!   once its signer and members are admitted, or revoked devices or devices of accounts the server
-//!   reports deleted among the channel's member accounts, whose Remove it then commits, unless it lists the device and a Welcome comes. A device whose
-//!   Welcome it refused joins by itself from that GroupInfo also if it lists the device, and one
-//!   whose Commit it could not process rejoins from a GroupInfo of a later epoch than its own;
+//!   reports deleted among the channel's member accounts, whose Remove it then commits, unless it
+//!   lists the device and a Welcome comes. A device whose Welcome it refused joins by itself from
+//!   that GroupInfo also if it lists the device, and one whose Commit it could not process
+//!   rejoins from a GroupInfo of a later epoch than its own;
 //!   either removes the leaf of its own the GroupInfo lists. One a Commit removed while admitted
 //!   warns and rejoins. A Commit of an epoch it has passed is a replay, dropped.
 //! - Its own Commit goes into the outbox with the state that holds it pending, all at once, before
