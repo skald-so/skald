@@ -389,6 +389,13 @@ mod tests {
     }
 
     #[test]
+    fn a_run_shows_its_process_tree() {
+        let run = start("true");
+        run.wait();
+        assert!(format!("{run:?}").starts_with("Run { tree: Tree {"));
+    }
+
+    #[test]
     fn dropping_a_run_ends_its_agent_and_runs_what_follows() {
         let scratch = Scratch::new("skald-run-test").unwrap();
         let pid_file = scratch.path().join("pid");
