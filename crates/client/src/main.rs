@@ -1599,6 +1599,14 @@ fn main() -> ExitCode {
     if matches!(operation.command, Command::DeleteAccount) && !link_code::at_terminal() {
         return exit(Err(deletion::NOT_AT_TERMINAL.to_owned()));
     }
+    // A device of a deleted account sends nothing; skald delete-account deletes its state.
+    if operation.command.reaches_server()
+        && !matches!(operation.command, Command::DeleteAccount)
+        && let Ok(dir) = state::dir(operation.state_dir.clone())
+        && deletion::reported(&dir)
+    {
+        return exit(Err(deletion::said(&dir)));
+    }
     if let Command::Mcp {
         relayed,
         call: None,
@@ -1722,12 +1730,43 @@ fn as_service(operation: Operation) -> ExitCode {
 /// Runs `operation`, a command that waits, in this process with `lock`, the lock of the state
 /// directory `dir` ([`wait::here`]), then closes the connection it kept.
 fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> ExitCode {
+    connection::forget_refused();
     let waited = wait::here(dir, operation, lock);
     mailbox::close_kept();
     match waited {
         Ok(Some(code)) => code,
         Ok(None) => ExitCode::SUCCESS,
-        Err(err) => exit(Err(err)),
+        Err(err) => exit(Err(Asks::of(operation).told(err))),
+    }
+}
+
+/// Where a run whose session the server refuses asks whether the account is deleted: the state
+/// directory of a run that reaches the server, with its settings.
+struct Asks(Option<(PathBuf, claude_socket::Settings)>);
+
+impl Asks {
+    /// Where a run of `operation` asks.
+    fn of(operation: &Operation) -> Self {
+        let command = &operation.command;
+        let asks = !service::stateless()
+            && command.reaches_server()
+            && !matches!(command, Command::DeleteAccount | Command::Hook { .. });
+        let settings = (operation.key_storage, operation.speaks, operation.timeout);
+        Asks(
+            (asks.then(|| state::dir(operation.state_dir.clone()).ok()))
+                .flatten()
+                .map(|dir| (dir, settings)),
+        )
+    }
+
+    /// `err`, of the run, or, once the server refused its session and says that the account is
+    /// deleted, what the run says of it ([`deletion::learned`]).
+    fn told(self, err: String) -> String {
+        let learned = (connection::session_refused())
+            .then_some(self.0)
+            .flatten()
+            .and_then(|(dir, settings)| deletion::learned(&dir, settings));
+        learned.unwrap_or(err)
     }
 }
 
@@ -2107,27 +2146,9 @@ fn performed(operation: Operation) -> Result<(), String> {
     if tool_call && let Some(says) = &says {
         say(says);
     }
-    // A run whose session the server refused asks whether the account is deleted.
-    let asks = (!service::stateless()
-        && operation.command.reaches_server()
-        && !matches!(
-            operation.command,
-            Command::DeleteAccount | Command::Hook { .. }
-        ))
-    .then(|| state::dir(operation.state_dir.clone()).ok())
-    .flatten()
-    .map(|dir| {
-        let settings = (operation.key_storage, operation.speaks, operation.timeout);
-        (dir, settings)
-    });
+    let asks = Asks::of(&operation);
     connection::forget_refused();
-    let ran = match command_performed(operation, agent) {
-        Err(err) if connection::session_refused() => {
-            let learned = asks.and_then(|(dir, settings)| deletion::learned(&dir, settings));
-            Err(learned.unwrap_or(err))
-        }
-        ran => ran,
-    };
+    let ran = command_performed(operation, agent).map_err(|err| asks.told(err));
     if !tool_call && let Some(says) = &says {
         say(says);
     }
@@ -2154,13 +2175,6 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
         && !hooked
         && let Ok(dir) = state::dir(state_dir.clone())
     {
-        // A device of a deleted account sends nothing; skald delete-account deletes its state.
-        if command.reaches_server()
-            && !matches!(command, Command::DeleteAccount)
-            && deletion::reported(&dir)
-        {
-            return Err(deletion::said(&dir));
-        }
         // A grant the device took waits for the server to store its certificate.
         if command.connects() {
             link_code::finish(&dir, key_storage, speaks, timeout, agent.is_none());

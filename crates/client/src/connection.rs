@@ -1759,6 +1759,16 @@ pub(crate) mod tests {
         body: Vec<u8>,
     }
 
+    /// A connection to a server that gives `answers`, each at once, one per request.
+    fn answered<const N: usize>(
+        answers: [String; N],
+    ) -> (Connection, thread::JoinHandle<Vec<Taken>>) {
+        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
+        let connection =
+            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        (connection, served)
+    }
+
     /// A stand-in server that answers each request in turn with the next of `answers`, a head and
     /// body after a pause; gives what it took.
     fn serving(answers: Vec<(Duration, String)>) -> (String, thread::JoinHandle<Vec<Taken>>) {
@@ -1902,10 +1912,7 @@ pub(crate) mod tests {
                          content-length: 7\r\n\r\nblocked"
             .to_owned();
         let page = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 0\r\n\r\n";
-        let answers = [stream, forbidden, page.to_owned()];
-        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
-        let mut connection =
-            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        let (mut connection, served) = answered([stream, forbidden, page.to_owned()]);
         let open = |connection: &mut Connection| {
             connection.open_events_as("/mailbox/events", ("token", "proof"), 7)
         };
@@ -1950,9 +1957,7 @@ pub(crate) mod tests {
             problem("403 Forbidden", NOT_SIGNED_IN),
             problem("401 Unauthorized", NOT_SIGNED_IN),
         ];
-        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
-        let mut connection =
-            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        let (mut connection, served) = answered(answers);
         forget_refused();
 
         for noted in [false, false, true] {
