@@ -1985,6 +1985,58 @@ impl State {
         Ok(())
     }
 
+    /// Keeps the key change `key`, warned of as `line`, found by `source` ('' for none), for its
+    /// person ([`crate::key_changes`]), unless one of that key and source waits already or, if
+    /// `once`, was ever kept; gives whether it kept it.
+    pub fn keep_key_change(
+        &self,
+        (key, source): (&str, &str),
+        line: &str,
+        once: bool,
+    ) -> Result<bool, Error> {
+        let kept = self.db.execute(
+            "INSERT INTO key_change (key, line, source) SELECT ?1, ?2, ?3
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM key_change WHERE key = ?1 AND source = ?3 AND (?4 OR seen = 0)
+             )",
+            params![key, line, source, once],
+        )?;
+        Ok(kept == 1)
+    }
+
+    /// The key changes that wait for the person, found by one of `sources`, in order, each by its
+    /// position, its warning.
+    pub fn key_changes(&self, sources: &[String]) -> Result<Vec<(u64, String)>, Error> {
+        let mut query = self.db.prepare(
+            "SELECT position, line, source FROM key_change WHERE seen = 0 ORDER BY position",
+        )?;
+        let rows = query.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut waiting = Vec::new();
+        for row in rows {
+            let (position, line, source) = row?;
+            if sources.contains(&source) {
+                let malformed = || Error::Malformed(format!("the key change {position}"));
+                waiting.push((u64::try_from(position).map_err(|_| malformed())?, line));
+            }
+        }
+        Ok(waiting)
+    }
+
+    /// Records that the person saw the key changes at `positions`.
+    pub fn key_changes_seen(&self, positions: &[u64]) -> Result<(), Error> {
+        let tx = self.write()?;
+        for position in positions {
+            tx.execute(
+                "UPDATE key_change SET seen = 1 WHERE position = ?1",
+                params![sql_seq(*position)?],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The highest `revision` the device accepted of the presence value of `device` in `channel`,
     /// with the SHA-256 of that value's bytes; none before the first.
     pub fn presence_revision(
@@ -7182,6 +7234,43 @@ pub(crate) mod tests {
             .map(|(_, line)| line)
             .collect();
         assert_eq!(lines, ["b", "c", "a"]);
+    }
+
+    /// A key change waits once per key and source until it is seen; one kept `once` is never kept
+    /// again. Each run counts only those of its sources, and a change kept while the person reads
+    /// stays waiting.
+    #[test]
+    fn key_changes_wait_per_key_and_source_until_seen() {
+        let dir = TestDir::new("state-key-changes");
+        let state = State::open(&dir).unwrap();
+        let sources = |extra: &str| [String::new(), extra.to_owned()];
+        let lines = |sources: &[String]| -> Vec<String> {
+            (state.key_changes(sources).unwrap().into_iter())
+                .map(|(_, line)| line)
+                .collect()
+        };
+
+        assert!(state.keep_key_change(("a", ""), "A", false).unwrap());
+        assert!(!state.keep_key_change(("a", ""), "A again", false).unwrap());
+        assert!(
+            state
+                .keep_key_change(("a", "dns x"), "A by x", false)
+                .unwrap()
+        );
+        assert!(state.keep_key_change(("b", ""), "B", true).unwrap());
+        assert_eq!(lines(&sources("dns x")), ["A", "A by x", "B"]);
+        assert_eq!(lines(&sources("dns y")), ["A", "B"]);
+
+        let shown: Vec<u64> = (state.key_changes(&sources("dns y")).unwrap().into_iter())
+            .map(|(position, _)| position)
+            .collect();
+        assert!(state.keep_key_change(("c", ""), "C", false).unwrap());
+        state.key_changes_seen(&shown).unwrap();
+        assert_eq!(lines(&sources("dns x")), ["A by x", "C"]);
+
+        assert!(state.keep_key_change(("a", ""), "A later", false).unwrap());
+        assert!(!state.keep_key_change(("b", ""), "B later", true).unwrap());
+        assert_eq!(lines(&sources("")), ["C", "A later"]);
     }
 
     /// The counters accepted from a sending device are kept per channel and scheme with the entry

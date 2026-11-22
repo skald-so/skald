@@ -172,20 +172,7 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-/// `text` with its control characters and the line and paragraph separators U+2028 and U+2029
-/// escaped, such as `\u{1b}` for ESC: the server's text must not drive the terminal, nor break a
-/// line for a reader that breaks lines there.
-pub fn printable(text: &str) -> String {
-    text.chars()
-        .map(|char| {
-            if char.is_control() || matches!(char, '\u{2028}' | '\u{2029}') {
-                char.escape_debug().to_string()
-            } else {
-                char.to_string()
-            }
-        })
-        .collect()
-}
+pub use skald_adapters::label::printable;
 
 /// The error of an HTTP request that got no answer: its connection's own, from [`Dial`], if it
 /// failed.
