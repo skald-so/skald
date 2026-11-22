@@ -99,6 +99,19 @@ impl Proxy {
     pub fn requests(&self) -> Vec<Request> {
         self.requests.lock().unwrap().clone()
     }
+
+    /// Fails unless it got a `CONNECT` to `host` at `port`.
+    #[track_caller]
+    pub fn assert_tunneled(&self, host: &str, port: u16) {
+        let connect = format!("CONNECT {host}:{port} ");
+        let tunnels = self.requests();
+        assert!(
+            tunnels
+                .iter()
+                .any(|request| request.line().starts_with(&connect)),
+            "no {connect}through the proxy: {tunnels:?}"
+        );
+    }
 }
 
 /// A free local port that nothing listens on: a proxy that is down.

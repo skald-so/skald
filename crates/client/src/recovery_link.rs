@@ -77,7 +77,7 @@ pub struct NewDevice<'a> {
 }
 
 /// The run that sends again what a run with the recovery key signed and did not send.
-const AGAIN: &str = "the next skald sign-in --with-recovery-key";
+const AGAIN: &str = "a later skald sign-in --with-recovery-key";
 
 /// What the run says when it stops: nothing is signed but what it says it signed.
 fn refused(why: &str) -> sign_in::Error {
@@ -100,15 +100,11 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
         && *pinned != master
     {
         return Err(refused(
-            "the server gives another master key than the one this device pinned at an earlier \
-             run with the recovery key",
+            "the master key differs from the one an earlier run pinned",
         ));
     }
-    check_account(&record, &master).map_err(|err| {
-        refused(&format!(
-            "the account record the server gives fails: {err}; someone may have changed it"
-        ))
-    })?;
+    check_account(&record, &master)
+        .map_err(|err| refused(&format!("the account record fails: {err}")))?;
     let typed = read_hidden("Type or paste the recovery key, then press Enter: ")
         .map_err(|err| sign_in::Error::Io(format!("cannot read the terminal: {err}")))?
         .ok_or_else(|| refused("no recovery key was typed"))?;
@@ -116,10 +112,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
         .map_err(|_| refused("that is not a recovery key: it has 12 letters and digits"))?;
     drop(typed);
     let opened = open_recovery(&record, &backup, &key).map_err(|_| {
-        refused(
-            "the recovery key does not open the account's master backup: it is not this \
-             account's recovery key, or someone changed the backup",
-        )
+        refused("the key does not open the master backup: wrong key or changed backup")
     })?;
     drop(key);
     let signer = opened.master;
@@ -167,15 +160,14 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
     match link_code::upload(new.connection, new.token, new.device.id, &cert.to_cbor()) {
         Err(sign_in::Error::Device(device::Error::DevicesLimit)) => {
             return Err(sign_in::Error::Recovery(
-                "the account has as many devices as it may on this server, so the server does not \
-                 store this device's certificate. Name a device stolen, or revoke one on a linked \
-                 device, then run skald sign-in --with-recovery-key again"
+                "the account has as many devices as it may: name one stolen or revoke one, then \
+                 retry"
                     .to_owned(),
             ));
         }
         stored => stored?,
     }
-    println!("The server stored this device's certificate, issued with the account's master key.");
+    println!("Stored this device's certificate, issued with the master key.");
 
     // 2. The anchors.
     let own = Own {
@@ -192,10 +184,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
     }
     .take(&own, &recovery)
     .map_err(|err| {
-        sign_in::Error::Recovery(format!(
-            "this device has not taken the history keys wrapped to the recovery key: {err}; {AGAIN} \
-             takes them"
-        ))
+        sign_in::Error::Recovery(format!("history keys not taken: {err}; {AGAIN} takes them"))
     })?;
     drop(recovery);
 
@@ -227,7 +216,7 @@ pub fn link(new: &mut NewDevice<'_>, named: &Named) -> Result<(), sign_in::Error
         .map_err(sign_in::Error::Recovery)?;
         say_revoked(revocation, &devices, "lost or wiped");
     }
-    println!("This device is linked with the recovery key, which it keeps nowhere.");
+    println!("Linked with the recovery key, which this device keeps nowhere.");
     Ok(())
 }
 
@@ -241,12 +230,10 @@ fn account_master(
         return Err(refused(if given.master.is_none() {
             "the server reports no master key for the account"
         } else {
-            "this account has no recovery key: it was made before recovery keys, so link this \
-             device from a linked device, with a link code"
+            "this account has no recovery key: link this device with a link code"
         }));
     };
-    let malformed =
-        || refused("the server gives the account's master key in a form it cannot read");
+    let malformed = || refused("the server gives the master key in an unreadable form");
     let decoded = |text: &str| URL_SAFE_NO_PAD.decode(text).map_err(|_| malformed());
     let master: [u8; 32] = decoded(master)?.try_into().map_err(|_| malformed())?;
     let record = AccountRecord::from_cbor(&decoded(record)?).map_err(|_| malformed())?;
@@ -329,8 +316,7 @@ impl NewDevice<'_> {
         }
         if personal.len() > 1 {
             eprintln!(
-                "skald: warning: the anchors objects of the account's devices name different \
-                 personal spaces, so this device pins none as its personal space"
+                "skald: warning: the devices' anchors name different personal spaces: none pinned"
             );
         }
         let personal = match personal[..] {
@@ -425,8 +411,7 @@ impl Plan {
             }
             if !certified.values().any(|ids| ids.contains(kept)) {
                 return Err(format!(
-                    "the device {kept} is not one a device named stolen or lost certified, so it \
-                     cannot be kept"
+                    "the device {kept} was not certified by a stolen or lost device: not kept"
                 ));
             }
         }
@@ -492,8 +477,7 @@ impl Plan {
         if let Some(device) = (self.named.keep_revoked.iter()).find(|id| !also_listed.contains(id))
         {
             return Err(refused(&format!(
-                "the device {device} is not one that a revocation by a device named stolen \
-                 revoked, so it cannot be kept revoked"
+                "the device {device} was not revoked by a stolen device: not kept revoked"
             )));
         }
         Ok(signed)
@@ -674,8 +658,7 @@ fn ask(
     if !restored.is_empty() {
         writeln!(
             output,
-            "Revocations by the devices named stolen revoked these, which are valid again unless \
-             kept revoked:"
+            "Stolen devices revoked these; they are valid again unless kept revoked:"
         )?;
         for id in &restored {
             writeln!(output, "  {id}")?;

@@ -21,6 +21,12 @@
 //!   was shown, saying so on a line holding `expired`; `SKALD_LINK_CODE_LIFETIME`, in seconds,
 //!   shortens that for the tests. Enter asks for a fresh code, which ends the current one; no other
 //!   fresh code is shown. Once a run succeeds it exits with success.
+//! - On a machine without a session and a device, `skald sign-in` at a terminal shows at once a
+//!   code of 12 characters, the run's pairing then its code, in three groups of four joined by
+//!   `-`; each run has its own pairing, and the code shown changes with it. `skald link` takes it as
+//!   a code of 6 characters. Linked, the device gets a session by its key; a grant whose issuer or
+//!   link object fails the check then ends the run failing, on a line holding `checks`, and ends
+//!   that session.
 //! - The same through a pipe, or `--agent <name>`, shows no code and sends no hello: it says the
 //!   device waits for linking, as before.
 //! - `skald link`, on a device whose certificate is valid, at a terminal: it says on a line holding
@@ -62,6 +68,7 @@ mod refusals;
 mod terminal;
 #[path = "../recovery_key/grants.rs"]
 mod terminal_grants;
+mod without_session;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the helpers of the
 // tests of the channel history on new devices and of reading the history, and the anchors objects

@@ -15,7 +15,7 @@ use crate::relay::{WAIT, fresh_session, hello, messages_of, reply, request};
 
 /// Opens a run without a session: `POST`.
 pub const OPEN: &str = "/links";
-/// The run's later messages: `GET`; a later message of the run: `POST`. With the run's token.
+/// The run's later messages: `GET`; a message of the run, its hello first: `POST`. With its token.
 pub const RUN_MESSAGES: &str = "/links/messages";
 /// Pairs a run with the session's account: `POST`.
 pub const PAIRING: &str = "/account/links/pairing";
@@ -53,19 +53,16 @@ impl Fresh {
         Session::none(&self.flow)
     }
 
-    /// `POST /links` of `hello`'s bytes naming `device`, without a session.
-    pub fn send_open(&self, device: &Device, hello: &[u8]) -> Response {
-        let body = json!({ "device": device.id.to_string(), "hello": b64(hello) });
+    /// `POST /links` naming `device`, without a session.
+    pub fn send_open(&self, device: &Device) -> Response {
+        let body = json!({ "device": device.id.to_string() });
         self.nobody().call("post", OPEN, Some(&body))
     }
 
-    /// Opens a run of `device`, which has no session, with a fresh `session`; the server must take
-    /// it.
+    /// Opens a run of `device`, which has no session, without its hello; the server must take it.
     #[track_caller]
-    pub fn open(&self, device: &Device) -> Run {
-        let session = fresh_session();
-        let hello = hello(&session);
-        let opened = self.send_open(device, &hello);
+    pub fn open_without_hello(&self, device: &Device) -> (String, Session) {
+        let opened = self.send_open(device);
         assert_eq!(opened.status, 201, "the run opens: {}", text(&opened));
         let body = json(&opened);
         let field = |name: &str| {
@@ -74,12 +71,27 @@ impl Fresh {
                 .unwrap_or_else(|| panic!("no {name} in {body}"))
                 .to_owned()
         };
-        Run {
+        (
+            field("pairing"),
+            Session::of_token(&self.flow, &field("token")),
+        )
+    }
+
+    /// Opens a run of `device`, which has no session, and sends its hello with a fresh `session`;
+    /// the server must take both.
+    #[track_caller]
+    pub fn open(&self, device: &Device) -> Run {
+        let (pairing, side) = self.open_without_hello(device);
+        let session = fresh_session();
+        let run = Run {
             session,
-            hello,
-            pairing: field("pairing"),
-            side: Session::of_token(&self.flow, &field("token")),
-        }
+            hello: hello(&session),
+            pairing,
+            side,
+        };
+        let sent = run.send(&run.hello);
+        assert_eq!(sent.status, 201, "the hello: {}", text(&sent));
+        run
     }
 
     /// alice's GitHub user.
@@ -122,7 +134,7 @@ pub fn register(session: &Session, device: &Device) {
 pub struct Run {
     /// The run's `session`.
     pub session: [u8; 16],
-    /// The hello that opened it.
+    /// Its hello, its first message.
     pub hello: Vec<u8>,
     /// What the person enters on the linked device.
     pub pairing: String,

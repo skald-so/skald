@@ -61,6 +61,29 @@ fn help_names_no_first_device_option() {
     );
 }
 
+/// `skald sign-in --help` says what the short lines of signing in leave out: a new machine shows
+/// both ways at once, a link code alone links the device with no sign-in, how long a code works,
+/// and that the local page of `--browser` shows the sign-in link.
+#[test]
+fn help_says_both_ways_and_what_the_page_shows() {
+    let finished = Machine::new().start(&[SIGN_IN, "--help"]).finish();
+
+    assert!(finished.success, "{finished:?}");
+    let help = finished
+        .stdout
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    for part in [
+        "two ways at once",
+        "the code alone links the device, with no sign-in",
+        "5 minutes",
+        "the sign-in link",
+    ] {
+        assert!(help.contains(part), "{part:?}: {help}");
+    }
+}
+
 /// Ada's machine on a new account signs in at a terminal with `--with-recovery-key`: once she
 /// approves its code, it says the account has no master key and creates none, sending none and
 /// holding no certificate, and asks nothing. Its next `skald sign-in` makes it the account's first

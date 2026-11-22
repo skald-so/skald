@@ -192,6 +192,28 @@ impl Shared {
     }
 }
 
+/// The reads of every relay this process started, so that [`given_pairings`] reads all answers.
+static ALL_READS: Mutex<Vec<Arc<Mutex<Vec<Chunk>>>>> = Mutex::new(Vec::new());
+
+/// Every pairing a server gave a run without a session through a relay of this process, as the
+/// `"pairing"` strings of its answers say.
+pub fn given_pairings() -> Vec<String> {
+    let all = ALL_READS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    let mut pairings = Vec::new();
+    for reads in all {
+        let reads = reads.lock().unwrap_or_else(PoisonError::into_inner);
+        let bytes: Vec<u8> = (reads.iter())
+            .filter(|read| !read.to_server)
+            .flat_map(|read| read.bytes.iter().copied())
+            .collect();
+        pairings.extend(strings_named(&String::from_utf8_lossy(&bytes), "pairing"));
+    }
+    pairings
+}
+
 /// The relay on a free local port; the machine talks to [`Relay::url`].
 pub struct Relay {
     pub url: String,
@@ -210,6 +232,7 @@ impl Relay {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
         let url = format!("http://{}", listener.local_addr().expect("local address"));
         let reads = Arc::new(Mutex::new(Vec::new()));
+        (ALL_READS.lock().unwrap_or_else(PoisonError::into_inner)).push(Arc::clone(&reads));
         let shared = Arc::new(Shared::default());
         let kept = Arc::clone(&reads);
         let rules = Arc::clone(&shared);
