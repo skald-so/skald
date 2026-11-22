@@ -37,6 +37,8 @@ mod claude_relay;
 mod claude_socket;
 mod clock;
 mod codex;
+#[cfg(unix)]
+mod codex_app_server;
 mod connection;
 mod copies;
 mod delivery;
@@ -57,6 +59,7 @@ mod history_reading;
 mod hook;
 mod inbound;
 mod intake;
+mod invites;
 mod joined;
 mod kept_certs;
 mod key_chain;
@@ -107,6 +110,7 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::io::IsTerminal as _;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -414,6 +418,29 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+    },
+    /// Creates an invite to a space this device follows, on a device of an admin of it, as its
+    /// person at a terminal: the device signs it, the server stores it, and the run shows its
+    /// link, which admits one person. Send the link only to them, over a channel you trust. The
+    /// invite names the space's default channel first, whose earlier history the newcomer reads;
+    /// its secret is only in the link, which nothing keeps.
+    Invite {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// Invites an admin, not a member.
+        #[arg(long)]
+        admin: bool,
+        /// A channel's ID, as skald channels shows it, whose earlier history the newcomer reads;
+        /// once per channel.
+        #[arg(long = "channel", value_name = "CHANNEL")]
+        channels: Vec<String>,
+        /// A channel's ID whose earlier history the newcomer does not read; once per channel.
+        #[arg(long = "channel-without-history", value_name = "CHANNEL")]
+        without_history: Vec<String>,
+        /// The days until the invite expires, 30 at most.
+        #[arg(long, value_name = "DAYS", default_value_t = invites::DEFAULT_DAYS, value_parser = invite_days)]
+        days: u64,
     },
     /// Creates a service agent of a space this device follows, on a device of an admin of it: a
     /// device of the admin's account that runs without a person, such as in CI, at the address
@@ -1131,7 +1158,7 @@ enum Command {
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
     /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification; Codex's
-    /// SessionStart, PostToolUse, UserPromptSubmit and Stop. It reads the hook input on standard
+    /// SessionStart, PostToolUse, UserPromptSubmit, Stop and PermissionRequest. It reads the hook input on standard
     /// input and runs in its folder, as the agent --agent names or, without it, the agent the session's skald mcp
     /// registers by default. SessionStart registers the session with the helper, starting one if
     /// none runs. On Claude Code, the helper writes the agent's messages into the session's
@@ -1145,9 +1172,11 @@ enum Command {
     /// Codex, every message goes in only as that line, once for the new ones, to the session whose
     /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
     /// and a Notification of a permission prompt record that the session waits on its permission
-    /// prompt, once per prompt, which the person's skald recv shows once, without the prompt's
-    /// content. It prints nothing while nothing waits, on PermissionRequest and Notification, and
-    /// on a failure, which exits with 1.
+    /// prompt, once per prompt; on Codex, PermissionRequest does, as does the session's background
+    /// app-server, which the helper watches, until its next hook or the app-server says the prompt
+    /// ended. The person's skald recv shows each prompt once, without its content. It prints nothing
+    /// while nothing waits, on PermissionRequest and Notification, and on a failure, which exits
+    /// with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -1176,6 +1205,7 @@ impl Command {
         match self {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
+            Command::Invite { .. } => Some("invite"),
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
             Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
@@ -1242,6 +1272,7 @@ impl Command {
                 | Command::Channels { .. }
                 | Command::CreateSpace { .. }
                 | Command::CreateChannel { .. }
+                | Command::Invite { .. }
                 | Command::RemoveMember { .. }
                 | Command::ExcludeDevice { .. }
                 | Command::AddToChannel { .. }
@@ -1407,6 +1438,15 @@ fn history_period(given: &str) -> Result<u64, String> {
     Ok(seconds)
 }
 
+/// The days until an invite expires: at least 1, at most [`invites::MOST_DAYS`].
+fn invite_days(given: &str) -> Result<u64, String> {
+    given
+        .parse::<u64>()
+        .ok()
+        .filter(|days| (1..=invites::MOST_DAYS).contains(days))
+        .ok_or_else(|| format!("give whole days from 1 to {}", invites::MOST_DAYS))
+}
+
 /// The setting of the host name the client reads, for tests; empty, the host name is empty.
 const HOST_NAME: &str = "SKALD_HOST_NAME";
 
@@ -1436,6 +1476,11 @@ fn main() -> ExitCode {
         Ok(Some(_)) => return as_service(operation),
         Ok(None) => {}
         Err(err) => return exit(Err(err)),
+    }
+    // The link holds the invite's secret: it goes only to a terminal, checked before anything is
+    // sent.
+    if matches!(operation.command, Command::Invite { .. }) && !std::io::stdout().is_terminal() {
+        return exit(Err(invites::NOT_AT_TERMINAL.to_owned()));
     }
     if let Command::Mcp {
         relayed,
@@ -2054,6 +2099,21 @@ fn performed(operation: Operation) -> Result<(), String> {
             agent.is_some(),
         )
         .and_then(channels::create),
+        Command::Invite {
+            space,
+            admin,
+            channels,
+            without_history,
+            days,
+        } => synced(state_dir, key_storage, speaks, timeout, &space, false).and_then(|synced| {
+            let asked = invites::Asked {
+                admin,
+                with_history: &channels,
+                without_history: &without_history,
+                days,
+            };
+            invites::create(synced, &asked)
+        }),
         Command::CreateServiceAgent {
             space,
             address,
@@ -2603,6 +2663,17 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An invite expires in whole days from 1 to 30; anything else is refused.
+    #[test]
+    fn invite_days_are_whole_days_from_1_to_30() {
+        for days in [1, 7, 30] {
+            assert_eq!(invite_days(&days.to_string()), Ok(days), "{days}");
+        }
+        for given in ["0", "31", "", "7d", "1.5", "-1", "99999999999999999999"] {
+            assert!(invite_days(given).is_err(), "{given:?}");
+        }
+    }
 
     /// A period is whole days or hours from a day on; under a day, or of another form, it is
     /// refused.
