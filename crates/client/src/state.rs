@@ -1203,6 +1203,40 @@ impl State {
             .collect()
     }
 
+    /// Records that the server reports `reported`, accounts of `space`, deleted, and no other: gives
+    /// those it did not report before, each once whichever run records it first.
+    pub fn report_deleted(
+        &self,
+        space: SpaceId,
+        reported: &BTreeSet<AccountId>,
+    ) -> Result<Vec<AccountId>, Error> {
+        let space = space.to_string();
+        let held: Vec<String> = self
+            .db
+            .prepare("SELECT account FROM reported_deleted WHERE space = ?1")?
+            .query_map(params![space], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        let wanted: BTreeSet<String> = reported.iter().map(ToString::to_string).collect();
+        for account in held.iter().filter(|account| !wanted.contains(*account)) {
+            self.db.execute(
+                "DELETE FROM reported_deleted WHERE space = ?1 AND account = ?2",
+                params![space, account],
+            )?;
+        }
+        let mut new = Vec::new();
+        for account in reported {
+            let added = self.db.execute(
+                "INSERT INTO reported_deleted (space, account) VALUES (?1, ?2)
+                 ON CONFLICT DO NOTHING",
+                params![space, account.to_string()],
+            )?;
+            if added == 1 {
+                new.push(*account);
+            }
+        }
+        Ok(new)
+    }
+
     /// The account record the device took of `account` ([`crate::records`]), in CBOR.
     pub fn account_record(&self, account: AccountId) -> Result<Option<Vec<u8>>, Error> {
         Ok(self
@@ -7514,6 +7548,44 @@ pub(crate) mod tests {
             BTreeSet::from([1, 2])
         );
         assert_eq!(state.settled_queue_keys(other).unwrap(), BTreeSet::new());
+    }
+
+    #[test]
+    fn a_deleted_account_is_reported_once_per_space_until_the_report_stops() {
+        let dir = TestDir::new("state-reported-deleted");
+        let state = State::open(&dir).unwrap();
+        let (one, other) = (SpaceId::generate(), SpaceId::generate());
+        let (ada, bob) = (AccountId::generate(), AccountId::generate());
+
+        assert_eq!(
+            state.report_deleted(one, &BTreeSet::from([ada])).unwrap(),
+            [ada]
+        );
+        assert_eq!(
+            state
+                .report_deleted(one, &BTreeSet::from([ada, bob]))
+                .unwrap(),
+            [bob]
+        );
+        assert_eq!(
+            state.report_deleted(other, &BTreeSet::from([ada])).unwrap(),
+            [ada]
+        );
+        assert_eq!(
+            state.report_deleted(one, &BTreeSet::from([bob])).unwrap(),
+            []
+        );
+        assert_eq!(
+            state
+                .report_deleted(one, &BTreeSet::from([ada, bob]))
+                .unwrap(),
+            [ada]
+        );
+        assert_eq!(state.report_deleted(other, &BTreeSet::new()).unwrap(), []);
+        assert_eq!(
+            state.report_deleted(other, &BTreeSet::from([ada])).unwrap(),
+            [ada]
+        );
     }
 
     #[test]

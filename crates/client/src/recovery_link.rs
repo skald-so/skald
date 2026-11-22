@@ -906,6 +906,7 @@ mod tests {
                 certs,
                 revocations: vec![by_a],
                 records: Vec::new(),
+                deleted: Default::default(),
             };
             Account {
                 id,

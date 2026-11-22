@@ -35,6 +35,8 @@ struct Devices {
     revocations: Vec<String>,
     #[serde(default)]
     records: Vec<String>,
+    #[serde(default)]
+    deleted: Vec<String>,
 }
 
 /// `Device` in the API spec: anything else the server gives with it, such as a name, is ignored.
@@ -187,8 +189,8 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
-/// it gives with those `state` holds; a certificate or revocation that does not decode counts as
-/// none. Prints the warning of each device given with a certificate other than the one `state`
+/// it gives with those `state` holds, and the accounts it reports deleted; a certificate,
+/// revocation or account ID that does not decode counts as none. Prints the warning of each device given with a certificate other than the one `state`
 /// keeps ([`kept_certs`]).
 pub fn fetch(
     connection: &mut Connection,
@@ -227,11 +229,15 @@ pub fn fetch(
             AccountRecord::from_cbor(&bytes).ok()
         })
         .collect();
+    let deleted = (devices.deleted.iter())
+        .filter_map(|id| id.parse().ok())
+        .collect();
     Ok(SpaceDevices {
         ids,
         certs,
         revocations,
         records,
+        deleted,
     })
 }
 
@@ -467,6 +473,7 @@ mod tests {
             certs,
             revocations,
             records: Vec::new(),
+            deleted: Default::default(),
         }
     }
 

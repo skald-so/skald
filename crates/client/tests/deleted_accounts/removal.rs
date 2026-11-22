@@ -12,7 +12,7 @@ use skald_proto::{DeviceId, Role};
 use crate::cloud::WAIT;
 use crate::fixtures::{await_running, send};
 use crate::helped::{Helped, WEBSOCKET};
-use crate::kit::{RECV, assert_members, group, received};
+use crate::kit::{RECV, assert_members, group_on_server, received};
 use crate::scene::{
     PUSHED, Scene, assert_marked_deleted, assert_read_from, assert_told_once, commits_sent,
     delete_account, epoch_of, one_message_sent, reported_deleted,
@@ -188,11 +188,17 @@ fn space_notice_makes_the_helper_remove_the_devices_with_no_command() {
     let (bob, carol) = (scene.bob.device, scene.carol.device());
     let mut wanted = vec![bob, carol];
     wanted.sort();
+    // Between a Commit and the upload of its GroupInfo, the server has none of the channel.
     let removed = || {
         scene.channels().iter().all(|channel| {
-            let mut held = group(cloud, &scene.bob.token, scene.space.id, *channel).members;
-            held.sort();
-            held == wanted
+            match group_on_server(cloud, &scene.bob.token, scene.space.id, *channel) {
+                (true, Some(group)) => {
+                    let mut held = group.members;
+                    held.sort();
+                    held == wanted
+                }
+                _ => false,
+            }
         })
     };
     let deadline = Instant::now() + WAIT;

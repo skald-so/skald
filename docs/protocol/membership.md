@@ -528,9 +528,11 @@ A channel is an MLS group [[RFC 9420](https://www.rfc-editor.org/rfc/rfc9420)] w
 - A `service` device sends its Commits on a connection of its service token, which needs the token's `send` permission and the channel among its channels ([Send](delivery.md#send)); its token alone uploads the GroupInfo.
 
 ### Admitted devices
-A device is admitted to a channel when its certificate is valid and it is one of:
+A device is admitted to a channel when its certificate is valid, its account is not one the server reports deleted, and it is one of:
 - a `client` device of an account in the channel's `channel-member` entries in the latest revision the client accepted, unless that member's `excluded` lists it;
 - a device in the channel's `services`.
+
+The server reports an account deleted in the space's device list ([api/openapi.json](../../api/openapi.json)). A member device fetches it with the revisions and on a `space-notice` ([Space notice](delivery.md#frames)); once its account is reported deleted, a device is no longer admitted, so member devices commit its Remove, which starts an epoch with a new history key, before they send in the channel, and add it nowhere.
 
 A member device:
 - MUST NOT commit the Add of a device that is not admitted;
@@ -635,7 +637,7 @@ wrap-recipient = [1, device: id] / [2, account: id]  ; a browser, or an account'
 ```
 
 - HPKE in base mode as in [Scheme `hpke`](README.md#scheme-hpke), to the `hpke` key of a `browser` device's certificate or to the recovery HPKE key of an account's [record](#account); `info` `skald history wrap`, `aad` the encoded `[channel, epoch, recipient]`.
-- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate, unless that member's `excluded` in the latest revision the wrapping device accepted lists it. `client` devices take keys from MLS and the key chain and need no wrap.
+- Each clean epoch's key is wrapped to the recovery key of each account among the channel's members and to each browser of those accounts with a valid certificate, unless that member's `excluded` in the latest revision the wrapping device accepted lists it. None goes to the recovery key or browsers of an account the server reports deleted. `client` devices take keys from MLS and the key chain and need no wrap.
 - A browser linked later gets wraps of the current epochs from member devices that find them missing.
 
 A reader MUST drop a wrap unless `ct` opens with its HPKE key and the signature verifies with the certificate of `signer`, revoked or not. That certificate MUST pass checks 1 and 2 of [Device checks](#device-checks) with the master key of an account that an accepted revision lists as a member of the space.
@@ -720,6 +722,8 @@ A reader MUST drop an entry unless:
 - The server holds GroupInfo, so it can join a channel by an external Commit from its own device. Members remove the device, and its epoch is not clean: no link opens an earlier key with that epoch's key, and no member writes under it.
 - A browser writes only under the key of a wrap whose signer the epoch's GroupInfo lists, with every member admitted, so the server cannot choose the key a browser writes under.
 - A reader takes a wrap signed by any device of a member account, revoked or not. A member device can upload a wrong link or wrap first. That breaks reading the history, not its authenticity: every entry is signed.
+- The server can report any account deleted. Member devices then remove its devices from the channels, and they rejoin by themselves once the report stops: a denial of service, as withholding is, that gives no one access.
+- A deleted account's devices read a channel until a member device that learned of the deletion commits their Remove; until then the server delivers them nothing.
 - A revoked device reads a channel until a member device that holds its revocation commits its Remove, or the empty Commit for a browser; the server delays this by withholding the revocation from every member device. A member device that did not process that Commit, such as one that joined later, learns the revocation only from the server: if the server withholds it and lets the device rejoin, that member's links open to it keys of epochs after the Remove.
 - A device that joins a group holding revoked devices ([Group changes](#group-changes)) shares its join epoch with them. That epoch is not clean, and the joiner sends nothing in it.
 - An entry's `timestamp` is its sender's claim. The server, not the reader, keeps a removed member from adding entries, and a member from adding them to epochs before the previous one.
