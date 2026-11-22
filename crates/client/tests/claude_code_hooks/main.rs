@@ -15,6 +15,8 @@
 //! - Its handover is by construction, so `read` goes as for `inbox`.
 //! - A session for which Claude Code gives no cross-session socket, or one that takes no write,
 //!   gets its messages by these hooks: its `SessionStart` and `SessionEnd` print nothing.
+//! - The permission prompt of a session that never registered is recorded for the person, as
+//!   `claude_code_permission/main.rs` has it.
 //! - What it puts into a session at once stays within Claude Code's hook output limit, 10,000
 //!   characters: messages that do not fit wait for the next handover; one longer than the limit is
 //!   cut and ends with how to read it whole. `inbox` and the agent's `skald recv` take a message's
@@ -56,6 +58,7 @@ mod limit;
 mod naming;
 mod no_socket;
 mod quiet;
+mod unregistered;
 
 // The runs of a copy of `skald` through a helper, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]

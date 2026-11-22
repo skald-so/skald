@@ -42,6 +42,7 @@ mod copies;
 mod delivery;
 mod device;
 mod devices;
+mod domains;
 mod events;
 mod fingerprints;
 mod folders;
@@ -68,6 +69,7 @@ mod mcp;
 mod message_status;
 mod output;
 mod page;
+mod permission_prompts;
 mod person;
 mod plain_path;
 mod presence;
@@ -393,6 +395,15 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
+        #[arg(
+            long,
+            env = "SKALD_DNS_RESOLVER",
+            value_name = "URL",
+            hide = true,
+            default_value = domains::RESOLVER
+        )]
+        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -555,6 +566,26 @@ enum Command {
         /// Whole days, such as 7d, or whole hours, such as 36h; at least a day.
         #[arg(value_name = "PERIOD", value_parser = history_period)]
         period: u64,
+    },
+    /// Names an organization's domain in the policy of a space this device follows, on a device of
+    /// an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then check the members against the fingerprints the
+    /// domain's DNS lists in TXT records at _skald.<domain>, each "<account ID> <fingerprint>", as
+    /// skald members shows.
+    SetDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The domain in lowercase, such as example.com.
+        #[arg(value_name = "DOMAIN", value_parser = domains::name)]
+        domain: String,
+    },
+    /// Clears the domain of a space this device follows, on a device of an admin of it, by the
+    /// space's next roster revision, which the device signs as skald create-channel does.
+    ClearDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
     },
     /// Makes a member of a space this device follows an admin, on a device of an admin of it, by the
     /// space's next roster revision, which the device signs as skald create-channel does.
@@ -1113,9 +1144,9 @@ enum Command {
         call: Option<mcp::Call>,
     },
     /// The hook handler of an agent CLI, which runs it from its hooks' config: Claude Code's
-    /// SessionStart, SessionEnd, PostToolUse and Stop; Codex's SessionStart, PostToolUse,
-    /// UserPromptSubmit and Stop. It reads the hook input on standard input and runs in its
-    /// folder, as the agent --agent names or, without it, the agent the session's skald mcp
+    /// SessionStart, SessionEnd, PostToolUse, Stop, PermissionRequest and Notification; Codex's
+    /// SessionStart, PostToolUse, UserPromptSubmit and Stop. It reads the hook input on standard
+    /// input and runs in its folder, as the agent --agent names or, without it, the agent the session's skald mcp
     /// registers by default. SessionStart registers the session with the helper, starting one if
     /// none runs. On Claude Code, the helper writes the agent's messages into the session's
     /// cross-session socket as they come, and SessionEnd ends that; PostToolUse and Stop give the
@@ -1126,8 +1157,11 @@ enum Command {
     /// delivery-modes. A message longer than the limit is cut, and skald recv #<ref> shows it
     /// whole. Stop continues the turn with them, up to the CLI's cap of continuations in a row. On
     /// Codex, every message goes in only as that line, once for the new ones, to the session whose
-    /// hook ran last, and the hooks never wait on the network. It prints nothing while nothing
-    /// waits, and on a failure, which exits with 1.
+    /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
+    /// and a Notification of a permission prompt record that the session waits on its permission
+    /// prompt, once per prompt, which the person's skald recv shows once, without the prompt's
+    /// content. It prints nothing while nothing waits, on PermissionRequest and Notification, and
+    /// on a failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
@@ -1172,6 +1206,8 @@ impl Command {
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::SetHistoryPeriod { .. } => Some("set-history-period"),
+            Command::SetDomain { .. } => Some("set-domain"),
+            Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
             Command::AddRule { .. } => Some("add-rule"),
@@ -1225,6 +1261,8 @@ impl Command {
                 | Command::AddToChannel { .. }
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
+                | Command::SetDomain { .. }
+                | Command::ClearDomain { .. }
                 | Command::MakeAdmin { .. }
                 | Command::HandOverAdmin { .. }
                 | Command::Address
@@ -1996,7 +2034,10 @@ fn performed(operation: Operation) -> Result<(), String> {
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members { space } => synced(
+        Command::Members {
+            space,
+            dns_resolver,
+        } => synced(
             state_dir,
             key_storage,
             speaks,
@@ -2004,7 +2045,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(spaces::members),
+        .and_then(|synced| spaces::members(synced, (&dns_resolver, timeout))),
         Command::Fingerprint { space: None, .. } => {
             state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
         }
@@ -2090,6 +2131,16 @@ fn performed(operation: Operation) -> Result<(), String> {
             (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
+        ),
+        Command::SetDomain { space, domain } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(Some(domain)),
+        ),
+        Command::ClearDomain { space } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(None),
         ),
         Command::MakeAdmin { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),
@@ -2299,9 +2350,19 @@ fn performed(operation: Operation) -> Result<(), String> {
             if cli == hook::Cli::Codex {
                 return codex::hook(&dir, &agent, (event, &input.session));
             }
+            // A later hook of the session tells that the prompt it waited on ended.
+            if matches!(
+                event,
+                hook::Event::SessionEnd | hook::Event::PostToolUse | hook::Event::Stop { .. }
+            ) {
+                permission_prompts::ended(&dir, input.session.id.as_deref())?;
+            }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
                 hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                hook::Event::PermissionRequest | hook::Event::PermissionPrompt => {
+                    permission_prompts::told(&dir, &agent, &input)
+                }
                 _ => recv::hook(
                     &dir,
                     key_storage,

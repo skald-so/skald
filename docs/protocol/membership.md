@@ -331,6 +331,7 @@ A client MUST warn its user when:
 - an account record's `recovery` changes;
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
+- its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
@@ -343,6 +344,16 @@ Two people check that their devices see the same master key for each other's acc
 - Two people compare the fingerprints their devices show for their own accounts over a channel they trust, such as in person or on a call; a fingerprint the server or a message gives proves nothing.
 - A device marks an account verified, for that master key, only on its person's yes to whether the fingerprint matches; an agent never marks one. A verification stays on the device that made it.
 - A verified account whose `master` changes in an accepted revision is no longer verified, and the device warns ([Device checks](#device-checks)).
+
+### Domain
+An organization lists its accounts' fingerprints in its domain's DNS, and member devices of a space whose policy names the domain check its members against them.
+
+- **Records:** TXT records at `_skald.<domain>`, one per account, its strings joined: the account ID as text, one space and the account's fingerprint as above, e.g. `01a1c4c4-94cb-7a3e-9c41-5d2e8f6b7a10 01234 56789 …`, with no other whitespace. A TXT record of another form lists nothing.
+- **Domain name:** two labels or more joined by `.`, each of 1 to 63 lowercase ASCII letters, digits and `-`, none starting or ending with `-`; at most 246 characters, so `_skald.<domain>` fits in 253; no trailing dot. A device checks nothing against a `domain` of another form.
+- **Lookup:** with DNS over HTTPS [[RFC 8484](https://www.rfc-editor.org/rfc/rfc8484)] at the resolver the device's setting names. The device keeps the records for their TTL, or for an answer without records the negative TTL [[RFC 2308](https://www.rfc-editor.org/rfc/rfc2308)], and looks them up again after it. A resolver that fails leaves the members not checked.
+- A member the records list with the fingerprint the device shows for it is listed by the domain. One they list only with other fingerprints, and an admin they do not list, are key changes, and the device warns ([Device checks](#device-checks)). Other members they do not list show nothing.
+- The check comes on top of the roster, never instead of it: it changes no master key, role or device check.
+- DNSSEC is not checked: [threat model](../threat-model.md#trade-offs).
 
 ## Trust levels
 A recipient device sets the level of each message it accepts from the sending device, the one its scheme authenticates ([Envelope](README.md#envelope)), and of each task it claims from its `sender` ([Claim checks](queues.md#claim-checks)). The level sets how a message's text reaches the agent ([Device to agent](delivery.md#device-to-agent)) and a task's rights ([Running a task](queues.md#running-a-task)).
@@ -433,6 +444,7 @@ policy = {
   1 => [peer: mode, service: mode],  ; ceilings: per trust level
   2 => uint .ge 86400,     ; history: the history key's longest age, in seconds
   ? 3 => [own: wake, peer: wake, service: wake],  ; wakes: per trust level
+  ? 4 => tstr,             ; domain: the organization's domain name
   * int => any,            ; fields of later versions
 }
 
@@ -448,7 +460,8 @@ wake-pull = 3
 - `mode`: `read-only` reads only the agent's folder and changes nothing, with no network; `full` has no limits. This version defines only these two; a device takes a mode it does not know as `read-only`.
 - `history`: [History key](#history-key).
 - `wakes`: the most waking delivery mode for messages of each sender trust level, in every channel of the space ([Device to agent](delivery.md#device-to-agent)). Absent, there is no ceiling. A device takes a wake mode it does not know as `pull`.
-- A new space starts with `[read-only, read-only]`, 30 days and no `wakes`.
+- `domain`: [Domain](#domain).
+- A new space starts with `[read-only, read-only]`, 30 days, no `wakes` and no `domain`.
 
 ## Invite
 An admin invites a person by link. The link's secret proves the newcomer is the one invited and never reaches the server.

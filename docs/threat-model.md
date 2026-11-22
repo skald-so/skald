@@ -343,6 +343,7 @@ Message texts, agent and session names other than service agents, threads, files
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
 - GitHub learns the address of each device that checks SSH signatures and which GitHub users it checks ([architecture.md, "Network"](dev/architecture.md#network));
+- a space's [domain](protocol/membership.md#domain) proves only what its DNS says: the domain's DNS operator and the resolver can list fingerprints of their choice, devices do not check DNSSEC, and the resolver learns which domains a device checks;
 - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds");
 - there has been no external crypto audit; the spec and threat model are public;
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).

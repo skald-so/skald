@@ -39,14 +39,7 @@ fn checks_go_through_https_proxy_and_carry_nothing_of_the_session() {
 
     let own = scene.own();
     assert!(shows_login(&own, scene.laptop.id, LOGIN), "{own:?}");
-    let connect = format!("CONNECT {HOST}:{} ", front.port());
-    let tunnels = proxy.requests();
-    assert!(
-        tunnels
-            .iter()
-            .any(|request| request.line().starts_with(&connect)),
-        "no {connect}through the proxy: {tunnels:?}"
-    );
+    proxy.assert_tunneled(HOST, front.port());
     let requests = github.requests();
     assert!(!requests.is_empty(), "no request to GitHub's API");
     assert_carry_nothing_of_the_session(&requests, &scene.ada);

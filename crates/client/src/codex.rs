@@ -96,7 +96,11 @@ fn busy_after(event: hook::Event, signalled: bool) -> bool {
     match event {
         hook::Event::SessionStart | hook::Event::SessionEnd => false,
         hook::Event::Stop { .. } => signalled,
-        hook::Event::PostToolUse | hook::Event::UserPromptSubmit => true,
+        // A prompt comes within a turn; Codex's hooks do not run the handler on it.
+        hook::Event::PostToolUse
+        | hook::Event::UserPromptSubmit
+        | hook::Event::PermissionRequest
+        | hook::Event::PermissionPrompt => true,
     }
 }
 
