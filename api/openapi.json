@@ -11863,6 +11863,11 @@
         "properties": {
           "invite": {
             "$ref": "#/components/schemas/InviteId"
+          },
+          "web": {
+            "description": "The server's web URL, which the invite's link starts with (docs/protocol/membership.md, \"Invite\"); absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false

@@ -7,6 +7,7 @@ use serde_json::Value;
 use skald_github_stand_in::{App, GitHub, User};
 
 use super::browser::{Browser, Cookie, Page, Submission, Visit};
+use super::device_flow::INTERVAL;
 use super::{Response, Server, TestDb, get_url, on_free_port};
 
 /// The fake OAuth App's client ID and secret.
@@ -49,6 +50,13 @@ pub fn github_stand_in(public: &str) -> GitHub {
         client_secret: CLIENT_SECRET.to_owned(),
         callback: Some(format!("{public}{CALLBACK}")),
     })
+}
+
+/// How a server is given its web address: `--web-url` or `SKALD_WEB_URL`.
+#[derive(Clone, Copy, Debug)]
+pub enum WebAddress {
+    Argument,
+    Environment,
 }
 
 /// A server with GitHub sign-in through the stand-in, on its own database.
@@ -144,6 +152,38 @@ impl SignIn {
             CLIENT_SECRET,
             envs,
         )
+    }
+
+    /// A server whose codes poll every second, with public and web addresses as `addresses` gives
+    /// them for the port it listens on, the web address set as `given` says; the app's callback is
+    /// on the web address, the sign-in's `public`, where browsers sign in. Gives it with the public
+    /// address.
+    pub fn with_web_address(
+        given: WebAddress,
+        addresses: impl Fn(u16) -> (String, String),
+    ) -> (Self, String) {
+        let db = TestDb::create();
+        let (github, server, (public, web)) = on_free_port(Duration::from_secs(30), |port| {
+            let (public, web) = addresses(port);
+            let github = github_stand_in(&web);
+            let mut args = vec!["--public-url", public.as_str(), INTERVAL, "1"];
+            args.extend(github_args(&github));
+            let mut envs = vec![(SECRET_ENV, CLIENT_SECRET)];
+            match given {
+                WebAddress::Argument => args.extend(["--web-url", web.as_str()]),
+                WebAddress::Environment => envs.push(("SKALD_WEB_URL", web.as_str())),
+            }
+            let listen = format!("127.0.0.1:{port}");
+            let server = Server::try_launch(&db, &listen, &args, &envs)?;
+            Ok((github, server, (public, web)))
+        });
+        let stand = SignIn {
+            db,
+            github,
+            server,
+            public: web,
+        };
+        (stand, public)
     }
 
     /// A server whose public address `public` gives for the port the server listens on.
