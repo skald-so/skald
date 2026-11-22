@@ -44,6 +44,7 @@ mod copies;
 mod delivery;
 mod device;
 mod devices;
+mod domains;
 mod events;
 mod fingerprints;
 mod folders;
@@ -378,6 +379,15 @@ enum Command {
         /// The space's name, such as acme.
         #[arg(value_name = "SPACE", allow_hyphen_values = true)]
         space: String,
+        /// The URL of the DNS-over-HTTPS resolver that looks up the records of the space's domain.
+        #[arg(
+            long,
+            env = "SKALD_DNS_RESOLVER",
+            value_name = "URL",
+            hide = true,
+            default_value = domains::RESOLVER
+        )]
+        dns_resolver: String,
     },
     /// Shows your account's fingerprint, or, given a space and a member's handle, that member's.
     /// Compare it with the one the other person's device shows, in person or on a call. Run by its
@@ -540,6 +550,26 @@ enum Command {
         /// Whole days, such as 7d, or whole hours, such as 36h; at least a day.
         #[arg(value_name = "PERIOD", value_parser = history_period)]
         period: u64,
+    },
+    /// Names an organization's domain in the policy of a space this device follows, on a device of
+    /// an admin of it, by the space's next roster revision, which the device signs as skald
+    /// create-channel does. Member devices then check the members against the fingerprints the
+    /// domain's DNS lists in TXT records at _skald.<domain>, each "<account ID> <fingerprint>", as
+    /// skald members shows.
+    SetDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
+        /// The domain in lowercase, such as example.com.
+        #[arg(value_name = "DOMAIN", value_parser = domains::name)]
+        domain: String,
+    },
+    /// Clears the domain of a space this device follows, on a device of an admin of it, by the
+    /// space's next roster revision, which the device signs as skald create-channel does.
+    ClearDomain {
+        /// The space's name, such as acme.
+        #[arg(value_name = "SPACE", allow_hyphen_values = true)]
+        space: String,
     },
     /// Makes a member of a space this device follows an admin, on a device of an admin of it, by the
     /// space's next roster revision, which the device signs as skald create-channel does.
@@ -1162,6 +1192,8 @@ impl Command {
             Command::AddToChannel { .. } => Some("add-to-channel"),
             Command::RemoveFromChannel { .. } => Some("remove-from-channel"),
             Command::SetHistoryPeriod { .. } => Some("set-history-period"),
+            Command::SetDomain { .. } => Some("set-domain"),
+            Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
             Command::AddRule { .. } => Some("add-rule"),
@@ -1215,6 +1247,8 @@ impl Command {
                 | Command::AddToChannel { .. }
                 | Command::RemoveFromChannel { .. }
                 | Command::SetHistoryPeriod { .. }
+                | Command::SetDomain { .. }
+                | Command::ClearDomain { .. }
                 | Command::MakeAdmin { .. }
                 | Command::HandOverAdmin { .. }
                 | Command::Address
@@ -1596,6 +1630,7 @@ fn run_hook(
             .filter(|home| !home.is_empty())
             .map(PathBuf::from);
         input.session.process = codex::parent();
+        input.session.codex = input.session.process.and_then(codex::exe_of);
     } else if event == hook::Event::SessionStart {
         let setting = |name| std::env::var_os(name).filter(|value| !value.is_empty());
         input.session.socket = setting(hook::SOCKET_SETTING).map(PathBuf::from);
@@ -1977,7 +2012,10 @@ fn performed(operation: Operation) -> Result<(), String> {
             Some(_) => agents::spaces(&dir, key_storage, speaks, timeout),
             None => spaces::list(&dir, key_storage, speaks, timeout, Scope::All),
         }),
-        Command::Members { space } => synced(
+        Command::Members {
+            space,
+            dns_resolver,
+        } => synced(
             state_dir,
             key_storage,
             speaks,
@@ -1985,7 +2023,7 @@ fn performed(operation: Operation) -> Result<(), String> {
             &space,
             agent.is_some(),
         )
-        .and_then(spaces::members),
+        .and_then(|synced| spaces::members(synced, (&dns_resolver, timeout))),
         Command::Fingerprint { space: None, .. } => {
             state::dir(state_dir).and_then(|dir| fingerprints::own(&dir))
         }
@@ -2071,6 +2109,16 @@ fn performed(operation: Operation) -> Result<(), String> {
             (state_dir, key_storage, speaks, timeout),
             &space,
             admin::Edit::HistoryPeriod(period),
+        ),
+        Command::SetDomain { space, domain } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(Some(domain)),
+        ),
+        Command::ClearDomain { space } => edit(
+            (state_dir, key_storage, speaks, timeout),
+            &space,
+            admin::Edit::Domain(None),
         ),
         Command::MakeAdmin { space, handle } => edit(
             (state_dir, key_storage, speaks, timeout),

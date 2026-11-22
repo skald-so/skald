@@ -305,6 +305,7 @@ An OS account on the device's machine other than the one that runs the client.
 **Defenses:**
 - The state directory and the key file in it are the client's account's only: on Unix by their permissions, on Windows by the access rights they inherit from `%LOCALAPPDATA%` ([architecture.md, "Cryptography"](dev/architecture.md#cryptography)).
 - The helper's socket is in the state directory, in a directory of its own that only the client's account reaches; the helper runs no other account's commands ([architecture.md, "Components"](dev/architecture.md#components)).
+- `codex queue` keeps what it queues in the Codex session's config home, where other local accounts can read it until its turn runs, so the client queues only the signal, never a message's text ([architecture.md, "Components"](dev/architecture.md#components)).
 - The local page of `--browser` listens on loopback, which other accounts reach, but answers only its secret, handed to the browser only through a file in the state directory ([architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 
 ## The server sees
@@ -342,6 +343,7 @@ Message texts, agent and session names other than service agents, threads, files
 - the history is outside MLS forward secrecy: a revoked device keeps the history keys it held and reads the history written before its revocation, but nothing written after;
 - metadata is visible;
 - GitHub learns the address of each device that checks SSH signatures and which GitHub users it checks ([architecture.md, "Network"](dev/architecture.md#network));
+- a space's [domain](protocol/membership.md#domain) proves only what its DNS says: the domain's DNS operator and the resolver can list fingerprints of their choice, devices do not check DNSSEC, and the resolver learns which domains a device checks;
 - on the web the server delivers the JS, so a linked browser trusts the served build; the build is reproducible ([infrastructure.md](dev/infrastructure.md), "Trust in builds");
 - there has been no external crypto audit; the spec and threat model are public;
 - the limits of trust in devices, rosters and history: [protocol spec](protocol/membership.md#security-considerations).

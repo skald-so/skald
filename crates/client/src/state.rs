@@ -382,10 +382,14 @@ pub struct CodexSession {
     /// Its session file and config home, if its hooks gave them.
     pub file: Option<PathBuf>,
     pub home: Option<PathBuf>,
-    /// The ID of the Codex process that runs it, if known.
+    /// The ID of the Codex process that runs it, and that process's executable, its `codex`, if
+    /// known.
     pub process: Option<u32>,
+    pub codex: Option<PathBuf>,
     /// Whether a turn of it runs: from a hook of the turn until the `Stop` that ends it.
     pub busy: bool,
+    /// Whether a signal the helper queued for it waits for the turn it starts: until its next hook.
+    pub queued: bool,
     /// The place of its last hook's run in the order of the sessions' hooks.
     pub hooked: u64,
 }
@@ -1245,6 +1249,86 @@ impl State {
         };
         self.db
             .execute(sql, params![account.to_string(), master.as_slice()])?;
+        Ok(())
+    }
+
+    /// The TXT records of `domain`'s `_skald` name that the resolver at `resolver` gave
+    /// ([`crate::domains`]), and when they expire, in seconds since the Unix epoch.
+    pub fn domain_records(
+        &self,
+        resolver: &str,
+        domain: &str,
+    ) -> Result<Option<(Vec<String>, u64)>, Error> {
+        let kept: Option<(String, i64)> = self
+            .db
+            .query_row(
+                "SELECT records, expires FROM domain_records WHERE resolver = ?1 AND domain = ?2",
+                params![resolver, domain],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(kept.map(|(records, expires)| {
+            let records = records.lines().map(str::to_owned).collect();
+            (records, u64::try_from(expires).unwrap_or_default())
+        }))
+    }
+
+    /// Keeps `records`, none with a line break, as those records until `expires`.
+    pub fn set_domain_records(
+        &self,
+        (resolver, domain): (&str, &str),
+        records: &[String],
+        expires: u64,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT INTO domain_records (resolver, domain, records, expires) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (resolver, domain)
+             DO UPDATE SET records = excluded.records, expires = excluded.expires",
+            params![
+                resolver,
+                domain,
+                records.join("\n"),
+                i64::try_from(expires).unwrap_or(i64::MAX)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Records that the device warned of the key change of `account`, with the master key
+    /// `master`, that `domain`'s records from `resolver` showed by listing it with the fingerprint
+    /// `listed`, or by not listing it if empty; whether it had not warned of it before.
+    pub fn warn_of_domain(
+        &self,
+        (resolver, domain): (&str, &str),
+        account: AccountId,
+        master: &[u8; 32],
+        listed: &str,
+    ) -> Result<bool, Error> {
+        let added = self.db.execute(
+            "INSERT INTO domain_warning (resolver, domain, account, master, listed)
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+            params![
+                resolver,
+                domain,
+                account.to_string(),
+                master.as_slice(),
+                listed
+            ],
+        )?;
+        Ok(added == 1)
+    }
+
+    /// Forgets the key changes of `account` that `domain`'s records from `resolver` showed, as
+    /// those records list it with its fingerprint.
+    pub fn clear_domain_warnings(
+        &self,
+        (resolver, domain): (&str, &str),
+        account: AccountId,
+    ) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM domain_warning WHERE resolver = ?1 AND domain = ?2 AND account = ?3",
+            params![resolver, domain, account.to_string()],
+        )?;
         Ok(())
     }
 
@@ -2820,19 +2904,22 @@ impl State {
     }
 
     /// Registers the Codex session `session`, or updates its registration, as the one whose hook
-    /// ran last: a session file or config home it does not give stays as registered.
+    /// ran last: a session file, config home, process or `codex` it does not give stays as
+    /// registered, and a signal queued for it no longer waits.
     pub fn register_codex(&self, session: &CodexSession) -> Result<(), Error> {
         let file = session.file.as_deref().map(path_text).transpose()?;
         let home = session.home.as_deref().map(path_text).transpose()?;
+        let codex = session.codex.as_deref().map(path_text).transpose()?;
         self.db.execute(
             "INSERT INTO codex_session
-                 (thread, space, agent, folder, file, home, process, busy, hooked)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8,
+                 (thread, space, agent, folder, file, home, process, codex, busy, hooked)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
                  (SELECT COALESCE(MAX(hooked), 0) + 1 FROM codex_session))
              ON CONFLICT (thread) DO UPDATE SET
                  space = excluded.space, agent = excluded.agent, folder = excluded.folder,
                  file = COALESCE(excluded.file, file), home = COALESCE(excluded.home, home),
-                 process = COALESCE(excluded.process, process), busy = excluded.busy,
+                 process = COALESCE(excluded.process, process),
+                 codex = COALESCE(excluded.codex, codex), busy = excluded.busy, queued = 0,
                  hooked = excluded.hooked",
             params![
                 session.thread,
@@ -2842,6 +2929,7 @@ impl State {
                 file,
                 home,
                 session.process,
+                codex,
                 session.busy,
             ],
         )?;
@@ -2881,20 +2969,26 @@ impl State {
     /// The registered Codex sessions, the one whose hook ran last first.
     pub fn codex_sessions(&self) -> Result<Vec<CodexSession>, Error> {
         let mut query = self.db.prepare(
-            "SELECT thread, space, agent, folder, file, home, process, busy, hooked
+            "SELECT thread, space, agent, folder, file, home, codex, process, busy, queued, hooked
              FROM codex_session ORDER BY hooked DESC",
         )?;
         let rows = query.query_map([], |row| {
             Ok((
                 texts::<4>(row, 0)?,
-                [row.get::<_, Option<String>>(4)?, row.get(5)?],
-                row.get::<_, Option<i64>>(6)?,
-                row.get::<_, bool>(7)?,
-                row.get::<_, i64>(8)?,
+                [row.get::<_, Option<String>>(4)?, row.get(5)?, row.get(6)?],
+                row.get::<_, Option<i64>>(7)?,
+                [row.get::<_, bool>(8)?, row.get(9)?],
+                row.get::<_, i64>(10)?,
             ))
         })?;
         rows.map(|row| {
-            let ([thread, space, agent, folder], [file, home], process, busy, hooked) = row?;
+            let (
+                [thread, space, agent, folder],
+                [file, home, codex],
+                process,
+                [busy, queued],
+                hooked,
+            ) = row?;
             let malformed = || Error::Malformed(format!("the Codex session {thread}"));
             Ok(CodexSession {
                 space: space.parse().map_err(|_| malformed())?,
@@ -2905,7 +2999,9 @@ impl State {
                 process: process
                     .map(|process| u32::try_from(process).map_err(|_| malformed()))
                     .transpose()?,
+                codex: codex.map(PathBuf::from),
                 busy,
+                queued,
                 hooked: u64::try_from(hooked).map_err(|_| malformed())?,
                 thread,
             })
@@ -2939,6 +3035,25 @@ impl State {
         Ok(())
     }
 
+    /// Marks a signal queued for the Codex session `thread` unless a turn of it runs or one is
+    /// queued already; gives whether it did.
+    pub fn queue_codex(&self, thread: &str) -> Result<bool, Error> {
+        let changed = self.db.execute(
+            "UPDATE codex_session SET queued = 1 WHERE thread = ?1 AND busy = 0 AND queued = 0",
+            params![thread],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Records that the signal queued for the Codex session `thread` failed to queue.
+    pub fn unqueue_codex(&self, thread: &str) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE codex_session SET queued = 0 WHERE thread = ?1",
+            params![thread],
+        )?;
+        Ok(())
+    }
+
     /// The `seq` of each kept message that waits for the agent `agent` whose signal goes to a
     /// Codex session, and that session's thread.
     pub fn codex_signals(&self, agent: &str) -> Result<Vec<(u64, String)>, Error> {
@@ -2949,14 +3064,24 @@ impl State {
         )
     }
 
-    /// Records that a hook of the agent `agent` gave the signal of each of the kept messages
-    /// `seqs`.
+    /// Records that a hook of the agent `agent`, or a `codex queue` for it, gave the signal of each
+    /// of the kept messages `seqs`.
     pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        self.mark_signalled(seqs, agent, true)
+    }
+
+    /// Records that the signal of each of the kept messages `seqs` for the agent `agent` did not go
+    /// after all: its `codex queue` failed.
+    pub fn signals_taken_back(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
+        self.mark_signalled(seqs, agent, false)
+    }
+
+    fn mark_signalled(&self, seqs: &[u64], agent: &str, signalled: bool) -> Result<(), Error> {
         let tx = self.write()?;
         for seq in seqs {
             tx.execute(
-                "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent],
+                "UPDATE handover SET signalled = ?3 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent, signalled],
             )?;
         }
         tx.commit()?;
@@ -5611,7 +5736,9 @@ pub(crate) mod tests {
             file: None,
             home: None,
             process: None,
+            codex: None,
             busy: false,
+            queued: false,
             hooked: 0,
         };
         other.register_codex(&session).unwrap();
@@ -5622,6 +5749,46 @@ pub(crate) mod tests {
 
         assert_eq!(state.write_entries(&[(1, vec![1])]).unwrap(), 1);
         committed.join().unwrap();
+    }
+
+    /// A signal is queued for a Codex session only while it is idle with none queued; a failed
+    /// one, or its next hook, leaves none queued. A hook keeps its `codex` when it gives none.
+    #[test]
+    fn a_codex_session_has_one_queued_signal_until_its_next_hook() {
+        let dir = TestDir::new("state-codex-queue");
+        let state = State::open(&dir).unwrap();
+        let mut session = CodexSession {
+            thread: "thread".to_owned(),
+            space: SpaceId::generate(),
+            agent: "web".to_owned(),
+            folder: PathBuf::from("/w"),
+            file: None,
+            home: None,
+            process: Some(7),
+            codex: Some(PathBuf::from("/apps/codex")),
+            busy: true,
+            queued: false,
+            hooked: 0,
+        };
+        let queued = || state.codex_sessions().unwrap()[0].queued;
+        state.register_codex(&session).unwrap();
+        assert!(!state.queue_codex("thread").unwrap(), "queued while busy");
+        session.busy = false;
+        session.codex = None;
+        state.register_codex(&session).unwrap();
+        assert_eq!(
+            state.codex_sessions().unwrap()[0].codex.as_deref(),
+            Some(Path::new("/apps/codex"))
+        );
+        assert!(state.queue_codex("thread").unwrap());
+        assert!(queued());
+        assert!(!state.queue_codex("thread").unwrap(), "queued twice");
+        state.unqueue_codex("thread").unwrap();
+        assert!(!queued());
+        assert!(state.queue_codex("thread").unwrap());
+        state.register_codex(&session).unwrap();
+        assert!(!queued(), "still queued after a hook");
+        assert!(!state.queue_codex("other").unwrap());
     }
 
     /// The state keeps each agent's status: what it set, what the device last gave it and its
