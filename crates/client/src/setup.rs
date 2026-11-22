@@ -50,14 +50,21 @@ pub const EVENTS: [&str; 5] = [
 
 /// The variables Codex gives Skald's MCP server besides its own defaults, such as `HOME` and
 /// `PATH`: those `skald mcp` reads, for its state directory and key storage, the Secret Service's
-/// session bus on Linux, and one-shot mode.
-pub const SERVER_VARIABLES: [&str; 6] = [
+/// session bus on Linux, one-shot mode, the proxy (`docs/dev/architecture.md`, "Network") and the
+/// root certificates ([`crate::tls`]).
+pub const SERVER_VARIABLES: [&str; 12] = [
     "SKALD_STATE_DIR",
     "SKALD_KEY_STORAGE",
     "SKALD_ONE_SHOT",
     "XDG_STATE_HOME",
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_RUNTIME_DIR",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
 ];
 
 /// How long Codex lets Skald's hook run, in seconds: the handler gives up after

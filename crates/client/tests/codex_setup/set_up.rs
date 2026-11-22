@@ -65,9 +65,27 @@ impl Home {
     }
 }
 
+/// The settings the client reads that Codex gives an MCP server only if its entry names them: the
+/// state directory, key storage, Linux's session bus, one-shot mode, the proxy and the root
+/// certificates.
+const SERVER_VARIABLES: [&str; 12] = [
+    "SKALD_STATE_DIR",
+    "SKALD_KEY_STORAGE",
+    "SKALD_ONE_SHOT",
+    "XDG_STATE_HOME",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
 /// Fails unless `read` holds Skald's entries, as the setup adds them: the MCP server `skald`, run
-/// as `skald mcp`, whose tools Codex calls without asking and to which it gives Skald's state
-/// directory and key storage settings, and exactly one hook of Skald's handler
+/// as `skald mcp`, whose tools Codex calls without asking and to which it gives the client's
+/// settings of [`SERVER_VARIABLES`], and exactly one hook of Skald's handler
 /// for each of its events, in a group that takes every tool.
 #[track_caller]
 fn assert_set_up(read: &Read, what: &str) {
@@ -79,7 +97,7 @@ fn assert_set_up(read: &Read, what: &str) {
         "{what}: Codex would ask to approve Skald's tools: {server}"
     );
     let named = (server["env_vars"].as_array().map(Vec::as_slice)).unwrap_or_default();
-    for variable in ["SKALD_STATE_DIR", "SKALD_KEY_STORAGE"] {
+    for variable in SERVER_VARIABLES {
         assert!(
             named.iter().any(|name| name == variable),
             "{what}: Codex would not give the server {variable}: {server}"
