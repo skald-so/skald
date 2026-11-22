@@ -225,13 +225,21 @@ fn write_unix(dir: &Path, records: &Path, script: &Script) -> PathBuf {
     path
 }
 
-/// The stand-in as a batch file that runs a PowerShell script.
+/// What the Windows stand-in's batch file passes for a last argument `-`.
+const DASH: &str = "--skald-stand-in-dash";
+
+/// The stand-in as a batch file that runs a PowerShell script. PowerShell's `-File` takes a lone
+/// `-`, the last argument of a session, for a parameter with no name and refuses it: the batch
+/// file passes [`DASH`] for it, and the script turns that back into `-`.
 fn write_windows(dir: &Path, records: &Path, script: &Script) -> PathBuf {
     let rec = records.to_string_lossy().replace('\'', "''");
     let mut ps = String::from("$ErrorActionPreference = 'Continue'\r\n");
+    ps += &format!(
+        "$argv = @($args | ForEach-Object {{ if (\"$_\" -eq '{DASH}') {{ '-' }} else {{ \"$_\" }} }})\r\n"
+    );
     ps += &format!("$rec = '{rec}'\r\n");
     ps += "Add-Content -LiteralPath \"$rec\\invocations\" -Value 'run'\r\n";
-    ps += "[IO.File]::WriteAllText(\"$rec\\args\", ($args -join [char]0))\r\n";
+    ps += "[IO.File]::WriteAllText(\"$rec\\args\", ($argv -join [char]0))\r\n";
     ps += "[IO.File]::WriteAllText(\"$rec\\cwd\", (Get-Location).Path)\r\n";
     for name in WATCHED {
         ps += &format!(
@@ -252,9 +260,9 @@ fn write_windows(dir: &Path, records: &Path, script: &Script) -> PathBuf {
     ps += "  [IO.File]::WriteAllText(\"$rec\\stdin\", [Console]::In.ReadToEnd())\r\n";
     ps += "}\r\n";
     ps += "$out = $null\r\n";
-    ps += "for ($i = 0; $i -lt $args.Count; $i++) {\r\n";
-    ps += "  if (($args[$i] -eq '-o' -or $args[$i] -eq '--output-last-message') -and $i + 1 -lt $args.Count) { $out = $args[$i + 1] }\r\n";
-    ps += "  if ($args[$i] -like '--output-last-message=*') { $out = $args[$i].Substring(24) }\r\n";
+    ps += "for ($i = 0; $i -lt $argv.Count; $i++) {\r\n";
+    ps += "  if (($argv[$i] -eq '-o' -or $argv[$i] -eq '--output-last-message') -and $i + 1 -lt $argv.Count) { $out = $argv[$i + 1] }\r\n";
+    ps += "  if ($argv[$i] -like '--output-last-message=*') { $out = $argv[$i].Substring(24) }\r\n";
     ps += "}\r\n";
     let line = |text: &str| {
         format!(
@@ -291,7 +299,10 @@ fn write_windows(dir: &Path, records: &Path, script: &Script) -> PathBuf {
     fs::write(dir.join("codex.ps1"), ps).expect("write the stand-in's script");
     let script = dir.join("codex.ps1").to_string_lossy().into_owned();
     let cmd = format!(
-        "@echo off\r\npowershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" %*\r\nexit /b %ERRORLEVEL%\r\n"
+        "@echo off\r\nsetlocal\r\nset \"args=%*\"\r\n\
+         if \"%args:~-2%\"==\" -\" set \"args=%args:~0,-2% {DASH}\"\r\n\
+         powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"{script}\" %args%\r\n\
+         exit /b %ERRORLEVEL%\r\n"
     );
     let path = dir.join("codex.cmd");
     write_executable(&path, &cmd);
