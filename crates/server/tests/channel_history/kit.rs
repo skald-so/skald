@@ -37,13 +37,20 @@ pub enum Item {
     Wrap(Vec<u8>),
     /// An entry and the `msg_id` its upload names.
     Entry(MessageId, Vec<u8>),
+    /// A queue key object (`docs/protocol/queues.md`, "Queue key object"), the item of the kind 4;
+    /// only the tests of queue key objects upload one.
+    #[allow(dead_code)]
+    QueueKey(Vec<u8>),
 }
 
 impl Item {
     /// The item's CBOR bytes.
     pub fn bytes(&self) -> &[u8] {
         match self {
-            Self::Link(bytes) | Self::Wrap(bytes) | Self::Entry(_, bytes) => bytes,
+            Self::Link(bytes)
+            | Self::Wrap(bytes)
+            | Self::Entry(_, bytes)
+            | Self::QueueKey(bytes) => bytes,
         }
     }
 
@@ -54,6 +61,7 @@ impl Item {
             Self::Entry(msg_id, bytes) => {
                 array_of(&[uint(3), byte_item(msg_id.as_bytes()), byte_item(bytes)])
             }
+            Self::QueueKey(bytes) => array_of(&[uint(4), byte_item(bytes)]),
         }
     }
 }

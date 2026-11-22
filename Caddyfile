@@ -19,6 +19,7 @@
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
 		path /spaces/*/channels/*/history/wraps /spaces/*/channels/*/presence /spaces/*/devices
+		path /spaces/*/channels/*/queue-keys/*
 		path /spaces/*/channels/*/queues /spaces/*/channels/*/queues/*
 		path /spaces/*/channels/*/queues/*/claims /spaces/*/channels/*/queues/*/tasks
 		path /spaces/*/channels/*/queues/*/tasks/* /spaces/*/channels/*/queues/*/tasks/*/*
