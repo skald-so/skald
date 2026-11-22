@@ -1,7 +1,8 @@
 //! The setup on fixture config homes: Skald's entries are added and every other entry and comment
 //! stays; a second run changes no byte; an older Skald's entries are replaced; a removal gives back
-//! the fixture and takes out only Skald's entries; a config it cannot read stays as it is, and the
-//! run says why; it follows `CODEX_HOME`, and `~/.codex` without it.
+//! the fixture and takes out only Skald's entries; a CRLF config keeps its line endings; a config
+//! it cannot read stays as it is, and the run says why; it follows `CODEX_HOME`, and `~/.codex`
+//! without it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -217,6 +218,45 @@ fn a_removal_gives_back_the_fixture() {
             "{name}: the removal did not give back the fixture"
         );
     }
+}
+
+/// With CRLF line endings, as an editor on Windows may leave them, in each file of the fixture
+/// `others`: a removal with nothing set up changes no byte; the setup writes `config.toml` with
+/// CRLF line endings only; a second run changes no byte; a removal gives back the files byte for
+/// byte.
+#[test]
+fn a_crlf_config_keeps_its_line_endings() {
+    let crlf: Files = (fixture_files("others").into_iter())
+        .map(|(file, bytes)| {
+            let lf = String::from_utf8(bytes)
+                .expect("UTF-8")
+                .replace("\r\n", "\n");
+            (file, lf.replace('\n', "\r\n").into_bytes())
+        })
+        .collect();
+    let home = Home::new(&crlf);
+    home.remove("CRLF, with nothing set up");
+    assert_eq!(
+        home.files(),
+        crlf,
+        "a removal with nothing set up changed it"
+    );
+
+    home.set_up("CRLF");
+    let after = home.files();
+    let config = text(&after, CONFIG).expect("config.toml");
+    let bare = config.matches('\n').count() - config.matches("\r\n").count();
+    assert_eq!(bare, 0, "the setup wrote LF line endings:\n{config}");
+    assert_set_up(&Read::of(&after), "CRLF");
+    home.set_up("CRLF, again");
+    assert_eq!(home.files(), after, "a second run changed it");
+
+    home.remove("CRLF");
+    assert_eq!(
+        home.files(),
+        crlf,
+        "the removal did not give back the files"
+    );
 }
 
 /// The hooks Paseo adds to `hooks.json` for its events, as it writes them.

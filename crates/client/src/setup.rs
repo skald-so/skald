@@ -305,13 +305,15 @@ fn edit(files: &Files, wanted: Option<&Entries>, paths: (&Path, &Path)) -> Resul
             if let Some(wanted) = wanted {
                 add_to_toml(&mut doc, wanted).map_err(|why| refused(config_path, &why))?;
             }
+            // toml_edit writes LF line endings: an edit that changes nothing else keeps the file,
+            // and one that does keeps its CRLF ones.
             let edited = doc.to_string();
-            if edited == text {
+            if lf_only(&edited) == lf_only(text) {
                 Change::Keep
             } else if edited.trim().is_empty() {
                 Change::Delete
             } else {
-                Change::Write(edited)
+                Change::Write(with_endings_of(text, &edited))
             }
         }
     };
@@ -322,7 +324,8 @@ fn edit(files: &Files, wanted: Option<&Entries>, paths: (&Path, &Path)) -> Resul
                 Change::Delete
             } else {
                 let pretty = serde_json::to_string_pretty(hooks).map_err(|err| err.to_string())?;
-                Change::Write(format!("{pretty}\n"))
+                let held = files.hooks.as_deref().unwrap_or_default();
+                Change::Write(with_endings_of(held, &format!("{pretty}\n")))
             }
         }
         _ => Change::Keep,
@@ -331,6 +334,21 @@ fn edit(files: &Files, wanted: Option<&Entries>, paths: (&Path, &Path)) -> Resul
         config: config_change,
         hooks: hooks_change,
     })
+}
+
+/// `text` with LF line endings only.
+fn lf_only(text: &str) -> String {
+    text.replace("\r\n", "\n")
+}
+
+/// `edited`, written with LF line endings, with CRLF ones if `held`, the file it replaces, has them.
+fn with_endings_of(held: &str, edited: &str) -> String {
+    let edited = lf_only(edited);
+    if held.contains("\r\n") {
+        edited.replace('\n', "\r\n")
+    } else {
+        edited
+    }
 }
 
 /// For each event of [`EVENTS`], the groups of `config`, `config.toml` as JSON, that hold a hook
@@ -624,6 +642,33 @@ mod tests {
             Change::Write(text) => text,
             other => panic!("not written: {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_crlf_file_keeps_its_line_endings() {
+        let config = "# Ada's\r\nmodel = \"m\"\r\n\r\n[features]\r\nhooks = true\r\n";
+        assert_eq!(removed(&files(Some(config), None)).config, Change::Keep);
+        let text = written(set_up(&files(Some(config), None)).config);
+        assert_eq!(
+            text.matches('\n').count(),
+            text.matches("\r\n").count(),
+            "{text:?}"
+        );
+        assert_eq!(set_up(&files(Some(&text), None)).config, Change::Keep);
+        let back = removed(&files(Some(&text), None)).config;
+        assert_eq!(back, Change::Write(config.to_owned()));
+        let skalds = format!(
+            "{{ \"hooks\": [{{ \"type\": \"command\", \"command\": \"{EXE} hook codex\" }}] }}"
+        );
+        let others = r#"{ "hooks": [{ "type": "command", "command": "say done" }] }"#;
+        let older =
+            format!("{{\r\n\"hooks\": {{\r\n\"Stop\": [{others}, {skalds}]\r\n}}\r\n}}\r\n");
+        let hooks = written(removed(&files(None, Some(&older))).hooks);
+        assert_eq!(
+            hooks.matches('\n').count(),
+            hooks.matches("\r\n").count(),
+            "{hooks:?}"
+        );
     }
 
     #[test]
