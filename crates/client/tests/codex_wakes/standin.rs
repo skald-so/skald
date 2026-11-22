@@ -329,6 +329,11 @@ pub fn assert_queued(
 #[track_caller]
 pub fn assert_soon(ran: &Ran, sent: SystemTime) {
     let after = ran.started().duration_since(sent).unwrap_or_default();
+    mark_timing(&format!(
+        "test: the send returned at {} us; codex queue started at {} us, {after:?} after",
+        micros(sent),
+        micros(ran.started())
+    ));
     assert!(
         after <= WAKE,
         "codex queue ran {after:?} after the message came, not within {WAKE:?}"
@@ -415,4 +420,26 @@ pub fn web_in_app(codex: &Codex) -> (StandIn, Thread, CodexApp) {
     let mut app = stand_in.start();
     app.starts(codex, &web);
     (stand_in, web, app)
+}
+
+/// Microseconds from the Unix epoch to `at`.
+fn micros(at: SystemTime) -> u128 {
+    (at.duration_since(UNIX_EPOCH)).map_or(0, |since| since.as_micros())
+}
+
+/// Appends `what` to the file of the client's timing marks (`src/timing.rs`), if the tests' run
+/// names one, as the client marks: now in microseconds since the Unix epoch, this process's ID
+/// and what happened.
+fn mark_timing(what: &str) {
+    let Some(log) = std::env::var_os(crate::helped::TIMING_LOG) else {
+        return;
+    };
+    if let Ok(mut file) = (OpenOptions::new().create(true).append(true)).open(log) {
+        let line = format!(
+            "{} {} {what}",
+            micros(SystemTime::now()),
+            std::process::id()
+        );
+        let _ = writeln!(file, "{line}");
+    }
 }

@@ -29,6 +29,8 @@ pub const ONE_SHOT: &str = "--one-shot";
 pub use crate::machine::ONE_SHOT as ONE_SHOT_SETTING;
 /// The setting of the helper's idle time, in seconds.
 pub const IDLE_SETTING: &str = "SKALD_HELPER_IDLE";
+/// The setting that names the file of the client's timing marks (`src/timing.rs`).
+pub const TIMING_LOG: &str = "SKALD_TIMING_LOG";
 /// The setting of the version a run acts as, for tests.
 pub const VERSION_SETTING: &str = "SKALD_VERSION";
 /// A request timeout, in seconds, long enough for the helper a command starts on a loaded machine
@@ -110,6 +112,10 @@ impl Helped {
             .env_remove(ONE_SHOT_SETTING)
             .env(IDLE_SETTING, IDLE.as_secs().to_string())
             .envs(settings.iter().copied());
+        // The client's opt-in timing marks (`src/timing.rs`), if the tests' run has them.
+        if let Some(log) = std::env::var_os(TIMING_LOG) {
+            command.env(TIMING_LOG, log);
+        }
         command
     }
 

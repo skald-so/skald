@@ -449,6 +449,9 @@ impl Sessions {
             return Some(false);
         }
         let came = self.watch.came();
+        if came != Came::Nothing {
+            crate::timing::mark(|| format!("helper came {came:?}"));
+        }
         // Each session's run says the devices that wait for linking.
         if mailbox::linking_came() {
             self.ran();
