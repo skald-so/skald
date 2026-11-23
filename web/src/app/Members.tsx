@@ -48,6 +48,12 @@ function found(member: ListedMember, query: string): boolean {
   );
 }
 
+/** Whether the session's account is the only admin among `members`, and they are more than it. */
+function onlyAdmin(members: readonly ListedMember[]): boolean {
+  const admins = members.filter((member) => member.role === "admin");
+  return members.length > 1 && admins.length === 1 && admins[0]!.you === true;
+}
+
 const columns = (now: number): Column<ListedMember>[] => [
   {
     key: "person",
@@ -105,8 +111,8 @@ export interface MembersScreenProps {
  * The Members section of 09-members.png: a row per member of the chosen space with its handle and
  * GitHub login, or that the server reports its account deleted, role, linked devices and when it
  * joined, in the server's order until a click on a column sorts them; filter buttons by role and a
- * search by handle or login, in the browser. It only shows them: an admin changes them with
- * `skald`.
+ * search by handle or login, in the browser. An admin changes roles with `skald`. The only admin
+ * of a space with another remaining member sees the command to appoint an admin.
  */
 export function MembersScreen({
   space,
@@ -155,6 +161,14 @@ export function MembersScreen({
         }
       />
       {failed && <Banner>{failed}</Banner>}
+      {onlyAdmin(all) && (
+        <Banner>
+          <strong>You are the only admin.</strong> If you lose all your devices
+          and the recovery key, nobody can manage this space. To make a member
+          an admin, run <code>skald make-admin {space} &lt;handle&gt;</code> on
+          your device.
+        </Banner>
+      )}
       <div className={styles.toolbar}>
         <FilterButtons
           label="Filter members"

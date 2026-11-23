@@ -795,6 +795,8 @@ export interface ListedMember {
   joined_at: string;
   /** `true` when the member's account is deleted: the server's word; absent otherwise. */
   deleted?: boolean;
+  /** `true` on the member whose account is the session's, of a web or a device session; absent on every other member. */
+  you?: boolean;
 }
 
 export interface ListedMembers {
