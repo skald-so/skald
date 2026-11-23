@@ -53,7 +53,7 @@ mod access;
 mod browser;
 #[path = "../../../server/tests/common/spa.rs"]
 mod spa;
-use access::{press, rows_holding};
+use access::{open_members, press, rows_holding};
 use browser::{Browser, Page};
 use spa::{
     Spa, answers_without_secrets, space_options, wait_for_cabinet, wait_for_sign_in_page,
@@ -124,10 +124,8 @@ fn delete_typing(page: &Page, typed: &str) -> String {
 }
 
 /// Opens Members in the cabinet of `username` in `page` and chooses the space `name`.
-fn open_members(page: &Page, spa: &Spa, username: &str, name: &str) {
-    page.goto(&spa.at("/"));
-    wait_for_cabinet(page, username);
-    press(page, None, "a, [role=link]", "^members\\b");
+fn open_space_members(page: &Page, spa: &Spa, username: &str, name: &str) {
+    open_members(page, spa, username);
     let listed = space_options(page).unwrap_or_default();
     let offered = listed.iter().filter(|option| option.contains(name)).count();
     assert_eq!(offered, 1, "{name} once in the space switcher: {listed:?}");
@@ -240,7 +238,7 @@ fn the_only_admin_deletes_nothing_until_handing_over_then_deletes_the_account() 
     let listed = run(&ida.machine, &[DEVICES]);
     assert!(!listed.success, "{listed:?}");
 
-    open_members(&bob_page, spa, &bob_name, ACME);
+    open_space_members(&bob_page, spa, &bob_name, ACME);
     wait_until(&bob_page, "Ida marked deleted in acme's Members", |page| {
         let rows = rows_holding(page, &ida_name);
         rows.len() == 1 && rows[0].to_lowercase().contains(DELETED)
