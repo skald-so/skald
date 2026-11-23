@@ -44,6 +44,7 @@ mod codex_app_server;
 mod codex_confirm;
 mod connection;
 mod copies;
+mod deletion;
 mod delivery;
 mod device;
 mod devices;
@@ -393,6 +394,15 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Deletes the account this machine signed in to, on the server of its session, only as its
+    /// person at a terminal. It shows the spaces the deletion deletes, those only the account is in,
+    /// and stops while the account is the only admin of a space with other members, naming the
+    /// command that hands over its admin rights. Otherwise it says what goes at once and what 30
+    /// days later, and deletes once you type the account's username. With a sign-in older than the
+    /// server allows, it first signs in again in the browser, as skald sign-in does. Once deleted,
+    /// it deletes this machine's secrets, the device's keys among them, and its local state. Nothing
+    /// undoes a deletion.
+    DeleteAccount,
     /// Sets the username of the account this machine signed in to, on the server of its session.
     /// The server refuses a username that is invalid, reserved or another account's, and the
     /// account keeps its old one.
@@ -1305,6 +1315,7 @@ impl Command {
             Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
+            Command::DeleteAccount => Some("delete-account"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
@@ -1402,6 +1413,19 @@ impl Command {
             )
     }
 
+    /// Whether it reaches the server of the machine's session: one that says which devices wait for
+    /// linking, signs in, links or deletes the account.
+    fn reaches_server(&self) -> bool {
+        self.prompts()
+            || matches!(
+                self,
+                Command::SignIn { .. }
+                    | Command::Link { .. }
+                    | Command::LinkStep { .. }
+                    | Command::DeleteAccount
+            )
+    }
+
     /// Whether it says what it says as JSON: `--json`.
     fn json(&self) -> bool {
         self.prompts_as_json()
@@ -1477,6 +1501,8 @@ impl Command {
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
+            // It stops the helper and takes the lock itself, then deletes the state with it.
+            Command::DeleteAccount => None,
             // It takes its person's answers here and its steps lock ([`link`], [`held`],
             // [`key_changes`]).
             Command::Link { .. } | Command::Held | Command::KeyChanges => None,
@@ -1611,6 +1637,18 @@ fn main() -> ExitCode {
     if matches!(operation.command, Command::Invite { .. }) && !std::io::stdout().is_terminal() {
         return exit(Err(invites::NOT_AT_TERMINAL.to_owned()));
     }
+    // The username is typed only at a terminal, checked before anything is sent.
+    if matches!(operation.command, Command::DeleteAccount) && !link_code::at_terminal() {
+        return exit(Err(deletion::NOT_AT_TERMINAL.to_owned()));
+    }
+    // A device of a deleted account sends nothing; skald delete-account deletes its state.
+    if operation.command.reaches_server()
+        && !matches!(operation.command, Command::DeleteAccount)
+        && let Ok(dir) = state::dir(operation.state_dir.clone())
+        && deletion::reported(&dir)
+    {
+        return exit(Err(deletion::said(&dir)));
+    }
     if let Command::Mcp {
         relayed,
         call: None,
@@ -1739,12 +1777,43 @@ fn as_service(operation: Operation) -> ExitCode {
 /// Runs `operation`, a command that waits, in this process with `lock`, the lock of the state
 /// directory `dir` ([`wait::here`]), then closes the connection it kept.
 fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> ExitCode {
+    connection::forget_refused();
     let waited = wait::here(dir, operation, lock);
     mailbox::close_kept();
     match waited {
         Ok(Some(code)) => code,
         Ok(None) => ExitCode::SUCCESS,
-        Err(err) => exit(Err(err)),
+        Err(err) => exit(Err(Asks::of(operation).told(err))),
+    }
+}
+
+/// Where a run whose session the server refuses asks whether the account is deleted: the state
+/// directory of a run that reaches the server, with its settings.
+struct Asks(Option<(PathBuf, claude_socket::Settings)>);
+
+impl Asks {
+    /// Where a run of `operation` asks.
+    fn of(operation: &Operation) -> Self {
+        let command = &operation.command;
+        let asks = !service::stateless()
+            && command.reaches_server()
+            && !matches!(command, Command::DeleteAccount | Command::Hook { .. });
+        let settings = (operation.key_storage, operation.speaks, operation.timeout);
+        Asks(
+            (asks.then(|| state::dir(operation.state_dir.clone()).ok()))
+                .flatten()
+                .map(|dir| (dir, settings)),
+        )
+    }
+
+    /// `err`, of the run, or, once the server refused its session and says that the account is
+    /// deleted, what the run says of it ([`deletion::learned`]).
+    fn told(self, err: String) -> String {
+        let learned = (connection::session_refused())
+            .then_some(self.0)
+            .flatten()
+            .and_then(|(dir, settings)| deletion::learned(&dir, settings));
+        learned.unwrap_or(err)
     }
 }
 
@@ -2237,7 +2306,9 @@ fn performed(operation: Operation) -> Result<(), String> {
     if tool_call && let Some(says) = &says {
         say(says);
     }
-    let ran = command_performed(operation, agent);
+    let asks = Asks::of(&operation);
+    connection::forget_refused();
+    let ran = command_performed(operation, agent).map_err(|err| asks.told(err));
     if !tool_call && let Some(says) = &says {
         say(says);
     }
@@ -2371,6 +2442,9 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
             state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
+        }
+        Command::DeleteAccount => {
+            state::dir(state_dir).and_then(|dir| deletion::run(&dir, key_storage, speaks, timeout))
         }
         Command::SetUsername { username } => state::dir(state_dir)
             .and_then(|dir| set_username::run(&dir, key_storage, speaks, timeout, &username)),
