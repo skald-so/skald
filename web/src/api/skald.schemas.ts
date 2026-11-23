@@ -310,12 +310,26 @@ export const ListedSessionKind = {
 } as const;
 
 /**
+ * The sign-in provider: GitHub, Google, or the corporate OpenID Connect issuer.
+ */
+export type SignInProvider =
+  (typeof SignInProvider)[keyof typeof SignInProvider];
+
+export const SignInProvider = {
+  github: "github",
+  google: "google",
+  corporate: "corporate",
+} as const;
+
+/**
  * A session of the account: a web session, from a sign-in in the browser, or a device session, from the device flow. No IP address or location.
  */
 export interface ListedSession {
   session: SessionId;
   /** `web` for a web session, `device` for a device session. */
   kind: ListedSessionKind;
+  /** The provider a web session signed in with; only for a web session. */
+  sign_in_method?: SignInProvider;
   /** A web session's browser, as the `User-Agent` of its sign-in names it, such as `Chrome`; only when it names a known one. */
   browser?: string;
   /** A web session's operating system, as the `User-Agent` of its sign-in names it, such as `macOS`; only when it names a known one. */
@@ -342,23 +356,11 @@ export interface Sessions {
 export type SignInMethodId = string;
 
 /**
- * `github`, or `google` for the server's OIDC provider.
- */
-export type SignInMethodProvider =
-  (typeof SignInMethodProvider)[keyof typeof SignInMethodProvider];
-
-export const SignInMethodProvider = {
-  github: "github",
-  google: "google",
-} as const;
-
-/**
  * A sign-in method: a provider and the subject it gives the person, which the server does not show.
  */
 export interface SignInMethod {
   method: SignInMethodId;
-  /** `github`, or `google` for the server's OIDC provider. */
-  provider: SignInMethodProvider;
+  provider: SignInProvider;
   /** When the method was linked, or the account created with it. */
   linked_at: string;
   /** A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub. */
@@ -426,17 +428,6 @@ export type SignInProvidersSignUp =
 export const SignInProvidersSignUp = {
   open: "open",
   closed: "closed",
-} as const;
-
-/**
- * A sign-in provider: `github`, or `google` for the server's OIDC provider.
- */
-export type SignInProvider =
-  (typeof SignInProvider)[keyof typeof SignInProvider];
-
-export const SignInProvider = {
-  github: "github",
-  google: "google",
 } as const;
 
 export interface SignInProviders {

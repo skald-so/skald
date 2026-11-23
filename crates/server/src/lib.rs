@@ -31,7 +31,6 @@ mod error_reports;
 mod events;
 mod expiry;
 mod github;
-mod google;
 mod groups;
 mod history;
 mod history_retention;
@@ -44,6 +43,7 @@ mod links;
 mod mailboxes;
 mod notices;
 mod oidc;
+mod oidc_browser;
 mod presence;
 mod protocol;
 mod queues;
@@ -65,9 +65,9 @@ pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
 pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
-use google::Google;
 pub use link_runs::LINK_CODE_LIFETIME;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
+use oidc_browser::{Corporate, Google, OidcSignIn};
 use protocol::Statement;
 pub use protocol::Versions;
 pub use requests::LONG_POLL_MAX_WAIT;
@@ -173,7 +173,8 @@ struct AppState {
     db: PgPool,
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
-    google: Option<Arc<Google>>,
+    google: Option<Arc<OidcSignIn<Google>>>,
+    corporate: Option<Arc<OidcSignIn<Corporate>>>,
     sign_up: Arc<SignUp>,
     privacy_policy_url: Option<Arc<PrivacyPolicyUrl>>,
     space_plans: bool,
@@ -339,9 +340,23 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .route(sign_in::START_PATH, get(sign_in::start::<GitHubApp>))
         .route(CALLBACK_PATH, get(sign_in::callback::<GitHubApp>))
         .route(links::GITHUB_PATH, post(links::start::<GitHubApp>))
-        .route(google::START_PATH, get(sign_in::start::<Google>))
-        .route(google::CALLBACK_PATH, get(sign_in::callback::<Google>))
-        .route(links::GOOGLE_PATH, post(links::start::<Google>))
+        .route(
+            oidc_browser::GOOGLE_START,
+            get(sign_in::start::<OidcSignIn<Google>>),
+        )
+        .route(
+            oidc_browser::GOOGLE_CALLBACK,
+            get(sign_in::callback::<OidcSignIn<Google>>),
+        )
+        .route(links::GOOGLE_PATH, post(links::start::<OidcSignIn<Google>>))
+        .route(
+            oidc_browser::CORPORATE_START,
+            get(sign_in::start::<OidcSignIn<Corporate>>),
+        )
+        .route(
+            oidc_browser::CORPORATE_CALLBACK,
+            get(sign_in::callback::<OidcSignIn<Corporate>>),
+        )
         .route(
             "/auth/token",
             post(device_flow::token).layer(checked(Statement::Header)),
@@ -602,7 +617,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .sign_in
                 .as_ref()
                 .and_then(|sign_in| sign_in.google.clone())
-                .map(|google| Arc::new(Google::new(google))),
+                .map(|settings| Arc::new(OidcSignIn::new(settings))),
+            corporate: settings
+                .sign_in
+                .as_ref()
+                .and_then(|sign_in| sign_in.corporate.clone())
+                .map(|settings| Arc::new(OidcSignIn::new(settings))),
             sign_in: settings.sign_in.map(Arc::new),
             sign_up: Arc::new(settings.sign_up),
             privacy_policy_url: settings.privacy_policy_url.map(Arc::new),
