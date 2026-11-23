@@ -31,7 +31,7 @@ getrandom = "0.4"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-io"] }
-rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 semver = "1"
@@ -69,7 +69,7 @@ mls-rs-crypto-rustcrypto = "0.23"
 # a terminal does.
 portable-pty = "0.9"
 # `trace` lets a state test run another connection in the middle of a read.
-rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "trace"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 skald-server = { path = "../server" }
