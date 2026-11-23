@@ -192,6 +192,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 
 ## Cloud
 - **The same image that is published for self-hosting.**
+- [Load testing](load-testing.md) covers the runner profile, targets and bounds.
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
   - Its GitHub sign-in uses an OAuth App of its own under `skald-so`; `script/check-github-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Its Google sign-in uses an OAuth client of its own; `script/check-google-sign-in https://dev.skald.so <client ID>` checks it without a person.
