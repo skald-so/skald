@@ -7,7 +7,7 @@ Add the `skald-client` crate from a Skald checkout to your Rust application.
 skald-client = { path = "../skald/crates/client" }
 ```
 
-Enroll a device with `skald sign-in` and finish linking it. Pass the device's state directory, its key storage and a timeout to `DeviceContext::one_shot`. Use `KeyStorage::Auto` for the system store with the usual file fallback, or `KeyStorage::File` for a device enrolled with `--key-storage file`. Use the channel ID from `skald channels <space>`. [Device enrollment](../README.md#2-connect-a-machine)
+Enroll a device with `skald sign-in` and finish linking it. Pass the device's state directory, its key storage and a timeout to `DeviceContext::one_shot`. Use `KeyStorage::Auto` for the system store with the usual file fallback, or `KeyStorage::File` for a device enrolled with `--key-storage file`. Use the channel ID from `skald --one-shot channels <space>`. [Device enrollment](../README.md#2-connect-a-machine)
 
 ```rust
 use std::{io, path::PathBuf, time::Duration};
@@ -26,7 +26,7 @@ fn exchange(
 }
 ```
 
-The calls block and use the CLI's state lock, device proof, transport and encryption. A one-shot call runs in the application process and waits for the lock if another process or the helper owns it. It uses the timeout for the lock wait, native requests and send retries. The [fixture application](../crates/client/examples/rust_message_fixture/main.rs) shows a complete command-line program.
+The calls block and use the CLI's state lock, device proof, transport and encryption. A one-shot call runs in the application process and waits for the lock if another process or the helper owns it. It uses the timeout for the lock wait, native requests and send retries. Use `skald --one-shot` for CLI commands on the SDK's device to avoid starting a helper there. [Fixture application](../crates/client/examples/rust_message_fixture/main.rs)
 
 ## Send and retry
 
