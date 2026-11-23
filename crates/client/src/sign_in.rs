@@ -190,7 +190,7 @@ pub struct Options<'p> {
     pub recovery: Option<recovery_link::Named>,
     /// The invite whose proof goes with a new device authorization.
     pub invite: Option<&'p InviteLink>,
-    /// How the device signs its key if it issues its own certificate.
+    /// How the device signs its key if it issues its own certificate or links with a link code.
     pub ssh: ssh_signing::Options,
 }
 
@@ -284,6 +284,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
                 person,
                 recovery: options.recovery.is_some(),
                 invite: options.invite,
+                ssh: &options.ssh,
             };
             match both.run(connection, &mut stored)? {
                 Some(session) => session,
@@ -430,11 +431,16 @@ struct Both<'a> {
     person: Person<'a>,
     recovery: bool,
     invite: Option<&'a InviteLink>,
+    /// How the device signs its key: once signed in, for the requests of its link codes.
+    ssh: &'a ssh_signing::Options,
 }
 
 /// What the device says once signed in on an account whose device links it.
 const SIGNED_IN_WAITS: &str =
     "Not linked yet: type its link code in skald link on a linked device.";
+/// What it says once linked without a session: it knew no account to sign its key for.
+const UNSIGNED_WITHOUT_SESSION: &str =
+    "No SSH key signs this device's certificate: it linked without a session.";
 /// What it says before its first code.
 const OR_CODE: &str = "Or run skald link on a linked device and type this code there:";
 
@@ -454,6 +460,7 @@ impl Both<'_> {
             person,
             recovery,
             invite,
+            ssh,
         } = self;
         let device = state.device()?.ok_or_else(|| {
             Error::Unexpected("no device recorded before its link code".to_owned())
@@ -484,6 +491,7 @@ impl Both<'_> {
             device: &device,
             keys,
             sessionless: true,
+            signed: None,
         };
         let tick = |new: &mut NewDevice<'_>| -> Result<bool, Error> {
             let token = match flow.taken() {
@@ -530,6 +538,7 @@ impl Both<'_> {
             }
             new.token = Some(token);
             new.account = Some(account);
+            new.sign(ssh);
             Ok(false)
         };
         let shown = link_code::show(&mut new, (person, &presses), OR_CODE, tick)?;
@@ -537,6 +546,9 @@ impl Both<'_> {
         match shown {
             Shown::Linked => Ok(session),
             Shown::ByKey(token) => {
+                if !ssh.off {
+                    println!("{UNSIGNED_WITHOUT_SESSION}");
+                }
                 // Its certificate registered the device.
                 state.set_registered()?;
                 keep(

@@ -1,6 +1,7 @@
 //! Signing a device's key with its person's SSH key that GitHub lists (`docs/protocol/membership.md`,
 //! "Device certificate"). A `client` device that issues its own certificate, as the account's first
-//! device or with the recovery key, signs it first, through OpenSSH's `ssh-keygen`, so passphrases,
+//! device or with the recovery key, signs it first, and one linked with a link code signs for its
+//! request ([`crate::link_code`]), through OpenSSH's `ssh-keygen`, so passphrases,
 //! ssh-agent and security keys stay OpenSSH's. The GitHub user is the login of the account's GitHub
 //! sign-in method, or the one `--github` names; the device takes its ID and SSH keys from GitHub's
 //! API ([`crate::ssh_checks`]). It signs with the key `--ssh-key` names, or with a listed key that
