@@ -370,8 +370,8 @@ pub struct Follower {
     /// Whether the run covers every space the device follows ([`Scope::All`]), so its warnings of
     /// master keys compare them ([`follow::master_warnings`]); otherwise only the synced one's.
     every_space: bool,
-    /// Whether what following a space tells, beside its warnings, is kept for the person's run
-    /// rather than shown: while an agent's run follows a space outside its scope.
+    /// Keeps notices from following a space for the person's run during agent-only intake or
+    /// while an agent's run follows a space outside its scope.
     pub hold_notices: bool,
 }
 
