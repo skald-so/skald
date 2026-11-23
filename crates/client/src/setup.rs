@@ -50,12 +50,13 @@ pub const EVENTS: [&str; 5] = [
 
 /// The variables Codex gives Skald's MCP server besides its own defaults, such as `HOME` and
 /// `PATH`: those `skald mcp` reads, for its state directory and key storage, the Secret Service's
-/// session bus on Linux, one-shot mode, the proxy (`docs/dev/architecture.md`, "Network") and the
-/// root certificates ([`crate::tls`]).
-pub const SERVER_VARIABLES: [&str; 12] = [
+/// session bus on Linux, one-shot mode, the resend timeout ([`crate::resend`]), the proxy
+/// (`docs/dev/architecture.md`, "Network") and the root certificates ([`crate::tls`]).
+pub const SERVER_VARIABLES: [&str; 13] = [
     "SKALD_STATE_DIR",
     "SKALD_KEY_STORAGE",
     "SKALD_ONE_SHOT",
+    crate::resend::RESEND_SETTING,
     "XDG_STATE_HOME",
     "DBUS_SESSION_BUS_ADDRESS",
     "XDG_RUNTIME_DIR",
@@ -739,6 +740,16 @@ mod tests {
             }
         );
         assert_eq!(removed(&files(Some(&text), None)).config, Change::Delete);
+    }
+
+    #[test]
+    fn the_mcp_server_inherits_the_resend_timeout_setting() {
+        let text = written(set_up(&files(None, None)).config);
+        let config = parsed(&text);
+        let variables = config["mcp_servers"][SERVER]["env_vars"]
+            .as_array()
+            .expect("the MCP environment allowlist");
+        assert!(variables.iter().any(|name| name == "SKALD_RESEND_AFTER"));
     }
 
     #[test]
