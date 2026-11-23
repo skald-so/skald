@@ -5,11 +5,13 @@
 //! on a WebSocket in its first frame, and in each HTTPS request of its mailbox in a header
 //! (`docs/protocol/delivery.md`, "Connecting").
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -51,32 +53,44 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 /// The problem of a request without a session, or with one the server does not hold.
 const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
 
+/// Whether a CLI request got [`NOT_SIGNED_IN`] since [`forget_refused`].
+static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
+
 thread_local! {
-    /// Whether a request on this thread got [`NOT_SIGNED_IN`] since [`forget_refused`].
-    static SESSION_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether a synchronous SDK operation on this thread got [`NOT_SIGNED_IN`].
+    static SCOPED_REFUSED: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
-/// Whether a request on this thread got the server's refusal of its session since
-/// [`forget_refused`].
+/// Whether a request of the current SDK operation or CLI run got a session refusal.
 pub fn session_refused() -> bool {
-    SESSION_REFUSED.get()
+    SCOPED_REFUSED
+        .get()
+        .unwrap_or_else(|| SESSION_REFUSED.load(Ordering::SeqCst))
 }
 
-/// Forgets the refusals [`session_refused`] gives.
+/// Forgets the CLI's refusals.
 pub fn forget_refused() {
-    SESSION_REFUSED.set(false);
+    SESSION_REFUSED.store(false, Ordering::SeqCst);
 }
 
 /// Tracks session refusals separately for a synchronous library operation and its caller.
 pub fn track_refusals() -> Refusals {
-    Refusals(SESSION_REFUSED.replace(false))
+    Refusals(SCOPED_REFUSED.replace(Some(false)))
 }
 
-pub struct Refusals(bool);
+pub struct Refusals(Option<bool>);
 
 impl Drop for Refusals {
     fn drop(&mut self) {
-        SESSION_REFUSED.set(self.0);
+        SCOPED_REFUSED.set(self.0);
+    }
+}
+
+fn note_refused() {
+    if SCOPED_REFUSED.get().is_some() {
+        SCOPED_REFUSED.set(Some(true));
+    } else {
+        SESSION_REFUSED.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1326,7 +1340,7 @@ impl Connection {
             }
             if kind != VersionProblem::TooNew.type_uri() {
                 if status == 401 && kind == NOT_SIGNED_IN {
-                    SESSION_REFUSED.set(true);
+                    note_refused();
                 }
                 return Err(Error::Refused {
                     status,

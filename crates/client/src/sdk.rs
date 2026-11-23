@@ -152,10 +152,7 @@ impl ReceivedMessage {
         if record.result.is_some() {
             return None;
         }
-        let reply_to = match record.reply_to {
-            Some(id) => Some(id.parse().ok()?),
-            None => None,
-        };
+        let reply_to = record.reply_to.map(|id| id.parse()).transpose().ok()?;
         Some(Self {
             id: record.msg_id.parse().ok()?,
             sender: record.device.parse().ok()?,
