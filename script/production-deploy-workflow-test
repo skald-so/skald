@@ -34,6 +34,7 @@ import { commitAll, runJobs } from './lib/run-jobs.mjs';
 import {
   allNeeds,
   commands,
+  condition,
   event,
   isUnknown,
   open,
@@ -43,6 +44,7 @@ import {
   readWorkflows,
   template,
   toText,
+  truth,
   unpublishedEvents,
   usesStatus,
   writes,
@@ -95,22 +97,25 @@ for (const [name, ref] of [
   if (!jobsFor(release, event(name, ref))[key].skipped) fail(`a ${name} on ${ref} deploys nothing, but job ${key} may run`);
 }
 
-// After the release check: when it fails, every job that needs it is skipped, unless its condition
-// calls a status function.
+// After the release check: when it fails, the deploy is skipped.
 const checkers = Object.keys(jobs).filter((k) => String(jobs[k].uses ?? '') === './.github/workflows/release-check.yml');
 if (checkers.length !== 1) fail(`one job of ${releaseFile} calls release-check.yml, not: ${checkers.join(', ') || 'none'}`);
 const checker = checkers[0];
 if (checker) {
   const needs = allNeeds(jobs, key);
   if (!needs.has(checker)) fail(`job ${key} does not need the release check, job ${checker}`);
-  // The jobs between the release check and the deploy, and the deploy: when the check fails, each is
-  // skipped if a job it needs failed or was skipped and its condition calls no status function.
+  const states = jobsFor(release, event('push', 'refs/tags/v1.2.3'));
   const outcome = { [checker]: 'failure' };
   const visit = (k) => {
     if (k in outcome) return outcome[k];
-    const direct = needsOf(jobs[k]);
-    const results = direct.map(visit);
-    outcome[k] = !usesStatus(jobs[k].if) && results.some((r) => r === 'failure' || r === 'skipped') ? 'skipped' : 'may run';
+    const { scope } = states[k];
+    const needs = Object.fromEntries(needsOf(jobs[k]).map((n) => [n, { ...scope.contexts.needs[n], result: visit(n) }]));
+    const success = Object.values(needs).every((need) => need.result === 'success');
+    const status = { success, always: true, failure: allNeeds(jobs, k).has(checker), cancelled: false };
+    const explicit = jobs[k].if;
+    const runs = (success || usesStatus(explicit)) &&
+      (explicit === undefined || truth(condition(explicit, { contexts: { ...scope.contexts, needs }, status })) !== false);
+    outcome[k] = runs ? 'success' : 'skipped';
     return outcome[k];
   };
   if (needs.has(checker) && visit(key) !== 'skipped') fail(`job ${key} may run when the release check, job ${checker}, fails`);

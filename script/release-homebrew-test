@@ -52,25 +52,44 @@ if (workflowOnly) {
   if (releaseJobs.length !== 1 || !needs.has(releaseJobs[0][0])) {
     fail('the tap can update before the GitHub release is published');
   }
-  const checker = Object.values(workflow.jobs).find((job) => job.uses === './.github/workflows/release-check.yml');
+  const checker = Object.keys(workflow.jobs).find((name) => workflow.jobs[name].uses === './.github/workflows/release-check.yml');
   if (!checker) {
     fail('the release workflow has no release check');
   } else {
-    for (const [tag, enabled, tapResult, expected] of [
-      [stable, false, 'skipped', true],
-      [stable, true, 'success', true],
-      [stable, true, 'skipped', false],
-      [stable, true, 'failure', false],
-      [beta, true, 'skipped', true],
-    ]) {
-      const needs = Object.fromEntries(needsOf(checker).map((name) => [name, { result: name === key ? tapResult : 'success' }]));
-      const success = Object.values(needs).every((need) => need.result === 'success');
-      const scope = {
-        contexts: { github: push(tag).github, needs, vars: varsFor(enabled) },
-        status: { success, always: true, failure: tapResult === 'failure', cancelled: false },
-      };
-      const runs = (success || usesStatus(checker.if)) && truth(condition(checker.if, scope)) === true;
-      if (runs !== expected) fail(`wrong release check state for ${tag}, Homebrew enabled=${enabled}, result=${tapResult}`);
+    const gates = [checker, 'move-main', 'production-set-up', 'deploy-production'];
+    const cases = [
+      { label: 'Homebrew disabled', enabled: false, check: true, stableJobs: true },
+      { label: 'production absent', enabled: false, production: false, check: true, stableJobs: true },
+      { label: 'Homebrew succeeds', tap: 'success', check: true, stableJobs: true },
+      { label: 'Homebrew unexpectedly skipped' },
+      { label: 'Homebrew fails', tap: 'failure' },
+      { label: 'Homebrew cancelled', tap: 'cancelled' },
+      { label: 'workflow cancelled', tap: 'success', cancelled: true },
+      { label: 'beta', ev: push(beta), check: true },
+      { label: 'draft PR', ev: event('pull_request', 'refs/pull/7/merge', { draft: true }) },
+      { label: 'manual dry run', ev: event('workflow_dispatch', `refs/tags/${stable}`) },
+    ];
+    for (const {
+      label, ev = push(stable), enabled = true, tap = 'skipped', cancelled = false,
+      production = true, check = false, stableJobs = false,
+    } of cases) {
+      const expected = [check, stableJobs, stableJobs, stableJobs && production];
+      const outcomes = { [key]: tap };
+      for (const [i, name] of gates.entries()) {
+        const job = workflow.jobs[name];
+        const needs = Object.fromEntries(needsOf(job).map((dep) => [dep, { result: outcomes[dep] ?? 'success', outputs: {} }]));
+        if (needs['production-set-up']?.result === 'success') needs['production-set-up'].outputs['set-up'] = String(production);
+        // GitHub's implicit success check can carry an optional publisher's skip past check-release.
+        const ancestors = [...allNeeds(workflow.jobs, name)].map((dep) => outcomes[dep] ?? 'success');
+        const success = !cancelled && ancestors.every((result) => result === 'success');
+        const scope = {
+          contexts: { github: ev.github, needs, vars: varsFor(enabled) },
+          status: { success, always: true, failure: ancestors.includes('failure'), cancelled },
+        };
+        const runs = (success || usesStatus(job.if)) && truth(condition(job.if, scope)) === true;
+        outcomes[name] = runs ? 'success' : 'skipped';
+        if (runs !== expected[i]) fail(`wrong ${name} state with ${label}`);
+      }
     }
   }
   done();

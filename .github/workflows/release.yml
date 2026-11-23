@@ -485,12 +485,17 @@ jobs:
     with:
       tag: ${{ needs.plan.outputs.tag }}
 
-  # main follows stable releases only, forward only, once every channel is published and the release
-  # check passes.
+  # Stable releases can proceed after check-release when an optional publisher was skipped.
+  # Check direct results to avoid propagating that skip through the remaining jobs.
+  # main follows stable releases only, forward only.
   move-main:
     name: Move main
     needs: [plan, release, publish-npm, publish-image, check-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.plan.result == 'success' && needs.release.result == 'success' &&
+      needs.publish-npm.result == 'success' && needs.publish-image.result == 'success' &&
+      needs.check-release.result == 'success'
     runs-on: ubuntu-latest
     # The deploy key, its only secret; only this job uses the environment, and only v* tags may.
     environment: move-main
@@ -524,7 +529,9 @@ jobs:
   production-set-up:
     name: Check that production is set up
     needs: check-release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.check-release.result == 'success'
     runs-on: ubuntu-latest
     # Reads the repository's environments.
     permissions:
@@ -553,7 +560,8 @@ jobs:
     name: Deploy to production
     needs: [plan, check-release, production-set-up]
     if: >-
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.plan.result == 'success' && needs.check-release.result == 'success' && needs.production-set-up.result == 'success' &&
       needs.production-set-up.outputs.set-up == 'true'
     runs-on: ubuntu-latest
     # The environment with the connection's secrets: the header of script/deploy-production. Its
