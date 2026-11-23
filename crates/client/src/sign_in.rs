@@ -695,7 +695,7 @@ fn account_id(account: &Account) -> Result<AccountId, Error> {
 /// Asks for a code, opens its verification page in the browser through a file in `dir`, prints
 /// one line with its link and polls until its person approves it; gives the session token. The
 /// file is gone once it returns.
-fn device_flow(
+pub fn device_flow(
     connection: &mut Connection,
     dir: &Path,
     invite: Option<&InviteLink>,
