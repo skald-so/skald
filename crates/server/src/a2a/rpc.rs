@@ -2,7 +2,7 @@
 
 use axum::Json;
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value, error::Category, json};
 
 use super::TEXT;
@@ -18,6 +18,11 @@ pub(super) struct Request {
 
 impl Request {
     pub(super) fn read(bytes: &[u8]) -> Result<Self, Error> {
+        // Serde also reads a struct from a positional array. JSON-RPC uses an object.
+        if bytes.iter().find(|byte| !byte.is_ascii_whitespace()) != Some(&b'{') {
+            serde_json::from_slice::<Value>(bytes).map_err(|_| Error::Parse)?;
+            return Err(Error::InvalidRequest);
+        }
         let request: Self =
             serde_json::from_slice(bytes).map_err(|error| match error.classify() {
                 Category::Data => Error::InvalidRequest,
@@ -52,7 +57,12 @@ impl Request {
             | "GetTaskPushNotificationConfig"
             | "ListTaskPushNotificationConfigs"
             | "DeleteTaskPushNotificationConfig" => Err(Error::Push),
-            _ => Err(Error::Unsupported),
+            "SendStreamingMessage"
+            | "ListTasks"
+            | "CancelTask"
+            | "SubscribeToTask"
+            | "GetExtendedAgentCard" => Err(Error::Unsupported),
+            _ => Err(Error::MethodNotFound),
         }
     }
 
@@ -62,7 +72,9 @@ impl Request {
             configuration,
             ..
         } = decode(&self.params)?;
+        let message: Message = decode(&message)?;
         if let Some(config) = configuration {
+            let config: Configuration = decode(&config)?;
             if config.task_push_notification_config.is_some() {
                 return Err(Error::Push);
             }
@@ -88,7 +100,8 @@ impl Request {
         {
             return Err(Error::InvalidParams);
         }
-        for part in message.parts {
+        for part in &message.parts {
+            let part: Part = decode(part)?;
             if part
                 .extra
                 .keys()
@@ -114,33 +127,47 @@ impl Request {
 }
 
 fn decode<'a, T: Deserialize<'a>>(value: &'a Value) -> Result<T, Error> {
+    if !value.is_object() {
+        return Err(Error::InvalidParams);
+    }
     T::deserialize(value).map_err(|_| Error::InvalidParams)
+}
+
+// An optional member may be omitted. A present member must have its declared JSON type.
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    value: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(value).map(Some)
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct GetTask {
     id: String,
+    #[serde(default, deserialize_with = "present")]
     history_length: Option<i32>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SendMessage {
-    message: Message,
-    configuration: Option<Configuration>,
-    #[serde(rename = "metadata")]
+    message: Value,
+    #[serde(default, deserialize_with = "present")]
+    configuration: Option<Value>,
+    #[serde(rename = "metadata", default, deserialize_with = "present")]
     _metadata: Option<Map<String, Value>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Configuration {
+    #[serde(default, deserialize_with = "present")]
     task_push_notification_config: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
     history_length: Option<i32>,
     #[serde(default)]
     accepted_output_modes: Vec<String>,
-    #[serde(rename = "returnImmediately")]
+    #[serde(rename = "returnImmediately", default, deserialize_with = "present")]
     _return_immediately: Option<bool>,
 }
 
@@ -149,23 +176,27 @@ struct Configuration {
 struct Message {
     message_id: String,
     role: String,
-    parts: Vec<Part>,
+    parts: Vec<Value>,
+    #[serde(default, deserialize_with = "present")]
     context_id: Option<String>,
+    #[serde(default, deserialize_with = "present")]
     task_id: Option<String>,
     #[serde(default)]
     reference_task_ids: Vec<String>,
-    #[serde(rename = "metadata")]
+    #[serde(rename = "metadata", default, deserialize_with = "present")]
     _metadata: Option<Map<String, Value>>,
-    #[serde(rename = "extensions")]
+    #[serde(rename = "extensions", default, deserialize_with = "present")]
     _extensions: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Part {
+    #[serde(default, deserialize_with = "present")]
     text: Option<String>,
+    #[serde(default, deserialize_with = "present")]
     media_type: Option<String>,
-    #[serde(rename = "metadata")]
+    #[serde(rename = "metadata", default, deserialize_with = "present")]
     _metadata: Option<Map<String, Value>>,
     #[serde(flatten)]
     extra: Map<String, Value>,
@@ -182,6 +213,7 @@ pub(super) enum Operation {
 pub(super) enum Error {
     Parse,
     InvalidRequest,
+    MethodNotFound,
     InvalidParams,
     TaskNotFound,
     Push,
@@ -195,6 +227,7 @@ impl Error {
         let (code, message) = match self {
             Self::Parse => (-32700, "Invalid JSON payload"),
             Self::InvalidRequest => (-32600, "Invalid request"),
+            Self::MethodNotFound => (-32601, "Method not found"),
             Self::InvalidParams => (-32602, "Invalid parameters"),
             Self::TaskNotFound => (-32001, "Task not found"),
             Self::Push => (-32003, "Push notifications are unsupported"),

@@ -11410,6 +11410,7 @@
                 "enum": [
                   -32700,
                   -32600,
+                  -32601,
                   -32602,
                   -32001,
                   -32003,
@@ -11417,7 +11418,7 @@
                   -32005,
                   -32009
                 ],
-                "description": "-32700 Parse error. -32600 Invalid request. -32602 Invalid params. -32001 TaskNotFoundError. -32003 PushNotificationNotSupportedError. -32004 UnsupportedOperationError. -32005 ContentTypeNotSupportedError. -32009 VersionNotSupportedError."
+                "description": "-32700 Parse error. -32600 Invalid request. -32601 MethodNotFoundError for unknown methods. -32602 Invalid params. -32001 TaskNotFoundError. -32003 PushNotificationNotSupportedError. -32004 UnsupportedOperationError. -32005 ContentTypeNotSupportedError. -32009 VersionNotSupportedError."
               },
               "message": {
                 "type": "string"
@@ -11493,8 +11494,26 @@
                       },
                       "referenceTaskIds": {
                         "type": "array",
-                        "maxItems": 0
+                        "maxItems": 0,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "metadata": {
+                        "type": "object"
+                      },
+                      "extensions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
                       }
+                    },
+                    "additionalProperties": false,
+                    "dependentRequired": {
+                      "contextId": [
+                        "taskId"
+                      ]
                     }
                   },
                   "configuration": {
@@ -11505,7 +11524,18 @@
                         "type": "array",
                         "items": {
                           "type": "string"
-                        }
+                        },
+                        "anyOf": [
+                          {
+                            "maxItems": 0
+                          },
+                          {
+                            "contains": {
+                              "type": "string",
+                              "pattern": "^[tT][eE][xX][tT]/[pP][lL][aA][iI][nN]$"
+                            }
+                          }
+                        ]
                       },
                       "historyLength": {
                         "type": "integer",
@@ -11515,9 +11545,14 @@
                       "returnImmediately": {
                         "type": "boolean"
                       }
-                    }
+                    },
+                    "additionalProperties": false
+                  },
+                  "metadata": {
+                    "type": "object"
                   }
-                }
+                },
+                "additionalProperties": false
               }
             }
           },
@@ -11560,7 +11595,8 @@
                     "minimum": 0,
                     "maximum": 2147483647
                   }
-                }
+                },
+                "additionalProperties": false
               }
             }
           }
@@ -11577,28 +11613,13 @@
           },
           "mediaType": {
             "type": "string",
-            "const": "text/plain"
+            "pattern": "^[tT][eE][xX][tT]/[pP][lL][aA][iI][nN]$"
+          },
+          "metadata": {
+            "type": "object"
           }
         },
-        "not": {
-          "anyOf": [
-            {
-              "required": [
-                "raw"
-              ]
-            },
-            {
-              "required": [
-                "url"
-              ]
-            },
-            {
-              "required": [
-                "data"
-              ]
-            }
-          ]
-        }
+        "additionalProperties": false
       },
       "Acceptance": {
         "description": "An acceptance's CBOR bytes (docs/protocol/membership.md, \"Invite\") in base64url without padding (RFC 4648, §5).",

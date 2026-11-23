@@ -132,7 +132,7 @@ fn header_violations(
 }
 
 /// How `instance` breaks the schema at the JSON pointer `schema` in `spec`.
-fn schema_violations(spec: &Value, schema: &str, instance: &Value) -> Vec<String> {
+pub fn schema_violations(spec: &Value, schema: &str, instance: &Value) -> Vec<String> {
     let registry = Registry::new()
         .add(SPEC_URI, spec)
         .expect("register the spec")

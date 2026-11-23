@@ -528,3 +528,104 @@ fn polling_checks_the_client_and_the_configured_queue() {
         "the configured queue must exist even with a live channel grant"
     );
 }
+
+#[test]
+fn rpc_checks_object_shapes_and_distinguishes_disabled_and_unknown_methods() {
+    use crate::common::spec::{schema_violations, spec};
+
+    const REQUEST_SCHEMA: &str = "/components/schemas/A2aGatewayRequest";
+    const ERROR_SCHEMA: &str = "/components/schemas/A2aGatewayError";
+    const INVALID_REQUEST: i64 = -32600;
+    const METHOD_NOT_FOUND: i64 = -32601;
+
+    let fixture = example();
+    let world = World::new(3_856_100_030);
+    let member = world.laptop_on(world.server(), &world.stage.f.team.alice);
+    let queue = member.queue("default").id;
+    let lab = Lab::new(&world);
+    let token = crate::bot::token(&world.stage, PERMISSIONS);
+    let route = lab.queue_binding(&world, queue, Some(&token.token));
+    let credentials =
+        json!([{ "client": "alice", "bearer": ALICE, "routes": ["primary"], "revoked": false }]);
+    let _process = lab.start(
+        &fixture,
+        json!({ "primary": route }),
+        credentials,
+        json!([]),
+    );
+    let request = |body: &Value| lab.rpc("primary", Some(ALICE), VERSION, body).json();
+
+    let doc = spec();
+    let mut supported = send_message(None, None);
+    supported["params"]["metadata"] = json!({ "source": "fixture" });
+    supported["params"]["message"]["metadata"] = json!({ "labels": ["text"] });
+    supported["params"]["message"]["extensions"] = json!(["urn:skald:fixture"]);
+    supported["params"]["message"]["parts"][0]["metadata"] = json!({ "index": 1 });
+    supported["params"]["message"]["parts"][0]["mediaType"] = json!("Text/Plain");
+    supported["params"]["configuration"] = json!({ "acceptedOutputModes": ["TEXT/PLAIN"] });
+    assert_eq!(
+        schema_violations(&doc, REQUEST_SCHEMA, &supported),
+        Vec::<String>::new()
+    );
+    let before = lab.upstream.plain().len();
+    let envelope = json!(["2.0", 1, "GetTask", { "id": TASK }]);
+    assert_eq!(request(&envelope)["error"]["code"], INVALID_REQUEST);
+
+    let mut invalid = vec![
+        rpc(GET_TASK, json!([TASK, 0])),
+        rpc(SEND_MESSAGE, json!([supported["params"]["message"]])),
+        send_message(None, Some(CONTEXT)),
+    ];
+    for (pointer, value) in [
+        (
+            "/params/message",
+            json!(["test-message", "ROLE_USER", [{"text": TEXT}]]),
+        ),
+        ("/params/configuration", json!([])),
+        ("/params/configuration", Value::Null),
+        ("/params/metadata", json!([])),
+        ("/params/message/extensions", json!({})),
+        ("/params/message/parts/0", json!([TEXT])),
+    ] {
+        let mut body = supported.clone();
+        *body.pointer_mut(pointer).expect("request member") = value;
+        invalid.push(body);
+    }
+    let mut extra = supported.clone();
+    extra["params"]["message"]["parts"][0]["extra"] = json!("ordinary extra field");
+    invalid.push(extra);
+    for body in invalid {
+        assert!(
+            !schema_violations(&doc, REQUEST_SCHEMA, &body).is_empty(),
+            "{body}"
+        );
+        let reply = request(&body);
+        assert_eq!(reply["id"], 1);
+        assert_eq!(reply["error"]["code"], INVALID_PARAMS, "{body}");
+    }
+
+    for (method, code) in [
+        ("UnknownMethod", METHOD_NOT_FOUND),
+        ("SendStreamingMessage", UNSUPPORTED),
+        ("GetExtendedAgentCard", UNSUPPORTED),
+        ("ListTaskPushNotificationConfigs", PUSH_UNSUPPORTED),
+    ] {
+        let reply = request(&rpc(method, json!({})));
+        assert_eq!(reply["error"]["code"], code, "{method}");
+        assert_eq!(
+            schema_violations(&doc, ERROR_SCHEMA, &reply),
+            Vec::<String>::new()
+        );
+    }
+    assert_eq!(
+        lab.upstream.plain().len(),
+        before,
+        "local refusals reached Skald"
+    );
+
+    assert_eq!(request(&supported)["error"]["code"], UNSUPPORTED);
+    assert!(
+        lab.upstream.plain().len() > before,
+        "valid request did not reach Skald"
+    );
+}
