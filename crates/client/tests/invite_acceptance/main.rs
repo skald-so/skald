@@ -49,8 +49,8 @@
 //! - A link given as an argument, and a run whose input or output is no terminal, it refuses,
 //!   saying `terminal` and sending nothing; a link in the environment it never reads, and asks for
 //!   one. Run with `--agent <name>`, it fails saying `skald accept-invite`, `person's command` and
-//!   `an agent cannot run`, and sends nothing. On a machine that never signed in, it fails saying
-//!   `sign-in`.
+//!   `an agent cannot run`, and sends nothing. On a machine that never signed in, a malformed
+//!   link also fails before it sends anything.
 //! - A run that connects, such as `skald recv`, sends an acceptance the device wrote that the
 //!   server has not taken; it follows the space while the device waits; once a revision admits
 //!   the device's account, the device joins the default channel by itself. When the server no
