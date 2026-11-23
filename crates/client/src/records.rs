@@ -5,15 +5,20 @@
 //!   devices and the one it took before, with that account's `master`: the one it pinned for its
 //!   own, the roster's for others. Of the valid ones it takes the one with the highest `revision`.
 //! - It keeps the record it takes in its local state, and warns when the record changes the
-//!   account's `recovery`.
+//!   account's `recovery`. It warns once of each record of a member account the server gives that
+//!   fails its check with that account's `master`. Both are key changes ([`key_changes`]). A record
+//!   that names the master key of the record the device holds, and verifies with it, does not
+//!   count: the account's earlier records stay so after a change of its `master`, which warns
+//!   itself.
 //! - The recovery key of the record it takes is the one it wraps each clean epoch's key to
 //!   ([`crate::wraps`]); an account without a valid record gets no wrap.
 
-use skald_crypto::check_account;
+use skald_crypto::{AccountError, check_account};
 use skald_proto::{AccountId, AccountRecord, Cbor as _, Member, Roster};
 
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices, master_of};
+use crate::key_changes;
 use crate::state::State;
 
 /// The valid record of `account` with the highest `revision` among `records`, checked with
@@ -56,16 +61,67 @@ pub fn of(
 }
 
 /// Takes the record of each member of `roster`, a space's last accepted revision, by `roster` and
-/// `devices`, the space's, as [`of`] says, and keeps it in `state`; gives the warning of each that
-/// changes its account's `recovery`.
+/// `devices`, the space's, as [`of`] says, and keeps it in `state`; gives the warning of each
+/// record that fails its check the first time ([`failed`]) and of each taken one that changes its
+/// account's `recovery`, keeping both as key changes.
 pub fn settle(
     state: &State,
     synced: (&Roster, &SpaceDevices),
     own: &Own,
 ) -> Result<Vec<String>, String> {
-    (synced.0.body().members.iter())
-        .filter_map(|member| take(state, synced, own, member).transpose())
-        .collect()
+    let mut warnings = Vec::new();
+    for member in synced.0.body().members.iter() {
+        warnings.extend(failed(state, synced, own, member)?);
+        if let Some(warning) = take(state, synced, own, member)? {
+            key_changes::keep(state, &warning)?;
+            warnings.push(warning);
+        }
+    }
+    Ok(warnings)
+}
+
+/// The warning of each record of `member` of `roster` that `devices`, the space's, give and that
+/// fails its check as the module says, the first time `state` keeps it as a key change.
+fn failed(
+    state: &State,
+    (roster, devices): (&Roster, &SpaceDevices),
+    own: &Own,
+    member: &Member,
+) -> Result<Vec<String>, String> {
+    let account = member.account;
+    let Some(master) = master_of(roster, own, account) else {
+        return Ok(Vec::new());
+    };
+    let held = held(state, account)?.map(|held| held.body().master);
+    let mut warnings = Vec::new();
+    for record in devices.records.iter() {
+        if record.body().account != account {
+            continue;
+        }
+        let named = record.body().master;
+        let fails = match check_account(record, &master) {
+            Ok(()) => false,
+            Err(AccountError::Master) => {
+                held != Some(named) || check_account(record, &named).is_err()
+            }
+            Err(_) => true,
+        };
+        if !fails {
+            continue;
+        }
+        let warning = format!(
+            "the server gives an account record of the member {} ({account}) in the space {} that \
+             fails its check with the account's master key: it may be forged; this device ignores \
+             it",
+            member.handle.as_str(),
+            roster.body().name.as_str()
+        );
+        let key = key_changes::key_of("account record", &record.to_cbor());
+        if key_changes::keep_once(state, &key, &warning)? {
+            warnings.push(warning);
+        }
+    }
+    Ok(warnings)
 }
 
 /// Takes the record of `member` of `roster` as [`settle`] says; gives the warning if it changes

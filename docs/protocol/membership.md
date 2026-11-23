@@ -328,13 +328,19 @@ The master key is the one the client pinned: its own account's on linking or, fo
 
 A client MUST warn its user when:
 - an account's device set changes: a device is added, revoked or restored by a voided revocation;
-- an account record's `recovery` changes;
+- an account record's `recovery` changes, or a record the server gives fails the check of [Account](#account), once per record; one that names the master key of the record the client holds and verifies with it does not count, as an account's records stay so after its `master` changes;
+- a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
-- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate));
+- the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate)), or a device with certificates of two bodies ([Device certificate](#device-certificate));
 - the latest revisions it accepted in its spaces give one account different master keys, or its own account one other than the one it pinned; each space's devices are still checked against that space's revisions;
 - two valid devices of an account have the same `name`.
+
+All but the first and the last are **key changes**. A client keeps each in its local state until its person sees it:
+- Until then, each command, as the person or as an agent, and each tool call of its MCP server says on one line how many wait and which command shows them; with JSON output, as a field. The line names no space, account or device. A [service device](#service-device)'s runs do not say it: no person sees them at a terminal.
+- One an `ssh` signature or a domain shows counts only in runs with the GitHub API or resolver that showed it, as their results do.
+- The command shows them only to the person at a terminal, never as an agent or through a pipe, and counts them seen once the person confirms.
 
 ## Account fingerprint
 Two people check that their devices see the same master key for each other's accounts by comparing fingerprints.
@@ -492,14 +498,16 @@ acceptance-body = {
 ```
 
 - **Secret:** 32 bytes from a cryptographically secure generator on the admin's device. The invite key pair has the Ed25519 private key `HKDF-SHA256(salt = "", IKM = secret, info = "skald invite", L = 32)` [[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869)].
-- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
+- **Link:** `<web>/invite/<invite>#<fragment>`; `<web>` is the server's web address, an origin such as `https://skald.example`, which the server names in its answers to `GET /session` and `GET /devices`; the fragment is base64url without padding, 86 characters, of the secret followed by the hash of the roster revision the admin's device last accepted. A link with a query, another path or another fragment is refused. Browsers do not send a fragment to the server.
 - The server stores the invite and the acceptance. An invite admits one account: the server keeps its first acceptance and refuses others. `expires` is at most 30 days after the server stores the invite.
 - An invite ends when it expires, is revoked or a stored revision lists a member with it; the server then deletes it with its acceptance.
 
-The newcomer's device MUST, from the link:
+The newcomer's device takes a link only from its person. It MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
 2. check the invite's signature with `signer`, an [admin's device](#roster) per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.
+
+It then follows the space from the anchor. When the invite ends before a revision lists its account, it stops following the space.
 
 An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
 1. checks the invite: its signature with the certificate of `signer`, an [admin's device](#roster) in the latest revision, `expires` not passed, no member of a revision it accepted with its `invite`;

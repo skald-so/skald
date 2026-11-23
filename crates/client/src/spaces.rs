@@ -229,7 +229,11 @@ fn creator_handle(first: &Roster) -> &str {
 
 /// The handle of `account`, the account of the session `token`: its username, as the server gives
 /// it.
-fn handle(connection: &mut Connection, token: &str, account: AccountId) -> Result<Name, String> {
+pub fn handle(
+    connection: &mut Connection,
+    token: &str,
+    account: AccountId,
+) -> Result<Name, String> {
     let body = connection.get_as("/session", token).map_err(text)?;
     let session: sign_in::Account = serde_json::from_slice(&body)
         .map_err(|_| "unexpected answer from the server: a session without its account")?;
@@ -1718,7 +1722,12 @@ pub fn members(synced: Synced, resolver: (&str, Duration)) -> Result<(), String>
             verified.insert(member.account);
         }
     }
-    let (members, mut warnings) = member_devices(&roster, &devices, &follower.own, &verified);
+    let (members, mut warnings) = member_devices(
+        &follower.state,
+        &roster,
+        &devices,
+        (&follower.own, &verified),
+    )?;
     let shown: Vec<&Cert> = (members.iter().flat_map(|(_, shown)| shown))
         .flat_map(|shown| shown.linked.iter().chain(&shown.revoked))
         .copied()
@@ -1750,17 +1759,21 @@ struct Shown<'d> {
     revoked: Vec<&'d Cert>,
 }
 
+/// Each member of a revision with what `skald members` shows of its account ([`member_devices`]).
+type MemberDevices<'r, 'd> = Vec<(&'r Member, Option<Shown<'d>>)>;
+
 /// Each member of `roster`, a space's last accepted revision, with what `skald members` shows of
 /// its account: its fingerprint, marked if `verified` holds the account, and the devices of it
 /// `devices` holds; none when the device has no master key for it. And the warnings of
-/// `skald devices` for them. A certificate and the fingerprint take the master key `own` pinned
-/// for its own account, and the `master` the revision gives any other.
+/// `skald devices` for them, keeping in `state` those of key changes. A certificate and the
+/// fingerprint take the master key `own` pinned for its own account, and the `master` the revision
+/// gives any other.
 fn member_devices<'r, 'd>(
+    state: &State,
     roster: &'r Roster,
     devices: &'d SpaceDevices,
-    own: &Own,
-    verified: &BTreeSet<AccountId>,
-) -> (Vec<(&'r Member, Option<Shown<'d>>)>, Vec<String>) {
+    (own, verified): (&Own, &BTreeSet<AccountId>),
+) -> Result<(MemberDevices<'r, 'd>, Vec<String>), String> {
     let mut warnings: Vec<String> = Vec::new();
     let mut members = Vec::new();
     for member in roster.body().members.iter() {
@@ -1771,7 +1784,7 @@ fn member_devices<'r, 'd>(
         let fingerprint =
             fingerprint_line(member.account, &master, verified.contains(&member.account));
         let checked = devices::check(&master, devices);
-        for warning in devices::two_bodies_warnings(&checked) {
+        for warning in devices::two_bodies_warnings(state, &checked)? {
             if !warnings.contains(&warning) {
                 warnings.push(warning);
             }
@@ -1789,7 +1802,7 @@ fn member_devices<'r, 'd>(
         warnings.extend(devices::shared_name_warnings(&shown.linked));
         members.push((member, Some(shown)));
     }
-    (members, warnings)
+    Ok((members, warnings))
 }
 
 /// What `skald members` shows of `roster`, a space's last accepted revision, with `members`, its
@@ -2053,7 +2066,9 @@ pub(crate) mod tests {
                 records: Vec::new(),
             };
             let own = self.own();
-            let (members, warnings) = member_devices(roster, &devices, &own, &BTreeSet::new());
+            let state = State::in_memory().unwrap();
+            let (members, warnings) =
+                member_devices(&state, roster, &devices, (&own, &BTreeSet::new())).unwrap();
             let listing = members_listing(roster, &members, (this, &Default::default()), None);
             (listing, warnings)
         }
@@ -2152,7 +2167,9 @@ pub(crate) mod tests {
         let devices = SpaceDevices::default();
         let verified = BTreeSet::from([pair.bob]);
 
-        let (members, _) = member_devices(&roster, &devices, &pair.own(), &verified);
+        let state = State::in_memory().unwrap();
+        let (members, _) =
+            member_devices(&state, &roster, &devices, (&pair.own(), &verified)).unwrap();
         let shown = members_listing(&roster, &members, (this, &Default::default()), None);
 
         let ada = fingerprint_line(pair.ada, &pair.ada_master.public_key(), false);
