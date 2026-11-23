@@ -46,9 +46,7 @@ pub fn start_accepting(machine: &Machine, extra: &[&str]) -> Terminal {
 /// Wait for the prompt for the invite link and return what the terminal showed so far.
 #[track_caller]
 pub fn asked_for_link(run: &mut Terminal) -> String {
-    run.wait_for("a prompt for the invite link", |shown| {
-        shown.to_lowercase().contains("link")
-    })
+    run.wait_to_show("Paste the invite link:")
 }
 
 /// Verify the space in the accept prompt, then confirm the invite.

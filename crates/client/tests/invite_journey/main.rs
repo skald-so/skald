@@ -127,7 +127,7 @@ fn journey(secret_file: &Path) {
     let bob1 = Machine::new().with_host_name(HOSTS[2]);
     let before = cloud.grants().len();
     let mut accept = invite_terminal::start_accepting(&bob1, &[]);
-    accept.wait_to_show("Paste the invite link:");
+    invite_terminal::asked_for_link(&mut accept);
     accept.type_line(invite.link());
     let mut grant = grants::shown_grant(&cloud, &mut accept, before);
     // The link the terminal shows carries the authorization into GitHub sign-in.

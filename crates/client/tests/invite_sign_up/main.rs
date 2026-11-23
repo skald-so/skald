@@ -107,7 +107,7 @@ fn an_unlisted_person_signs_up_from_the_terminal_and_accepts() {
     assert_eq!(approved.status, Some(200), "{}", page.text());
 
     let recovery = at_terminal::shown_key(&mut run);
-    run.wait_to_show("Press Enter");
+    run.wait_to_show("Press Enter once it is written down:");
     run.enter();
     confirm_invite(&mut run);
     let finished = run.finish();
@@ -188,7 +188,7 @@ fn a_fresh_device_discovers_the_public_api_from_the_invites_web_address() {
     grant.verification_uri = format!("{}?user_code={}", grant.verification_uri, grant.user_code);
     cloud.decide(&world.browser.page(), &bob, &grant, APPROVE);
     at_terminal::shown_key(&mut run);
-    run.wait_to_show("Press Enter");
+    run.wait_to_show("Press Enter once it is written down:");
     run.enter();
     confirm_invite(&mut run);
     let finished = run.finish();
