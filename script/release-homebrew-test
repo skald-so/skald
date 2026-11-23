@@ -174,7 +174,7 @@ const tail = (output) => {
 };
 
 let server;
-let macBrewPrefix;
+let brewPrefix;
 let nativeVerified = false;
 try {
   git('config', '--global', 'init.defaultBranch', 'main');
@@ -353,20 +353,17 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
   // stand-in routes the public URL in the actual formula to the exact local release bytes.
   const brewOnPath = sync('sh', ['-c', 'command -v brew']).stdout.trim();
   let brew;
-  let brewPrefix;
   let brewEnv;
   if (brewOnPath && localTarget && process.getuid?.() !== 0 && failed() === 0) {
-    if (process.platform === 'darwin') {
-      // Homebrew's macOS sandbox allows writes to system temp roots and checks that brew is outside them.
-      const { homedir, uid } = os.userInfo();
-      const accountHome = fs.realpathSync(homedir);
-      const stat = fs.statSync(accountHome);
-      if (!stat.isDirectory() || stat.uid !== uid || /^\/private\/(?:tmp|var\/(?:tmp|folders))(?:\/|$)/.test(accountHome)) {
-        throw new Error('Homebrew needs a user-owned Mac home outside the system temp roots');
-      }
-      macBrewPrefix = fs.mkdtempSync(path.join(accountHome, '.skald-brew-'));
+    // The sandbox allows writes to system temp roots and checks that brew is outside them.
+    const { homedir, uid } = os.userInfo();
+    const accountHome = fs.realpathSync(homedir);
+    const stat = fs.statSync(accountHome);
+    const systemTemp = /^\/(?:tmp|var\/tmp|private\/(?:tmp|var\/(?:tmp|folders)))(?:\/|$)/;
+    if (!stat.isDirectory() || stat.uid !== uid || systemTemp.test(accountHome)) {
+      throw new Error('Homebrew needs a user-owned home outside the system temp roots');
     }
-    brewPrefix = macBrewPrefix ?? path.join(scratch, 'brew');
+    brewPrefix = fs.mkdtempSync(path.join(accountHome, '.skald-brew-'));
     const brewTemp = path.join(scratch, 'brew-temp');
     const brewHome = path.join(scratch, 'brew-home');
     const source = checked(brewOnPath, ['--repository']);
@@ -503,7 +500,7 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
     if (server) await server.close();
     fs.rmSync(scratch, { recursive: true, force: true });
   } finally {
-    if (macBrewPrefix) fs.rmSync(macBrewPrefix, { recursive: true, force: true });
+    if (brewPrefix) fs.rmSync(brewPrefix, { recursive: true, force: true });
   }
 }
 if (!nativeVerified && failed() === 0) {
