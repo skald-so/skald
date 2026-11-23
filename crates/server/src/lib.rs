@@ -15,6 +15,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+pub mod a2a;
 mod accounts;
 mod anchors;
 mod attachments;

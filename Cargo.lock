@@ -3443,6 +3443,7 @@ dependencies = [
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "zeroize",
 ]
 
 [[package]]

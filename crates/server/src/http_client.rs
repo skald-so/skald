@@ -16,20 +16,29 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// loads at its first use.
 pub(crate) fn agent() -> &'static Agent {
     static AGENT: OnceLock<Agent> = OnceLock::new();
-    AGENT.get_or_init(|| {
-        let tls = TlsConfig::builder()
-            .root_certs(RootCerts::Specific(Arc::new(platform_roots())))
-            .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .build();
-        Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_global(Some(TIMEOUT))
-            .user_agent(concat!("skald-server/", env!("CARGO_PKG_VERSION")))
-            .tls_config(tls)
-            .build()
-            .new_agent()
-    })
+    AGENT.get_or_init(|| with_roots(platform_roots(), true))
+}
+
+/// An HTTP client restricted to configured origins for gateway requests.
+pub(crate) fn gateway_agent(roots: Option<Vec<Certificate<'static>>>) -> Agent {
+    with_roots(roots.unwrap_or_else(platform_roots), false)
+}
+
+fn with_roots(roots: Vec<Certificate<'static>>, allow_proxy: bool) -> Agent {
+    let tls = TlsConfig::builder()
+        .root_certs(RootCerts::Specific(Arc::new(roots)))
+        .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
+        .build();
+    let mut config = Agent::config_builder()
+        .http_status_as_error(false)
+        .max_redirects(0)
+        .timeout_global(Some(TIMEOUT))
+        .user_agent(concat!("skald-server/", env!("CARGO_PKG_VERSION")))
+        .tls_config(tls);
+    if !allow_proxy {
+        config = config.proxy(None);
+    }
+    config.build().new_agent()
 }
 
 /// The JSON body of a `200` answer, or why there is none, such as `answered 404`.

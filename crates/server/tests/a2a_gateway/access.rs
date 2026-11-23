@@ -472,3 +472,59 @@ fn assert_private(bytes: &[u8], private: &[(&str, String)]) {
         assert!(!text.contains(value), "disclosed fixture {label}");
     }
 }
+
+#[test]
+fn polling_checks_the_client_and_the_configured_queue() {
+    let example = example();
+    let world = World::new(3_856_100_020);
+    let stage = &world.stage;
+    let member = world.laptop_on(world.server(), &stage.f.team.alice);
+    let grant = crate::bot::token(stage, PERMISSIONS);
+    let queue = member.queue("default").id;
+    let missing = skald_proto::QueueId::generate();
+    let lab = Lab::new(&world);
+    let routes = json!({
+        "primary": lab.queue_binding(&world, queue, Some(&grant.token)),
+        "missing-queue": lab.queue_binding(&world, missing, Some(&grant.token)),
+    });
+    let credentials = json!([
+        { "client": "alice", "bearer": ALICE, "routes": ["primary", "missing-queue"], "revoked": false },
+        { "client": "bob", "bearer": BOB, "routes": ["primary"], "revoked": false },
+    ]);
+    let tasks = json!([
+        { "id": TASK, "contextId": CONTEXT, "client": "alice", "route": "primary" },
+        { "id": OTHER_TASK, "contextId": CONTEXT, "client": "alice", "route": "missing-queue" },
+    ]);
+    let _process = lab.start(&example, routes, credentials, tasks);
+    let poll = |route, bearer, id| {
+        lab.rpc(
+            route,
+            Some(bearer),
+            VERSION,
+            &rpc(GET_TASK, json!({ "id": id })),
+        )
+    };
+    assert_error(
+        &poll("primary", ALICE, TASK),
+        UNSUPPORTED,
+        "the owner's polling reaches the fixture correlation",
+    );
+    let unknown = assert_error(
+        &poll("primary", ALICE, UNKNOWN_TASK),
+        TASK_NOT_FOUND,
+        "unknown task",
+    );
+    for (bearer, id) in [(BOB, TASK), (ALICE, OTHER_TASK)] {
+        let inaccessible = assert_error(
+            &poll("primary", bearer, id),
+            TASK_NOT_FOUND,
+            "out-of-scope task",
+        );
+        assert_eq!(inaccessible, unknown);
+    }
+    assert_eq!(
+        poll("missing-queue", ALICE, OTHER_TASK).status,
+        403,
+        "the configured queue must exist even with a live channel grant"
+    );
+}
