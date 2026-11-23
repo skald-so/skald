@@ -44,7 +44,7 @@ use skald_proto::{
 use crate::connection::{self, Method, printable};
 use crate::devices::text;
 use crate::follow::SpaceDevices;
-use crate::forms::{self, Form, References};
+use crate::forms::{self, Form, References, as_message};
 use crate::groups::{self, Link, Rosters};
 use crate::history;
 use crate::key_packages;
@@ -1239,11 +1239,6 @@ impl Fenced {
 /// The name the state key seals what the device keeps of its claim of `task` under.
 fn item(task: TaskId) -> Vec<u8> {
     [b"claim:".as_slice(), task.as_bytes()].concat()
-}
-
-/// `task` as references count it: as a message ID of the same bytes.
-fn as_message(task: TaskId) -> MessageId {
-    MessageId::from_bytes(*task.as_bytes())
 }
 
 /// What references count by the device of `state`: its kept messages and the tasks it holds
