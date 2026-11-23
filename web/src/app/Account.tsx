@@ -21,13 +21,12 @@ import { PageHeader } from "../ui/PageHeader.tsx";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import styles from "./Account.module.css";
 import { signedIn, versioned } from "./api.ts";
-import { accountPath, providerNames } from "./names.ts";
+import { accountPath, providerNames, signInPaths } from "./names.ts";
 import { date } from "./time.ts";
 
-/** Where a link of each provider starts, and a sign-in. */
-const starts: Record<SignInProvider, { link: string; signIn: string }> = {
-  github: { link: "/auth/github/link", signIn: "/auth/github" },
-  google: { link: "/auth/google/link", signIn: "/auth/google" },
+const linkPaths = {
+  github: "/auth/github/link",
+  google: "/auth/google/link",
 };
 
 /** The query that returns a link or a sign-in to the Account page. */
@@ -67,7 +66,7 @@ export interface AccountScreenProps {
 /**
  * The Account page: the username with the GitHub login; the account's sign-in methods, each with
  * when it was linked and Remove while the account has two or more; a link for each provider the
- * server has, which returns here. Remove asks first and, for the method of this web session, says
+ * server supports linking, which returns here. Remove asks first and, for the method of this web session, says
  * that it signs this browser out. Under them, the account's deletion (`DeletionPart`).
  */
 export function AccountScreen({
@@ -86,8 +85,9 @@ export function AccountScreen({
   const [asking, setAsking] = useState(defaultAsking);
   const [removing, setRemoving] = useState(false);
   const removable = (methods?.length ?? 0) > 1;
-  // A sign-in again with a provider the account has none of would reach another account.
-  const again = providers.filter((provider) =>
+  // Corporate reauthentication needs issuer information to match the account's method.
+  const canLink = providers.filter((provider) => provider !== "corporate");
+  const again = canLink.filter((provider) =>
     methods?.some((method) => method.provider === provider),
   );
 
@@ -139,11 +139,11 @@ export function AccountScreen({
             <code>skald</code> stay.
           </>
         }
-        actions={providers.map((provider) => (
+        actions={canLink.map((provider) => (
           <form
             key={provider}
             method="post"
-            action={`${starts[provider].link}?${back}`}
+            action={`${linkPaths[provider]}?${back}`}
           >
             <Button type="submit" size="large">
               Link {providerNames[provider]}
@@ -156,7 +156,7 @@ export function AccountScreen({
           actions={again.map((provider) => ({
             label: `Sign in again with ${providerNames[provider]}`,
             onClick: () =>
-              window.location.assign(`${starts[provider].signIn}?${back}`),
+              window.location.assign(`${signInPaths[provider]}?${back}`),
           }))}
         >
           To{" "}

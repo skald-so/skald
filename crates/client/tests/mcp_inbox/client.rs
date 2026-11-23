@@ -5,7 +5,7 @@
 
 use std::io::{Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -90,7 +90,7 @@ pub struct Session {
     output: Arc<Output>,
     /// How many bytes of the output the client has taken as messages.
     taken: usize,
-    errors: Arc<Mutex<Vec<u8>>>,
+    errors: Arc<Output>,
     /// The ID of the next request.
     next: u64,
     /// What each request's `_meta` holds, as of [`STATELESS`].
@@ -148,14 +148,8 @@ impl Session {
             .expect("run skald mcp");
         let output = Arc::new(Output::default());
         read(child.stdout.take().expect("stdout is piped"), &output);
-        let errors = Arc::new(Mutex::new(Vec::new()));
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let into = Arc::clone(&errors);
-        thread::spawn(move || {
-            let mut all = Vec::new();
-            let _ = { stderr }.read_to_end(&mut all);
-            into.lock().expect("the server's errors").extend(all);
-        });
+        let errors = Arc::new(Output::default());
+        read(child.stderr.take().expect("stderr is piped"), &errors);
         Session {
             input: child.stdin.take(),
             child,
@@ -176,7 +170,8 @@ impl Session {
 
     /// What the server wrote to its standard error so far.
     pub fn errors(&self) -> String {
-        String::from_utf8_lossy(&self.errors.lock().expect("the server's errors")).into_owned()
+        String::from_utf8_lossy(&self.errors.bytes.lock().expect("the server's errors"))
+            .into_owned()
     }
 
     /// The result the server gave `initialize`.
@@ -231,7 +226,17 @@ impl Session {
     /// The result of `tools/list`; fails unless there is one.
     #[track_caller]
     pub fn tools(&mut self) -> Value {
-        match self.request("tools/list", json!({})) {
+        self.tools_page(None)
+    }
+
+    /// Requests one `tools/list` page, starting from the supplied cursor if there is one.
+    #[track_caller]
+    pub fn tools_page(&mut self, cursor: Option<&str>) -> Value {
+        let params = match cursor {
+            Some(cursor) => json!({ "cursor": cursor }),
+            None => json!({}),
+        };
+        match self.request("tools/list", params) {
             Ok(result) => result,
             Err(error) => panic!("tools/list failed: {error}: {}", self.errors()),
         }
@@ -260,17 +265,42 @@ impl Session {
             );
             thread::sleep(Duration::from_millis(10));
         }
+        self.wait_for_exit();
+        let read = self.output.bytes.lock().expect("the server's output");
+        String::from_utf8_lossy(&read).into_owned()
+    }
+
+    /// Closes the input and captures both streams through the server's exit.
+    #[allow(dead_code)]
+    pub fn finish(mut self) -> (Vec<u8>, Vec<u8>) {
+        assert!(self.wait_for_exit(), "skald mcp did not exit successfully");
+        let deadline = Instant::now() + EXIT;
+        let drained = |stream: &Output| {
+            while !stream.ended.load(Ordering::SeqCst) {
+                assert!(
+                    Instant::now() < deadline,
+                    "skald mcp's output did not close"
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+            stream.bytes.lock().expect("the server's output").clone()
+        };
+        (drained(&self.output), drained(&self.errors))
+    }
+
+    fn wait_for_exit(&mut self) -> bool {
         drop(self.input.take());
         let deadline = Instant::now() + EXIT;
-        while self.child.try_wait().expect("wait for skald mcp").is_none() {
+        loop {
+            if let Some(status) = self.child.try_wait().expect("wait for skald mcp") {
+                return status.success();
+            }
             if Instant::now() > deadline {
                 let _ = self.child.kill();
-                break;
+                return false;
             }
             thread::sleep(Duration::from_millis(50));
         }
-        let read = self.output.bytes.lock().expect("the server's output");
-        String::from_utf8_lossy(&read).into_owned()
     }
 
     /// Sends the request `method` with `params`; gives its result, or its error. Answers the
@@ -387,7 +417,7 @@ fn text_of(result: &Value) -> String {
 
 /// Reads `stdout` into `output` in small pieces until it ends, or, once `output` says where to
 /// close, until it holds that text; then closes it and marks the output ended.
-fn read(mut stdout: ChildStdout, output: &Arc<Output>) {
+fn read(mut stdout: impl Read + Send + 'static, output: &Arc<Output>) {
     let output = Arc::clone(output);
     thread::spawn(move || {
         let mut piece = [0; 256];

@@ -5,11 +5,12 @@
 //! warns its user and keeps working with it. Another valid revision with a number it accepted means
 //! the server forked the roster: the device keeps its own and warns. It warns when a revision it
 //! accepts changes a member's `master`, again for an account its person verified, which is then
-//! no longer verified ("Account fingerprint"), and when a member's device is revoked, valid again
-//! or new since it last checked it ("Device checks"), and when a member account's record changes
-//! its `recovery` ([`crate::records`]). A revision's signer is checked with the revocations of its
-//! account. The run that accepts a revision changing a member's role tells its user: the member's
-//! handle, its new role and the handle of the signing device's account. The first run to learn that
+//! no longer verified ("Account fingerprint"), and keeps a key change when a revision assigns a
+//! handle to another account. It warns when a member's device is revoked, valid again or new since
+//! it last checked it ("Device checks"), and when a member account's record changes its `recovery`
+//! ([`crate::records`]). A revision's signer is checked with the revocations of its account. The
+//! run that accepts a revision changing a member's role tells its user: the member's handle, its
+//! new role and the handle of the signing device's account. The first run to learn that
 //! the server reports a member deleted tells its user, naming its handle; its devices are then not
 //! admitted ([`crate::send::admitted`]).
 //!
@@ -288,8 +289,8 @@ pub fn read(state: &State, id: SpaceId, name: &str) -> Result<state::Accepted, S
 /// `name` when the run read it, with `devices`, its accounts', and `own`, and records them. While
 /// another run accepted revisions of the space first, it accepts again from what `state` then
 /// holds. Gives the space's last accepted revision, the warnings and the role changes of the
-/// revisions it recorded ([`changed_roles`]); keeps the master keys they change and the accounts
-/// no longer verified as key changes ([`key_changes::keep`]).
+/// revisions it recorded ([`changed_roles`]); keeps changed master keys, reassigned handles and
+/// accounts no longer verified as key changes.
 fn settle(
     state: &State,
     (id, name): (SpaceId, &str),
@@ -307,7 +308,11 @@ fn settle(
         let changes = master_changes(&last, &accepted);
         let changed: Vec<String> = (std::iter::once(&last).chain(&accepted))
             .zip(&accepted)
-            .flat_map(|(previous, next)| changed_masters(previous, next))
+            .flat_map(|(previous, next)| {
+                changed_masters(previous, next)
+                    .into_iter()
+                    .chain(reassigned_handles(previous, next))
+            })
             .collect();
         let mut recorded = earlier;
         let notices: Vec<String> = (std::iter::once(&last).chain(&accepted))
@@ -329,11 +334,11 @@ fn settle(
             }
         };
         if state
-            .accept(id, &held.last, &recorded, &newest.to_cbor())
+            .accept(id, &held.last, &recorded, &newest.to_cbor(), &changed)
             .map_err(text)?
         {
             let unverified = unverify(state, name, &changes)?;
-            for line in changed.iter().chain(&unverified) {
+            for line in &unverified {
                 key_changes::keep(state, line)?;
             }
             let mut warnings = warnings;
@@ -719,6 +724,32 @@ fn changed_masters(previous: &Roster, next: &Roster) -> Vec<String> {
         .collect()
 }
 
+/// The pending key changes for handles that change accounts between accepted revisions.
+fn reassigned_handles(previous: &Roster, next: &Roster) -> Vec<String> {
+    let body = next.body();
+    let (revision, space) = (body.revision, body.name.as_str());
+    let previous_accounts: BTreeMap<_, _> = previous
+        .body()
+        .members
+        .iter()
+        .map(|member| (&member.handle, member.account))
+        .collect();
+    body.members
+        .iter()
+        .filter_map(|member| {
+            let before = previous_accounts.get(&member.handle)?;
+            (*before != member.account).then(|| {
+                let (handle, account) = (member.handle.as_str(), member.account);
+                format!(
+                    "revision {revision} of the space {space} changed the account for {handle} \
+                     from {before} to {account}. Run skald fingerprint {space} {handle} to compare \
+                     fingerprints."
+                )
+            })
+        })
+        .collect()
+}
+
 /// The master keys the last accepted revisions of the device's spaces give one account, each with
 /// the spaces that give it.
 struct Masters {
@@ -996,7 +1027,7 @@ mod tests {
             let hashes = [(1, acme.first.hash())];
             assert!(
                 state
-                    .accept(id, &first, &hashes, &acme.second.to_cbor())
+                    .accept(id, &first, &hashes, &acme.second.to_cbor(), &[])
                     .unwrap()
             );
             let stale = state.accepted(id).unwrap().unwrap();

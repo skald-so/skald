@@ -1,6 +1,7 @@
 //! Locks the test holds so that requests run in an order: one on an account's sign-in methods,
 //! which a deletion takes once it holds the account's row lock, so a request sent meanwhile runs
-//! while the deletion's transaction is open; and a device's lock for opening its link runs.
+//! while the deletion's transaction is open; a device's lock for opening its link runs; and an
+//! account's row, which a roster revision locks after locking its space.
 
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
@@ -21,6 +22,14 @@ pub struct Held {
 }
 
 impl Held {
+    /// Holds an update lock on `account` in `db`.
+    pub fn account(db: &TestDb, account: AccountId) -> Self {
+        let sql = "SELECT 1 FROM accounts WHERE id = $1::uuid FOR UPDATE";
+        let held = Self::locking(db, sql, account.to_string());
+        assert_eq!(held.1, 1, "the account exists");
+        held.0
+    }
+
     /// Holds a share lock on the sign-in methods of `account` in `db`.
     pub fn sign_in_methods(db: &TestDb, account: AccountId) -> Self {
         let sql = "SELECT 1 FROM sign_in_methods WHERE account_id = $1::uuid FOR SHARE";

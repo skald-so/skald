@@ -264,6 +264,7 @@ const accountUsage = getGetAccountUsageResponseMock({
   devices: { count: 4, limit: 50 },
 });
 const spaceUsage = getGetSpaceUsageResponseMock({
+  plan: undefined,
   monthly_messages: { count: 12_480, limit: 10_000_000 },
   message_size: { limit: 64 * 1024 },
   mailbox_retention: { limit: 7 * 86_400 },

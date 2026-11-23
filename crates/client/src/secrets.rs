@@ -47,6 +47,8 @@ pub trait Keyring {
     /// The entry's value, if it has one.
     fn get(&self) -> Result<Option<String>, KeyringError>;
     fn set(&self, value: &str) -> Result<(), KeyringError>;
+    /// Deletes the entry; one that is gone already counts as deleted.
+    fn delete(&self) -> Result<(), KeyringError>;
 }
 
 /// The system's key storage, through the keyring project's store for the platform: the entry of
@@ -92,6 +94,13 @@ impl Keyring for System {
 
     fn set(&self, value: &str) -> Result<(), KeyringError> {
         self.entry()?.set_password(value).map_err(keyring_error)
+    }
+
+    fn delete(&self) -> Result<(), KeyringError> {
+        match self.entry()?.delete_credential() {
+            Ok(()) | Err(keyring_core::Error::NoEntry) => Ok(()),
+            Err(err) => Err(keyring_error(err)),
+        }
     }
 }
 
@@ -208,6 +217,17 @@ impl Secrets {
         write_file(file, &value).map_err(|err| Error::File(file.to_path_buf(), err))
     }
 
+    /// Deletes the stored secrets: the key storage's entry and the file.
+    pub fn erase(&self) -> Result<(), Error> {
+        if let Some(keyring) = &self.keyring {
+            match keyring.delete() {
+                Ok(()) | Err(KeyringError::Unavailable) => {}
+                Err(KeyringError::Failed(err)) => return Err(Error::Keyring(err)),
+            }
+        }
+        self.remove_file()
+    }
+
     fn remove_file(&self) -> Result<(), Error> {
         let Some(file) = &self.file else {
             return Ok(());
@@ -291,6 +311,16 @@ mod tests {
                 }
             }
         }
+
+        fn delete(&self) -> Result<(), KeyringError> {
+            match self.broken {
+                Some(error) => Err(error()),
+                None => {
+                    self.value.borrow_mut().take();
+                    Ok(())
+                }
+            }
+        }
     }
 
     fn token(value: &str) -> Map {
@@ -357,6 +387,32 @@ mod tests {
             Some(r#"{"session_token":"new"}"#)
         );
         assert_eq!(secrets.load().unwrap(), token("new"));
+    }
+
+    #[test]
+    fn erasing_deletes_the_key_storage_entry_and_the_file() {
+        let dir = TestDir::new("secrets-erased");
+        let keyring = StandIn::new(None);
+        let secrets = Secrets::with(&dir, Some(Box::new(keyring.clone())));
+        secrets.save(&token("kept")).unwrap();
+        fs::write(dir.join(FILE), r#"{"session_token":"older"}"#).unwrap();
+
+        secrets.erase().unwrap();
+
+        assert_eq!(keyring.value.borrow().as_deref(), None);
+        assert!(!dir.join(FILE).exists(), "the file is kept");
+        assert_eq!(secrets.load().unwrap(), Map::new());
+        let unavailable = StandIn::new(Some(|| KeyringError::Unavailable));
+        let in_file = Secrets::with(&dir, Some(Box::new(unavailable)));
+        in_file.save(&token("in the file")).unwrap();
+        in_file.erase().unwrap();
+        assert!(!dir.join(FILE).exists(), "the file is kept");
+        let failing = StandIn::new(Some(|| KeyringError::Failed("locked".to_owned())));
+        let error = (Secrets::with(&dir, Some(Box::new(failing))).erase()).expect_err("refused");
+        assert!(
+            matches!(&error, Error::Keyring(err) if err == "locked"),
+            "{error:?}"
+        );
     }
 
     #[test]

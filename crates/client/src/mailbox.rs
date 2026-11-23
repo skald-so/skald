@@ -103,6 +103,13 @@ struct Kept {
 /// watches has its own.
 static LINKING: AtomicBool = AtomicBool::new(false);
 
+/// Whether the server closed a connection of this process because the device's account is
+/// deleted (`docs/protocol/delivery.md`, "Connecting").
+static ACCOUNT_DELETED: AtomicBool = AtomicBool::new(false);
+
+/// The reason the server closes a connection with once the device's account is deleted.
+const DELETED_REASON: &str = "account-deleted";
+
 thread_local! {
     /// The connection kept.
     static KEPT: RefCell<Option<Kept>> = const { RefCell::new(None) };
@@ -115,6 +122,19 @@ thread_local! {
 /// asked: each waiting session runs `skald recv` again, which says which devices wait for linking.
 pub fn linking_came() -> bool {
     LINKING.swap(false, Ordering::SeqCst)
+}
+
+/// Notes why the server closed a connection, by its close `frame`, if any.
+pub fn note_closing(frame: Option<&tungstenite::protocol::CloseFrame>) {
+    if frame.is_some_and(|frame| frame.reason.as_str() == DELETED_REASON) {
+        ACCOUNT_DELETED.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Whether the server closed a connection of this process because the device's account is
+/// deleted.
+pub fn account_deleted() -> bool {
+    ACCOUNT_DELETED.load(Ordering::SeqCst)
 }
 
 /// Whether a run of this thread dropped what came on its connection since this was last asked.
@@ -529,7 +549,10 @@ fn read_now(socket: &mut WebSocket) -> (Vec<Message>, bool) {
     }
     let open = loop {
         match socket.read() {
-            Ok(Message::Close(_)) => break false,
+            Ok(Message::Close(frame)) => {
+                note_closing(frame.as_ref());
+                break false;
+            }
             Ok(message) => messages.push(message),
             Err(err) => break crate::send::timed_out(&err),
         }

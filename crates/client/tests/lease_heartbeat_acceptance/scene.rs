@@ -33,8 +33,8 @@ pub const THREE_LEASES: Duration = Duration::from_secs(3 * LEASE);
 pub const ENDS_WITHIN: Duration = Duration::from_secs(LEASE + 5 + 25);
 
 /// The command of `skald recv` and its flag that waits.
-pub const RECV: &str = "recv";
-pub const WAIT_FLAG: &str = "--wait";
+pub use crate::kit::RECV;
+pub use crate::senders::WAIT_FLAG;
 
 /// The scene of the tests of claiming tasks, the queue `default` handing out claims with a lease
 /// of [`LEASE`] seconds.
@@ -46,13 +46,9 @@ impl Scene {
     /// Ada, GitHub user `ids[0]` with `logins[0]`, and Bob, the next ones.
     #[track_caller]
     pub fn new(ids: [u64; 2], logins: [&str; 2]) -> Self {
-        let claims = Claims::new(ids, logins);
-        claims.cloud().execute(&format!(
-            "ALTER TABLE queues DROP CONSTRAINT IF EXISTS queues_lease_check;
-             UPDATE queues SET lease = {LEASE} WHERE id = '{}'::uuid",
-            claims.queue
-        ));
-        Scene { claims }
+        Scene {
+            claims: Claims::with_lease(ids, logins, LEASE),
+        }
     }
 
     /// Ada's second machine's own copy of `skald`, whose runs may go through a helper.
