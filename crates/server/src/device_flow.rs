@@ -10,14 +10,17 @@ use axum::body::Bytes;
 use axum::extract::{RawQuery, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde::Serialize;
-use sqlx::PgPool;
+use serde::{Deserialize, Serialize};
+use skald_proto::InviteId;
+use sqlx::{PgConnection, PgPool};
 
 use crate::deletion::{Lock, deleted};
+use crate::devices::bytes;
+use crate::refusal::{Answer, Refusal, parse};
 use crate::sign_in::{
     self, Session, digest, escape, flows, off, param, random_token, sign_in_links, web_session,
 };
-use crate::{AppState, database_failed};
+use crate::{AppState, SignUp, database_failed, invites};
 
 /// The verification page's path under the web address.
 pub(crate) const VERIFICATION_PATH: &str = "/device";
@@ -200,6 +203,64 @@ pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Res
     )
 }
 
+/// `DeviceInviteRequest` in the spec.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeviceInviteRequest {
+    device_code: String,
+    invite: String,
+    proof: String,
+}
+
+/// `PUT /auth/device/invite`: attaches a verified proof to a pending code. Keep its invite key as
+/// evidence and the code only by its hash. A well-formed request gets the same response regardless
+/// of whether the proof attached.
+pub(crate) async fn attach_invite(State(state): State<AppState>, body: Bytes) -> Answer {
+    if sign_in::settings(&state).is_none() {
+        return Ok(off());
+    }
+    let DeviceInviteRequest {
+        device_code,
+        invite,
+        proof,
+    } = parse(&body)?;
+    let invalid = |detail: &str| Refusal::Invalid(detail.to_owned());
+    if bytes(&device_code, "device_code")?.len() != 32 {
+        return Err(invalid("device_code must encode 32 bytes"));
+    }
+    let id: InviteId = invite
+        .parse()
+        .map_err(|_| invalid("invite is not an invite ID"))?;
+    if id.to_string() != invite {
+        return Err(invalid("invite is not in canonical form"));
+    }
+    let proof: [u8; 64] = bytes(&proof, "proof")?
+        .try_into()
+        .map_err(|_| invalid("proof must encode 64 bytes"))?;
+    let failed = |err| Refusal::Database("attach an invite proof", err);
+    if matches!(state.sign_up.as_ref(), SignUp::Closed(_))
+        && let Some(key) = invites::sign_up_key(&state.db, id).await.map_err(failed)?
+        && skald_crypto::check_invite_sign_up(id, &device_code, &key, &proof).is_ok()
+    {
+        sqlx::query(
+            "UPDATE device_codes SET sign_up_invite = $2::uuid, sign_up_key = $3
+             WHERE device_code_hash = $1 AND state = 'pending' AND sign_up_account_id IS NULL
+               AND expires_at > clock_timestamp()",
+        )
+        .bind(digest(&device_code))
+        .bind(invite)
+        .bind(key.as_slice())
+        .execute(&state.db)
+        .await
+        .map_err(failed)?;
+    }
+    Ok((
+        StatusCode::NO_CONTENT,
+        [(header::CACHE_CONTROL, "no-store")],
+    )
+        .into_response())
+}
+
 /// `DeviceToken` in the spec.
 #[derive(Serialize)]
 struct DeviceToken {
@@ -331,23 +392,66 @@ async fn poll(db: &PgPool, device_code: &str) -> Result<Result<String, OAuthErro
     Ok(answer)
 }
 
-/// Refuses the user code of `return_to`, if it is the verification page with a pending one: the
-/// sign-in that would have approved it was refused as a sign-up, and its polls say so.
-pub(crate) async fn refuse_sign_up(db: &PgPool, return_to: &str) -> Result<(), sqlx::Error> {
-    let Ok(url) = url::Url::parse(return_to) else {
-        return Ok(());
-    };
+/// The user-code hash of a sign-in from the verification page.
+fn returning_code(return_to: &str) -> Option<Vec<u8>> {
+    let url = url::Url::parse(return_to).ok()?;
     if url.path() != VERIFICATION_PATH {
-        return Ok(());
+        return None;
     }
-    let Some(code) = param(url.query(), "user_code").and_then(|typed| typed_code(&typed)) else {
+    let typed = param(url.query(), "user_code")?;
+    typed_code(&typed).map(|code| digest(&code))
+}
+
+/// Uses the proof of a pending device flow to reserve its invite for a new account. The caller
+/// commits the reservation and the account together. The pending code can then be decided only
+/// by that account.
+pub(crate) async fn reserve_invite(
+    conn: &mut PgConnection,
+    return_to: &str,
+    account: &str,
+) -> Result<bool, sqlx::Error> {
+    let Some(hash) = returning_code(return_to) else {
+        return Ok(false);
+    };
+    let found: Option<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT sign_up_invite::text, sign_up_key FROM device_codes
+         WHERE user_code_hash = $1 AND state = 'pending' AND sign_up_invite IS NOT NULL
+           AND sign_up_account_id IS NULL AND expires_at > clock_timestamp()
+         FOR NO KEY UPDATE",
+    )
+    .bind(&hash)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some((invite, key)) = found else {
+        return Ok(false);
+    };
+    if !invites::reserve_sign_up(conn, &invite, &key, account).await? {
+        return Ok(false);
+    }
+    let taken = sqlx::query(
+        "UPDATE device_codes SET sign_up_account_id = $2::uuid,
+                                 sign_up_invite = NULL, sign_up_key = NULL
+         WHERE user_code_hash = $1 AND expires_at > clock_timestamp()",
+    )
+    .bind(hash)
+    .bind(account)
+    .execute(conn)
+    .await?;
+    Ok(taken.rows_affected() == 1)
+}
+
+/// Refuses the pending user code of a sign-up that was refused, unless another callback used it
+/// to create an account.
+pub(crate) async fn refuse_sign_up(db: &PgPool, return_to: &str) -> Result<(), sqlx::Error> {
+    let Some(hash) = returning_code(return_to) else {
         return Ok(());
     };
     sqlx::query(
-        "UPDATE device_codes SET state = 'refused'
-         WHERE user_code_hash = $1 AND state = 'pending' AND expires_at > now()",
+        "UPDATE device_codes SET state = 'refused', sign_up_invite = NULL, sign_up_key = NULL
+         WHERE user_code_hash = $1 AND state = 'pending' AND sign_up_account_id IS NULL
+           AND expires_at > now()",
     )
-    .bind(digest(&code))
+    .bind(hash)
     .execute(db)
     .await?;
     Ok(())
@@ -553,8 +657,10 @@ async fn record(
     let decided = match typed_code(typed) {
         Some(code) => {
             sqlx::query(
-                "UPDATE device_codes SET state = $1, account_id = $2::uuid
-                 WHERE user_code_hash = $3 AND state = 'pending' AND expires_at > now()",
+                "UPDATE device_codes SET state = $1, account_id = $2::uuid,
+                                         sign_up_invite = NULL, sign_up_key = NULL
+                 WHERE user_code_hash = $3 AND state = 'pending' AND expires_at > now()
+                   AND (sign_up_account_id IS NULL OR sign_up_account_id = $2::uuid)",
             )
             .bind(decided)
             .bind(account)

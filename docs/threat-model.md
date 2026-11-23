@@ -82,7 +82,7 @@ Watches or alters traffic between devices and the server, or the channel an invi
 - See the IP addresses, times and sizes of each device's connections.
 - Behind a TLS-intercepting proxy the device trusts, see what the server sees of the device's traffic, and take the device's credentials to the server. With those, it gets an `at-most-once` task the device started run again, as a restart does ([queues.md](protocol/queues.md#security-considerations)).
 - Behind such a proxy, guess a link code online and report no master key, as the server does ([The server or its operator](#the-server-or-its-operator)).
-- Read an invite link on its way and accept the invite first: holding the link's secret is what proves the newcomer ([Invite](protocol/membership.md#invite)).
+- Read an invite link on its way, accept it first and create one account if sign-up is closed ([Invite](protocol/membership.md#invite)).
 - Alter an invite link on its way: the newcomer trusts the roster revision the link names ([membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**

@@ -38,6 +38,7 @@ signed<body> = [
 - Labels: `skald account`, `skald cert`, `skald proof`, `skald link`, `skald anchors`, `skald revocation`, `skald roster`, `skald invite`, `skald acceptance`, `skald wrap`, `skald history`. The [SSH signature](#device-certificate) has its own form, with the label `skald ssh`.
 - [Link code](#link-code) labels: `skald link code` in the CPace channel identifier; `skald link request` and `skald link grant` in key derivation.
 - [Device key session](#device-key-session) label: `skald device session`.
+- [Invite sign-up](#invite) label: `skald invite sign-up`.
 
 ## Account
 Each account has two keys, both created on its first device:
@@ -503,7 +504,11 @@ acceptance-body = {
 - The server stores the invite and the acceptance. An invite admits one account: the server keeps its first acceptance and refuses others. `expires` is at most 30 days after the server stores the invite.
 - An invite ends when it expires, is revoked or a stored revision lists a member with it; the server then deletes it with its acceptance.
 
-The newcomer's device takes a link only from its person. It MUST, from the link:
+While sign-up is closed, the invite also lets one unlisted person create an account. Before opening the device flow's verification page, the device sends the invite ID and an Ed25519 signature by the invite key over the CBOR array `["skald invite sign-up", invite, device-code]`. The signed `invite` is its 16 UUID bytes. The signed `device-code` is the UTF-8 bytes of the code from `POST /auth/device`. Both are CBOR byte strings.
+
+The server creates the account only if the attached proof verifies against the key of an invite the server still holds that is live and unused. In the same transaction it reserves the invite for that account. Only that account's sessions get the invite and can accept it. A sign-in already allowed by the server's sign-up policy leaves the invite available.
+
+The newcomer's device takes a link only from its person. To accept it, the device MUST, from the link:
 1. take the roster revision with the hash in the fragment, check its hash and accept it as its anchor, then accept later revisions as [Roster](#roster) says;
 2. check the invite's signature with `signer`, an [admin's device](#roster) per those revisions, and that `key` is the one derived from the secret;
 3. only then prove it holds the secret: sign an acceptance with the invite key, for its own account, master key and handle.

@@ -266,20 +266,27 @@ pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String
 pub fn signed_in_with_secrets(
     dir: &Path,
     storage: secrets::Storage,
-) -> Result<(State, String, String, secrets::Map, Secrets), String> {
+) -> Result<SessionSecrets, String> {
+    session_with_secrets(dir, storage)?.ok_or_else(|| NOT_SIGNED_IN.to_owned())
+}
+
+type SessionSecrets = (State, String, String, secrets::Map, Secrets);
+
+/// The stored session with its secrets, if the machine has one.
+pub fn session_with_secrets(
+    dir: &Path,
+    storage: secrets::Storage,
+) -> Result<Option<SessionSecrets>, String> {
     if !dir.is_dir() {
-        return Err(NOT_SIGNED_IN.to_owned());
+        return Ok(None);
     }
     let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
-    let session = state
-        .session()
-        .map_err(text)?
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+    let Some(session) = state.session().map_err(text)? else {
+        return Ok(None);
+    };
     let stored = secrets.load().map_err(text)?;
-    let token = sign_in::token_for(&stored, &session.server)
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
-        .clone();
-    Ok((state, session.server, token, stored, secrets))
+    let token = sign_in::token_for(&stored, &session.server).cloned();
+    Ok(token.map(|token| (state, session.server, token, stored, secrets)))
 }
 
 /// A connection to `server`, the server of the machine's stored session, as [`Connection::new`]

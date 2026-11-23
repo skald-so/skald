@@ -119,7 +119,7 @@ export const getDeleteAccountUrl = () => {
 };
 
 /**
- * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused while sign-up is closed; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
+ * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused under the server's sign-up policy; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
  * @summary Delete the account
  */
 export const deleteAccount = async (
@@ -1437,7 +1437,7 @@ export const getRemoveSignInMethodUrl = (method: SignInMethodId) => {
 };
 
 /**
- * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
+ * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused under the server's sign-up policy, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
  * @summary Remove a sign-in method of the account
  */
 export const removeSignInMethod = async (
@@ -2191,7 +2191,7 @@ export const getGetInviteUrl = (invite: string) => {
 };
 
 /**
- * The invite as the server got it (docs/protocol/membership.md, "Invite"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite has an acceptance; then only sessions of that acceptance's account, which also get the space's revisions and devices until the invite ends.
+ * The invite as the server got it (docs/protocol/membership.md, "Invite"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite is used for sign-up or acceptance; then only sessions of that account get it. Once accepted, sessions of that account also get the space's revisions and devices until the invite ends.
  * @summary An invite with its space
  */
 export const getInvite = async (
@@ -2277,7 +2277,7 @@ export const getStoreAcceptanceUrl = (invite: string) => {
 };
 
 /**
- * Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, "Invite"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.
+ * Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, "Invite"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite used for sign-up takes only that account's acceptance. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.
  * @summary Store an invite's acceptance
  */
 export const storeAcceptance = async (
@@ -2520,8 +2520,8 @@ export const getGetServerUrl = () => {
 };
 
 /**
- * The `server` of every agent address on this server (docs/protocol/README.md, "Agent address"): its operator's setting, by default the host of its public address. It never changes.
- * @summary The server's name in agent addresses
+ * Names the `server` of its agent addresses (docs/protocol/README.md, "Agent address"): its operator's setting, by default the host of its public address. The name never changes. A new device taking an invite link from the web address gets the device flow's public address here.
+ * @summary The server's name and public address
  */
 export const getServer = async (
   options?: RequestInit,

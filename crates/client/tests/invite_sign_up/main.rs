@@ -164,3 +164,66 @@ fn an_already_signed_in_device_accepts_without_signing_in_again() {
     assert_eq!(cloud.count_sent(since, "POST /auth/token "), 0);
     assert_accepted(cloud, &ada, space, &link, &carol);
 }
+
+#[test]
+fn a_fresh_device_discovers_the_public_api_from_the_invites_web_address() {
+    let public_front = front::Front::bind();
+    let public = format!("http://localhost:{}", public_front.port());
+    let (mut world, _web_front) = fixtures::fronted_with(|settings| {
+        settings.sign_up = SignUp::Closed(Listed {
+            github_logins: vec![ADA.to_owned()],
+            ..Listed::default()
+        });
+        let sign_in = settings.sign_in.as_mut().expect("sign-in settings");
+        sign_in.web_url = Some(sign_in.public_url.clone());
+        sign_in.public_url = public.parse().expect("a public URL");
+    });
+    public_front.forward_to(world.cloud.relay.address());
+    let web = std::mem::replace(&mut world.cloud.public, public.clone());
+    world.cloud.url.clone_from(&public);
+    let cloud = &world.cloud;
+    let ada = world.sign_up(7_305_410_021, ADA, "ada-with-separate-origins");
+    let space = create(cloud, &ada, ACME).body().space;
+    let link = make_invite(&ada);
+    assert_eq!(link.web, web);
+    let bob = cloud.user(7_305_410_022, "bob-on-a-separate-origin");
+    let fresh = Machine::new().with_host_name(BOB_HOST);
+    let since = cloud.relay.mark();
+    let grants = cloud.grants().len();
+
+    let mut run = open_invite(&fresh, &link);
+    let mut grant = grants::shown_grant(cloud, &mut run, grants);
+    assert_eq!(grant.verification_uri, format!("{web}/device"));
+    grant.verification_uri = format!("{}?user_code={}", grant.verification_uri, grant.user_code);
+    cloud.decide(&world.browser.page(), &bob, &grant, APPROVE);
+    at_terminal::shown_key(&mut run);
+    run.wait_to_show("Press Enter");
+    run.enter();
+    confirm_invite(&mut run);
+    let finished = run.finish();
+    assert!(
+        finished.success,
+        "{}",
+        finished.text.replace(link.shown().as_str(), "")
+    );
+
+    let sent = cloud.relay.sent_since(since);
+    for (request, origin) in [
+        ("get /server ", &web),
+        ("put /auth/device/invite ", &public),
+    ] {
+        let host = origin.strip_prefix("http://").expect("an HTTP origin");
+        assert!(
+            sent.iter().any(|sent| {
+                sent.head.starts_with(request)
+                    && sent
+                        .head
+                        .lines()
+                        .any(|header| header.strip_prefix("host: ") == Some(host))
+            }),
+            "expected {request} at {origin}"
+        );
+    }
+    let bob = world.person(bob, fresh, BOB_HOST);
+    assert_accepted(cloud, &ada, space, &link, &bob);
+}
