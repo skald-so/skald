@@ -28,7 +28,10 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { getSkaldAPIMock } from "./api/skald.msw.ts";
+import {
+  getListSpaceInvitesMockHandler,
+  getSkaldAPIMock,
+} from "./api/skald.msw.ts";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
 import { App } from "./App.tsx";
 
@@ -142,6 +145,7 @@ const server = setupServer(
   http.get("*/spaces/:space/service-tokens", () =>
     signedOut ? refused() : HttpResponse.json({ tokens: [] }),
   ),
+  getListSpaceInvitesMockHandler({ invites: [] }),
   ...getSkaldAPIMock(),
 );
 /** Records `request` in `sent`. */
