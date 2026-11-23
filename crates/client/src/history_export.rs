@@ -513,14 +513,15 @@ mod tests {
 $ErrorActionPreference = 'Stop'
 $sidType = [System.Security.Principal.SecurityIdentifier]
 $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$control = Get-Acl -LiteralPath $env:SKALD_TEST_ACL_CONTROL
+# Read ACLs through .NET without PowerShell module discovery.
+$control = [System.IO.File]::GetAccessControl($env:SKALD_TEST_ACL_CONTROL)
 $everyone = $control.GetAccessRules($false, $true, $sidType) | Where-Object {
     $_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow' -and
         ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData)
 }
 if (-not $everyone) { throw 'The control file did not inherit the permissive rule' }
 foreach ($path in @($env:SKALD_TEST_ACL_TEMP, $env:SKALD_TEST_ACL_EXPORT)) {
-    $acl = Get-Acl -LiteralPath $path
+    $acl = [System.IO.File]::GetAccessControl($path)
     $rules = $acl.GetAccessRules($true, $true, $sidType)
     if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $user -or
         $rules.Count -ne 1 -or $rules[0].IsInherited -or
