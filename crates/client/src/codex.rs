@@ -28,6 +28,9 @@
 //! - What `inbox` gives waits for the session's rollout to confirm it, which the helper reads while
 //!   the session runs and `Stop` as the fallback; unconfirmed, its signal goes again by the next
 //!   path ([`codex_confirm`]).
+//! - A message's first signal follows the person's delivery mode for its channel and sender trust
+//!   level: `now` at once, `batch` at the end of its window, `pull` never ([`crate::delivery`]).
+//!   `pull` also prevents a resend. Each signal counts one wake for each channel it covers.
 //! - `PermissionRequest` records that the session waits on its permission prompt, and its next
 //!   hook that the prompt ended ([`crate::permission_prompts`]); so does the session's app-server,
 //!   to which the helper keeps a client ([`crate::codex_app_server`]), and the end of the session.
@@ -49,8 +52,8 @@ use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
 use crate::session_file::{Reader, opened};
-use crate::state::{CodexSession, State};
-use crate::{claude_socket, codex_confirm, hook, permission_prompts, recv};
+use crate::state::{CodexSession, Resend, State};
+use crate::{claude_socket, codex_confirm, delivery, hook, permission_prompts, recv};
 
 /// How long a hook waits for its run before it prints nothing.
 pub const PATIENCE: Duration = Duration::from_secs(3);
@@ -116,11 +119,17 @@ pub fn hook(
     }
     (state.end_confirmation_waits(clock.0.saturating_sub(clock.1))).map_err(text)?;
     // What waits goes to a session before this one counts as the one whose hook ran last.
-    let signalled = signals(&state, &this, event, clock)?;
+    let resends = state.resends(&this.agent).map_err(text)?;
+    let routed = route(&state, space, &this.agent, Some(thread), &resends, clock.0)?;
+    let seqs = routed.to.get(thread).map(Vec::as_slice).unwrap_or_default();
+    let signalled = ways(event).map_or_else(Vec::new, |(first, again)| {
+        paths(&resends, seqs, (first, again, clock))
+    });
     if !signalled.is_empty() {
         output::write(Stream::Out, output_of(event).as_bytes())
             .map_err(|err| format!("cannot write the signal to the output: {err}"))?;
         (state.signals_went(&signalled, agent.as_str(), clock.0)).map_err(text)?;
+        (state.count_wakes(&routed.channels(&signalled))).map_err(text)?;
     }
     this.busy = busy_after(event, !signalled.is_empty());
     state.register_codex(&this).map_err(text)
@@ -187,58 +196,77 @@ fn busy_after(event: hook::Event, signalled: bool) -> bool {
     }
 }
 
-/// The `seq` of each kept message that waits for the agent of `this`, a session whose hook on
-/// `event` runs, whose signal goes to it ([`route`]) by a path of the hook's ([`ways`]) at `clock`,
-/// now and the resend timeout ([`codex_confirm::path`]), with that path.
-fn signals(
-    state: &State,
-    this: &CodexSession,
-    event: hook::Event,
-    clock: (u64, u64),
-) -> Result<Vec<(u64, u64)>, String> {
-    let mut routed = route(state, this.space, &this.agent, Some(&this.thread))?;
-    let Some((first, again)) = ways(event) else {
-        return Ok(Vec::new());
-    };
-    let seqs = routed.remove(&this.thread).unwrap_or_default();
-    paths(state, &this.agent, &seqs, (first, again, clock))
-}
-
-/// Of `seqs`, kept messages that wait for `agent`, each that goes by a path of a way that takes
+/// Of `seqs`, kept messages that wait for an agent, each that goes by a path of a way that takes
 /// `first` and `again` at `clock` ([`codex_confirm::path`]), with that path.
 fn paths(
-    state: &State,
-    agent: &str,
+    resends: &BTreeMap<u64, Resend>,
     seqs: &[u64],
     (first, again, clock): (u64, Option<u64>, (u64, u64)),
-) -> Result<Vec<(u64, u64)>, String> {
-    let resends = state.resends(agent).map_err(text)?;
-    Ok((seqs.iter())
+) -> Vec<(u64, u64)> {
+    (seqs.iter())
         .filter_map(|seq| {
             let resend = resends.get(seq).copied().unwrap_or_default();
             codex_confirm::path(first, again, &resend, clock).map(|path| (*seq, path))
         })
-        .collect())
+        .collect()
 }
 
-/// The `seq` of each kept message that waits for `agent` in `space`, but those that wait for a
-/// confirmation, by the thread of the session its signal goes to: the live session it went to, or
-/// else the live session of the agent whose hook ran last. `this`, a session whose hook runs,
-/// counts as live, and as the one whose hook ran last when no other lives. Sessions whose Codex
-/// process ended end.
+/// The kept messages that wait for an agent and can give a signal, by session ([`route`]).
+#[derive(Default)]
+struct Routed {
+    /// Their `seq`, by the thread of the session their signal goes to.
+    to: BTreeMap<String, Vec<u64>>,
+    /// Each one's channel, if kept, by `seq`.
+    of: BTreeMap<u64, Option<String>>,
+    /// When the first window of `batch` that holds back another ends, in Unix milliseconds.
+    due: Option<u64>,
+}
+
+impl Routed {
+    /// The channels of `seqs`, each counting one wake when their signal goes.
+    fn channels(&self, signals: &[(u64, u64)]) -> BTreeSet<String> {
+        (signals.iter())
+            .filter_map(|(seq, _)| self.of.get(seq).cloned().flatten())
+            .collect()
+    }
+}
+
+/// The messages that wait for `agent` in `space` whose first signal is due or can go again as the
+/// person's settings say, by the thread of the session their signal goes to: the live session it
+/// went to, or else the live session of the agent whose hook ran last. `this`, a session whose hook
+/// runs, counts as live and as the last hooked when no other lives.
 fn route(
     state: &State,
     space: SpaceId,
     agent: &str,
     this: Option<&str>,
-) -> Result<BTreeMap<String, Vec<u64>>, String> {
-    let waiting: Vec<u64> = (state.for_agent(space, agent, crate::state::unix_now()))
+    resends: &BTreeMap<u64, Resend>,
+    now: u64,
+) -> Result<Routed, String> {
+    let kept = state.kept_waiting(space).map_err(text)?;
+    let (again, first): (Vec<_>, Vec<_>) = (state.for_agent(space, agent, now / 1_000))
         .map_err(text)?
         .into_iter()
-        .map(|(seq, _)| seq)
-        .collect();
-    let mut routed: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    if waiting.is_empty() {
+        .filter_map(|(seq, _)| kept.get(&seq).cloned())
+        .partition(|message| {
+            resends
+                .get(&message.seq)
+                .is_some_and(|resend| resend.signalled)
+        });
+    let mut routed = Routed::default();
+    if first.is_empty() && again.is_empty() {
+        return Ok(routed);
+    }
+    let settings = delivery::Settings::load(state)?;
+    // A message signalled in a previous window cannot open a window for new messages.
+    let plan = settings.plan(&first, now);
+    routed.due = plan.due;
+    let first = first.into_iter().filter(|msg| plan.goes.contains(&msg.seq));
+    let again = again
+        .into_iter()
+        .filter(|msg| settings.of(msg.channel.as_deref(), msg.level).mode != delivery::Mode::Pull);
+    let mut waiting = first.chain(again).peekable();
+    if waiting.peek().is_none() {
         return Ok(routed);
     }
     let mut live = Vec::new();
@@ -262,7 +290,8 @@ fn route(
         .into_iter()
         .collect();
     let mut moved = Vec::new();
-    for seq in waiting {
+    for message in waiting {
+        let seq = message.seq;
         let to = match going.get(&seq) {
             Some(to) if live.contains(to) => to.clone(),
             _ => {
@@ -270,7 +299,8 @@ fn route(
                 latest.clone()
             }
         };
-        routed.entry(to).or_default().push(seq);
+        routed.to.entry(to).or_default().push(seq);
+        routed.of.insert(seq, message.channel);
     }
     state.signal_to(&moved, agent, &latest).map_err(text)?;
     Ok(routed)
@@ -549,14 +579,19 @@ pub struct Served {
     /// When the resend timeout of a message a signal or `inbox` gave next passes, if one does: a
     /// look then wakes the idle sessions.
     resend_at: Option<Instant>,
+    /// When the first window of `batch` that held back a message at the last wake ends, in Unix
+    /// milliseconds: the helper wakes the sessions again then.
+    batch: Option<u64>,
 }
 
 /// A `codex queue` the helper runs: its process, the agent and the messages whose signal it
-/// queues, and when it started.
+/// queues, their channels, each of which its success counts one wake, and when it started.
 struct Queuing {
     child: Child,
     agent: String,
-    seqs: Vec<u64>,
+    previous: Vec<(u64, Resend)>,
+    channels: BTreeSet<String>,
+    queued_at: u64,
     started: Instant,
 }
 
@@ -597,6 +632,7 @@ impl Served {
             queuing: BTreeMap::new(),
             unqueued: BTreeMap::new(),
             resend_at: None,
+            batch: None,
         }
     }
 
@@ -687,7 +723,8 @@ impl Served {
         }
         self.queued(dir);
         let resend = (self.resend_at).is_some_and(|at| at <= Instant::now());
-        if std::mem::take(&mut self.due) || !runs.is_empty() || resend {
+        let batched = (self.batch).is_some_and(|at| at <= crate::state::unix_millis());
+        if std::mem::take(&mut self.due) || resend || batched || !runs.is_empty() {
             self.wake(dir);
         }
         Some(!runs.is_empty())
@@ -696,9 +733,11 @@ impl Served {
     /// Wakes each idle session in the state in `dir` that has no signal queued and whose agent has
     /// messages whose signal goes to it ([`route`]) by `codex queue` ([`codex_confirm::path`]):
     /// runs `codex queue` with the signal for its thread ([`queue`]). Messages a `codex queue`
-    /// failed for wake it no more; they wait for its hooks and `inbox`. Then notes when the next
-    /// resend timeout passes.
+    /// failed for wait for its hooks and `inbox`. Notes the next resend timeout and end of a batch
+    /// window.
     fn wake(&mut self, dir: &Path) {
+        self.batch = None;
+        self.resend_at = None;
         let Ok(state) = State::open(dir) else {
             return;
         };
@@ -706,7 +745,7 @@ impl Served {
         let _ = state.end_confirmation_waits(now.saturating_sub(timeout));
         self.waking(&state, (now, timeout));
         self.resend_at = (state
-            .next_given((now + 1).saturating_sub(timeout))
+            .next_given(now.saturating_add(1).saturating_sub(timeout))
             .ok()
             .flatten())
         .map(|given| {
@@ -724,65 +763,114 @@ impl Served {
             .map(|session| (session.space, session.agent.as_str()))
             .collect();
         for (space, agent) in agents {
-            let Ok(routed) = route(state, space, agent, None) else {
+            let Ok(resends) = state.resends(agent) else {
                 continue;
             };
-            for (thread, seqs) in routed {
-                let Some(session) = sessions.iter().find(|session| session.thread == thread) else {
+            let Ok(routed) = route(state, space, agent, None, &resends, clock.0) else {
+                continue;
+            };
+            if let Some(due) = routed.due {
+                self.batch = Some(self.batch.map_or(due, |batch| batch.min(due)));
+            }
+            for (thread, seqs) in &routed.to {
+                let Some(session) = sessions.iter().find(|session| &session.thread == thread)
+                else {
                     continue;
                 };
+                if session.busy || session.queued || self.queuing.contains_key(thread) {
+                    continue;
+                }
                 let queuing = (codex_confirm::QUEUE, Some(codex_confirm::QUEUE), clock);
-                let Ok(going) = paths(state, agent, &seqs, queuing) else {
-                    continue;
-                };
-                let failed = self.unqueued.get(&thread);
-                let new = going
-                    .iter()
-                    .any(|(seq, _)| failed.is_none_or(|failed| !failed.contains(seq)));
-                if session.busy || session.queued || self.queuing.contains_key(&thread) || !new {
+                let mut going = paths(&resends, seqs, queuing);
+                if let Some(failed) = self.unqueued.get(thread) {
+                    going.retain(|(seq, _)| !failed.contains(seq));
+                }
+                if going.is_empty() {
                     continue;
                 }
                 let Some(codex) = &session.codex else {
                     continue;
                 };
                 // A hook of a turn that started meanwhile, or a signal queued, keeps it.
-                if !state.queue_codex(&thread).unwrap_or(false) {
+                if !state.queue_codex(thread).unwrap_or(false) {
                     continue;
                 }
                 // Before it runs, so no hook of the turn it starts gives the signal again.
-                let _ = state.signals_went(&going, agent, clock.0);
-                let seqs: Vec<u64> = going.into_iter().map(|(seq, _)| seq).collect();
-                match queue(codex, &thread, session.home.as_deref()).spawn() {
+                if state.signals_went(&going, agent, clock.0).is_err() {
+                    let _ = state.unqueue_codex(thread);
+                    continue;
+                }
+                let previous: Vec<_> = going
+                    .iter()
+                    .map(|&(seq, _)| (seq, resends.get(&seq).copied().unwrap_or_default()))
+                    .collect();
+                match queue(codex, thread, session.home.as_deref()).spawn() {
                     Ok(child) => {
-                        let started = Instant::now();
-                        let agent = agent.to_owned();
                         let queuing = Queuing {
                             child,
-                            agent,
-                            seqs,
-                            started,
+                            agent: agent.to_owned(),
+                            previous,
+                            channels: routed.channels(&going),
+                            queued_at: clock.0,
+                            started: Instant::now(),
                         };
-                        self.queuing.insert(thread, queuing);
+                        self.queuing.insert(thread.clone(), queuing);
                     }
-                    Err(_) => self.failed_queue(state, thread, agent, seqs),
+                    Err(_) => self.failed_queue(state, thread, agent, &previous, clock.0),
                 }
             }
         }
     }
 
-    /// Records in `state` that the `codex queue` for the session `thread` failed: the signal of
-    /// `agent`'s messages `seqs` did not go, the session has no signal queued, and they wake it
-    /// no more.
-    fn failed_queue(&mut self, state: &State, thread: String, agent: &str, seqs: Vec<u64>) {
-        let _ = state.signals_taken_back(&seqs, agent);
-        let _ = state.unqueue_codex(&thread);
-        self.unqueued.entry(thread).or_default().extend(seqs);
+    /// Records that the queue attempt failed. Its messages can still go by hooks and `inbox`.
+    fn failed_queue(
+        &mut self,
+        state: &State,
+        thread: &str,
+        agent: &str,
+        previous: &[(u64, Resend)],
+        queued_at: u64,
+    ) {
+        let _ = state.codex_queue_failed(thread, agent, previous, queued_at);
+        self.unqueued
+            .entry(thread.to_owned())
+            .or_default()
+            .extend(previous.iter().map(|(seq, _)| *seq));
     }
 
-    /// Takes the end of each `codex queue` that ended in the state in `dir`, or kills one that ran
-    /// for [`QUEUE_PATIENCE`]: one that failed did not give its messages' signal
-    /// ([`Served::failed_queue`]).
+    /// Takes the end of each `codex queue` that ended in the state in `dir` ([`Served::ended`]): one
+    /// that succeeded counts one wake for each channel of its messages; one that failed did not
+    /// give its messages' signal ([`Served::failed_queue`]).
     fn queued(&mut self, dir: &Path) {
+        let ended = self.ended();
+        if ended.is_empty() {
+            return;
+        }
+        let state = State::open(dir);
+        for (thread, succeeded) in ended {
+            let Some(queuing) = self.queuing.remove(&thread) else {
+                continue;
+            };
+            let Ok(state) = &state else {
+                continue;
+            };
+            if succeeded {
+                let _ = state.count_wakes(&queuing.channels);
+            } else {
+                self.failed_queue(
+                    state,
+                    &thread,
+                    &queuing.agent,
+                    &queuing.previous,
+                    queuing.queued_at,
+                );
+            }
+        }
+    }
+
+    /// The thread of each `codex queue` that ended, and whether it succeeded; one that ran for
+    /// [`QUEUE_PATIENCE`] is killed, as failed.
+    fn ended(&mut self) -> Vec<(String, bool)> {
         let mut ended = Vec::new();
         for (thread, queuing) in &mut self.queuing {
             let succeeded = match queuing.child.try_wait() {
@@ -797,18 +885,7 @@ impl Served {
             };
             ended.push((thread.clone(), succeeded));
         }
-        if ended.is_empty() {
-            return;
-        }
-        let state = State::open(dir);
-        for (thread, succeeded) in ended {
-            let Some(queuing) = self.queuing.remove(&thread) else {
-                continue;
-            };
-            if let (false, Ok(state)) = (succeeded, &state) {
-                self.failed_queue(state, thread, &queuing.agent, queuing.seqs);
-            }
-        }
+        ended
     }
 
     /// Takes the registrations from the state in `dir`, keeping what it has of each it served.
@@ -880,6 +957,55 @@ fn newly_due(owed: Option<&BTreeSet<(i64, bool)>>, due: &BTreeSet<(i64, bool)>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resending_an_old_signal_does_not_open_the_next_batch_window() {
+        let dir = crate::test_dir::TestDir::new("codex-batch-resend");
+        let state = State::open(&dir).unwrap();
+        let agent = "web";
+        let mut message = crate::state::tests::kept(&[agent]);
+        let channel = message.channel;
+        state
+            .set_delivery_mode(channel, "peer", "batch", Some(10))
+            .unwrap();
+        state
+            .add_device(
+                skald_proto::DeviceId::from_signing_key(&[1; 32]),
+                "local",
+                "0190",
+            )
+            .unwrap();
+        let sender = skald_proto::DeviceId::from_signing_key(&[2; 32]);
+        state.add_agent(message.space, agent).unwrap();
+        state.write_entries(&[(1, vec![1]), (2, vec![2])]).unwrap();
+        for seq in [1, 2] {
+            state.keep(seq, (sender, message.msg_id), &message).unwrap();
+            message.msg_id = skald_proto::MessageId::generate();
+        }
+        let now = crate::state::unix_millis();
+        let stored = i64::try_from(now).unwrap();
+        let file = crate::plain_path::plain(&dir.join(crate::state::FILE));
+        let db = rusqlite::Connection::open(file).unwrap();
+        db.execute(
+            "UPDATE kept SET came = CASE seq WHEN 1 THEN ?1 ELSE ?2 END",
+            rusqlite::params![stored - 20_000, stored],
+        )
+        .unwrap();
+        state
+            .signals_went(&[(1, codex_confirm::CONTEXT)], agent, now - 10_000)
+            .unwrap();
+        let resends = state.resends(agent).unwrap();
+        let route_at =
+            |at| route(&state, message.space, agent, Some("thread"), &resends, at).unwrap();
+        let routed = route_at(now);
+        assert_eq!(routed.to["thread"], [1]);
+        assert_eq!(routed.due, Some(now + 10_000));
+        assert_eq!(route_at(now + 10_000).to["thread"], [2, 1]);
+        state
+            .set_delivery_mode(channel, "peer", "pull", None)
+            .unwrap();
+        assert!(route_at(now).to.is_empty());
+    }
 
     /// A receipt an intake left due, as one whose channel takes none yet, brings no further intake
     /// at the looks after it; one that became due since, or any after a failed intake, does.

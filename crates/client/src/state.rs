@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use skald_crypto::SealedState;
 use skald_proto::{
     AccountId, ChannelId, DeviceId, InviteId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId,
-    TaskId, WrapRecipient,
+    TaskId, TrustLevel, WrapRecipient,
 };
 
 use crate::gaps::{Counters, Source};
@@ -282,6 +282,8 @@ pub struct Kept {
     /// Its content's `hops`.
     pub hops: u64,
     pub agents: Vec<String>,
+    /// Its sender's trust level.
+    pub level: TrustLevel,
     /// The agents in `hold` it waits for the person's decision for, until its wait ends.
     pub held: Vec<String>,
     /// The `replied` it gives a message the device sent, if it is such a reply.
@@ -2898,16 +2900,34 @@ impl State {
         .collect()
     }
 
-    /// When the device kept each kept message in the space `space`, by `seq`, in Unix
-    /// milliseconds; 0 for one an older client kept.
-    pub fn kept_came(&self, space: SpaceId) -> Result<BTreeMap<u64, u64>, Error> {
-        let came: Vec<(u64, i64)> = self.lines(
-            "SELECT seq, COALESCE(came, 0) FROM kept WHERE space = ?1",
-            params![space.to_string()],
-        )?;
-        Ok((came.into_iter())
-            .map(|(seq, came)| (seq, u64::try_from(came).unwrap_or(0)))
-            .collect())
+    /// Each kept message in the space `space`, by `seq`, as a push path plans it
+    /// ([`crate::delivery::Settings::plan`]): its channel, if kept, its sender's trust level,
+    /// `peer` for one an older client kept from another device, and when the device kept it, in
+    /// Unix milliseconds, 0 for one an older client kept.
+    pub fn kept_waiting(
+        &self,
+        space: SpaceId,
+    ) -> Result<BTreeMap<u64, crate::delivery::Waiting>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT seq, channel, level, COALESCE(came, 0) FROM kept WHERE space = ?1")?;
+        let rows = query.query_map(params![space.to_string()], |row| {
+            <(i64, Option<String>, Option<String>, i64)>::try_from(row)
+        })?;
+        rows.map(|row| {
+            let (seq, channel, level, came) = row?;
+            let seq = u64::try_from(seq).map_err(|_| Error::Malformed(format!("the seq {seq}")))?;
+            let level = (level.and_then(|level| level.parse().ok())).unwrap_or(TrustLevel::Peer);
+            let came = u64::try_from(came).unwrap_or(0);
+            let waiting = crate::delivery::Waiting {
+                seq,
+                channel,
+                level,
+                came,
+            };
+            Ok((seq, waiting))
+        })
+        .collect()
     }
 
     /// The kept messages the person's run has yet to show, by `seq`, each with its sealed line.
@@ -3495,23 +3515,50 @@ impl State {
     /// Records that a hook of the agent `agent`, or a `codex queue` for it, gave the signal of each
     /// of the kept messages `seqs`.
     pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
-        self.mark_signalled(seqs, agent, true)
-    }
-
-    /// Records that the signal of each of the kept messages `seqs` for the agent `agent` did not go
-    /// after all: its `codex queue` failed.
-    pub fn signals_taken_back(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
-        self.mark_signalled(seqs, agent, false)
-    }
-
-    fn mark_signalled(&self, seqs: &[u64], agent: &str, signalled: bool) -> Result<(), Error> {
         let tx = self.write()?;
         for seq in seqs {
             tx.execute(
-                "UPDATE handover SET signalled = ?3 WHERE seq = ?1 AND agent = ?2",
-                params![sql_seq(*seq)?, agent, signalled],
+                "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
+                params![sql_seq(*seq)?, agent],
             )?;
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Restores what went before a failed `codex queue`, keeping any later `inbox` time or signal.
+    pub fn codex_queue_failed(
+        &self,
+        thread: &str,
+        agent: &str,
+        previous: &[(u64, Resend)],
+        queued_at: u64,
+    ) -> Result<(), Error> {
+        let tx = self.write()?;
+        let queue = sql_u64(crate::codex_confirm::QUEUE)?;
+        let queued_at = sql_u64(queued_at)?;
+        for (seq, resend) in previous {
+            tx.execute(
+                "UPDATE handover
+                 SET signalled = ?5, went_by = ?6,
+                     since = CASE WHEN since = ?7 AND confirming = 0 THEN ?8 ELSE since END
+                 WHERE seq = ?1 AND agent = ?2 AND thread = ?3 AND went_by = ?4",
+                params![
+                    sql_seq(*seq)?,
+                    agent,
+                    thread,
+                    queue,
+                    resend.signalled,
+                    sql_u64(resend.went_by)?,
+                    queued_at,
+                    resend.since.map(sql_u64).transpose()?,
+                ],
+            )?;
+        }
+        tx.execute(
+            "UPDATE codex_session SET queued = 0 WHERE thread = ?1",
+            params![thread],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -3601,12 +3648,11 @@ impl State {
         Ok(())
     }
 
-    /// Ends the wait for its confirmation of each kept message `inbox` gave before `before`, in
-    /// Unix milliseconds: it waits again for every path.
-    pub fn end_confirmation_waits(&self, before: u64) -> Result<(), Error> {
+    /// Ends confirmation waits for messages `inbox` gave on or before `until`, in Unix milliseconds.
+    pub fn end_confirmation_waits(&self, until: u64) -> Result<(), Error> {
         self.db.execute(
-            "UPDATE handover SET confirming = 0 WHERE confirming = 1 AND since < ?1",
-            params![sql_u64(before)?],
+            "UPDATE handover SET confirming = 0 WHERE confirming = 1 AND since <= ?1",
+            params![sql_u64(until)?],
         )?;
         Ok(())
     }
@@ -4646,9 +4692,10 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
     let now = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     let wait = i64::try_from(kept.wait).unwrap_or(i64::MAX);
     tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
+        "INSERT INTO kept
+             (seq, space, line, expires, person, msg_id, channel, target, hops, came, level)
          SELECT ?1, ?2, ?3, COALESCE((SELECT written FROM inbox WHERE seq = ?1), ?4) + ?5, 1, ?6,
-             ?7, ?8, ?9, ?10
+             ?7, ?8, ?9, ?10, ?11
          WHERE true ON CONFLICT DO NOTHING",
         params![
             seq,
@@ -4661,7 +4708,8 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             kept.target,
             // A sender may set any `hops`; past what SQLite holds, it counts as the highest.
             i64::try_from(kept.hops).unwrap_or(i64::MAX),
-            sql_u64(unix_millis())?
+            sql_u64(unix_millis())?,
+            kept.level.name(),
         ],
     )?;
     if let Some(replied) = &kept.replied {
@@ -5042,8 +5090,9 @@ fn keep_own(tx: &Transaction, msg_id: MessageId) -> Result<(), Error> {
     let msg_id = msg_id.to_string();
     let now = sql_u64(unix_now())?;
     let kept = tx.execute(
-        "INSERT INTO kept (seq, space, line, expires, person, msg_id, channel, target, hops, came)
-         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops, ?3
+        "INSERT INTO kept
+             (seq, space, line, expires, person, msg_id, channel, target, hops, came, level)
+         SELECT seq, space, line, ?2 + wait, person, msg_id, channel, target, hops, ?3, 'own'
          FROM own_message WHERE msg_id = ?1 ON CONFLICT DO NOTHING",
         params![msg_id, now, sql_u64(unix_millis())?],
     )?;
@@ -6473,6 +6522,7 @@ pub(crate) mod tests {
             wait: 86_400,
             hops: 0,
             agents: agents.iter().map(|&agent| agent.to_owned()).collect(),
+            level: TrustLevel::Peer,
             held: Vec::new(),
             read: None,
             replied: None,
@@ -6554,6 +6604,61 @@ pub(crate) mod tests {
         state.register_codex(&session).unwrap();
         assert!(!queued(), "still queued after a hook");
         assert!(!state.queue_codex("other").unwrap());
+    }
+
+    #[test]
+    fn failed_codex_queue_restores_the_last_signal_and_keeps_a_new_inbox_wait() {
+        use crate::codex_confirm::{PROMPT, QUEUE, STOP};
+
+        let dir = TestDir::new("state-failed-codex-queue");
+        let state = State::open(&dir).unwrap();
+        let agent = "codex";
+        let space = space_of_kept();
+        let sender = DeviceId::from_signing_key(&[6; 32]);
+        state
+            .add_device(DeviceId::from_signing_key(&[5; 32]), "laptop", "0193")
+            .unwrap();
+        state.add_agent(space, agent).unwrap();
+        let seqs = [1u8, 2, 3, 4];
+        state
+            .write_entries(&seqs.map(|seq| (u64::from(seq), vec![seq])))
+            .unwrap();
+        let seqs = seqs.map(u64::from);
+        for seq in seqs {
+            let message = kept(&[agent]);
+            state.keep(seq, (sender, message.msg_id), &message).unwrap();
+        }
+        state.signal_to(&seqs, agent, "thread").unwrap();
+        state
+            .signals_went(&[(2, STOP), (3, STOP), (4, STOP)], agent, 100)
+            .unwrap();
+        let previous = state.resends(agent).unwrap();
+        state
+            .signals_went(&seqs.map(|seq| (seq, QUEUE)), agent, 200)
+            .unwrap();
+        state.await_confirmation(&[3], agent, (true, 210)).unwrap();
+        state.signals_went(&[(4, PROMPT)], agent, 220).unwrap();
+        state
+            .codex_queue_failed(
+                "thread",
+                agent,
+                &previous.into_iter().collect::<Vec<_>>(),
+                200,
+            )
+            .unwrap();
+
+        let restored = state.resends(agent).unwrap();
+        assert_eq!(restored[&1], Resend::default());
+        assert_eq!(restored[&2].went_by, STOP);
+        assert_eq!(restored[&2].since, Some(100));
+        assert_eq!(restored[&3].went_by, STOP);
+        assert_eq!(restored[&3].since, Some(210));
+        assert_eq!(restored[&4].went_by, PROMPT);
+        assert_eq!(restored[&4].since, Some(220));
+        state.end_confirmation_waits(209).unwrap();
+        assert_eq!(state.confirming(space, agent).unwrap()[0].0, 3);
+        state.end_confirmation_waits(210).unwrap();
+        assert!(state.confirming(space, agent).unwrap().is_empty());
     }
 
     /// A rollout confirms only a message `inbox` gave, that waits for its confirmation, and only
@@ -6660,6 +6765,49 @@ pub(crate) mod tests {
             })
         );
         assert_eq!(state.next_presence_revision(channel).unwrap(), 3);
+    }
+
+    /// A kept message's channel and sender trust level are what a push path plans it by; one an
+    /// older client kept, with no level, counts as `peer`.
+    #[test]
+    fn kept_messages_give_their_channel_and_level_to_plan_by() {
+        let dir = TestDir::new("state-kept-level");
+        let state = State::open(&dir).unwrap();
+        state
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let space = space_of_kept();
+        state.add_agent(space, "codex").unwrap();
+        state
+            .write_entries(&[(2, vec![2]), (3, vec![3]), (4, vec![4])])
+            .unwrap();
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        let mut levels = Vec::new();
+        for (seq, level) in [
+            (2, TrustLevel::Own),
+            (3, TrustLevel::Service),
+            (4, TrustLevel::Own),
+        ] {
+            let mut kept = kept(&["codex"]);
+            kept.level = level;
+            state
+                .keep(seq, (sender, MessageId::generate()), &kept)
+                .unwrap();
+            levels.push((seq, kept.channel.to_string(), level));
+        }
+        state
+            .db
+            .execute("UPDATE kept SET level = NULL WHERE seq = 4", [])
+            .unwrap();
+        levels[2].2 = TrustLevel::Peer;
+
+        let waiting = state.kept_waiting(space).unwrap();
+        let got: Vec<(u64, String, TrustLevel)> = (waiting.values())
+            .map(|it| (it.seq, it.channel.clone().unwrap(), it.level))
+            .collect();
+        assert_eq!(got, levels);
+        assert!(waiting.values().all(|it| it.came > 0));
+        assert!(state.kept_waiting(SpaceId::generate()).unwrap().is_empty());
     }
 
     /// An agent the device has run as in a space gets each entry written after that, there only.
