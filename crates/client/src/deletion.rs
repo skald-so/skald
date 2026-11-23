@@ -8,7 +8,8 @@
 //! keys among them, from key storage and the state directory, and the local state, marked deleted
 //! ([`REPORTED`]) until it is gone. A run that sent the deletion leaves a mark ([`SENT`]) until the
 //! server itself refused it: the next run, if the server refuses the session and says the account
-//! is deleted, finishes.
+//! is deleted, finishes; on a device without its certificate, which cannot ask, it keeps the local
+//! state and names the directory to remove.
 //!
 //! A device learns that its account is deleted as the server says so: the helper, from a connection
 //! the server closes ([`mailbox::note_closing`]); any run whose session the server refused, from a
@@ -44,6 +45,12 @@ pub const NOT_AT_TERMINAL: &str = "skald delete-account takes the account's user
 /// deletion.
 const NO_SESSION: &str = "the server no longer takes this machine's session: run skald sign-in, \
                           then skald delete-account again";
+
+/// What `skald delete-account` says, before the state directory, when the server refuses the
+/// session of a machine without its certificate whose deletion got no answer of the server's.
+const MAY_HAVE_GONE: &str = "the server no longer takes this machine's session, and the deletion \
+                             it sent may have gone through; without its certificate, this machine \
+                             cannot ask: if the deletion went through, remove the state directory";
 
 /// The mark of a deletion this machine sent whose answer it did not get, in the state directory.
 const SENT: &str = "deletion-sent";
@@ -107,9 +114,9 @@ pub fn run(
             drop(state);
             return match deleted {
                 Some(true) => erase(dir, storage, username, lock),
-                // A device without its certificate asks nothing: a deletion it sent took its
-                // session.
-                None if sent.is_file() => erase(dir, storage, username, lock),
+                // A device without its certificate cannot ask whether a deletion it sent went
+                // through: it keeps its state.
+                None if sent.is_file() => Err(format!("{MAY_HAVE_GONE} {}", dir.display())),
                 _ => {
                     let _ = fs::remove_file(&sent);
                     Err(NO_SESSION.to_owned())
@@ -328,7 +335,9 @@ fn erase(
     let failed =
         |err: io::Error| format!("cannot empty the state directory {}: {err}", dir.display());
     fs::write(dir.join(REPORTED), b"").map_err(failed)?;
-    Secrets::new(dir, storage).erase().map_err(text)?;
+    // The key storage's entry is named by the directory's canonical path, as at sign-in.
+    let canonical = dir.canonicalize().map_err(failed)?;
+    Secrets::new(&canonical, storage).erase().map_err(text)?;
     let kept = [lock::FILE, SENT, REPORTED];
     for entry in fs::read_dir(dir).map_err(failed)? {
         let path = entry.map_err(failed)?.path();
