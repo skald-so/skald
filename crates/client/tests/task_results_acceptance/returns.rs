@@ -4,7 +4,6 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
-use std::path::Path;
 
 use serde_json::{Value, json};
 use skald_proto::{
@@ -14,12 +13,11 @@ use skald_proto::{
 
 use crate::agents::{CLAUDE, run_as_in};
 use crate::claiming::{Claims, address};
-use crate::fixtures::CHANNEL;
 use crate::kit::{RECV, received};
 use crate::lines::{JSON_FLAG, json_objects, refers_to};
-use crate::machine::{Finished, Machine};
+use crate::machine::Finished;
 use crate::played::mls_envelope;
-use crate::queuing::{default_queue, enqueued, refers_to_task, run_in, tasks};
+use crate::queuing::{as_message, default_queue, refers_to_task, run_in};
 use crate::senders::holds_word;
 use crate::states::{self, Held};
 use crate::talk::stored;
@@ -50,10 +48,11 @@ impl Answer {
     /// A result of the claim `held` with `outcome` and `text`, from `from` to `to`.
     #[track_caller]
     pub fn of(held: &Held, outcome: Outcome, (from, to): (&str, &str), text: &str) -> Self {
+        let (claim_id, generation) = named(held);
         Answer {
             task: held.task,
-            claim_id: (held.claim_id.parse()).unwrap_or_else(|_| panic!("no claim ID in {held:?}")),
-            generation: held.generation,
+            claim_id,
+            generation,
             outcome,
             from: from.to_owned(),
             to: to.to_owned(),
@@ -83,6 +82,16 @@ impl Answer {
             1,
         )
     }
+}
+
+/// A claim as a result names it: its `claim_id` and generation.
+pub type Named = (ClaimId, u64);
+
+/// The claim `held` names, as a result names it.
+#[track_caller]
+pub fn named(held: &Held) -> Named {
+    let claim_id = (held.claim_id.parse()).unwrap_or_else(|_| panic!("no claim ID in {held:?}"));
+    (claim_id, held.generation)
 }
 
 /// The scene of the tests of claiming tasks, with the counter of Bob's last message in each
@@ -133,38 +142,7 @@ impl Returns {
         self.claims.bob().device()
     }
 
-    /// As `agent`, or the person with none, on `machine` in `dir`, `skald enqueue --channel
-    /// <channel> <args>`, which must succeed; gives the one task it added to `channel`'s queue
-    /// `default`.
-    #[track_caller]
-    pub fn enqueues(
-        &self,
-        (machine, dir, agent): (&Machine, &Path, Option<&str>),
-        channel: ChannelId,
-        args: &[&str],
-    ) -> TaskId {
-        let (cloud, ada) = (self.claims.cloud(), self.claims.ada());
-        let (at, queue) = (self.at(channel), self.queue_of(channel));
-        let ids = || -> Vec<TaskId> {
-            (tasks(cloud, ada, at, queue).iter())
-                .map(|stored| stored.task.task)
-                .collect()
-        };
-        let before = ids();
-        let named = channel.to_string();
-        let mut all = vec![CHANNEL, named.as_str()];
-        all.extend_from_slice(args);
-        enqueued(machine, (dir, agent), &all);
-        let added: Vec<TaskId> = (ids().into_iter())
-            .filter(|task| !before.contains(task))
-            .collect();
-        let [one] = added.as_slice() else {
-            panic!("not one task enqueued in {channel}: {added:?}");
-        };
-        *one
-    }
-
-    /// As claude on Ada's first machine, [`Returns::enqueues`] of `<extra> <text>`.
+    /// As claude on Ada's first machine, [`Claims::enqueues`] of `<extra> <text>`.
     #[track_caller]
     pub fn claude_enqueues_in(&self, channel: ChannelId, extra: &[&str], text: &str) -> TaskId {
         let mut args = extra.to_vec();
@@ -174,7 +152,7 @@ impl Returns {
             self.claims.senders.agents.folder.as_path(),
             Some(CLAUDE),
         );
-        self.enqueues(claude, channel, &args)
+        self.claims.enqueues(claude, channel, &args)
     }
 
     /// As [`Returns::claude_enqueues_in`], in the talk's channel.
@@ -405,7 +383,7 @@ pub fn holds_part(value: &Value, part: &str) -> bool {
 /// Whether `value` or a value nested in it names the task `task`: its ID, or a reference to it,
 /// with or without its `#`.
 pub fn names_task(value: &Value, task: TaskId) -> bool {
-    let as_message = MessageId::from_bytes(*task.as_bytes());
+    let as_message = as_message(task);
     match value {
         Value::String(held) => {
             let short = held.trim_start_matches('#');

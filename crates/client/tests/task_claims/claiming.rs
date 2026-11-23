@@ -22,8 +22,8 @@ use crate::fixtures::{CHANNEL, hex};
 use crate::machine::{Finished, Machine};
 use crate::played::Played;
 use crate::queuing::{
-    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks_path,
-    the_one_task,
+    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks,
+    tasks_path, the_one_task,
 };
 use crate::senders::{LAPTOP_AGENT, Senders};
 use crate::states;
@@ -200,6 +200,38 @@ impl Claims {
         let claude = (self.senders.agents.folder.as_path(), Some(CLAUDE));
         enqueued(&self.ada().machine, claude, &[CHANNEL, &self.channel, text]);
         the_one_task(self.cloud(), self.ada(), self.at, self.queue).task
+    }
+
+    /// As `agent`, or the person with none, on `machine` in `dir`, `skald enqueue --channel
+    /// <channel> <args>`, which must succeed; gives the one task it added to `channel`'s queue
+    /// `default`.
+    #[track_caller]
+    pub fn enqueues(
+        &self,
+        (machine, dir, agent): (&Machine, &Path, Option<&str>),
+        channel: ChannelId,
+        args: &[&str],
+    ) -> TaskId {
+        let (cloud, ada) = (self.cloud(), self.ada());
+        let at = (self.at.0, channel);
+        let queue = default_queue(cloud, ada, at);
+        let ids = || -> Vec<TaskId> {
+            (tasks(cloud, ada, at, queue).iter())
+                .map(|stored| stored.task.task)
+                .collect()
+        };
+        let before = ids();
+        let named = channel.to_string();
+        let mut all = vec![CHANNEL, named.as_str()];
+        all.extend_from_slice(args);
+        enqueued(machine, (dir, agent), &all);
+        let added: Vec<TaskId> = (ids().into_iter())
+            .filter(|task| !before.contains(task))
+            .collect();
+        let [one] = added.as_slice() else {
+            panic!("not one task enqueued in {channel}: {added:?}");
+        };
+        *one
     }
 
     /// A task `craft` makes, written as Ada's first device and uploaded with its proof; fails

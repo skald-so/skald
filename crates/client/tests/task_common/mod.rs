@@ -15,10 +15,10 @@ pub mod agents;
 #[allow(unused_imports)]
 #[path = "../task_claims/claiming.rs"]
 pub mod claiming;
-#[path = "../gap_detection/gaps.rs"]
-pub mod gaps;
 #[path = "../history_devices/devices.rs"]
 pub mod devices;
+#[path = "../gap_detection/gaps.rs"]
+pub mod gaps;
 #[path = "../compact_output/lines.rs"]
 pub mod lines;
 #[path = "../queues/queuing.rs"]

@@ -10,8 +10,8 @@ use crate::claiming::address;
 use crate::fixtures::TO;
 use crate::lines::AFTER_MISSING;
 use crate::queuing::tasks_path;
-use crate::results::{assert_dropped, assert_result_line, named};
-use crate::returns::Returns;
+use crate::results::{assert_dropped, assert_result_line};
+use crate::returns::{Returns, named};
 use crate::senders::{LAPTOP_AGENT, labelled_of};
 use crate::states::{self, CLAIMED, Held};
 
@@ -198,7 +198,9 @@ fn result_of_a_task_the_device_did_not_enqueue_or_of_another_channel_is_dropped(
         results.claims.senders.laptop_folder.as_path(),
         Some(LAPTOP_AGENT),
     );
-    let laptop_s = results.enqueues(codex, results.channel(), &[LAPTOP_S]);
+    let laptop_s = results
+        .claims
+        .enqueues(codex, results.channel(), &[LAPTOP_S]);
     let held = results.bob_claims();
     assert_eq!(held.task, laptop_s, "Bob claimed another task");
     results.bob_completes(&held);

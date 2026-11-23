@@ -8,15 +8,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use skald_proto::{
-    Body, Cbor as _, ClaimId, Content, DeviceId, MessageId, Outcome, ReceiptStatus, TaskId,
-};
+use skald_proto::{Body, Cbor as _, Content, DeviceId, MessageId, Outcome, ReceiptStatus, TaskId};
 
 use crate::cloud::WAIT;
 use crate::lines::{json_objects, refers_to};
 use crate::machine::Finished;
 use crate::queuing::{references, refers_to_task};
-use crate::returns::{Answer, Returns};
+use crate::returns::{Answer, Named, Returns, named};
 use crate::states::Held;
 use crate::talk::Line;
 
@@ -30,9 +28,6 @@ pub fn outcome_mark(outcome: Outcome) -> &'static str {
 
 /// The word of a dropped message's warning.
 pub const DROPPED: &str = "dropped";
-
-/// A claim as a result names it: its `claim_id` and generation.
-pub type Named = (ClaimId, u64);
 
 impl Returns {
     /// Bob's device writes, in the talk's channel as its next line there, the content `content`
@@ -135,13 +130,6 @@ impl Returns {
             thread::sleep(Duration::from_millis(500));
         }
     }
-}
-
-/// The claim `held` names, as a result names it.
-#[track_caller]
-pub fn named(held: &Held) -> Named {
-    let claim_id = (held.claim_id.parse()).unwrap_or_else(|_| panic!("no claim ID in {held:?}"));
-    (claim_id, held.generation)
 }
 
 /// Fails unless `shown`, an agent's output, has one line holding `text`, and it names `task` by
