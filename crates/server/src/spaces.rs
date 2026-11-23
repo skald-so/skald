@@ -81,6 +81,8 @@ struct ListedMember {
     joined_at: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     deleted: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    you: bool,
 }
 
 /// `ListedMembers` in the spec.
@@ -100,6 +102,8 @@ pub(crate) struct Found {
     pub(crate) id: SpaceId,
     name: Name,
     creator: String,
+    /// The ID of the account that finds it.
+    account: String,
     /// Whether the account gets the space.
     pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
@@ -128,6 +132,7 @@ pub(crate) async fn find(
         id,
         name: name.parse().expect("a stored space name is a valid name"),
         creator,
+        account: account.to_owned(),
         gets,
         admin,
     })
@@ -391,8 +396,8 @@ pub(crate) async fn space_devices(db: &PgPool, space: SpaceId) -> Result<Devices
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
-/// shows them, in its order. A member joined when the server stored the first revision of the run
-/// up to the latest that lists it.
+/// shows them, in its order, the session's account marked. A member joined when the server stored
+/// the first revision of the run up to the latest that lists it.
 pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let space = found.id.to_string();
     let latest = mailboxes::latest(&state.db, found.id)
@@ -404,14 +409,15 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     let revision =
         i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
-    let rows: Vec<(String, Option<String>, i64, String, bool)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>, i64, String, bool, bool)> = sqlx::query_as(
         "SELECT m.account_id::text,
              (SELECT login FROM sign_in_methods
               WHERE account_id = m.account_id AND provider = $3 ORDER BY created_at LIMIT 1),
              (SELECT count(*) FROM devices
               WHERE account_id = m.account_id AND cert IS NOT NULL AND NOT revoked),
              to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
-             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL)
+             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL),
+             m.account_id = $4::uuid
          FROM roster_members m
          JOIN roster_revisions r ON r.space_id = m.space_id AND r.revision = 1 + COALESCE(
              (SELECT max(o.revision) FROM roster_revisions o
@@ -425,13 +431,14 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     .bind(&space)
     .bind(revision)
     .bind(GITHUB)
+    .bind(&found.account)
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's members", err))?;
-    let mut shown: HashMap<String, (Option<String>, i64, String, bool)> = rows
+    let mut shown: HashMap<String, (Option<String>, i64, String, bool, bool)> = rows
         .into_iter()
-        .map(|(account, login, linked, joined, deleted)| {
-            (account, (login, linked, joined, deleted))
+        .map(|(account, login, linked, joined, deleted, you)| {
+            (account, (login, linked, joined, deleted, you))
         })
         .collect();
     let members = roster
@@ -439,7 +446,7 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
         .members
         .iter()
         .filter_map(|member| {
-            let (github_login, linked_devices, joined_at, deleted) =
+            let (github_login, linked_devices, joined_at, deleted, you) =
                 shown.remove(&member.account.to_string())?;
             Some(ListedMember {
                 handle: member.handle.to_string(),
@@ -451,6 +458,7 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
                 linked_devices,
                 joined_at,
                 deleted,
+                you,
             })
         })
         .collect();
