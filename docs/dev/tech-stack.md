@@ -34,7 +34,7 @@ Versions as of 2026-11-09.
 | Web screenshot comparison | The kit page and the website's main page in the Chromium of the Playwright Docker image (linux/amd64, pinned by digest) on every machine; pixelmatch 8 compares with the references, anti-aliasing aside |
 | Website and docs | VitePress 2 (alpha) builds `docs/` into a static site, with its default theme in the main page's look and local search; github-slugger 2 gives headings GitHub's IDs. The main page is static HTML built with Vite. `site/build.mjs` checks every link of the built pages: [infrastructure.md](infrastructure.md#website-and-docs) |
 | In-browser decryption | WASM build of the Rust core: `proto` and `crypto` for `wasm32-unknown-unknown`. There getrandom 0.4 with `wasm_js` takes the random generator of the browser or Node.js, and js-sys 0.3 JavaScript's clock for UUIDv7 IDs. wasm-bindgen-test 0.3 runs the tests there |
-| SDK | Rust |
+| SDK | [Rust message SDK](../rust-sdk.md) |
 | Distribution | GitHub Releases; `install.sh` and `install.ps1` with a one-time code; npm package `skald-so` that runs the release's binary (`npx skald-so`); Claude Code plugin; server Docker image |
 | Server image | Built in the `rust` Debian 13 image; runs on distroless `cc-debian13` as a non-root user; base images pinned by digest |
 | Infrastructure | Docker Compose, Caddy, WAL-G, Prometheus, Alertmanager, Grafana, Loki, Alloy; details in [infrastructure.md](infrastructure.md) |

@@ -56,6 +56,7 @@
 use std::cell::Cell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -99,6 +100,7 @@ use crate::receipts;
 use crate::reply;
 use crate::resend;
 use crate::results;
+use crate::sdk::{MessageError, ReceivedMessage};
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
@@ -357,6 +359,31 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
 /// space: gives how many messages it handed over.
 type Whole<'w> = &'w dyn Fn(&Follower, (SpaceId, &Name)) -> Result<usize, String>;
 
+type Receiver<'a> = dyn FnMut(ReceivedMessage) -> io::Result<()> + 'a;
+
+enum PersonHandover<'a> {
+    Cli(Form),
+    Application(&'a mut Receiver<'a>),
+}
+
+/// Receives as the person and hands over typed messages to the application.
+pub fn receive_messages(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    hand_over: &mut impl FnMut(ReceivedMessage) -> io::Result<()>,
+) -> Result<(), MessageError> {
+    receive_with(
+        dir,
+        storage,
+        settings,
+        None,
+        (false, PersonHandover::Application(hand_over), None),
+        true,
+    )
+    .map(drop)
+}
+
 /// [`run`], showing in `form`; handing over with `whole`, if given, as [`inbox`] does; handing
 /// nothing over to the agent unless `hands`.
 fn received(
@@ -367,6 +394,29 @@ fn received(
     (waits, form, whole): (bool, Form, Option<Whole>),
     hands: bool,
 ) -> Result<bool, String> {
+    receive_with(
+        dir,
+        storage,
+        (speaks, timeout),
+        agent,
+        (waits, PersonHandover::Cli(form), whole),
+        hands,
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn receive_with(
+    dir: &Path,
+    storage: secrets::Storage,
+    (speaks, timeout): (VersionRange, Duration),
+    agent: Option<&Name>,
+    (waits, handover, whole): (bool, PersonHandover<'_>, Option<Whole>),
+    hands: bool,
+) -> Result<bool, MessageError> {
+    let form = match &handover {
+        PersonHandover::Cli(form) => Some(*form),
+        PersonHandover::Application(_) => None,
+    };
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
     SPACE.with(|space| {
@@ -393,8 +443,8 @@ fn received(
     let queued = send::queued(&follower.state, scope)?;
     let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
     let reported = match (agent, form) {
-        (Some(_), _) => Reported::Quiet,
-        (None, Form::Json) => Reported::Json(None),
+        (Some(_), _) | (None, None) => Reported::Quiet,
+        (None, Some(Form::Json)) => Reported::Json(None),
         (None, _) => Reported::Full,
     };
     if let Err(err) = send::report(&follower.state, &queued, &delivered, timeout, reported) {
@@ -415,15 +465,21 @@ fn received(
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
         Err(err) => Err(err.clone()),
     };
-    let handed = match (ran_as, whole) {
-        (Some(_), _) if !hands => Ok(0),
+    let handed = match (ran_as, whole, handover) {
+        (Some(_), _, _) if !hands => Ok(0),
         // A failed run hands nothing over.
-        (Some((space, agent)), Some(whole)) => match (&received, &aligned, &shown) {
-            (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)),
+        (Some((space, agent)), Some(whole), _) => match (&received, &aligned, &shown) {
+            (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)).map_err(Into::into),
             _ => Ok(0),
         },
-        (Some((space, agent)), None) => hand_over(&follower, (space, agent), form),
-        (None, _) => show_to_person(&follower, form),
+        (Some((space, agent)), None, PersonHandover::Cli(form)) => {
+            hand_over(&follower, (space, agent), form).map_err(Into::into)
+        }
+        (_, _, PersonHandover::Application(_)) if crate::connection::session_refused() => Ok(0),
+        (_, _, PersonHandover::Application(receiver)) => {
+            hand_over_to_application(&follower, receiver)
+        }
+        (None, _, PersonHandover::Cli(form)) => show_to_person(&follower, form).map_err(Into::into),
     };
     if let Ok(checks) = &checks {
         receipts::send(&mut follower, &checks.synced, scope);
@@ -432,6 +488,7 @@ fn received(
     let person_shown = output::written() > written;
     if ran_as.is_none()
         && !follower.stateless()
+        && let Some(form) = form
         && let Err(err) = held::say_waiting(&follower.state, form)
     {
         eprintln!("skald: warning: {err}");
@@ -450,6 +507,9 @@ fn received(
         // Its connection goes back to be kept.
         link.mailbox = None;
         intake::leave(Intake::new(follower, checks, link));
+    }
+    if let Err(err @ MessageError::Handover(_)) = handed {
+        return Err(err);
     }
     received?;
     aligned?;
@@ -1144,6 +1204,26 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
     Ok(shown + permission_prompts::show_to_person(state, form)?)
 }
 
+/// Hands over the person's message records, leaving other records for the CLI.
+fn hand_over_to_application(
+    follower: &Follower,
+    receiver: &mut Receiver<'_>,
+) -> Result<usize, MessageError> {
+    let state = &follower.state;
+    hand_over_kept(
+        follower,
+        state.for_person().map_err(text)?,
+        |opened| {
+            let Some(message) = ReceivedMessage::from_record(opened) else {
+                return Ok(false);
+            };
+            receiver(message).map_err(MessageError::Handover)?;
+            Ok(true)
+        },
+        &mut |seq| state.shown_to_person(seq, false),
+    )
+}
+
 /// Hands each kept status of a message `agent` sent in `space`, then each kept message that waits
 /// for it there, over to it, in `form`, in `seq` order: shows it, then marks it handed over. A
 /// message whose wait ended is dropped first. Gives how many messages it handed over.
@@ -1500,24 +1580,45 @@ fn shown_kept(
     (form, references): (Form, &References),
     (put, mark): (&mut Put, &mut Mark),
 ) -> Result<usize, String> {
+    let mut warned = false;
+    hand_over_kept(
+        follower,
+        kept,
+        |opened| {
+            let (line, level) = kept_line(opened, form, references);
+            let warns = form == Form::Short && !warned && level < TrustLevel::Own;
+            let line = if warns {
+                warned = true;
+                format!("{}\n{line}", forms::DATA_WARNING)
+            } else {
+                line
+            };
+            put(format!("{line}\n"))?;
+            Ok(true)
+        },
+        mark,
+    )
+}
+
+/// Opens each kept record in order and marks it after `put` accepts it. Leaves records
+/// that `put` skips and stops on its first error.
+fn hand_over_kept<E: From<String>>(
+    follower: &Follower,
+    kept: Vec<(u64, Vec<u8>)>,
+    mut put: impl FnMut(&[u8]) -> Result<bool, E>,
+    mark: &mut Mark,
+) -> Result<usize, E> {
     if kept.is_empty() {
         return Ok(0);
     }
     let key = groups::inbox_key(follower)?;
     let mut shown = 0;
-    let mut warned = false;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
-                let (line, level) = kept_line(&opened, form, references);
-                let warns = form == Form::Short && !warned && level < TrustLevel::Own;
-                let line = if warns {
-                    warned = true;
-                    format!("{}\n{line}", forms::DATA_WARNING)
-                } else {
-                    line
-                };
-                put(format!("{line}\n"))?;
+                if !put(&opened)? {
+                    continue;
+                }
                 shown += 1;
             }
             None => eprintln!(

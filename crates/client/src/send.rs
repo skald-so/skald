@@ -62,6 +62,7 @@ use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
 use crate::queue_keys;
 use crate::recv;
+use crate::sdk::MessageError;
 use crate::secrets;
 use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
@@ -206,11 +207,35 @@ pub fn run(
             dir,
             storage,
             (speaks, timeout),
-            (to, channel, text),
+            (
+                to.map(addressee).transpose()?,
+                channel.map(channel_id).transpose()?,
+                text,
+            ),
             agent,
-            reported(json, agent),
+            Some(reported(json, agent)),
         )
+        .map(drop)
+        .map_err(|err| err.to_string())
     })
+}
+
+/// Sends a person's message to an explicit channel for the application.
+pub fn send_message(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    channel: ChannelId,
+    text: &str,
+) -> Result<MessageId, MessageError> {
+    sent(
+        dir,
+        storage,
+        settings,
+        (None, Some(channel), text),
+        None,
+        None,
+    )
 }
 
 /// How a run as `agent`, if any, reports the messages it sent, as JSON if `json`.
@@ -236,12 +261,10 @@ fn sent(
     dir: &Path,
     storage: secrets::Storage,
     (speaks, timeout): (VersionRange, Duration),
-    (to, channel, text): Named,
+    (to, channel, text): (Option<Addressee>, Option<ChannelId>, &str),
     agent: Option<&Name>,
-    reported: Reported,
-) -> Result<(), String> {
-    let to = to.map(addressee).transpose()?;
-    let channel = channel.map(channel_id).transpose()?;
+    reported: Option<Reported>,
+) -> Result<MessageId, MessageError> {
     let scope = Scope::of_run(dir, agent.is_some())?;
     let (mut synced, channel) = match channel {
         Some(channel) => of_channel(dir, storage, (speaks, timeout), channel, scope)
@@ -264,7 +287,7 @@ fn sent(
         reply_to: None,
         hops,
     };
-    send_synced(
+    send_with(
         dir,
         (synced, channel),
         (scope, server),
@@ -314,8 +337,28 @@ pub fn send_synced(
     agent: Option<&Name>,
     reported: Reported,
 ) -> Result<(), String> {
+    send_with(
+        dir,
+        (synced, channel),
+        (scope, server),
+        draft,
+        agent,
+        Some(reported),
+    )
+    .map(drop)
+    .map_err(|err| err.to_string())
+}
+
+fn send_with(
+    dir: &Path,
+    (synced, channel): (Synced, ChannelId),
+    (scope, server): (Scope, ServerName),
+    draft: &Draft,
+    agent: Option<&Name>,
+    reported: Option<Reported>,
+) -> Result<MessageId, MessageError> {
     if counted(&synced.follower, agent).is_some() && draft.hops > MOST_HOPS {
-        return Err(over_the_limit(agent, channel, draft.to.as_ref(), "sent"));
+        return Err(over_the_limit(agent, channel, draft.to.as_ref(), "sent").into());
     }
     let Synced {
         mut follower,
@@ -333,7 +376,9 @@ pub fn send_synced(
     // It goes through no mailbox: what it would write there, it would ack unshown.
     if follower.stateless() {
         let to = (channel, server);
-        return stateless::send(&mut follower, (&roster, &devices), to, draft, reported);
+        let reported = reported.ok_or_else(|| "an enrolled device is required".to_owned())?;
+        return stateless::send(&mut follower, (&roster, &devices), to, draft, reported)
+            .map_err(Into::into);
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
     // A service agent's message carries its token's grant; only a member's has copies.
@@ -351,7 +396,7 @@ pub fn send_synced(
             (from, None, readers)
         }
     };
-    let (_, first) = groups::encrypt(
+    let (msg_id, first) = groups::encrypt(
         &follower,
         (&roster, &devices),
         (channel, agent.map(Name::as_str)),
@@ -366,7 +411,13 @@ pub fn send_synced(
     for reader in first {
         eprintln!("skald: warning: {}", copies::first_copy(reader, channel));
     }
-    let queued = queued(&follower.state, scope)?;
+    let queued = queued(&follower.state, scope).map_err(|reason| match reported {
+        Some(_) => MessageError::Operation(reason),
+        None => MessageError::SendPending {
+            id: msg_id,
+            reason: Some(reason),
+        },
+    })?;
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
     match Link::new(&follower) {
         Ok(mut link) => {
@@ -375,6 +426,9 @@ pub fn send_synced(
         }
         Err(err) => eprintln!("skald: warning: {err}"),
     }
+    let Some(reported) = reported else {
+        return result_for(msg_id, &queued, &delivered);
+    };
     let reported = report(&follower.state, &queued, &delivered, timeout, reported);
     if let Some(agent) = agent {
         // It showed them in full, or as JSON.
@@ -384,7 +438,37 @@ pub fn send_synced(
             }
         }
     }
-    reported
+    reported?;
+    Ok(msg_id)
+}
+
+/// The server's answers to the envelopes of the application's own send.
+fn result_for(
+    id: MessageId,
+    queued: &[Queued],
+    delivered: &Delivered,
+) -> Result<MessageId, MessageError> {
+    let mut pending = false;
+    for key in queued.iter().map(Wire::key).filter(|key| key.0 == id) {
+        match delivered.answer(&key) {
+            Some(Answer::Stored) => {}
+            Some(Answer::Refused(problem)) => {
+                return Err(MessageError::SendRefused {
+                    id,
+                    recipient: key.1,
+                    problem: problem.clone(),
+                });
+            }
+            None => pending = true,
+        }
+    }
+    if pending {
+        return Err(MessageError::SendPending {
+            id,
+            reason: delivered.failed().map(str::to_owned),
+        });
+    }
+    Ok(id)
 }
 
 /// Why what `agent`, none for a member service agent, sends to `to`, none for everyone, in

@@ -10,7 +10,6 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -52,18 +51,33 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 /// The problem of a request without a session, or with one the server does not hold.
 const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
 
-/// Whether a request of the process got [`NOT_SIGNED_IN`] since [`forget_refused`].
-static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    /// Whether a request on this thread got [`NOT_SIGNED_IN`] since [`forget_refused`].
+    static SESSION_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Whether a request of the process got the server's refusal of its session since
+/// Whether a request on this thread got the server's refusal of its session since
 /// [`forget_refused`].
 pub fn session_refused() -> bool {
-    SESSION_REFUSED.load(Ordering::SeqCst)
+    SESSION_REFUSED.get()
 }
 
 /// Forgets the refusals [`session_refused`] gives.
 pub fn forget_refused() {
-    SESSION_REFUSED.store(false, Ordering::SeqCst);
+    SESSION_REFUSED.set(false);
+}
+
+/// Tracks session refusals separately for a synchronous library operation and its caller.
+pub fn track_refusals() -> Refusals {
+    Refusals(SESSION_REFUSED.replace(false))
+}
+
+pub struct Refusals(bool);
+
+impl Drop for Refusals {
+    fn drop(&mut self) {
+        SESSION_REFUSED.set(self.0);
+    }
 }
 
 /// Why a request to the server failed.
@@ -1312,7 +1326,7 @@ impl Connection {
             }
             if kind != VersionProblem::TooNew.type_uri() {
                 if status == 401 && kind == NOT_SIGNED_IN {
-                    SESSION_REFUSED.store(true, Ordering::SeqCst);
+                    SESSION_REFUSED.set(true);
                 }
                 return Err(Error::Refused {
                     status,
