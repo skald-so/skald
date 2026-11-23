@@ -3770,7 +3770,7 @@
             }
           },
           "403": {
-            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; or `https://skald.so/problems/device-revoked`, for a device that checks 3 and 4 of \"Device checks\" revoke, as by its issuer's revocation.",
+            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; or `https://skald.so/problems/device-revoked`, for a device that checks 3 and 4 of \"Device checks\" revoke, as by its issuer's revocation, or whose certificate names a deleted account.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4458,7 +4458,7 @@
       "post": {
         "operationId": "openSessionlessLinkRun",
         "summary": "Open a run without a session",
-        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The request names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server picks the run's pairing, which the device's hello binds and the person enters on the issuing device with the code, and gives it with the run's token for its messages; the hello follows as the run's first message, `POST /links/messages`. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
+        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The request names the device, which holds no certificate, is on no deleted account and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server picks the run's pairing, which the device's hello binds and the person enters on the issuing device with the code, and gives it with the run's token for its messages; the hello follows as the run's first message, `POST /links/messages`. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does, and once the account its device registered on is deleted. The request has no session.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4508,6 +4508,21 @@
                       "$ref": "#/components/schemas/Problem"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/device-revoked`: the device is on a deleted account, whose devices are each served as a revoked one. No run opens.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
