@@ -300,7 +300,7 @@ fn signed_in_again(
     (secrets, stored): (&Secrets, &mut secrets::Map),
 ) -> Result<String, String> {
     println!("The session's sign-in is too old to delete the account: sign in again.");
-    let token = sign_in::device_flow(connection, dir).map_err(|err| {
+    let token = sign_in::device_flow(connection, dir, None).map_err(|err| {
         match err {
             sign_in::Error::Denied => "the sign-in was denied in the browser: nothing is deleted",
             sign_in::Error::Expired => "the sign-in code expired: nothing is deleted",

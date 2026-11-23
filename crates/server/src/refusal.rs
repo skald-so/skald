@@ -86,7 +86,7 @@ pub(crate) enum Refusal {
     SignatureRefused,
     /// A revoked device.
     DeviceRevoked,
-    /// A device whose certificate names a deleted account, which proved it holds the device's key.
+    /// A device that proved it holds the key in its server-held certificate on a deleted account.
     AccountDeleted,
     /// A grant the server does not take, for the reason it holds.
     Grant(String),

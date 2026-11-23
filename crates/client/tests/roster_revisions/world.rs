@@ -4,7 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -360,23 +360,80 @@ pub fn set_role(members: &mut [Member], account: AccountId, role: Role) {
 /// Sends `POST <path>` with the JSON `request`, or without a body if `None`, as the session
 /// `token`, through the API: the status and the body.
 pub fn post_as(cloud: &Cloud, token: &str, path: &str, request: Option<&Value>) -> (u16, Value) {
-    let post = super::cloud::agent()
-        .post(format!("{}{path}", cloud.url))
+    send_as(cloud, "POST", (token, path), request)
+}
+
+/// Sends `PUT <path>` with the JSON `request` as the session `token`, through the API: the status
+/// and the body.
+pub fn put_as(cloud: &Cloud, token: &str, path: &str, request: &Value) -> (u16, Value) {
+    send_as(cloud, "PUT", (token, path), Some(request))
+}
+
+/// Sends `<method> <path>`, `POST` or `PUT`, as [`post_as`] does.
+fn send_as(
+    cloud: &Cloud,
+    method: &str,
+    (token, path): (&str, &str),
+    request: Option<&Value>,
+) -> (u16, Value) {
+    let agent = super::cloud::agent();
+    let url = format!("{}{path}", cloud.url);
+    let builder = if method == "PUT" {
+        agent.put(url)
+    } else {
+        agent.post(url)
+    };
+    let builder = builder
         .header(
             skald_proto::VERSION_HEADER,
             skald_proto::PROTOCOL_VERSION.to_string(),
         )
         .header("authorization", format!("Bearer {token}"));
     let sent = match request {
-        Some(request) => post
+        Some(request) => builder
             .header("content-type", "application/json")
             .send(request.to_string().as_bytes()),
-        None => post.send_empty(),
+        None => builder.send_empty(),
     };
-    let mut response = sent.unwrap_or_else(|err| panic!("POST {path}: {err}"));
+    let mut response = sent.unwrap_or_else(|err| panic!("{method} {path}: {err}"));
     let status = response.status().as_u16();
     let body = response.body_mut().read_to_string().unwrap_or_default();
     (status, serde_json::from_str(&body).unwrap_or(Value::Null))
+}
+
+/// Fails unless the machine whose requests the relay of `cloud` sees sent none from `since` on.
+#[track_caller]
+pub fn assert_nothing_sent(cloud: &Cloud, since: Instant) {
+    let heads: Vec<String> = (cloud.relay.sent_since(since).into_iter())
+        .map(|sent| sent.head)
+        .collect();
+    assert_eq!(heads, Vec::<String>::new(), "requests sent");
+}
+
+/// Fails if a request the relay of `cloud` saw, a row of its database or a file of `machine` holds
+/// `secret`, an invite's secret, or `private`, the invite private key derived from it, in any
+/// encoding ([`keys::holds`]).
+#[track_caller]
+pub fn assert_secret_nowhere(cloud: &Cloud, machine: &Machine, secret: &[u8], private: &[u8]) {
+    let mut kept = vec![
+        ("the requests".to_owned(), cloud.relay.sent_bytes()),
+        (
+            "the database".to_owned(),
+            cloud.rows().join("\n").into_bytes(),
+        ),
+    ];
+    for file in machine.files() {
+        if let Ok(bytes) = fs::read(&file) {
+            kept.push((file.display().to_string(), bytes));
+        }
+    }
+    for (what, bytes) in kept {
+        assert!(!keys::holds(&bytes, secret), "{what} holds the secret");
+        assert!(
+            !keys::holds(&bytes, private),
+            "{what} holds the invite private key"
+        );
+    }
 }
 
 /// Stores `roster` on the server as the session `token`, through the API; fails unless the server

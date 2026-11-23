@@ -3,13 +3,13 @@
 //! the person's terminal or on its local page, never in an agent's output; meanwhile every other
 //! command says that it waits.
 
-use std::io::BufRead as _;
 use std::path::Path;
 
 use skald_crypto::RecoveryKey;
 use zeroize::Zeroizing;
 
 use crate::output::{self, Stream};
+use crate::page::Page;
 use crate::person::{self, Person};
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
@@ -87,16 +87,20 @@ pub fn show(
         Some(Person::Page(page)) => page,
         Some(Person::Terminal) => return at_terminal(state, secrets, &mut stored, &key),
     };
-    page.show(Some(key.shown().as_str()))
-        .map_err(sign_in::Error::Io)?;
-    let question = format!("The recovery key above shows only once. {KEEP_IT}");
-    let answered = page.ask(&question, &["Written down"], None, true);
-    let answered = answered.map_err(sign_in::Error::Io)?.recv().is_ok();
-    page.show(None).map_err(sign_in::Error::Io)?;
-    if answered {
+    if on_page(page, &key)? {
         written_down(state, secrets, &mut stored)?;
     }
     Ok(())
+}
+
+/// Shows `key` on `page` and asks whether it is written down; gives whether its person said so.
+fn on_page(page: &Page, key: &RecoveryKey) -> Result<bool, sign_in::Error> {
+    let question = format!("The recovery key above shows only once. {KEEP_IT}");
+    // In one change: the key never shows under the question before, such as the link code's.
+    let answered = page.show_asking(key.shown().as_str(), &question, &["Written down"]);
+    let answered = answered.map_err(sign_in::Error::Io)?.recv().is_ok();
+    page.show(None).map_err(sign_in::Error::Io)?;
+    Ok(answered)
 }
 
 /// Shows `key`, of `stored`, the secrets, at the person's terminal, and has it written down once
@@ -115,14 +119,11 @@ fn at_terminal(
     text.push_str("\n\n");
     text.push_str(KEEP_IT);
     text.push_str("\nPress Enter once it is written down: ");
-    output::write(Stream::Out, text.as_bytes())
-        .map_err(|err| sign_in::Error::Io(format!("cannot show the recovery key: {err}")))?;
-    person::forget_entered();
-    let mut line = String::new();
-    let read = person::input()
-        .read_line(&mut line)
-        .map_err(|err| sign_in::Error::Io(format!("cannot read the terminal: {err}")))?;
-    if read == 0 {
+    let answered = person::answer(|| {
+        output::write(Stream::Out, text.as_bytes())
+            .map_err(|err| format!("cannot show the recovery key: {err}"))
+    });
+    if answered.map_err(sign_in::Error::Io)?.is_none() {
         println!();
         return Ok(());
     }
@@ -157,6 +158,8 @@ pub fn say_if_waiting(dir: &Path) {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     use crate::test_dir::TestDir;
 
@@ -179,6 +182,33 @@ mod tests {
         assert_eq!(loaded.get("other").map(String::as_str), Some("kept"));
         let broken = secrets::Map::from([(RECOVERY_KEY.to_owned(), "AAAA".to_owned())]);
         assert!(kept(&broken).is_none(), "no key of 4 characters");
+    }
+
+    /// On the page, the key replaces the link code and "Written down" its "Fresh code" question in
+    /// one change, so the key never shows under "Fresh code"; once pressed, the key is taken as
+    /// written down.
+    #[test]
+    fn page_shows_the_key_and_asks_whether_written_down_in_one_change() {
+        let dir = TestDir::new("recovery-on-page");
+        let (page, _presses) = Page::showing_a_link_code_for_tests(&dir);
+        let key = RecoveryKey::generate();
+        let answered = std::thread::scope(|scope| {
+            let answered = scope.spawn(|| on_page(&page, &key));
+            while !page.press("Written down") {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            answered.join().expect("the page step")
+        });
+        assert!(answered.expect("an answer"));
+        let versions = page.versions();
+        let first = (versions.iter())
+            .find(|view| view["shown"] == key.shown().as_str())
+            .unwrap_or_else(|| panic!("the key never showed: {versions:?}"));
+        assert_eq!(
+            first["question"]["buttons"],
+            json!(["Written down"]),
+            "{first}"
+        );
     }
 
     #[test]

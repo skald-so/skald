@@ -17,7 +17,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use super::common::CLIENT;
-use test_dir::TestDir;
+pub(crate) use test_dir::TestDir;
 
 /// The setting of the directory of the local state and of the secrets file.
 pub const STATE_DIR: &str = "SKALD_STATE_DIR";

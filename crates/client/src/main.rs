@@ -27,7 +27,9 @@ macro_rules! eprintln {
     };
 }
 
+mod acceptances;
 mod admin;
+mod admission;
 mod agents;
 mod anchors;
 mod channels;
@@ -39,6 +41,7 @@ mod clock;
 mod codex;
 #[cfg(unix)]
 mod codex_app_server;
+mod codex_confirm;
 mod connection;
 mod copies;
 mod deletion;
@@ -89,12 +92,14 @@ mod recovery_link;
 mod recovery_wraps;
 mod recv;
 mod reply;
+mod resend;
 mod results;
 mod revocations;
 mod secrets;
 mod send;
 mod service;
 mod service_agents;
+mod session_file;
 mod set_username;
 mod sign_in;
 mod sign_out;
@@ -115,11 +120,12 @@ mod wait;
 mod wraps;
 
 use std::io::IsTerminal as _;
+use std::io::Write as _;
 use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::builder::FalseyValueParser;
 use clap::{Parser, Subcommand};
@@ -486,6 +492,24 @@ enum Command {
         #[arg(long, value_name = "DAYS", default_value_t = invites::DEFAULT_DAYS, value_parser = invite_days)]
         days: u64,
     },
+    /// Accepts an invite link to a space of another account, as its person at a terminal: asks for
+    /// the link and signs in if needed. It checks the invite against the roster revision the link
+    /// names, shows it and asks to confirm, then stores the acceptance with the account's username
+    /// or another handle. An unlisted person can sign up with the invite on a closed server. The
+    /// device then follows the space, and skald recv joins its channels once an admin's device
+    /// admits the account.
+    AcceptInvite {
+        /// The handle to ask for in the space, by default the account's username.
+        #[arg(long, value_name = "HANDLE", allow_hyphen_values = true)]
+        handle: Option<String>,
+        /// Never taken: the link goes only into the terminal, when asked.
+        #[arg(hide = true, value_name = "LINK")]
+        given: Vec<String>,
+    },
+    /// The step of skald accept-invite after its person's answers, which skald accept-invite hands
+    /// to the helper.
+    #[command(skip)]
+    AcceptInviteStep { step: acceptances::Step },
     /// Creates a service agent of a space this device follows, on a device of an admin of it: a
     /// device of the admin's account that runs without a person, such as in CI, at the address
     /// OWNER/AGENT. Its keys are made here; it is registered and certified, and the space's next
@@ -1212,19 +1236,37 @@ enum Command {
     /// as skald recv shows it; for those from others, only a line that tells the agent to call
     /// inbox, or their lines under inline. Both follow the delivery settings, skald
     /// delivery-modes. A message longer than the limit is cut, and skald recv #<ref> shows it
-    /// whole. Stop continues the turn with them, up to the CLI's cap of continuations in a row. On
-    /// Codex, every message goes in only as that line, once for the new ones, to the session whose
-    /// hook ran last, and the hooks never wait on the network. On Claude Code, PermissionRequest
-    /// and a Notification of a permission prompt record that the session waits on its permission
-    /// prompt, once per prompt; on Codex, PermissionRequest does, as does the session's background
-    /// app-server, which the helper watches, until its next hook or the app-server says the prompt
-    /// ended. The person's skald recv shows each prompt once, without its content. It prints nothing
-    /// while nothing waits, on PermissionRequest and Notification, and on a failure, which exits
-    /// with 1.
+    /// whole. Stop continues the turn with them, up to the CLI's cap of continuations in a row. A
+    /// message the socket, a channel event of skald mcp, the --wait hook or the mod took, which
+    /// the session does not confirm within 30 seconds, or SKALD_RESEND_AFTER seconds, goes by the
+    /// next of them, then by these hooks and inbox. On Codex, every message goes in only as that
+    /// line, once for the new ones, to the session whose hook ran last, and the hooks never wait
+    /// on the network. On Claude Code, PermissionRequest and a Notification of a permission prompt
+    /// record that the session waits on its permission prompt, once per prompt; on Codex,
+    /// PermissionRequest does, as does the session's background app-server, which the helper
+    /// watches, until its next hook or the app-server says the prompt ended. The person's skald
+    /// recv shows each prompt once, without its content. It prints nothing while nothing waits, on
+    /// PermissionRequest and Notification, and on a failure, which exits with 1.
     Hook {
         /// The agent CLI.
         #[arg(value_name = "CLI")]
         cli: hook::Cli,
+        /// As Claude Code's asyncRewake hook on SessionStart and Stop: waits up to SECONDS for the
+        /// agent's messages, prints them as the other hooks give them on standard error and exits
+        /// with 2, which starts a turn; with none, it exits with success, printing nothing.
+        #[arg(long, value_name = "SECONDS")]
+        #[serde(default)]
+        wait: Option<u64>,
+        /// As the poll of the mod, a Claude Code plugin: runs without hook input and prints, as
+        /// JSON, how many messages wait for the agent, and, with --idle, which says no turn runs,
+        /// a prompt that asks the agent to call inbox, when the mod is to submit it.
+        #[arg(long = "mod", conflicts_with = "wait")]
+        #[serde(default)]
+        mods: bool,
+        /// With --mod: no turn runs in the session.
+        #[arg(long, requires = "mods")]
+        #[serde(default)]
+        idle: bool,
         /// What the hook input gives.
         #[arg(skip)]
         #[serde(default)]
@@ -1250,6 +1292,9 @@ impl Command {
             Command::CreateSpace { .. } => Some("create-space"),
             Command::CreateChannel { .. } => Some("create-channel"),
             Command::Invite { .. } => Some("invite"),
+            Command::AcceptInvite { .. } | Command::AcceptInviteStep { .. } => {
+                Some("accept-invite")
+            }
             Command::CreateServiceAgent { .. } => Some("create-service-agent"),
             Command::CreateServiceToken { .. } => Some("create-service-token"),
             Command::ReplaceServiceKey { .. } => Some("replace-service-key"),
@@ -1558,9 +1603,6 @@ fn invite_days(given: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("give whole days from 1 to {}", invites::MOST_DAYS))
 }
 
-/// The setting of the host name the client reads, for tests; empty, the host name is empty.
-const HOST_NAME: &str = "SKALD_HOST_NAME";
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let one_shot = cli.one_shot;
@@ -1628,16 +1670,21 @@ fn main() -> ExitCode {
     if let Command::Link { browser } = operation.command {
         return link(operation, !one_shot, browser);
     }
-    if let Command::Hook { cli, .. } = operation.command {
-        return match cli {
-            hook::Cli::Claude => run_hook(operation, cli, one_shot, None),
-            hook::Cli::Codex => {
+    if let Command::Hook { cli, mods, .. } = operation.command {
+        return match (mods, cli) {
+            (true, _) => mod_poll(operation, one_shot),
+            (false, hook::Cli::Claude) => run_hook(operation, cli, one_shot, None),
+            (false, hook::Cli::Codex) => {
                 patiently(move |gate| run_hook(operation, cli, one_shot, Some(gate)))
             }
         };
     }
     if let Command::Held = operation.command {
         return held(operation, !one_shot);
+    }
+    if let Command::AcceptInvite { given, handle } = &operation.command {
+        let (given, handle) = (given.clone(), handle.clone());
+        return accept_invite(operation, &given, handle.as_deref());
     }
     if let Command::KeyChanges = operation.command {
         return key_changes(operation);
@@ -1822,13 +1869,18 @@ fn link_steps(operation: &Operation, dir: &Path, starts: bool, person: Person) -
 /// `skald hook <cli>` as `operation` says ([`hook`]): reads the hook input, then runs in its
 /// folder, through the helper that runs, or one it starts unless `one_shot`, or here; a Codex hook
 /// runs here ([`codex_here`]). Prints only what the run gives the session, unless `gate` says the
-/// hook no longer waits for it, and exits with 1 on a failure, never 2.
+/// hook no longer waits for it, and exits with 1 on a failure; 2 only as the `asyncRewake` hook
+/// ([`rewake`]).
 fn run_hook(
     mut operation: Operation,
     cli: hook::Cli,
     one_shot: bool,
     gate: Option<Gate>,
 ) -> ExitCode {
+    let wait = match operation.command {
+        Command::Hook { wait, .. } => wait,
+        _ => None,
+    };
     let cap = std::env::var(hook::CAP_SETTING).ok();
     let Ok(mut input) = hook::input(std::io::stdin().lock(), cap.as_deref()) else {
         return ExitCode::FAILURE;
@@ -1836,6 +1888,10 @@ fn run_hook(
     let Some(event) = input.event.filter(|event| cli.handles(*event)) else {
         return ExitCode::SUCCESS;
     };
+    let waits_on = matches!(event, hook::Event::SessionStart | hook::Event::Stop { .. });
+    if wait.is_some() && !waits_on {
+        return ExitCode::SUCCESS;
+    }
     if cli == hook::Cli::Codex {
         input.session.home = std::env::var_os(hook::CODEX_HOME)
             .filter(|home| !home.is_empty())
@@ -1870,7 +1926,13 @@ fn run_hook(
     operation.command = Command::Hook {
         cli,
         input: Some(input),
+        wait,
+        mods: false,
+        idle: false,
     };
+    if let Some(seconds) = wait {
+        return rewake(operation, &dir, Duration::from_secs(seconds), one_shot);
+    }
     if cli == hook::Cli::Codex && state::current(&dir) {
         return codex_here(operation, &dir, starts, gate);
     }
@@ -1894,6 +1956,84 @@ fn hooked(operation: Operation, dir: &Path, starts: bool, gate: Option<Gate>) ->
         },
         Err(_) => ExitCode::FAILURE,
     }
+}
+
+/// How long the `asyncRewake` hook waits before it tries again once its helper went away.
+const REWAKE_AGAIN: Duration = Duration::from_secs(1);
+
+/// `skald hook claude --wait` as `operation` says, by the state in `dir`: waits through the helper
+/// that runs, or one it starts unless `one_shot`, as the agent `--agent` names or, without it, the
+/// default one, for up to `wait`, until the agent's paths give it messages ([`resend`]); prints them
+/// on standard error and exits with 2, which starts a turn. With none, without a helper, or in a
+/// folder in no space, at once, it exits with success, printing nothing.
+fn rewake(mut operation: Operation, dir: &Path, wait: Duration, one_shot: bool) -> ExitCode {
+    let deadline = Instant::now() + wait;
+    if folders::working_space(dir).is_err() {
+        return ExitCode::SUCCESS;
+    }
+    if operation.agent.is_none() {
+        let Some(agent) = mcp::default_agent(dir, hook::CLAUDE_CODE) else {
+            return ExitCode::SUCCESS;
+        };
+        operation.agent = Some(agent.to_string());
+    }
+    let (give, given) = std::sync::mpsc::channel();
+    let dir = dir.to_path_buf();
+    std::thread::spawn(move || {
+        loop {
+            let mut said = Vec::new();
+            let mut sink = |stream, bytes: &[u8]| {
+                if stream == output::Stream::Err {
+                    said.extend_from_slice(bytes);
+                }
+                Ok(())
+            };
+            match helper::route_into(&dir, &operation, (false, !one_shot, false), &mut sink) {
+                Ok(helper::Route::Helped(code))
+                    if code == ExitCode::SUCCESS && !said.is_empty() =>
+                {
+                    let _ = give.send(said);
+                    return;
+                }
+                Ok(helper::Route::Here(_)) => return,
+                // The helper went away, or ended the wait giving nothing.
+                _ => std::thread::sleep(REWAKE_AGAIN),
+            }
+        }
+    });
+    match given.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(said) => match std::io::stderr().lock().write_all(&said) {
+            Ok(()) => ExitCode::from(REWAKES),
+            Err(_) => ExitCode::FAILURE,
+        },
+        Err(_) => ExitCode::SUCCESS,
+    }
+}
+
+/// The exit code with which the `asyncRewake` hook starts a turn.
+const REWAKES: u8 = 2;
+
+/// `skald hook claude --mod` as `operation` says: runs in the session's folder, the working
+/// directory, as the agent `--agent` names or, without it, the default one, through the helper
+/// that runs, or one it starts unless `one_shot`, or here, which gives no prompt; prints only
+/// what the run gives ([`resend::mod_poll`]).
+fn mod_poll(mut operation: Operation, one_shot: bool) -> ExitCode {
+    let Ok(dir) = state::dir(operation.state_dir.clone()) else {
+        return ExitCode::FAILURE;
+    };
+    let agent = match &operation.agent {
+        Some(_) => operation.agent.clone(),
+        None if dir.join(state::FILE).is_file() => {
+            mcp::default_agent(&dir, hook::CLAUDE_CODE).map(|agent| agent.to_string())
+        }
+        None => None,
+    };
+    let Some(agent) = agent else {
+        println!("{}", serde_json::json!({ "waiting": 0 }));
+        return ExitCode::SUCCESS;
+    };
+    operation.agent = Some(agent);
+    hooked(operation, &dir, !one_shot, None)
 }
 
 /// Runs `operation`, a Codex hook's, here by the state in `dir`, which has this client's schema,
@@ -2015,6 +2155,26 @@ fn interactive<S>(
         key_changes::say(&dir, &operation.key_change_sources(), false);
     }
     code
+}
+
+/// `skald accept-invite` as `operation` says ([`acceptances::run`]): its step goes through the
+/// helper if one runs; otherwise it runs here, holding the lock.
+fn accept_invite(operation: Operation, given: &[String], handle: Option<&str>) -> ExitCode {
+    let dir = match state::dir(operation.state_dir.clone()) {
+        Ok(dir) => dir,
+        Err(err) => return exit(Err(err)),
+    };
+    let settings = (operation.speaks, operation.timeout);
+    acceptances::run(
+        (&dir, operation.key_storage),
+        settings,
+        (given, handle),
+        |step| {
+            let operation = operation.step(Command::AcceptInviteStep { step });
+            let route = helper::route(&dir, &operation, false, false);
+            routed(route, operation)
+        },
+    )
 }
 
 /// Runs `operation` in this process, then closes the connection it kept.
@@ -2224,10 +2384,6 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                     )
                 })
                 .transpose()?;
-            let host_name = std::env::var_os(HOST_NAME)
-                .unwrap_or_else(gethostname::gethostname)
-                .to_string_lossy()
-                .into_owned();
             state::dir(state_dir).and_then(|dir| {
                 let page = opener.map(|opener| page::Page::new(&dir, opener));
                 // A recovery key or a link code is shown only to the person: at a terminal, or on
@@ -2240,9 +2396,10 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 let options = sign_in::Options {
                     storage: key_storage,
                     name,
-                    host_name,
+                    host_name: sign_in::host_name(),
                     person,
                     recovery,
+                    invite: None,
                     ssh: ssh_signing::Options {
                         key: ssh_key,
                         off: no_ssh,
@@ -2323,6 +2480,12 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
         .and_then(|synced| fingerprints::show(&synced, handle.as_deref().unwrap_or_default())),
         Command::FingerprintStep { step } => state::dir(state_dir)
             .and_then(|dir| fingerprints::step(&dir, key_storage, (speaks, timeout), step)),
+        // It runs through `accept_invite`.
+        Command::AcceptInvite { .. } => {
+            Err("skald accept-invite runs only through its own process".to_owned())
+        }
+        Command::AcceptInviteStep { step } => state::dir(state_dir)
+            .and_then(|dir| acceptances::step(&dir, key_storage, (speaks, timeout), step)),
         // It runs through `key_changes`.
         Command::KeyChanges => {
             Err("skald key-changes runs only through its own process".to_owned())
@@ -2614,7 +2777,15 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 forms::Form::of(true, json),
             )
         }
-        Command::Hook { cli, input } => {
+        Command::Hook { mods: true, .. } => {
+            let dir = state::dir(state_dir)?;
+            let Some(agent) = agent else {
+                return Err("skald hook --mod runs only as itself".to_owned());
+            };
+            // Without the helper, no path gives the mod its prompt.
+            resend::mod_poll(&dir, &agent, false)
+        }
+        Command::Hook { cli, input, .. } => {
             let (Some(input), Ok(dir)) = (input, state::dir(state_dir)) else {
                 return Err("skald hook runs only as itself".to_owned());
             };
@@ -2641,7 +2812,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
             }
             match event {
                 hook::Event::SessionStart => claude_socket::register(&dir, &agent, &input.session),
-                hook::Event::SessionEnd => claude_socket::end(&dir, &input.session),
+                hook::Event::SessionEnd => claude_socket::end(&dir, &agent, &input.session),
                 hook::Event::PermissionRequest | hook::Event::PermissionPrompt => {
                     permission_prompts::told(&dir, &agent, &input)
                 }

@@ -177,7 +177,7 @@ pub(crate) fn master_of(
 /// device with a valid certificate among `certs`, with `revocations`, of an account that is an
 /// admin in it, which that member's `excluded` does not list; the master key of a member's account
 /// given by `master`.
-pub(crate) fn admins_device(
+pub fn admins_device(
     body: &RosterBody,
     (certs, revocations): (&[Cert], &[Revocation]),
     device: DeviceId,

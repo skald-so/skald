@@ -13,8 +13,9 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::{Deserialize, Serialize};
 use skald_proto::{AccountRecord, CERT_NAME_MAX, Cbor as _, Cert, DeviceId, MasterBackup};
 
+use crate::deletion::{Lock, deleted};
 use crate::refusal::{Answer, Refusal, SignedIn, account, answer, parse};
-use crate::sign_in::{bearer, digest};
+use crate::sign_in::{self, bearer, digest};
 use crate::{AppState, link_runs, revocations};
 
 /// The kinds of device that register here: a person's `client` device, and a `service` device a
@@ -200,6 +201,15 @@ pub(crate) async fn register(
         let account = account(&state.db, &headers).await?;
         let checked = Checked::of(parse(&body)?)?;
         let device = checked.device.to_string();
+        let failed = |err| Refusal::Database("register a device", err);
+        let mut tx = state.db.begin().await.map_err(failed)?;
+        // A deletion of the account holds its lock until it commits: its sessions then end.
+        if deleted(&mut tx, &account, Lock::KeyShare)
+            .await
+            .map_err(failed)?
+        {
+            return Err(Refusal::NotSignedIn);
+        }
         // A new ID is inserted. A taken one is updated to itself, and so returned, only if this
         // registration is the one it has: `xmax` is `0` only in the row of an insert.
         let stored: Option<(bool, Option<Vec<u8>>)> = sqlx::query_as(
@@ -216,9 +226,10 @@ pub(crate) async fn register(
         .bind(checked.signing.as_slice())
         .bind(checked.hpke.as_slice())
         .bind(checked.name.as_bytes())
-        .fetch_optional(&state.db)
+        .fetch_optional(&mut *tx)
         .await
-        .map_err(|err| Refusal::Database("register a device", err))?;
+        .map_err(failed)?;
+        tx.commit().await.map_err(failed)?;
         let (created, cert) = stored.ok_or(Refusal::DeviceTaken)?;
         // A device session lists the `client` device it registered: a `service` device it registers
         // is not the session's.
@@ -259,9 +270,22 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         .await
         .map_err(|err| Refusal::Database("read the devices", err))?;
         let revocations = revocations::of_account(&state.db, &account).await?;
-        Ok(Json(Devices::of(found, &revocations)).into_response())
+        let own = Own {
+            devices: Devices::of(found, &revocations),
+            web: sign_in::web_origin(state.sign_in.as_deref()),
+        };
+        Ok(Json(own).into_response())
     })
     .await
+}
+
+/// `Devices` in the spec: the account's devices with the server's web address.
+#[derive(Serialize)]
+struct Own {
+    #[serde(flatten)]
+    devices: Devices,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
 }
 
 /// `ListedDevice` in the spec.

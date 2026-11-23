@@ -221,6 +221,7 @@ mod tests {
             certs,
             revocations: Vec::new(),
             records: Vec::new(),
+            deleted: Default::default(),
         };
         let own = Own {
             account: ada.id,

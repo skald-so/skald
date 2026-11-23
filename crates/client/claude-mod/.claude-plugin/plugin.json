@@ -1,0 +1,5 @@
+{
+  "name": "skald-mod",
+  "version": "0.0.0",
+  "description": "Skald: shows how many messages wait and, while the session is idle, asks the agent to call inbox."
+}

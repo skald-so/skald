@@ -10,7 +10,7 @@
       "delete": {
         "operationId": "deleteAccount",
         "summary": "Delete the account",
-        "description": "Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused while sign-up is closed; its username is free; each of its devices is served as a revoked one, but for `POST /devices/{device}/session`, which tells it the account is deleted, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.",
+        "description": "Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused under the server's sign-up policy; its username is free; each of its devices is served as a revoked one, with `account-deleted` for devices with server-held certificates asking for a session by key, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -1928,7 +1928,7 @@
       "delete": {
         "operationId": "removeSignInMethod",
         "summary": "Remove a sign-in method of the account",
-        "description": "Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.",
+        "description": "Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused under the server's sign-up policy, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -2331,6 +2331,93 @@
         }
       }
     },
+    "/auth/device/invite": {
+      "put": {
+        "operationId": "attachDeviceInvite",
+        "summary": "Attach an invite proof to a device sign-in",
+        "description": "The machine calls this before it opens the verification page. While sign-up is closed, a proof that verifies with the invite's key is attached to its pending device authorization. If the identity has no account and is on none of the server's lists, sign-in from that authorization creates an account only if the invite is still held, live and unused. The invite then belongs to that account. If sign-in is already allowed, it leaves the invite available.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceInviteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The request is well formed. The response reveals nothing about the authorization, invite or proof.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version or the request body is malformed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Sign-in is off: the server has no sign-in settings.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/auth/github": {
       "get": {
         "operationId": "startGitHubSignIn",
@@ -2399,7 +2486,7 @@
       "get": {
         "operationId": "finishGitHubSignIn",
         "summary": "GitHub's callback",
-        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and the sign-in's PKCE verifier and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. While the server's sign-up is closed, a first sign-in creates an account only for a GitHub login on the server's list, compared without case; the GitHub user's email does not count. Keeps no GitHub token. For a link, started by `POST /auth/github/link`, it adds the GitHub sign-in method to the account of the web session that started the link instead of signing in.",
+        "description": "Opened by the browser on its way back from GitHub. Checks `state` against the browser's cookie, exchanges `code` with the app's client ID and secret and the sign-in's PKCE verifier and reads the GitHub user. The first sign-in of a GitHub user creates an account with the user's GitHub ID as its GitHub sign-in method; later ones reach the account that holds that method and update the method's GitHub login. While the server's sign-up is closed, a first sign-in creates an account for a GitHub login on the server's list, compared without case, or through `PUT /auth/device/invite`; the GitHub user's email does not count. Keeps no GitHub token. For a link, started by `POST /auth/github/link`, it adds the GitHub sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -2468,7 +2555,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists and has no usable invite proof on the device authorization; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -2707,7 +2794,7 @@
       "get": {
         "operationId": "finishGoogleSignIn",
         "summary": "Google's callback",
-        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. While the server's sign-up is closed, a first sign-in creates an account only for an email on the server's list whose `email_verified` is true, or for an ID token whose `hd`, the Google Workspace or Cloud organization, is on its domain list; the email's domain does not count. Lists compare without case. Keeps no email, ID token or Google token. For a link, started by `POST /auth/google/link`, it adds the Google sign-in method to the account of the web session that started the link instead of signing in.",
+        "description": "Opened by the browser on its way back from Google. Checks `state` against the browser's cookie, exchanges `code` with the client ID and secret and the sign-in's PKCE verifier, and checks the ID token as OpenID Connect Core 1.0, §3.1.3.7, says, with this sign-in's `nonce`. The account is bound to its Google sign-in method, Google's issuer and the ID token's `sub`, never to the email. The first sign-in creates the account, its username made from the email's local part; later ones reach the account that holds that method, also after the email changes. While the server's sign-up is closed, a first sign-in creates an account for an email on the server's list whose `email_verified` is true, for an ID token whose `hd`, the Google Workspace or Cloud organization, is on its domain list, or through `PUT /auth/device/invite`; the email's domain does not count. Lists compare without case. Keeps no email, ID token or Google token. For a link, started by `POST /auth/google/link`, it adds the Google sign-in method to the account of the web session that started the link instead of signing in.",
         "parameters": [
           {
             "name": "code",
@@ -2776,7 +2863,7 @@
             }
           },
           "403": {
-            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
+            "description": "A link that links nothing: the browser is not under the web session that started it, or that session ended during the callback. Or a refused sign-up: the server's sign-up is closed and the person, who has no account, is on none of its lists and has no usable invite proof on the device authorization; the page names the problem type `https://skald.so/problems/sign-up-closed`, and nothing is created. A sign-in from the verification page with a user code refuses that code too: its polls answer `sign_up_closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -3770,7 +3857,7 @@
             }
           },
           "403": {
-            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; `https://skald.so/problems/device-revoked`, for a device that checks 3 and 4 of \"Device checks\" revoke, as by its issuer's revocation; or `https://skald.so/problems/account-deleted`, once the signature verifies, for a device whose certificate names a deleted account.",
+            "description": "The problem `https://skald.so/problems/devices-limit`, for a certificate the account has no place for, counted as at `PUT /devices/{device}/cert`; `https://skald.so/problems/device-revoked`, for a device that checks 3 and 4 of \"Device checks\" revoke, as by its issuer's revocation, or for a certificate naming a deleted account that the server does not hold; or `https://skald.so/problems/account-deleted`, for a device whose server-held certificate names a deleted account, once the signature verifies.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4097,7 +4184,7 @@
       "get": {
         "operationId": "getInvite",
         "summary": "An invite with its space",
-        "description": "The invite as the server got it (docs/protocol/membership.md, \"Invite\"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite has an acceptance; then only sessions of that acceptance's account, which also get the space's revisions and devices until the invite ends.",
+        "description": "The invite as the server got it (docs/protocol/membership.md, \"Invite\"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite is used for sign-up or acceptance; then only sessions of that account get it. Once accepted, sessions of that account also get the space's revisions and devices until the invite ends.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4161,7 +4248,7 @@
             }
           },
           "404": {
-            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. Once it has an acceptance, it goes only to that acceptance's account.",
+            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. An invite used for sign-up or acceptance goes only to that account.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4197,7 +4284,7 @@
       "put": {
         "operationId": "storeAcceptance",
         "summary": "Store an invite's acceptance",
-        "description": "Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, \"Invite\"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.",
+        "description": "Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, \"Invite\"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite used for sign-up takes only that account's acceptance. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4308,7 +4395,7 @@
             }
           },
           "404": {
-            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. Once it has an acceptance, it goes only to that acceptance's account.",
+            "description": "The problem `https://skald.so/problems/no-invite`: the server holds no such invite for the session's account. It was never stored, or it ended: it expired, was revoked, or a stored revision lists a member with it. An invite used for sign-up is available only to that account.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -4458,7 +4545,7 @@
       "post": {
         "operationId": "openSessionlessLinkRun",
         "summary": "Open a run without a session",
-        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The request names the device, which holds no certificate and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server picks the run's pairing, which the device's hello binds and the person enters on the issuing device with the code, and gives it with the run's token for its messages; the hello follows as the run's first message, `POST /links/messages`. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does. The request has no session.",
+        "description": "A new `client` device that has no session opens a run of CPace keyed by its link code (docs/protocol/membership.md, \"Link code\"); the server relays it and never sees the code. The request names the device, which holds no certificate, is on no deleted account and may be registered on no account yet, and replaces that device's open run, whose messages are then refused. The server picks the run's pairing, which the device's hello binds and the person enters on the issuing device with the code, and gives it with the run's token for its messages; the hello follows as the run's first message, `POST /links/messages`. The run is no account's until a session enters its pairing, `POST /account/links/pairing`: no account's latest hello gives it, and its device is given as waiting only once it registers on an account. It ends as a run of `POST /account/links` does, and once the account its device registered on is deleted. The request has no session.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -4508,6 +4595,21 @@
                       "$ref": "#/components/schemas/Problem"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/device-revoked`: the device is on a deleted account, whose devices are each served as a revoked one. No run opens.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
                 }
               }
             }
@@ -5310,8 +5412,8 @@
     "/server": {
       "get": {
         "operationId": "getServer",
-        "summary": "The server's name in agent addresses",
-        "description": "The `server` of every agent address on this server (docs/protocol/README.md, \"Agent address\"): its operator's setting, by default the host of its public address. It never changes.",
+        "summary": "The server's name and public address",
+        "description": "Names the `server` of its agent addresses (docs/protocol/README.md, \"Agent address\"): its operator's setting, by default the host of its public address. The name never changes. A new device taking an invite link from the web address gets the device flow's public address here.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -5319,7 +5421,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The server's name, or `null` when it has no valid one.",
+            "description": "The server's name and, when sign-in is available, its public address.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -5954,7 +6056,7 @@
       "get": {
         "operationId": "getWaitingAcceptances",
         "summary": "The space's waiting acceptances",
-        "description": "The acceptances of the space's invites that have not ended, for an admin's session, each with its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, \"Invite\").",
+        "description": "The acceptances of the space's invites that have not ended, for an admin's session, each with its invite and its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, \"Invite\").",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -9370,6 +9472,116 @@
       }
     },
     "/spaces/{space}/invites": {
+      "get": {
+        "operationId": "listSpaceInvites",
+        "summary": "The space's active invites",
+        "description": "The space's stored, active invites, oldest first, with their metadata and waiting state. Only for a web session of an admin in the space's latest revision.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The space's invite metadata.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListedInvites"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session or an unknown one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the request has a device session, or the account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "operationId": "createInvite",
         "summary": "A new invite ID",
@@ -9485,6 +9697,112 @@
       }
     },
     "/spaces/{space}/invites/{invite}": {
+      "delete": {
+        "operationId": "revokeSpaceInvite",
+        "summary": "Revoke an invite",
+        "description": "Deletes a stored, active invite and its acceptance, if any. Only for a web session of an admin in the space's latest revision, from a page of the web URL: a request whose `Origin` is any other, or that has none, revokes nothing. Members already admitted by a stored revision keep their access.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          },
+          {
+            "$ref": "#/components/parameters/Invite"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The invite is revoked.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no session or an unknown one.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The problem `https://skald.so/problems/not-allowed`: the request has a device session, does not come from a page of the web URL, or the account is no admin in the space's latest revision.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such space, or the session's account does not get it; or the problem `https://skald.so/problems/no-invite`: the space has no such stored, active invite.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      },
       "put": {
         "operationId": "storeInvite",
         "summary": "Store an invite",
@@ -9912,7 +10230,7 @@
             }
           },
           "400": {
-            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate or is revoked, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; a `service` device, in a service agent entry or a channel's `services`, that is revoked or no certified `service` device on the account of a member of the revision; a channel whose ID the server did not issue for this space; or members whose accounts are not all deleted with no admin whose account is not.",
+            "description": "The server refuses the stated version (`ProtocolProblem`), or the revision is refused: a malformed body; bytes that do not decode as a `roster`; another space or name than this one; a `signer` that is no device of the session's account with a certificate or is revoked, or a signature that does not verify with its key; revision 1 that does not list the creator as an admin; checks 2 to 4 of \"Roster\" failed, on revision 1 checks 3 and 4; a `service` device, in a service agent entry or a channel's `services`, that is revoked or no certified `service` device on the account of a member of the revision; a channel whose ID the server did not issue for this space; a member newly listed with an invite that is no longer active or lacks an acceptance from that account; or members whose accounts are not all deleted with no admin whose account is not.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -11107,6 +11425,26 @@
         "type": "string",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
       },
+      "DeviceInviteRequest": {
+        "type": "object",
+        "required": ["device_code", "invite", "proof"],
+        "properties": {
+          "device_code": {
+            "description": "The machine's secret from `POST /auth/device`.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          },
+          "invite": {
+            "$ref": "#/components/schemas/InviteId"
+          },
+          "proof": {
+            "description": "The Ed25519 signature by the invite key (docs/protocol/membership.md, \"Invite\"), 64 bytes in base64url without padding (RFC 4648, §5).",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{85}[AQgw]$"
+          }
+        },
+        "additionalProperties": false
+      },
       "DeviceKeySession": {
         "type": "object",
         "required": ["token"],
@@ -11217,6 +11555,11 @@
             "items": {
               "$ref": "#/components/schemas/Revocation"
             }
+          },
+          "web": {
+            "description": "The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, \"Invite\"); absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false
@@ -11653,6 +11996,70 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ListedDevice"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedInvite": {
+        "description": "An active invite without its key or signed bytes.",
+        "type": "object",
+        "required": [
+          "invite",
+          "role",
+          "created_at",
+          "expires_at",
+          "acceptance_waiting"
+        ],
+        "properties": {
+          "invite": {
+            "$ref": "#/components/schemas/InviteId"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ]
+          },
+          "username": {
+            "description": "The invite's creator, while their account exists.",
+            "$ref": "#/components/schemas/Username"
+          },
+          "device_name": {
+            "description": "The name of the device that signed the invite, while its account exists.",
+            "type": "string"
+          },
+          "created_at": {
+            "description": "When the server stored the invite. For invites stored before this date was recorded, when the server issued its ID.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "acceptance_waiting": {
+            "description": "An acceptance waits for an admin device to admit the newcomer.",
+            "type": "boolean"
+          },
+          "acceptance_handle": {
+            "description": "The newcomer's requested handle, present when an acceptance is waiting.",
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ListedInvites": {
+        "type": "object",
+        "required": [
+          "invites"
+        ],
+        "properties": {
+          "invites": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedInvite"
             }
           }
         },
@@ -12369,6 +12776,11 @@
                 "type": "null"
               }
             ]
+          },
+          "public": {
+            "description": "The server's public address as an origin, for devices starting sign-in from the web address. Absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false
@@ -12566,6 +12978,11 @@
           "sign_in_method": {
             "description": "The provider a web session signed in with; only for a web session.",
             "$ref": "#/components/schemas/SignInProvider"
+          },
+          "web": {
+            "description": "The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, \"Invite\"); absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false
@@ -12991,11 +13408,16 @@
       "WaitingAcceptance": {
         "type": "object",
         "required": [
+          "invite",
           "acceptance",
           "devices",
           "revocations"
         ],
         "properties": {
+          "invite": {
+            "description": "The invite the acceptance is of, as the server got it.",
+            "$ref": "#/components/schemas/Invite"
+          },
           "acceptance": {
             "description": "The acceptance as the server got it.",
             "$ref": "#/components/schemas/Acceptance"
