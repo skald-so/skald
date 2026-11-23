@@ -16,9 +16,19 @@ use skald_proto::{
 };
 
 use crate::gaps::{Counters, Source};
+use crate::plain_path::plain;
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
+
+/// The database's file in the state directory `dir`, as SQLite opens it: on Windows without a
+/// verbatim prefix (`\\?\C:\…`, as `canonicalize` gives), where it names the same file without
+/// it ([`plain`]). SQLite takes a path that starts with `\\` for a UNC one, whose connections in a
+/// process lock the `-shm` through one shared handle, and threads that read at once can leave a
+/// read lock on it held, so no checkpoint can truncate the WAL until the process closes the state.
+fn file(dir: &Path) -> PathBuf {
+    plain(&dir.join(FILE))
+}
 
 /// The schema's migrations, in order: the database's `user_version` counts those applied. Each is
 /// a file of `migrations/`, in the order of their names; `build.rs` embeds them.
@@ -717,7 +727,7 @@ impl State {
     /// Opens the state in `dir`, which exists, creating it if it is missing, and migrates its
     /// schema to the latest.
     pub fn open(dir: &Path) -> Result<Self, Error> {
-        let mut db = Connection::open(dir.join(FILE))?;
+        let mut db = Connection::open(file(dir))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         db.pragma_update(None, "secure_delete", true)?;
         let mode: String =
@@ -5165,7 +5175,7 @@ fn end_prompts(db: &Connection, session: &str, at: u64) -> Result<(), Error> {
 /// The position of the last permission prompt recorded in the state in `dir` that the person's
 /// run has yet to show, read without migrating it; `None` if it cannot be read.
 pub fn last_prompt(dir: &Path) -> Option<u64> {
-    let db = Connection::open(dir.join(FILE)).ok()?;
+    let db = Connection::open(file(dir)).ok()?;
     db.busy_timeout(std::time::Duration::from_secs(1)).ok()?;
     last_prompt_in(&db).ok()
 }
@@ -5185,7 +5195,7 @@ fn last_prompt_in(db: &Connection) -> Result<u64, Error> {
 /// migrating it.
 pub fn current(dir: &Path) -> bool {
     let latest = MIGRATIONS.len();
-    let version = Connection::open(dir.join(FILE)).and_then(|db| {
+    let version = Connection::open(file(dir)).and_then(|db| {
         db.busy_timeout(std::time::Duration::from_secs(1))?;
         db.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))
     });
@@ -8077,6 +8087,57 @@ pub(crate) mod tests {
 
         assert_eq!(saved, Err(Error::WalBusy.to_string()));
         reader.db.execute_batch("COMMIT").unwrap();
+    }
+
+    /// On Windows, the state opened by its verbatim path (`\\?\C:\…`) is opened without the
+    /// prefix, and a save of the MLS state after threads read and wrote it at once by that path
+    /// truncates the WAL.
+    #[cfg(windows)]
+    #[test]
+    fn mls_save_after_threads_use_the_state_by_its_verbatim_path_truncates_the_wal() {
+        let dir = TestDir::new("state-verbatim");
+        let verbatim = dir.canonicalize().unwrap();
+        assert!(
+            verbatim.to_string_lossy().starts_with(r"\\?\"),
+            "{verbatim:?}"
+        );
+        let state = State::open(&verbatim).unwrap();
+        let opened = state.db.path().unwrap_or_default().to_owned();
+        assert!(!opened.starts_with(r"\\"), "{opened}");
+        let save = |state: &State, byte: u8| {
+            state.mls_step(|_| Ok((Some(sealed(&[(b"group:1", &[byte; 40])])), ())))
+        };
+        save(&state, 1).unwrap();
+
+        // Opening the state takes a write lock to check the schema.
+        let readers: Vec<_> = (0..8).map(|_| State::open(&verbatim).unwrap()).collect();
+        let writer = State::open(&verbatim).unwrap();
+        let start = std::sync::Barrier::new(readers.len() + 1);
+        std::thread::scope(|scope| {
+            let start = &start;
+            for reader in readers {
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..300 {
+                        reader.session().unwrap();
+                    }
+                });
+            }
+            scope.spawn(move || {
+                start.wait();
+                for n in 0..300 {
+                    writer
+                        .start_session(&format!("https://{n}.example"))
+                        .unwrap();
+                }
+            });
+        });
+
+        assert_eq!(save(&state, 2), Ok(()));
+        let wal = files(&dir)
+            .into_iter()
+            .find(|(name, _)| name.ends_with("-wal"));
+        assert_eq!(wal.map(|(_, bytes)| bytes.len()), Some(0), "the WAL");
     }
 
     #[test]
