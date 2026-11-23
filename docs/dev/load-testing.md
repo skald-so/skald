@@ -40,14 +40,16 @@ Round doubled peak rates up to whole operations per reporting interval.
 | Scenario | Target | Basis |
 |---|---|---|
 | Delivery and history | Store and push 12 channel messages per second, each with its [history entry](../protocol/membership.md#uploads). Ack every push. | Twice the peak of 5,000 devices sending one message per hour, with the payload mix above up to the [message text limit](architecture.md#cloud-limits). Rotate senders within the device rate limit. |
-| Cursor catch-up | Reconnect all 5,000 devices at once, each with at least 25 missed messages. Check mailbox order, then resume live pushes. | Twice the peak reconnect wave. During the two-minute receive gap, 26 distinct senders per channel each send once with delivery reports off, twice the 13 sends modeled at peak. [Senders receive no copy of their own messages](../protocol/delivery.md#hops). |
+| Cursor catch-up | Reconnect all 5,000 devices at once. During the receive gap, send 22, 27 and 267 messages in channels of 80, 100 and 1,000 devices, respectively. Check mailbox order, then resume live pushes. | Twice the peak reconnect wave. Over the two-minute gap, double the peak of four messages per device per hour and round up each channel's send count. |
 | Large-channel fan-out | One device sends 120 messages per rolling minute to the other 999 devices in the large channel. Measure time to the last push. | The [per-device send limit](architecture.md#cloud-limits) at 20 members with 50 devices each. |
 | Large-channel MLS Commits | Accept and push 80 Commits per hour in the large channel. Exercise Adds, Removes and empty Commits with the [new epoch uploads](../protocol/membership.md#uploads). | Twice the large channel's peak of 40 Commits per hour. Submit Commits against the current epoch. |
 | Presence | Store 39 presence values per second and serve 23 channel reads per second, including the large channel. Check the latest values byte for byte. | Twice the refresh and peak state-change workload of about 19.4 values per second, and twice the peak of about 11.1 reads per second. Keep each device's value current within the [900-second protocol interval](../protocol/agents.md#presence). |
 | Task queue | Enqueue, claim and complete 3 tasks per second each, extend 18 leases per second, and deliver completed results to their senders. Exercise both modes. | Twice the population peak, rounded up. Split two-minute tasks evenly between [30- and 300-second leases](../protocol/queues.md#queues). Extending each third of the lease gives 11 and 1 [heartbeats](../protocol/queues.md#claims-and-leases) per task, respectively. |
 | Two instances | Meet the delivery and history target with 2,500 devices per instance and senders and recipients on different instances. | Same target with cross-instance pushes through [PostgreSQL `LISTEN/NOTIFY`](architecture.md#network). |
 
-For catch-up, send over HTTPS while recipients' WebSockets are down. In the restart variant, fill the backlog after HTTPS is ready and before releasing the reconnect wave. For tasks, also check that expired leases reach the expected queue state and that no task has two live claims.
+For catch-up, send over HTTPS while WebSockets are down. Use distinct senders in each channel and turn delivery reports off. Each device has one missed entry per message sent by another device in its channel. Senders have one fewer entry than the channel's send count. In the restart variant, fill the backlog after HTTPS is ready and before releasing the reconnect wave. [Channel delivery](../protocol/delivery.md#hops)
+
+For tasks, also check that expired leases reach the expected queue state and that no task has two live claims.
 
 ## Step bounds
 
