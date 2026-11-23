@@ -189,7 +189,10 @@ const { devices } = getListAccountDevicesResponseMock({
   ],
 });
 
-/** The members of 09-members.png: an admin and two members, one of them without a GitHub login. */
+/**
+ * The members of 09-members.png: the account, the only admin, and two members, one of them without
+ * a GitHub login.
+ */
 const { members } = getListSpaceMembersResponseMock({
   members: [
     {
@@ -198,6 +201,7 @@ const { members } = getListSpaceMembersResponseMock({
       github_login: "ana",
       linked_devices: 4,
       joined_at: before(39 * day),
+      you: true,
     },
     {
       handle: "lee-park",

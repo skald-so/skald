@@ -3940,6 +3940,7 @@ export const getListSpaceMembersResponseMock = (
     linked_devices: faker.number.int({ min: 0 }),
     joined_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     deleted: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+    you: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
   })),
   ...overrideResponse,
 });
@@ -3960,6 +3961,7 @@ export const getListSpaceMembersResponseMock200 = (
     linked_devices: faker.number.int({ min: 0 }),
     joined_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     deleted: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
+    you: faker.helpers.arrayElement([faker.datatype.boolean(), undefined]),
   })),
   ...overrideResponse,
 });
