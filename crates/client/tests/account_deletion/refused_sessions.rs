@@ -1,7 +1,9 @@
 //! A refused session alone deletes nothing on the machine: `skald delete-account` takes the
 //! account as deleted only as the server says so, and a run whose answer it did not get, or got
 //! from no server, keeps its mark until the next run finds out. A device without its certificate,
-//! which cannot ask, keeps its state and names the directory to remove.
+//! which cannot ask, erases its keys and state only once its person types the username again.
+
+use skald_github_stand_in::User;
 
 use crate::cloud::Cloud;
 use crate::deletion::{
@@ -94,16 +96,18 @@ fn waiting(world: &World, first: &Person) -> NewDevice {
     waiting
 }
 
-/// The waiting machine of `first`'s account, its `skald delete-account` at a terminal refused by
-/// the session the server no longer takes: the run fails, asks nothing, names the state directory
-/// and keeps the machine's local state.
+/// The waiting machine of `first`'s account, whose session the server no longer takes after a
+/// deletion it sent: its `skald delete-account` at a terminal asks for the username once, and its
+/// person types another; the run fails, names the state directory and keeps the machine's local
+/// state.
 #[track_caller]
 fn assert_waiting_keeps_its_state(world: &World, first: &Person, waiting: &NewDevice) {
     let machine = &waiting.machine;
-    let refused = delete_at_terminal(world, machine, first.handle.as_str(), AtGrant::Refuse);
+    let other = format!("not-{}", first.handle.as_str());
+    let refused = delete_at_terminal(world, machine, &other, AtGrant::Refuse);
     let Deletion { shown, asked, .. } = refused;
     assert!(
-        !shown.success && asked == 0,
+        !shown.success && asked == 1,
         "asked {asked}: {}",
         shown.text
     );
@@ -115,6 +119,43 @@ fn assert_waiting_keeps_its_state(world: &World, first: &Person, waiting: &NewDe
         shown.text
     );
     assert_state_kept(&world.cloud, machine, &shown.text);
+}
+
+/// The waiting machine `laptop` of `first`'s account runs `skald delete-account` at a terminal,
+/// typing the username; the relay withholds the server's answer to its request that deletes the
+/// account, and the run's request timeout passes, as [`lost_to_the_timeout`]. Its next `skald
+/// delete-account` at a terminal, whose session the server no longer takes, asks for the username
+/// once; its person types it, and the run exits with success: the machine then keeps no local state
+/// and no file with a session token.
+#[track_caller]
+fn assert_erased_after_a_lost_answer(world: &World, first: &Person, laptop: &NewDevice) {
+    let cloud = &world.cloud;
+    let typed = first.handle.as_str();
+    cloud.relay.lose_answer(DELETE_REQUEST, Lose::Withhold);
+    lost_to_the_timeout(world, &laptop.machine, typed);
+    assert_deleted(cloud, first);
+
+    let machine = &laptop.machine;
+    let erased = delete_at_terminal(world, machine, typed, AtGrant::Refuse);
+
+    let Deletion { shown, asked, .. } = erased;
+    assert!(shown.success && asked == 1, "asked {asked}: {}", shown.text);
+    assert!(
+        machine.sqlite_files().is_empty(),
+        "the local state stays: {}",
+        shown.text
+    );
+    let tokens = cloud.token_files(machine);
+    assert!(tokens.is_empty(), "{tokens:?} stay: {}", shown.text);
+}
+
+/// `machine` signs in to `other`'s account; fails unless it does.
+#[track_caller]
+pub fn assert_signs_in(world: &World, machine: &Machine, other: &User) {
+    let signed_in = world
+        .cloud
+        .signed_in(&world.browser.page(), machine, other, &[]);
+    assert!(signed_in.success, "{signed_in:?}");
 }
 
 /// `person`'s `skald delete-account` at a terminal fails, asking nothing and sending no request
@@ -200,31 +241,28 @@ fn an_answer_lost_to_the_timeout_says_the_account_may_be_deleted_and_the_next_ru
     assert_finishes(&world, &ada, &held);
 }
 
-/// Ada's machine that waits for linking, without its certificate, runs `skald delete-account` at a
-/// terminal, typing her username; the relay withholds the server's answer to its request that
-/// deletes her account, and the run's request timeout passes: the run fails, saying the deletion
-/// may have gone through, as it has. The machine's next `skald delete-account` at a terminal, whose
-/// session the server no longer takes, fails, names the state directory and keeps the machine's
-/// local state.
+/// Ada's machine that waits for linking, without its certificate, loses the server's answer to its
+/// deletion of her account; its next `skald delete-account` at a terminal erases its keys and state
+/// once she types her username again ([`assert_erased_after_a_lost_answer`]). The machine then
+/// signs in to Bob's account.
 #[test]
-fn on_a_device_waiting_for_linking_an_answer_lost_to_the_timeout_keeps_the_machines_state() {
+fn on_a_device_waiting_for_linking_after_a_lost_answer_the_typed_username_erases_the_machine() {
     let (world, _front) = fronted();
-    let cloud = &world.cloud;
     let ada = world.sign_up(6_120_009_004, "ada-waits-while-linking", ADA_HOST);
+    let bob = world.cloud.user(6_120_009_007, "bob-takes-the-laptop");
     let laptop = waiting(&world, &ada);
-    cloud.relay.lose_answer(DELETE_REQUEST, Lose::Withhold);
 
-    lost_to_the_timeout(&world, &laptop.machine, ada.handle.as_str());
-    assert_deleted(cloud, &ada);
+    assert_erased_after_a_lost_answer(&world, &ada, &laptop);
 
-    assert_waiting_keeps_its_state(&world, &ada, &laptop);
+    assert_signs_in(&world, &laptop.machine, &bob);
 }
 
 /// Ada's machine that waits for linking, without its certificate, runs `skald delete-account` at a
 /// terminal, typing her username; a proxy's answer, not the server's, takes its request that
 /// deletes her account, which never reaches the server, and her account stays. The machine's
-/// session then ends while her account lives: its next `skald delete-account` at a terminal fails,
-/// names the state directory and keeps the machine's local state.
+/// session then ends while her account lives: its next `skald delete-account` at a terminal asks
+/// for the username once, and Ada types another: the run fails, names the state directory and
+/// keeps the machine's local state.
 #[test]
 fn on_a_device_waiting_for_linking_a_session_ended_after_a_blocked_deletion_keeps_its_state() {
     let (world, _front) = fronted();
@@ -267,4 +305,40 @@ fn with_the_systems_key_storage_a_run_from_the_deleted_mark_deletes_the_entry() 
 
     assert!(finished.shown.success, "{}", finished.shown.text);
     assert_eq!(entry.value(), None, "the entry is kept");
+    assert_signs_in(
+        &world,
+        &machine,
+        &cloud.user(6_120_009_008, "bob-takes-the-keyring"),
+    );
+}
+
+/// With the system's key storage, only with `SKALD_TEST_REAL_KEY_STORAGE=1`: Ada's machine that
+/// waits for linking keeps its secrets in the key storage's entry of the machine. It loses the
+/// server's answer to its deletion of her account, and its next `skald delete-account` at a
+/// terminal erases its keys and state once she types her username again
+/// ([`assert_erased_after_a_lost_answer`]): the entry is gone, and the machine then signs in to
+/// Bob's account. The test deletes the entry.
+#[test]
+fn with_the_systems_key_storage_a_device_waiting_for_linking_erases_the_entry_and_signs_in_again() {
+    let real = std::env::var_os("SKALD_TEST_REAL_KEY_STORAGE");
+    if real.is_none_or(|real| real != "1") {
+        return;
+    }
+    let machine = Machine::new()
+        .with_host_name(WAITING_HOST)
+        .with_env(KEY_STORAGE, "auto");
+    let entry = Entry::of(&machine);
+    let (world, _front) = fronted();
+    let ada = world.sign_up(6_120_009_009, "ada-waits-with-a-keyring", ADA_HOST);
+    let bob = world
+        .cloud
+        .user(6_120_009_010, "bob-takes-the-waiting-keyring");
+    let mut laptop = NewDevice::start_on(&world, &ada, machine, WAITING_HOST);
+    laptop.kill();
+    assert!(entry.value().is_some(), "the entry holds no secrets");
+
+    assert_erased_after_a_lost_answer(&world, &ada, &laptop);
+    assert_eq!(entry.value(), None, "the entry is kept");
+
+    assert_signs_in(&world, &laptop.machine, &bob);
 }

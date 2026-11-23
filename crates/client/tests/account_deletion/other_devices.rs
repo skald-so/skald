@@ -1,5 +1,6 @@
 //! The account's other devices, once it is deleted: each command and the helper say once that the
-//! server reports the account deleted and which state directory to remove, and send nothing.
+//! server reports the account deleted and which state directory `skald delete-account` erases, and
+//! send nothing.
 
 use std::path::PathBuf;
 use std::thread;

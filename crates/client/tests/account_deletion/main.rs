@@ -6,8 +6,8 @@
 //! in again by device flow, as `skald sign-in` does, and deletes with that session. Once the server
 //! has deleted the account, it deletes the device's keys from key storage, its secrets and its local
 //! state; killed after sending, its next run finds the account deleted and finishes. The account's
-//! other devices say the server reports the account deleted, naming the state directory to remove,
-//! and send nothing (`architecture.md`, "Data model"; `deleteAccount` in the OpenAPI spec).
+//! other devices say the server reports the account deleted, naming the state directory that `skald
+//! delete-account` erases, and send nothing (`architecture.md`, "Data model"; `deleteAccount` in the OpenAPI spec).
 //!
 //! Against a `skald-server` on PostgreSQL with GitHub sign-in through the stand-in, behind the
 //! front and the recording relay of the tests of sending, with the person approving codes on the

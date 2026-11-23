@@ -8,8 +8,8 @@
 //! keys among them, from key storage and the state directory, and the local state, marked deleted
 //! ([`REPORTED`]) until it is gone. A run that sent the deletion leaves a mark ([`SENT`]) until the
 //! server itself refused it: the next run, if the server refuses the session and says the account
-//! is deleted, finishes; on a device without its certificate, which cannot ask, it keeps the local
-//! state and names the directory to remove.
+//! is deleted, finishes; on a device without its certificate, which cannot ask, it finishes once
+//! its person types the username again.
 //!
 //! A device learns that its account is deleted as the server says so: the helper, from a connection
 //! the server closes ([`mailbox::note_closing`]); any run whose session the server refused, from a
@@ -46,11 +46,11 @@ pub const NOT_AT_TERMINAL: &str = "skald delete-account takes the account's user
 const NO_SESSION: &str = "the server no longer takes this machine's session: run skald sign-in, \
                           then skald delete-account again";
 
-/// What `skald delete-account` says, before the state directory, when the server refuses the
-/// session of a machine without its certificate whose deletion got no answer of the server's.
-const MAY_HAVE_GONE: &str = "the server no longer takes this machine's session, and the deletion \
-                             it sent may have gone through; without its certificate, this machine \
-                             cannot ask: if the deletion went through, remove the state directory";
+/// What `skald delete-account` says when the server refuses the session of a machine without its
+/// certificate whose deletion got no answer of the server's.
+const MAY_HAVE_GONE: &str = "The server no longer takes this machine's session, and the deletion it \
+                             sent may have gone through; without its certificate, this machine \
+                             cannot ask the server.";
 
 /// The mark of a deletion this machine sent whose answer it did not get, in the state directory.
 const SENT: &str = "deletion-sent";
@@ -101,7 +101,7 @@ pub fn run(
     let lock = lock::take(dir, false, timeout)?;
     // Reported by the server, or by a run that stopped while it deleted the local state.
     if reported(dir) {
-        return erase(dir, storage, None, lock);
+        return erase_deleted(dir, storage, None, lock);
     }
     let (state, server, token, mut stored, secrets) =
         devices::signed_in_with_secrets(dir, storage)?;
@@ -113,10 +113,10 @@ pub fn run(
             let deleted = by_key(&mut connection, &state, &stored)?;
             drop(state);
             return match deleted {
-                Some(true) => erase(dir, storage, username, lock),
+                Some(true) => erase_deleted(dir, storage, username, lock),
                 // A device without its certificate cannot ask whether a deletion it sent went
-                // through: it keeps its state.
-                None if sent.is_file() => Err(format!("{MAY_HAVE_GONE} {}", dir.display())),
+                // through: its person says.
+                None if sent.is_file() => confirmed(dir, storage, username, lock),
                 _ => {
                     let _ = fs::remove_file(&sent);
                     Err(NO_SESSION.to_owned())
@@ -177,7 +177,7 @@ pub fn run(
         deleted => deleted,
     };
     match deleted {
-        Ok(()) => erase(dir, storage, Some(account.username), lock),
+        Ok(()) => erase_deleted(dir, storage, Some(account.username), lock),
         // An answer that is not the server's, or none, may follow a deletion.
         Err(err) if !server_refused(&err) => Err(format!(
             "{err}; the deletion may have gone through: run skald delete-account again to finish"
@@ -321,17 +321,62 @@ fn signed_in_again(
     Ok(token)
 }
 
-/// Deletes what the machine whose state is in `dir`, its secrets in `storage`, keeps of its deleted
-/// account, the local state closed: marks the state as of a deleted account first, so that the next
-/// run finishes what a run that stops on the way leaves; then deletes the secrets, from key storage
-/// and the state directory, every other file there, the marks, and the `lock` file last. Says the
-/// account, `username` if known, is deleted.
-fn erase(
+/// Erases what the machine whose state is in `dir`, its secrets in `storage`, keeps of its deleted
+/// account ([`erase`]); says the account, `username` if known, is deleted.
+fn erase_deleted(
     dir: &Path,
     storage: secrets::Storage,
     username: Option<String>,
     lock: Option<lock::Lock>,
 ) -> Result<(), String> {
+    erase(dir, storage, lock)?;
+    match username {
+        Some(username) => println!(
+            "The account {} is deleted, and this machine keeps nothing of it.",
+            printable(&username)
+        ),
+        None => println!("The account is deleted, and this machine keeps nothing of it."),
+    }
+    Ok(())
+}
+
+/// On the machine whose state is in `dir`, its secrets in `storage`, which has no certificate to ask
+/// whether the deletion it sent went through: erases what it keeps of the account ([`erase`]) once
+/// its person types the account's username, `username`, or `erase` if unknown.
+fn confirmed(
+    dir: &Path,
+    storage: secrets::Storage,
+    username: Option<String>,
+    lock: Option<lock::Lock>,
+) -> Result<(), String> {
+    println!("{MAY_HAVE_GONE}");
+    let (expected, what) = match &username {
+        Some(username) => (
+            username.as_str(),
+            format!("the account's username, {},", printable(username)),
+        ),
+        None => ("erase", "erase".to_owned()),
+    };
+    let typed = Person::Terminal.enter(
+        &format!("If it went through, type {what} to erase this machine's keys and state"),
+        "",
+    )?;
+    if typed.as_deref().map(str::trim) != Some(expected) {
+        return Err(format!(
+            "nothing is erased: this machine keeps its keys and its state directory {}",
+            dir.display()
+        ));
+    }
+    erase(dir, storage, lock)?;
+    println!("This machine keeps nothing of the account any more.");
+    Ok(())
+}
+
+/// Deletes what the machine whose state is in `dir`, its secrets in `storage`, keeps of its
+/// account, the local state closed: marks the state as of a deleted account first, so that the next
+/// run finishes what a run that stops on the way leaves; then deletes the secrets, from key storage
+/// and the state directory, every other file there, the marks, and the `lock` file last.
+fn erase(dir: &Path, storage: secrets::Storage, lock: Option<lock::Lock>) -> Result<(), String> {
     let failed =
         |err: io::Error| format!("cannot empty the state directory {}: {err}", dir.display());
     fs::write(dir.join(REPORTED), b"").map_err(failed)?;
@@ -362,13 +407,6 @@ fn erase(
     }
     drop(lock);
     let _ = fs::remove_file(dir.join(lock::FILE));
-    match username {
-        Some(username) => println!(
-            "The account {} is deleted, and this machine keeps nothing of it.",
-            printable(&username)
-        ),
-        None => println!("The account is deleted, and this machine keeps nothing of it."),
-    }
     Ok(())
 }
 
@@ -380,8 +418,8 @@ pub fn reported(dir: &Path) -> bool {
 /// What a run on a device of a deleted account says, the state directory being `dir`.
 pub fn said(dir: &Path) -> String {
     format!(
-        "the server reports this machine's account deleted, so it sends and receives nothing: to \
-         use this machine with another account, remove its state directory {}",
+        "the server reports this machine's account deleted, so it sends and receives nothing: run \
+         skald delete-account to erase its keys and its state directory {}",
         dir.display()
     )
 }
