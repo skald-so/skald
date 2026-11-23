@@ -2054,7 +2054,7 @@
       "get": {
         "operationId": "getAccountUsage",
         "summary": "The spaces the account owns and its devices, with their limits",
-        "description": "The spaces the session's account owns and its devices, each counted as its limit counts it, with the limit while the server has its setting (docs/dev/architecture.md, \"Cloud limits\"). Asking creates no personal space.",
+        "description": "The spaces the session's account owns and its devices, each counted as its limit counts it (docs/dev/architecture.md, \"Cloud limits\"). Asking creates no personal space.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -6214,7 +6214,7 @@
             }
           },
           "403": {
-            "description": "The problem `https://skald.so/problems/owned-spaces-limit`: the account owns as many spaces as the server setting `--owned-spaces-limit` allows. It owns the spaces it created; its personal space counts also before it is created. Without the setting there is no limit.",
+            "description": "The problem `https://skald.so/problems/owned-spaces-limit`: the account's owned space count is at or above its limit, as reported by `GET /account/usage`.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -10476,7 +10476,7 @@
             }
           },
           "403": {
-            "description": "The session's account gets the space, but is not its creator for revision 1, or no admin in revision n for revision n+1. Or the problem `https://skald.so/problems/service-agents-limit`: the revision lists more service agent entries than the server setting `--service-agents-limit` allows and than revision n, or than none for revision 1; nothing is stored. A revision that keeps or lowers their number is stored, so a space over a lowered limit still removes agents and changes the rest. Without the setting there is no limit.",
+            "description": "The session's account gets the space, but is not its creator for revision 1, or no admin in revision n for revision n+1. `https://skald.so/problems/members-limit` or `https://skald.so/problems/service-agents-limit` means the revision increases the corresponding count beyond its effective limit in `GET /spaces/{space}/usage`. Each count starts at zero before revision 1. The refusal leaves the roster and any invite acceptances unchanged. Edits and reductions can leave a count above its limit.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -12596,18 +12596,22 @@
         "additionalProperties": false
       },
       "OwnedSpaces": {
-        "description": "The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.",
+        "description": "The spaces the account created. `spaces` lists all that exist, including paid spaces. The count includes the personal space before it is created. With plans enabled, only Free spaces count, and an uncreated personal space counts as Free.",
         "type": "object",
         "required": ["count", "spaces"],
         "properties": {
           "count": {
             "type": "integer",
-            "minimum": 1
+            "minimum": 0
           },
           "limit": {
-            "description": "The value of `--owned-spaces-limit`; absent without it.",
+            "description": "Two Free spaces with plans enabled. With plans off, the value of `--owned-spaces-limit`, if set.",
             "type": "integer",
             "minimum": 1
+          },
+          "free_only": {
+            "description": "True when the count and limit apply only to Free spaces. Absent with plans off.",
+            "type": "boolean"
           },
           "spaces": {
             "type": "array",
@@ -13385,7 +13389,7 @@
             "$ref": "#/components/schemas/SpacePlan"
           },
           "members": {
-            "description": "The plan allowance for space members. Team has no member limit.",
+            "description": "The effective plan limit for space members. Team has no member limit. Absent with plans off.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "devices_per_member": {
@@ -13413,7 +13417,7 @@
             "$ref": "#/components/schemas/UsageLimit"
           },
           "service_agents": {
-            "description": "Service agent entries in the space's latest revision. Before the first revision the count is zero. With plans off, the limit comes from `--service-agents-limit`.",
+            "description": "Service agent entries in the space's latest revision. Before the first revision the count is zero. The effective limit comes from the space's plan or, with plans off, `--service-agents-limit`.",
             "$ref": "#/components/schemas/UsageCount"
           }
         },

@@ -123,10 +123,9 @@ pub struct Settings {
     /// The privacy policy that the answer on sign-in and the server's pages that start one link;
     /// none without it.
     pub privacy_policy_url: Option<PrivacyPolicyUrl>,
-    /// Show effective cloud plans and their limits in space usage.
+    /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
     pub space_plans: bool,
-    /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
-    /// limit without it.
+    /// With plans off, the number of spaces an account may own. No limit when unset.
     pub owned_spaces_limit: Option<u32>,
     /// The server's name in agent addresses; without it, the host of sign-in's public address, if
     /// that is a valid server name.
@@ -153,8 +152,7 @@ pub struct Settings {
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
-    /// The number of service agent entries a space's latest revision may list
-    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    /// With plans off, the limit on service agent entries in a space's roster. No limit when unset.
     pub service_agents_limit: Option<u32>,
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.

@@ -106,9 +106,9 @@ fn existing_and_new_spaces_default_to_free_with_plans_on() {
 
     assert_free(&usage(&api, team.space, &web.carol));
 
-    let created = team.alice.session.on(&cloud).create("globex");
+    let created = team.carol.session.on(&cloud).create("globex");
     assert_taken(&created);
-    assert_free(&usage(&api, space_of(&created), &web.alice));
+    assert_free(&usage(&api, space_of(&created), &web.carol));
 }
 
 #[test]
