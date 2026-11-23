@@ -123,6 +123,7 @@ const tail = (output) => {
 };
 
 let server;
+let nativeVerified = false;
 try {
   git('config', '--global', 'init.defaultBranch', 'main');
   git('config', '--global', 'user.name', 'Release fixture');
@@ -399,7 +400,7 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
   if (didInstall) {
     const checkout = path.join(brewPrefix, 'Library', 'Taps', 'skald-so', 'homebrew-tap');
     git('-C', checkout, 'pull', '--ff-only');
-    await installed('upgrade', next);
+    nativeVerified = await installed('upgrade', next);
   }
   await unchanged('a stale stable retry', push(stable), firstRelease);
   await unchanged('a beta release', push(beta), betaRelease);
@@ -423,4 +424,8 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
   if (server) await server.close();
   fs.rmSync(scratch, { recursive: true, force: true });
 }
-done();
+if (!nativeVerified && failed() === 0) {
+  console.log('release-homebrew-test: fixture checks passed. Native Homebrew install and upgrade unverified.');
+} else {
+  done();
+}
