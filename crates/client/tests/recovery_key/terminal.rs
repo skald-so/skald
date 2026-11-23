@@ -162,6 +162,7 @@ impl Terminal {
 
     /// Waits until what it printed passes `seen`, for up to [`RUN_LIMIT`] from its start; gives
     /// what it printed then. Fails if it exits first.
+    #[track_caller]
     pub fn wait_for(&mut self, what: &str, seen: impl Fn(&str) -> bool) -> String {
         loop {
             let shown = self.shown();
@@ -183,6 +184,7 @@ impl Terminal {
     }
 
     /// Waits until it shows `part`, as [`Terminal::wait_for`] does.
+    #[track_caller]
     pub fn wait_to_show(&mut self, part: &str) -> String {
         self.wait_for(part, |shown| shown.contains(part))
     }
