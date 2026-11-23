@@ -160,8 +160,8 @@ struct Cli {
     )]
     device_poll_interval: u64,
 
-    /// Who may sign up: open, anyone the sign-in providers sign in; closed, only the identities on
-    /// the --sign-up-* lists. Existing accounts sign in and link methods either way.
+    /// Who may sign up: open, anyone the providers sign in. Closed admits corporate sign-ins,
+    /// identities on the --sign-up-* lists and usable invites. Existing accounts can still sign in.
     #[arg(
         long,
         env = "SKALD_SIGN_UP",
@@ -431,7 +431,7 @@ fn open_warning(settings: &Settings) -> Option<String> {
     };
     Some(format!(
         "skald-server: warning: sign-up is open: any {providers} account can sign up; \
-         --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+         --sign-up closed (SKALD_SIGN_UP=closed) restricts GitHub and Google sign-up"
     ))
 }
 
@@ -977,7 +977,7 @@ mod tests {
         let any = |providers: &str| {
             Some(format!(
                 "skald-server: warning: sign-up is open: any {providers} account can sign up; \
-                 --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+                 --sign-up closed (SKALD_SIGN_UP=closed) restricts GitHub and Google sign-up"
             ))
         };
         assert_eq!(warning(true, true), any("GitHub or Google"));
