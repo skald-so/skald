@@ -165,7 +165,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Until the repository's Pages publishes from GitHub Actions, GitHub's API answering 404, the publish job is skipped and the run passes. Pages set up from a branch fails the run.
   - Only the publish job writes: `pages` and `id-token`, for the deployment.
 - GitHub Pages serves one custom domain per site, so there is one site: its custom domain is `skald.so`, HTTPS enforced.
-  - `docs.skald.so` answers every path with a permanent redirect to the same path on `skald.so`, over HTTPS; the cloud's Caddy keeps it, as GitHub Pages serves no redirect and the DNS provider's has no HTTPS.
+  - Over HTTPS, `docs.skald.so/` redirects temporarily to the docs start page at `https://skald.so/start`. Every other path redirects permanently to the same path on `https://skald.so`.
 - [`docs/privacy.md`](../privacy.md), the privacy policy of the cloud and the website, is the page `/privacy`.
 
 ## Trust in builds
