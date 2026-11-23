@@ -85,7 +85,7 @@ if ($LASTEXITCODE -ne 0) { throw 'skald --version failed.' }
         }
         $before = @(Get-Content -LiteralPath $requests).Count
         # Both entries are present, and WinGet selects the native one without an architecture flag.
-        & $winget install --manifest $ManifestDir --scope user --skip-dependencies --disable-interactivity --accept-package-agreements --no-proxy
+        & $winget install --manifest $ManifestDir --scope user --skip-dependencies --disable-interactivity --accept-package-agreements
         $code = $LASTEXITCODE
         $downloads = @(Get-Content -LiteralPath $requests | Select-Object -Skip $before)
         if ($downloads -cnotcontains "/$archive" -or $downloads -ccontains "/$otherArchive") {

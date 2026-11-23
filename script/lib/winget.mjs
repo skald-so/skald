@@ -42,7 +42,6 @@ NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: skald.exe
     PortableCommandAlias: skald
-Scope: user
 Installers:
 ` + entries.map(({ architecture, url, sha256 }) => `  - Architecture: ${architecture}
     InstallerUrl: ${JSON.stringify(url)}

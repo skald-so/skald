@@ -84,6 +84,8 @@ function checkManifestSet(dir, baseUrl) {
     assert.equal(String(entry.InstallerSha256).toLowerCase(), hash(path.join(assets, name)));
     assert.equal(entry.InstallerType ?? installer.InstallerType, 'zip');
     assert.equal(entry.NestedInstallerType ?? installer.NestedInstallerType, 'portable');
+    assert.ok(!Object.hasOwn(installer, 'Scope') && !Object.hasOwn(entry, 'Scope'),
+      'WinGet validates portable ZIPs without a manifest scope');
     const nested = entry.NestedInstallerFiles ?? installer.NestedInstallerFiles;
     assert.equal(nested.length, 1);
     assert.equal(nested[0].RelativeFilePath, 'skald.exe');
@@ -207,6 +209,12 @@ test('the release workflow submits WinGet only after publishing a stable release
 });
 
 test('release dry runs exercise the same WinGet manifest artifact on both native Windows targets', () => {
+  const fixture = fs.readFileSync(path.join(root, 'script/winget-installers-test.ps1'), 'utf8');
+  const install = fixture.match(/^\s*& \$winget install (.+)$/m)?.[1] ?? '';
+  assert.match(install, /(?:^|\s)--scope user(?:\s|$)/);
+  assert.doesNotMatch(install, /(?:^|\s)--(?:no-)?proxy(?:\s|=|$)/,
+    'loopback installation uses default WinGet proxy settings');
+
   const release = workflow();
   const artifactNames = (job, action) => (job.steps ?? [])
     .filter((step) => step.uses?.startsWith(`actions/${action}-artifact@`))
