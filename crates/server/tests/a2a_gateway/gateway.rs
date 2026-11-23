@@ -26,7 +26,8 @@ use ureq::tls::{Certificate, RootCerts, TlsConfig};
 use ureq::{Agent, Body};
 use url::Url;
 
-use crate::common::{SERVER, collect, devices};
+use crate::common::sign_in::{CLIENT_SECRET, SECRET_ENV, github_settings};
+use crate::common::{SERVER, Server, collect, devices, on_free_port};
 use crate::front::Front;
 use crate::kit::World;
 use crate::tls::Ca;
@@ -36,6 +37,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 pub struct Lab {
     _files: Files,
     pub upstream: Front,
+    _skald_server: Server,
     incoming: Front,
     pub public: String,
     pub skald: String,
@@ -49,8 +51,20 @@ impl Lab {
         let ca = Ca::new(&files.0);
         let certificate = ca.issue("IP:127.0.0.1");
         let incoming = Front::bind(vec![Arc::clone(&certificate)]);
-        let target = world.server().base().trim_start_matches("http://");
-        let upstream = Front::start(target, vec![certificate]);
+        let upstream = Front::bind(vec![certificate]);
+        let skald = upstream.url("127.0.0.1");
+        // Proofs sign the configured public origin. Serve the same database under the TLS
+        // front's address while the member fixtures keep their original server and sign-in.
+        let settings = github_settings(&skald, &world.stage.f.team.flow.stand.github);
+        let skald_server = on_free_port(TIMEOUT, |port| {
+            Server::try_launch(
+                world.db(),
+                &format!("127.0.0.1:{port}"),
+                &settings,
+                &[(SECRET_ENV, CLIENT_SECRET)],
+            )
+        });
+        upstream.forward_to(skald_server.base().trim_start_matches("http://"));
         let root = CertificateDer::from_pem_file(&ca.cert).expect("test CA");
         let roots = vec![Certificate::from_der(root.as_ref()).to_owned()];
         let tls = TlsConfig::builder()
@@ -68,8 +82,9 @@ impl Lab {
         Self {
             _files: files,
             public: incoming.url("127.0.0.1"),
-            skald: upstream.url("127.0.0.1"),
+            skald,
             upstream,
+            _skald_server: skald_server,
             incoming,
             ca: ca.cert,
             client,
