@@ -16,29 +16,18 @@ use skald_proto::{
 };
 
 use crate::gaps::{Counters, Source};
+use crate::plain_path::plain;
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
 
-/// The database's file in the state directory `dir`, as SQLite opens it. On Windows, a verbatim
-/// path to a drive (`\\?\C:\…`, as `canonicalize` gives) goes without its prefix: SQLite takes a
-/// path that starts with `\\` for a UNC one, whose connections in a process lock the `-shm` through
-/// one shared handle, and threads that read at once can leave a read lock on it held, so no
-/// checkpoint can truncate the WAL until the process closes the state.
+/// The database's file in the state directory `dir`, as SQLite opens it: on Windows without a
+/// verbatim prefix (`\\?\C:\…`, as `canonicalize` gives), where it names the same file without
+/// it ([`plain`]). SQLite takes a path that starts with `\\` for a UNC one, whose connections in a
+/// process lock the `-shm` through one shared handle, and threads that read at once can leave a
+/// read lock on it held, so no checkpoint can truncate the WAL until the process closes the state.
 fn file(dir: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        use std::path::{Component, Prefix};
-        let mut components = dir.components();
-        if let Some(Component::Prefix(prefix)) = components.next()
-            && let Prefix::VerbatimDisk(disk) = prefix.kind()
-        {
-            let mut plain = PathBuf::from(format!("{}:\\", char::from(disk)));
-            plain.extend(components.filter(|part| !matches!(part, Component::RootDir)));
-            return plain.join(FILE);
-        }
-    }
-    dir.join(FILE)
+    plain(&dir.join(FILE))
 }
 
 /// The schema's migrations, in order: the database's `user_version` counts those applied. Each is
