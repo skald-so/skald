@@ -13375,7 +13375,7 @@
         "additionalProperties": false
       },
       "SpaceUsage": {
-        "description": "A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.",
+        "description": "A space's messages this month and service agents, with its limits. When `plan` is present, the server enforces the plan's member and service agent limits. The other plan allowances are informational and the server's existing limits still apply to those features.",
         "type": "object",
         "required": [
           "monthly_messages",

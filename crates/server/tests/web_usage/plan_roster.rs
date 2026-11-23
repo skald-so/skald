@@ -13,6 +13,7 @@ use crate::rosters::{channel, member, name, next, service_agent};
 use crate::upload::issued_by;
 use crate::usage::space_usage_path;
 
+const MEMBER_LIMIT: &str = "https://skald.so/problems/members-limit";
 const SERVICE_AGENT_LIMIT: &str = "https://skald.so/problems/service-agents-limit";
 
 fn signed(team: &Team, previous: &[Vec<u8>], change: impl FnOnce(&mut RosterBody)) -> Vec<u8> {
@@ -33,19 +34,20 @@ fn store(team: &Team, kept: &mut Vec<Vec<u8>>, revision: Vec<u8>) {
 }
 
 #[track_caller]
-fn assert_quota_refusal(response: &Response, what: &str) {
+fn assert_quota_refusal(response: &Response, what: &str, problem_type: &str) {
     assert_refused(response, what);
     assert_eq!(response.status, 403, "{what}: {}", text(response));
+    let problem = body_of(response);
+    assert_eq!(problem["type"], problem_type, "{what}: {}", text(response));
+    assert_eq!(problem["status"], 403, "{what}: {}", text(response));
 }
 
 #[track_caller]
 fn assert_agent_refusal(response: &Response) {
-    assert_quota_refusal(response, "adding an agent above the plan limit");
-    assert_eq!(
-        body_of(response)["type"],
+    assert_quota_refusal(
+        response,
+        "adding an agent above the plan limit",
         SERVICE_AGENT_LIMIT,
-        "{}",
-        text(response)
     );
 }
 
@@ -123,6 +125,7 @@ fn a_fourth_member_waits_for_team_when_admitted_by_invite() {
     assert_quota_refusal(
         &alice.session.store(team.space, &admission),
         "a fourth Free member",
+        MEMBER_LIMIT,
     );
     assert_eq!(alice.session.revisions(team.space), kept);
     assert_eq!(alice.session.waiting(team.space), waiting);
@@ -221,6 +224,7 @@ fn a_lowered_plan_preserves_over_limit_rosters_and_only_allows_edits_or_reductio
     assert_quota_refusal(
         &alice.session.store(team.space, &regrow_members),
         "adding a member above a lowered limit",
+        MEMBER_LIMIT,
     );
     assert_eq!(alice.session.revisions(team.space), kept);
 

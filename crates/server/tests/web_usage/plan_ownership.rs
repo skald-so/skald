@@ -16,7 +16,15 @@ const OWNED_LIMIT: &str = "https://skald.so/problems/owned-spaces-limit";
 
 #[track_caller]
 fn owned(session: &Session) -> AccountUsage {
-    account_usage_of(&session.call("get", ACCOUNT_USAGE, None))
+    let response = session.call("get", ACCOUNT_USAGE, None);
+    let usage = account_usage_of(&response);
+    assert_eq!(
+        body_of(&response)["owned_spaces"]["free_only"],
+        true,
+        "{}",
+        text(&response)
+    );
+    usage
 }
 
 #[track_caller]
@@ -42,6 +50,23 @@ fn free_ownership_counts_personal_and_excludes_paid_and_joined_spaces() {
 
     assert_owned(&owned(&alice.session), 1, &[paid]);
     assert_owned(&owned(&bob.session), 1, &[]);
+
+    // The same paid space counts on a server with plans disabled.
+    let legacy = team.flow.stand.instance(
+        &["--owned-spaces-limit", "2"],
+        &[("SKALD_SPACE_PLANS", "false")],
+    );
+    let response = alice.session.on(&legacy).call("get", ACCOUNT_USAGE, None);
+    assert_owned(&account_usage_of(&response), 2, &[paid]);
+    assert!(
+        body_of(&response)["owned_spaces"]
+            .get("free_only")
+            .is_none(),
+        "{}",
+        text(&response)
+    );
+    drop(legacy);
+
     team.with_members();
     assert!(bob.session.spaces().contains_key(&team.space.to_string()));
     assert_owned(&owned(&bob.session), 1, &[]);

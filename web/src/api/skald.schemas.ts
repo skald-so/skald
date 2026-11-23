@@ -887,7 +887,7 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.
+ * A space's messages this month and service agents, with its limits. When `plan` is present, the server enforces the plan's member and service agent limits. The other plan allowances are informational and the server's existing limits still apply to those features.
  */
 export interface SpaceUsage {
   plan?: SpacePlan;
