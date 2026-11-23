@@ -182,6 +182,25 @@ fn private_file(parent: &Path) -> io::Result<NamedTempFile> {
 
 #[cfg(target_os = "macos")]
 fn private_file(parent: &Path) -> io::Result<NamedTempFile> {
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd as _;
+
+    private_macos_file(parent, |file| {
+        let mut volume = MaybeUninit::<libc::statfs>::uninit();
+        // SAFETY: `file` is open and `volume` has room for fstatfs to initialize on success.
+        if unsafe { libc::fstatfs(file.as_raw_fd(), volume.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fstatfs succeeded and initialized `volume`.
+        Ok(unsafe { volume.assume_init() }.f_flags)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn private_macos_file(
+    parent: &Path,
+    mount_flags: impl FnOnce(&std::fs::File) -> io::Result<u32>,
+) -> io::Result<NamedTempFile> {
     use std::ffi::CString;
     use std::fs::{File, Permissions};
     use std::os::unix::ffi::OsStrExt as _;
@@ -240,8 +259,14 @@ fn private_file(parent: &Path) -> io::Result<NamedTempFile> {
             // SAFETY: openx_np returned an owned file descriptor.
             Ok(unsafe { File::from_raw_fd(fd) })
         })?;
-        file.as_file()
-            .set_permissions(Permissions::from_mode(mode.into()))?;
+        let handle = file.as_file();
+        if mount_flags(handle)? & libc::MNT_IGNORE_OWNERSHIP as u32 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "enable ownership on the output volume or choose another volume",
+            ));
+        }
+        handle.set_permissions(Permissions::from_mode(mode.into()))?;
         Ok(file)
     })();
     // SAFETY: the objects were allocated by filesec_init and acl_from_text, respectively.
@@ -440,5 +465,78 @@ mod tests {
         assert!(listed.status.success());
         let acl = String::from_utf8_lossy(&listed.stdout);
         assert_eq!(acl.lines().count(), 1, "{acl}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn export_refuses_a_volume_that_ignores_ownership() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = private_macos_file(dir.path(), |file| {
+            assert_eq!(file.metadata().unwrap().len(), 0);
+            Ok((libc::MNT_LOCAL | libc::MNT_IGNORE_OWNERSHIP) as u32)
+        })
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_export_keeps_a_protected_current_user_dacl() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let permissive = Command::new("icacls.exe")
+            .arg(dir.path())
+            .args(["/grant", "*S-1-1-0:(OI)(IO)R"])
+            .output()
+            .unwrap();
+        assert!(permissive.status.success(), "{permissive:?}");
+
+        let control = dir.path().join("inherited.txt");
+        fs::write(&control, "control").unwrap();
+        let temporary = private_file(dir.path()).unwrap();
+        let output = dir.path().join("history.json");
+        fs::write(&output, "older export").unwrap();
+        write_file(&output, Format::Json, &[]).unwrap();
+        assert_eq!(fs::read_to_string(&output).unwrap(), "[]\n");
+
+        let checked = Command::new("powershell.exe")
+            .env("SKALD_TEST_ACL_CONTROL", control)
+            .env("SKALD_TEST_ACL_TEMP", temporary.path())
+            .env("SKALD_TEST_ACL_EXPORT", output)
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                r"
+$ErrorActionPreference = 'Stop'
+$sidType = [System.Security.Principal.SecurityIdentifier]
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$control = Get-Acl -LiteralPath $env:SKALD_TEST_ACL_CONTROL
+$everyone = $control.GetAccessRules($false, $true, $sidType) | Where-Object {
+    $_.IdentityReference.Value -eq 'S-1-1-0' -and $_.AccessControlType -eq 'Allow' -and
+        ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData)
+}
+if (-not $everyone) { throw 'The control file did not inherit the permissive rule' }
+foreach ($path in @($env:SKALD_TEST_ACL_TEMP, $env:SKALD_TEST_ACL_EXPORT)) {
+    $acl = Get-Acl -LiteralPath $path
+    $rules = $acl.GetAccessRules($true, $true, $sidType)
+    if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $user -or
+        $rules.Count -ne 1 -or $rules[0].IsInherited -or
+        $rules[0].IdentityReference.Value -ne $user -or $rules[0].AccessControlType -ne 'Allow' -or
+        $rules[0].FileSystemRights -ne 'FullControl') {
+        throw 'The export DACL does not grant access exclusively to the current user'
+    }
+}
+",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            checked.status.success(),
+            "ACL check failed: {}",
+            String::from_utf8_lossy(&checked.stderr)
+        );
     }
 }
