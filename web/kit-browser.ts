@@ -24,6 +24,7 @@ export type Screen =
   | "cabinet"
   | "cabinet-menu"
   | "sign-in"
+  | "invite"
   | "account"
   | "machines"
   | "members"

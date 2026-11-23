@@ -41,6 +41,7 @@ import type {
   LinkMessageRequest,
   LinkMessages,
   ListedDevices,
+  ListedInvites,
   ListedMembers,
   MasterKey,
   MasterKeyRequest,
@@ -1785,6 +1786,7 @@ export const getGetDevicesResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -1807,6 +1809,7 @@ export const getGetDevicesResponseMock200 = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2678,6 +2681,7 @@ export const getGetServerResponseMock = (
     ),
     null,
   ]),
+  public: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2690,6 +2694,7 @@ export const getGetServerResponseMock200 = (
     ),
     null,
   ]),
+  public: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2726,6 +2731,7 @@ export const getGetSessionResponseMock = (
     faker.helpers.arrayElement(Object.values(SignInProvider)),
     undefined,
   ]),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2744,6 +2750,7 @@ export const getGetSessionResponseMock200 = (
     faker.helpers.arrayElement(Object.values(SignInProvider)),
     undefined,
   ]),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -3018,6 +3025,7 @@ export const getGetWaitingAcceptancesResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     devices: Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
@@ -3046,6 +3054,7 @@ export const getGetWaitingAcceptancesResponseMock200 = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => ({
+    invite: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     acceptance: faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$"),
     devices: Array.from(
       { length: faker.number.int({ min: 1, max: 10 }) },
@@ -3726,6 +3735,124 @@ export const getGetSpaceDevicesResponseMock500 = (
   ...overrideResponse,
 });
 
+export const getListSpaceInvitesResponseMock = (
+  overrideResponse: Partial<Extract<ListedInvites, object>> = {},
+): ListedInvites => ({
+  invites: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    invite: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    role: faker.helpers.arrayElement(["admin", "member"] as const),
+    username: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"),
+      undefined,
+    ]),
+    device_name: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    expires_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    acceptance_waiting: faker.datatype.boolean(),
+    acceptance_handle: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock200 = (
+  overrideResponse: Partial<Extract<ListedInvites, object>> = {},
+): ListedInvites => ({
+  invites: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => ({
+    invite: faker.helpers.fromRegExp(
+      "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    ),
+    role: faker.helpers.arrayElement(["admin", "member"] as const),
+    username: faker.helpers.arrayElement([
+      faker.helpers.fromRegExp("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$"),
+      undefined,
+    ]),
+    device_name: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+    created_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    expires_at: faker.date.past().toISOString().slice(0, 19) + "Z",
+    acceptance_waiting: faker.datatype.boolean(),
+    acceptance_handle: faker.helpers.arrayElement([
+      faker.string.alpha({ length: { min: 10, max: 20 } }),
+      undefined,
+    ]),
+  })),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getListSpaceInvitesResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
 export const getCreateInviteResponseMock = (
   overrideResponse: Partial<Extract<NewInvite, object>> = {},
 ): NewInvite => ({
@@ -3795,6 +3922,64 @@ export const getCreateInviteResponseMock404 = (
 });
 
 export const getCreateInviteResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeSpaceInviteResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getRevokeSpaceInviteResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeSpaceInviteResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeSpaceInviteResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getRevokeSpaceInviteResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -12081,6 +12266,189 @@ export const getGetSpaceDevicesMockHandler500 = (
   );
 };
 
+export const getListSpaceInvitesMockHandler = (
+  overrideResponse?:
+    | ListedInvites
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ListedInvites> | ListedInvites),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler200 = (
+  overrideResponse?:
+    | ListedInvites
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ListedInvites> | ListedInvites),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getListSpaceInvitesMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/invites",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getListSpaceInvitesResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getCreateInviteMockHandler = (
   overrideResponse?:
     | NewInvite
@@ -12254,6 +12622,225 @@ export const getCreateInviteMockHandler500 = (
             ? await overrideResponse(info)
             : overrideResponse
           : getCreateInviteResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler204 = (
+  overrideResponse?:
+    | void
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<void> | void),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      if (typeof overrideResponse === "function") {
+        await overrideResponse(info);
+      }
+
+      return new HttpResponse(null, { status: 204 });
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeSpaceInviteResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeSpaceInviteResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeSpaceInviteResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeSpaceInviteResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getRevokeSpaceInviteMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string; invite: string }>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.delete<{ space: string; invite: string }>(
+    "*/spaces/:space/invites/:invite",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string; invite: string }>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getRevokeSpaceInviteResponseMock500(),
         {
           status: 500,
           headers: { "Content-Type": "application/problem+json" },
@@ -13914,7 +14501,9 @@ export const getSkaldAPIMock = () => [
   getGetHistoryLinksMockHandler(),
   getGetHistoryWrapsMockHandler(),
   getGetSpaceDevicesMockHandler(),
+  getListSpaceInvitesMockHandler(),
   getCreateInviteMockHandler(),
+  getRevokeSpaceInviteMockHandler(),
   getStoreInviteMockHandler(),
   getListSpaceMembersMockHandler(),
   getGetRosterRevisionsMockHandler(),

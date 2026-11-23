@@ -64,7 +64,7 @@ const LISTS_OR_ENDS: &str = "lists or ends the account's sessions";
 
 /// The web session of the request's cookie; a device session is refused, as only a web session
 /// `does` this, such as [`LISTS_OR_ENDS`].
-async fn web_session(
+pub(crate) async fn web_session(
     state: &AppState,
     headers: &HeaderMap,
     does: &str,

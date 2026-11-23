@@ -8,6 +8,7 @@ use skald_crypto::passes_proof_check;
 use skald_proto::{Cbor as _, Cert, DeviceId};
 
 use crate::devices::text;
+use crate::key_changes;
 use crate::state::State;
 
 /// Keeps the certificates of `trusted`, each of a device that passed checks 1 and 2, of the devices
@@ -22,8 +23,8 @@ pub fn keep(state: &State, trusted: &[&Cert]) -> Result<(), String> {
 /// Checks `given`, the certificates the server gives, against those `state` keeps: keeps each of a
 /// kept device with another body that passes the proof check, and gives the warning of each kept
 /// device given with another certificate in place of the first kept one, unless it warned of that
-/// certificate last. Gives `given` with every kept certificate of each device with two bodies, and
-/// the warnings.
+/// certificate last, and keeps it as a key change. Gives `given` with every kept certificate of each
+/// device with two bodies, and the warnings.
 pub fn settle(state: &State, mut given: Vec<Cert>) -> Result<(Vec<Cert>, Vec<String>), String> {
     let mut devices: Vec<DeviceId> = Vec::new();
     for cert in &given {
@@ -58,11 +59,13 @@ pub fn settle(state: &State, mut given: Vec<Cert>) -> Result<(Vec<Cert>, Vec<Str
             swapped.clear();
         }
         if state.swapped_certs(device, &swapped).map_err(text)? {
-            warnings.push(format!(
+            let warning = format!(
                 "the server gives device {device} a certificate other than the one this device \
                  trusted, so it is not trusted until the server gives that one back: its key may \
                  have been swapped"
-            ));
+            );
+            key_changes::keep(state, &warning)?;
+            warnings.push(warning);
         }
         let kept = self::kept(state, device)?;
         if kept.len() > 1 {

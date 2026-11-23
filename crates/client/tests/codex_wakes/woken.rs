@@ -4,7 +4,7 @@
 use crate::codex::{Codex, Event, assert_bare};
 use crate::queued::assert_inbox_gives;
 use crate::solo::API;
-use crate::standin::{assert_quiet, web_in_app};
+use crate::standin::{assert_quiet, fails_for, web_in_app};
 
 /// What api says to web, whose signal is queued; it is nowhere else.
 const QUEUED: &str = "codex wake test: api asks web, woken, to rerun the migrations";
@@ -41,12 +41,7 @@ const TO_API: &str = "codex wake test: web tells api the logs wait";
 pub fn a_failed_codex_queue_runs_no_more_for_the_same_messages() {
     let mut codex = Codex::new(4_928_008_001, "ada-codex-wake-unqueued");
     let _api_mcp = codex.web.solo.session(API);
-    let (app, web, mut process) = web_in_app(&codex);
-    app.fail();
-
-    let unqueued = codex.web.own(UNQUEUED);
-    let ran = app.await_runs(1);
-    assert!(ran[0].failed(), "the stand-in did not fail: {ran:#?}");
+    let (app, web, mut process, unqueued, _) = fails_for(&codex, UNQUEUED);
     let solo = &codex.web.solo;
     let to = solo.short(API);
     solo.sends(&mut codex.web.session, &to, TO_API);

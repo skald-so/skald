@@ -19,6 +19,9 @@
 //! what it holds (`socket_model.rs`). On Windows, where Claude Code's socket is a named pipe that
 //! the client does not write to, they get them by the hooks.
 //!
+//! The sessions of `wake_fallbacks.rs` refuse cross-session messages and get them by Channels, the
+//! `asyncRewake` hook or the mod, which `socket_claude.rs` adds as a test's options say.
+//!
 //! The sessions of `modes.rs` and `inline.rs` run under the person's delivery settings, as the
 //! tests of the settings set them (`claude_code_modes/main.rs`, `delivery.rs`); those that wait for
 //! an idle session to wake run on Unix only, where the client writes into the socket.
@@ -28,12 +31,17 @@
 //!
 //! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
 //! marketplace of this checkout, and nothing else of Skald's.
+//!
+//! The host tests run this plugin in sessions of Paseo and Herdr on Unix. They skip without
+//! their host on `PATH`, a failure when `SKALD_E2E_REQUIRED_HOSTS=1`.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
 mod delivery;
+#[cfg(unix)]
+mod hosts;
 mod inline;
 #[cfg(unix)]
 mod modes;
@@ -46,6 +54,7 @@ mod socket_model;
 mod socket_routing;
 mod socket_sessions;
 mod stub;
+mod wake_fallbacks;
 
 // The processes of a copy of `skald`, as the tests of the helper have them.
 #[path = "../helper/helped.rs"]

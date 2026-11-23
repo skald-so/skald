@@ -1,7 +1,7 @@
 //! The agent CLI these tests play: an MCP client of `skald mcp` over its standard streams, MCP's
 //! stdio transport, one JSON-RPC 2.0 message per line. It answers a request of the server's with
-//! an empty result for `ping` and an error for anything else, and takes the server's notifications
-//! in without acting on them.
+//! an empty result for `ping` and an error for anything else, and keeps the server's notifications
+//! without acting on them.
 
 use std::io::{Read, Write};
 use std::path::Path;
@@ -95,6 +95,10 @@ pub struct Session {
     next: u64,
     /// What each request's `_meta` holds, as of [`STATELESS`].
     meta: Option<Value>,
+    /// The result of `initialize`, once the server gave it.
+    initialized: Value,
+    /// The server's notifications so far, in order.
+    notifications: Vec<Value>,
 }
 
 impl Session {
@@ -108,8 +112,9 @@ impl Session {
             "capabilities": {},
             "clientInfo": { "name": client, "version": "1.0.0" },
         });
-        if let Err(error) = session.request("initialize", params) {
-            panic!("initialize failed: {error}: {}", session.errors());
+        match session.request("initialize", params) {
+            Ok(result) => session.initialized = result,
+            Err(error) => panic!("initialize failed: {error}: {}", session.errors()),
         }
         session.write(&json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
         session
@@ -117,7 +122,7 @@ impl Session {
 
     /// Starts `command`, a run of `skald mcp`, and opens the session as a client of [`STATELESS`]
     /// named `client` does, as Claude Code does: `server/discover`, and no `initialize`; fails
-    /// unless the server answers it with a result.
+    /// unless the server answers it with a result, which [`Session::initialized`] then gives.
     #[track_caller]
     pub fn discovered(command: &mut Command, client: &str) -> Self {
         let mut session = Self::spawn(command);
@@ -126,8 +131,9 @@ impl Session {
             "io.modelcontextprotocol/clientInfo": { "name": client, "version": "1.0.0" },
             "io.modelcontextprotocol/clientCapabilities": {},
         }));
-        if let Err(error) = session.request("server/discover", json!({})) {
-            panic!("server/discover failed: {error}: {}", session.errors());
+        match session.request("server/discover", json!({})) {
+            Ok(result) => session.initialized = result,
+            Err(error) => panic!("server/discover failed: {error}: {}", session.errors()),
         }
         session
     }
@@ -158,6 +164,8 @@ impl Session {
             errors,
             next: 1,
             meta: None,
+            initialized: Value::Null,
+            notifications: Vec::new(),
         }
     }
 
@@ -169,6 +177,31 @@ impl Session {
     /// What the server wrote to its standard error so far.
     pub fn errors(&self) -> String {
         String::from_utf8_lossy(&self.errors.lock().expect("the server's errors")).into_owned()
+    }
+
+    /// The result the server gave `initialize`.
+    pub fn initialized(&self) -> &Value {
+        &self.initialized
+    }
+
+    /// The server's notifications of `method` so far, waiting for up to `wait` until it sent
+    /// `count` of them; answers the server's requests meanwhile.
+    #[track_caller]
+    pub fn notifications(&mut self, method: &str, count: usize, wait: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + wait;
+        loop {
+            while let Some(message) = self.taken_message() {
+                self.answer(&message);
+            }
+            let sent: Vec<Value> = (self.notifications.iter())
+                .filter(|notification| notification["method"] == method)
+                .cloned()
+                .collect();
+            if sent.len() >= count || Instant::now() >= deadline {
+                return sent;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// Calls `tool` with `arguments`.
@@ -258,16 +291,27 @@ impl Session {
                     None => Ok(message["result"].clone()),
                 };
             }
-            if let (Some(method), Some(asked)) = (message["method"].as_str(), message.get("id")) {
-                let answer = if method == "ping" {
-                    json!({ "jsonrpc": "2.0", "id": asked, "result": {} })
-                } else {
-                    let error = json!({ "code": -32601, "message": "method not found" });
-                    json!({ "jsonrpc": "2.0", "id": asked, "error": error })
-                };
-                self.write(&answer);
-            }
+            self.answer(&message);
         }
+    }
+
+    /// Keeps `message` if it is a notification of the server's, and answers it if it is a request.
+    #[track_caller]
+    fn answer(&mut self, message: &Value) {
+        let Some(method) = message["method"].as_str() else {
+            return;
+        };
+        let Some(asked) = message.get("id") else {
+            self.notifications.push(message.clone());
+            return;
+        };
+        let answer = if method == "ping" {
+            json!({ "jsonrpc": "2.0", "id": asked, "result": {} })
+        } else {
+            let error = json!({ "code": -32601, "message": "method not found" });
+            json!({ "jsonrpc": "2.0", "id": asked, "error": error })
+        };
+        self.write(&answer);
     }
 
     /// Writes `message` to the server's input, on a line of its own.
@@ -286,22 +330,8 @@ impl Session {
     fn next_message(&mut self) -> Value {
         let deadline = Instant::now() + RUN_LIMIT;
         loop {
-            let line = {
-                let bytes = self.output.bytes.lock().expect("the server's output");
-                (bytes[self.taken..].iter().position(|&byte| byte == b'\n')).map(|end| {
-                    let line = String::from_utf8_lossy(&bytes[self.taken..self.taken + end]);
-                    (line.into_owned(), end + 1)
-                })
-            };
-            if let Some((line, length)) = line {
-                self.taken += length;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                return match serde_json::from_str::<Value>(&line) {
-                    Ok(message) if message.is_object() => message,
-                    _ => panic!("not a JSON-RPC message on its output: {line:?}"),
-                };
+            if let Some(message) = self.taken_message() {
+                return message;
             }
             if self.output.ended.load(Ordering::SeqCst) {
                 panic!("skald mcp's output ended: {}", self.errors());
@@ -312,6 +342,28 @@ impl Session {
                 self.errors()
             );
             thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// The next message the server's output holds now, if it holds a whole one; fails if a line is
+    /// no JSON object.
+    #[track_caller]
+    fn taken_message(&mut self) -> Option<Value> {
+        loop {
+            let (line, length) = {
+                let bytes = self.output.bytes.lock().expect("the server's output");
+                let end = bytes[self.taken..].iter().position(|&byte| byte == b'\n')?;
+                let line = String::from_utf8_lossy(&bytes[self.taken..self.taken + end]);
+                (line.into_owned(), end + 1)
+            };
+            self.taken += length;
+            if line.trim().is_empty() {
+                continue;
+            }
+            return match serde_json::from_str::<Value>(&line) {
+                Ok(message) if message.is_object() => Some(message),
+                _ => panic!("not a JSON-RPC message on its output: {line:?}"),
+            };
         }
     }
 }

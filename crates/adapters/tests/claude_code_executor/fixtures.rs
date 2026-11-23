@@ -31,6 +31,16 @@ const REQUIRED: &str = "SKALD_E2E_REQUIRED";
 /// How long an executor may run: no person answers it.
 const RUN_LIMIT: Duration = Duration::from_secs(180);
 
+/// Sets each variable of `names` in this process's environment too, so a run that inherits this
+/// process's environment instead of getting only the device's gets them.
+pub fn set_in_this_process(names: &[&str]) {
+    for name in names {
+        // SAFETY: these tests' processes read and write their environment only through `std`,
+        // which serializes it.
+        unsafe { env::set_var(name, token(name)) };
+    }
+}
+
 /// A unique piece of text, which shows where it went.
 pub fn token(of: &str) -> String {
     static NEXT: AtomicUsize = AtomicUsize::new(0);

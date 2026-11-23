@@ -65,26 +65,11 @@ mod entries;
 #[path = "../history_wraps/wraps.rs"]
 mod wraps;
 
-// Ada's agents, as the tests of handing messages over have them, with the messages of the tests of
-// gap detection; what an agent reads, as the tests of compact output have it; the senders of the
-// tests of trust levels; the queue commands and requests of the tests of queues; the task states
-// and reads of the tests of task states; the claims of the tests of claiming tasks.
-#[path = "../agent_handover/agents.rs"]
-mod agents;
-// Its states beside the claim commands, some of which these tests do not name.
-#[allow(unused_imports)]
-#[path = "../task_claims/claiming.rs"]
-mod claiming;
-#[path = "../gap_detection/gaps.rs"]
-mod gaps;
-#[path = "../compact_output/lines.rs"]
-mod lines;
-#[path = "../queues/queuing.rs"]
-mod queuing;
-#[path = "../trust_levels/senders.rs"]
-mod senders;
-#[path = "../task_states/states.rs"]
-mod states;
+// The modules the tests of tasks after their claim share (`task_common/mod.rs`): Ada's agents,
+// what an agent reads, the senders, the queue commands, the task states and the claims.
+#[path = "../task_common/mod.rs"]
+mod task_common;
+use task_common::*;
 
 // The runs of a machine's own copy of `skald`, as the tests of the helper have them; the agent CLI
 // of the tests of the MCP server; the presence values and a device's proof of the tests of

@@ -168,18 +168,17 @@ pub fn space_options(page: &Page) -> Option<Vec<String>> {
 pub fn assert_no_secrets(answers: &[Answer], tokens: &[String]) {
     assert!(!answers.is_empty(), "the web app got no answer");
     for answer in answers {
-        let what = format!("{} {} {}", answer.method, answer.url, answer.status);
+        let what = format!("{} answer with status {}", answer.method, answer.status);
         for token in tokens {
             assert!(
                 !answer.body.contains(token.as_str()),
-                "{what}: a session token: {}",
-                answer.body
+                "{what}: contains a session token"
             );
         }
         if let Ok(body) = serde_json::from_str::<Value>(&answer.body) {
             let mut found = Vec::new();
             secret_keys(&body, &mut found);
-            assert_eq!(found, Vec::<String>::new(), "{what}: {}", answer.body);
+            assert!(found.is_empty(), "{what}: contains secret fields");
         }
     }
 }

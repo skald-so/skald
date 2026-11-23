@@ -2,9 +2,16 @@
 # The GitHub and OIDC stand-ins are test code: script/mutants runs only the mutated crate's tests, so
 # only a stand-in's own tests could catch its mutants, while the tests that rely on it are other
 # crates'.
-exclude_globs = ["crates/github-stand-in/**", "crates/oidc-stand-in/**"]
+# The adapters' code that finds and ends a run's processes: its mutants kill every process of the
+# user who runs the tests, such as one that takes every process for the run's.
+exclude_globs = [
+  "crates/github-stand-in/**",
+  "crates/oidc-stand-in/**",
+  "crates/adapters/src/executor/tree.rs",
+]
 # The client's wrapper of the system's key storage: tests touch the system's only with
 # SKALD_TEST_REAL_KEY_STORAGE=1, which script/mutants never sets, so none reaches it; the logic
 # around it runs against a stand-in. The fixed generator of a seal's ephemeral key: HPKE draws
-# only its 32 bytes, with fill_bytes, so its other methods are unreachable.
-exclude_re = ["<impl Keyring for System>", "<impl TryRng for Fixed>"]
+# only its 32 bytes, with fill_bytes, so its other methods are unreachable. The helper's end of a
+# `codex queue` it runs kills the process.
+exclude_re = ["<impl Keyring for System>", "<impl TryRng for Fixed>", "Served::ended"]
