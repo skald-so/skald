@@ -33,7 +33,7 @@ import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import { afterAll, beforeAll, beforeEach, expect, test } from "vitest";
 
-type Provider = "github" | "google";
+type Provider = "github" | "google" | "corporate";
 
 interface Method {
   method: string;
@@ -75,6 +75,7 @@ let providers: Provider[] = [];
 let signedInWith: Provider = "google";
 /** Whether the web session has ended. */
 let ended = false;
+let signInTooOld = false;
 /** The path of each `DELETE` request the web app sent. */
 let removals: string[] = [];
 
@@ -117,6 +118,18 @@ const server = setupServer(
     HttpResponse.json({ providers, sign_up: "open" }),
   ),
   http.delete(`*${getListSignInMethodsUrl()}/:method`, ({ params }) => {
+    if (signInTooOld)
+      return HttpResponse.json(
+        {
+          type: "https://skald.so/problems/sign-in-too-old",
+          title: "Sign in again",
+          status: 403,
+        },
+        {
+          status: 403,
+          headers: { "content-type": "application/problem+json" },
+        },
+      );
     const removed = methods.find((method) => method.method === params.method);
     methods = methods.filter((method) => method !== removed);
     ended ||= removed?.provider === signedInWith;
@@ -133,6 +146,7 @@ beforeEach(() => {
   providers = ["github", "google"];
   signedInWith = "google";
   ended = false;
+  signInTooOld = false;
   removals = [];
 });
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
@@ -149,16 +163,18 @@ function linkedForms(method: Method): RegExp {
   return new RegExp([ago, short("en-US"), short("en-GB"), iso].join("|"), "i");
 }
 
-/**
- * Renders the web app signed in, afresh, and opens the Account page from the account menu; waits
- * for its link buttons and for when each method was linked.
- */
-async function openAccount(user: UserEvent) {
+/** Renders the web app signed in and opens the Account page from the account menu. */
+async function openAccountPage(user: UserEvent) {
   cleanup();
   window.history.replaceState(null, "", "/");
   render(<App />);
   await user.click(await screen.findByRole("button", { name: "Account" }));
   await user.click(await screen.findByRole("menuitem", { name: "Account" }));
+}
+
+/** Opens the Account page and waits for legacy Link buttons and the methods' dates. */
+async function openAccount(user: UserEvent) {
+  await openAccountPage(user);
   await screen.findAllByRole("button", { name: /^link (github|google)$/i });
   for (const method of methods)
     await waitFor(() =>
@@ -184,7 +200,10 @@ function context(button: HTMLElement): string {
  * dialog and sends nothing; confirms there and waits for the request that removes the method.
  * Gives what the dialog said.
  */
-async function removeAfterAsking(user: UserEvent, provider: Provider) {
+async function removeAfterAsking(
+  user: UserEvent,
+  provider: "github" | "google",
+) {
   await openAccount(user);
   const other: Provider = provider === "github" ? "google" : "github";
   const found = removes().filter(
@@ -274,4 +293,56 @@ test("The page has a link for each provider the server has settings for", async 
     expect(links(offered)).toHaveLength(1);
     expect(links(absent)).toHaveLength(0);
   }
+});
+
+test.each([
+  { offered: ["corporate"] as Provider[], otherMethods: [] },
+  {
+    offered: ["github", "google", "corporate"] as Provider[],
+    otherMethods: [github, google],
+  },
+])(
+  "Account lists corporate sign-in without an unavailable Link action ($offered)",
+  async ({ offered, otherMethods }) => {
+    const user = userEvent.setup();
+    signedInWith = "corporate";
+    methods = [
+      ...otherMethods,
+      {
+        method: "01968a2e-0000-7000-8000-0000000003a3",
+        provider: "corporate",
+        linked_at: daysAgo(1),
+      },
+    ];
+    providers = offered;
+
+    await openAccountPage(user);
+    const table = await screen.findByRole("table", { name: "Sign-in methods" });
+    await within(table).findByText(/corporate/i);
+    const linkCorporate = { name: /^link.*corporate/i };
+    expect(screen.queryByRole("button", linkCorporate)).toBeNull();
+    expect(screen.queryByRole("link", linkCorporate)).toBeNull();
+    for (const provider of ["github", "google"] as const) {
+      expect(links(provider)).toHaveLength(offered.includes(provider) ? 1 : 0);
+    }
+  },
+);
+
+test("An enabled corporate provider without a linked method cannot reauthenticate the account", async () => {
+  providers = ["github", "google", "corporate"];
+  signInTooOld = true;
+
+  await removeAfterAsking(userEvent.setup(), "github");
+
+  for (const provider of ["github", "google"]) {
+    await screen.findByRole("button", {
+      name: new RegExp(`sign in again with ${provider}`, "i"),
+    });
+  }
+  expect(
+    screen.queryByRole("button", { name: /sign in again.*corporate/i }),
+  ).toBeNull();
+  expect(
+    screen.queryByRole("link", { name: /sign in again.*corporate/i }),
+  ).toBeNull();
 });

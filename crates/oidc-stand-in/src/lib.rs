@@ -442,6 +442,8 @@ pub enum Fault {
     TokenStatus { status: u16 },
     /// The token endpoint's ID tokens carry this `nonce` instead of their authorization request's.
     Nonce { nonce: String },
+    /// The token endpoint omits the email and email verification claims.
+    OmitEmail,
 }
 
 /// One of the provider's endpoints of the authorization code flow.
@@ -1114,11 +1116,13 @@ async fn token(State(shared): State<Shared>, headers: HeaderMap, body: Bytes) ->
         "azp": client.client_id,
         "aud": client.client_id,
         "sub": person.subject,
-        "email": person.email,
-        "email_verified": person.email_verified,
         "iat": now,
         "exp": now + ID_TOKEN_LIFETIME,
     });
+    if !served.faults.contains(&Fault::OmitEmail) {
+        claims["email"] = json!(person.email);
+        claims["email_verified"] = json!(person.email_verified);
+    }
     if let Some(nonce) = nonce {
         claims["nonce"] = json!(nonce);
     }
