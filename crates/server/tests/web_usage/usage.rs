@@ -45,7 +45,7 @@ pub fn unlimited(count: u64) -> Counted {
 }
 
 /// The account's usage.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccountUsage {
     pub owned: Counted,
     /// The names of the owned spaces listed, by space ID.
@@ -98,8 +98,14 @@ pub fn account_usage_response(api: &Api, headers: &[(&str, &str)]) -> Response {
 #[track_caller]
 pub fn account_usage(api: &Api, cookie: &str) -> AccountUsage {
     let response = account_usage_response(api, &[("cookie", cookie)]);
-    assert_eq!(response.status, 200, "{}", text(&response));
-    let body = json(&response);
+    account_usage_of(&response)
+}
+
+/// The account usage from a successful response.
+#[track_caller]
+pub fn account_usage_of(response: &Response) -> AccountUsage {
+    assert_eq!(response.status, 200, "{}", text(response));
+    let body = json(response);
     let listed = body["owned_spaces"]["spaces"]
         .as_array()
         .unwrap_or_else(|| panic!("a list of owned spaces: {body}"));

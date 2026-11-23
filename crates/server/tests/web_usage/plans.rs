@@ -13,6 +13,7 @@ use crate::usage::{Web, space_usage_response};
 /// The last migration of the server before space plans.
 const BEFORE_PLANS: i64 = 20270209000000;
 const OPT_IN: [(&str, &str); 1] = [("SKALD_SPACE_PLANS", "true")];
+pub(super) const CLOUD: &[&str] = &["--space-plans"];
 const LEGACY_SETTINGS: &[&str] = &[
     "--monthly-messages-limit",
     "42",
@@ -70,7 +71,7 @@ fn assert_free(body: &Value) {
 }
 
 /// The only fixture write for a paid plan. Usage itself is read through the public API.
-fn entitle_team(db: &TestDb, space: SpaceId) {
+pub(super) fn entitle_team(db: &TestDb, space: SpaceId) {
     db.query(async |conn| {
         sqlx::query("INSERT INTO space_entitlements (space_id, plan) VALUES ($1::uuid, 'team')")
             .bind(space.to_string())
@@ -78,6 +79,17 @@ fn entitle_team(db: &TestDb, space: SpaceId) {
             .await
     })
     .expect("seed a Team entitlement in the upgraded database");
+}
+
+/// Removes a fixture entitlement so the space goes back to the default plan.
+pub(super) fn remove_entitlement(db: &TestDb, space: SpaceId) {
+    db.query(async |conn| {
+        sqlx::query("DELETE FROM space_entitlements WHERE space_id = $1::uuid")
+            .bind(space.to_string())
+            .execute(conn)
+            .await
+    })
+    .expect("remove the fixture Team entitlement");
 }
 
 #[test]
