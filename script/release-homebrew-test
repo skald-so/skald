@@ -1,0 +1,426 @@
+#!/usr/bin/env node
+// Runs the release workflow's Homebrew publisher against published release fixtures and a local
+// Git tap. Homebrew resolves the four formula branches and installs and upgrades in its own prefix.
+import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { reporter } from './lib/report.mjs';
+import { imageName, localTarget, releaseWorkflow, repository, serve, standInTools } from './lib/release-check-stub.mjs';
+import {
+  allNeeds, commands, event, isUnknown, jobsFor, needsOf, open, readWorkflow,
+  stepSkipped, template, toText,
+} from './lib/workflows.mjs';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const { fail, failed, done } = reporter('release-homebrew-test');
+const workflowOnly = process.argv[2] === '--workflow';
+const workflow = readWorkflow(path.join(root, '.github/workflows/release.yml'));
+const tapName = 'skald-so/homebrew-tap';
+const tapFormula = 'skald-so/tap/skald';
+const releaseUrl = 'https://github.com/skald-so/skald/releases/download';
+const stable = 'v1.2.9';
+const next = 'v1.2.10';
+const beta = 'v1.3.0-beta.1';
+const broken = 'v1.3.0';
+const push = (tag) => event('push', `refs/tags/${tag}`);
+const tapPublisher = /homebrew-tap|(?:publish|update)[- _]+(?:to[- _]+)?homebrew|homebrew[- _]+(?:tap|publish)/i;
+const publishers = Object.entries(workflow.jobs).filter(([key, job]) =>
+  tapPublisher.test(`${key} ${job.name ?? ''} ${JSON.stringify(job.steps ?? [])}`));
+if (publishers.length !== 1) {
+  fail(`the release workflow needs one Homebrew tap publisher, found ${publishers.length}`);
+  done();
+}
+
+const [[key, publisher]] = publishers;
+const publisherState = (ev) => jobsFor(workflow, ev)[key];
+const writesTap = (ev) => (publisher.steps ?? []).some((step) => step.run && !stepSkipped(step, publisherState(ev)));
+if (workflowOnly) {
+  if (!writesTap(push(stable))) fail(`${stable} does not run the Homebrew publisher`);
+  const releaseJobs = Object.entries(workflow.jobs).filter(([, job]) =>
+    (job.steps ?? []).some((step) => commands(step.run).some((line) => /\bgh\s+release\s+create\b/.test(line))));
+  const needs = allNeeds(workflow.jobs, key);
+  if (releaseJobs.length !== 1 || !needs.has(releaseJobs[0][0])) {
+    fail('the tap can update before the GitHub release is published');
+  }
+  done();
+}
+
+const platforms = [
+  ['sonoma', 'arm', 'aarch64-apple-darwin'],
+  ['sonoma', 'intel', 'x86_64-apple-darwin'],
+  ['linux', 'arm', 'aarch64-unknown-linux-gnu'],
+  ['linux', 'intel', 'x86_64-unknown-linux-gnu'],
+];
+const archiveOf = (target) => `skald-client-${target}.tar.gz`;
+const sha256 = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-homebrew-test-')));
+const home = path.join(scratch, 'home');
+const bin = path.join(scratch, 'bin');
+const tap = path.join(scratch, 'tap.git');
+const gitConfig = path.join(scratch, 'gitconfig');
+for (const dir of [home, bin]) fs.mkdirSync(dir);
+const loopbackOnly = 'http://127.0.0.1:1';
+const env = {
+  HOME: home,
+  PATH: process.env.PATH,
+  GIT_CONFIG_GLOBAL: gitConfig,
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_ALLOW_PROTOCOL: 'file',
+  GIT_TERMINAL_PROMPT: '0',
+  http_proxy: loopbackOnly,
+  https_proxy: loopbackOnly,
+  HTTP_PROXY: loopbackOnly,
+  HTTPS_PROXY: loopbackOnly,
+  ALL_PROXY: loopbackOnly,
+  NO_PROXY: '127.0.0.1,localhost',
+  no_proxy: '127.0.0.1,localhost',
+};
+for (const name of ['CARGO_HOME', 'RUSTUP_HOME', 'USER', 'LOGNAME', 'LANG']) {
+  if (process.env[name]) env[name] = process.env[name];
+}
+const sync = (file, args, options = {}) => spawnSync(file, args, { cwd: root, env, encoding: 'utf8', ...options });
+const checked = (file, args, options) => {
+  const r = sync(file, args, options);
+  if (r.status !== 0) throw new Error(`${file} ${args.join(' ')}: ${r.error ?? r.stderr ?? r.stdout}`);
+  return r.stdout.trim();
+};
+const git = (...args) => checked('git', args);
+const head = () => git('--git-dir', tap, 'rev-parse', 'main');
+const copy = (source, destination) => fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
+const world = { releases: [], latest: stable, requests: [] };
+const attestations = [];
+const addRelease = (tag) => {
+  const work = path.join(scratch, tag);
+  checked('bash', ['-c', 'source script/lib/release-files.sh; stand_in_release "$1" "$2"', 'bash', work, tag.slice(1)]);
+  const dir = path.join(work, 'release');
+  for (const file of fs.readdirSync(dir)) {
+    attestations.push({
+      digest: sha256(path.join(dir, file)),
+      repo: repository,
+      workflow: releaseWorkflow,
+      ref: `refs/tags/${tag}`,
+      predicateType: 'https://slsa.dev/provenance/v1',
+    });
+  }
+  const release = { tag, dir, immutable: true, prerelease: tag.includes('-') };
+  world.releases.push(release);
+  return release;
+};
+const run = (file, args, options) => new Promise((resolve, reject) => {
+  const child = spawn(file, args, { cwd: root, env, timeout: 120_000, ...options });
+  let output = '';
+  child.stdout.on('data', (d) => { output += d; });
+  child.stderr.on('data', (d) => { output += d; });
+  child.on('error', reject);
+  child.on('close', (status) => resolve({ status, output }));
+});
+const tail = (output) => {
+  const lines = output.trim().split('\n');
+  return (lines.find((line) => /^Error:/.test(line)) ?? lines.slice(-6).join(' | '));
+};
+
+let server;
+try {
+  git('config', '--global', 'init.defaultBranch', 'main');
+  git('config', '--global', 'user.name', 'Release fixture');
+  git('config', '--global', 'user.email', 'release-fixture@example.invalid');
+  git('init', '--bare', tap);
+  const seed = path.join(scratch, 'seed');
+  git('clone', tap, seed);
+  git('-C', seed, 'commit', '--allow-empty', '-m', 'Initialize tap');
+  git('-C', seed, 'push', 'origin', 'main');
+  for (const base of [
+    `https://github.com/${tapName}`,
+    `git@github.com:${tapName}`,
+    `ssh://git@github.com/${tapName}`,
+  ]) {
+    git('config', '--global', '--add', `url.${tap}.insteadOf`, base);
+    git('config', '--global', '--add', `url.${tap}.insteadOf`, `${base}.git`);
+  }
+
+  const firstRelease = addRelease(stable);
+  const nextRelease = addRelease(next);
+  const betaRelease = addRelease(beta);
+  const badRelease = addRelease(broken);
+  server = await serve(world);
+  const state = path.join(scratch, 'state.json');
+  const curl = checked('sh', ['-c', 'command -v curl']);
+  fs.writeFileSync(state, JSON.stringify({
+    server: server.url, curl, calls: path.join(scratch, 'calls.jsonl'),
+    image: { name: imageName, tags: {} }, signatures: [], attestations,
+  }));
+  standInTools(bin, state);
+  fs.writeFileSync(path.join(bin, 'curl'), `#!${process.execPath}
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2).map((arg) => arg.replace(
+  /^https:\\/\\/github\\.com\\/skald-so\\/skald\\/releases\\/download(?=\\/)/,
+  ${JSON.stringify(`${server.url}/download`)},
+).replace(/^https:\\/\\/api\\.github\\.com(?=\\/)/, ${JSON.stringify(`${server.url}/api`)}));
+if (args.some((arg) => /^[a-z]+:\\/\\//i.test(arg) && !arg.startsWith(${JSON.stringify(server.url + '/')}))) {
+  console.error('curl: the test only serves local release files');
+  process.exit(6);
+}
+process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).status ?? 1);
+`, { mode: 0o755 });
+  for (const command of ['ssh-agent', 'ssh-add']) {
+    fs.writeFileSync(path.join(bin, command), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  }
+
+  // Run the workflow's Bash steps with its fixture event and successful prerequisites. The Git
+  // remapping also supplies a tap checkout when the publisher uses actions/checkout.
+  const publish = async (ev, release) => {
+    if (!writesTap(ev)) return { status: 0, output: '' };
+    const runner = fs.mkdtempSync(path.join(scratch, 'runner-'));
+    const work = path.join(runner, 'checkout');
+    fs.mkdirSync(work);
+    for (const name of fs.readdirSync(root)) {
+      if (name === 'Cargo.toml' || name === 'release' || name === 'target' || name.startsWith('.')) continue;
+      fs.symlinkSync(path.join(root, name), path.join(work, name));
+    }
+    const cargo = fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8').replace(
+      /(\[workspace\.package\]\r?\nversion\s*=\s*)"[^"]+"/, `$1"${release.tag.slice(1)}"`,
+    );
+    fs.writeFileSync(path.join(work, 'Cargo.toml'), cargo);
+    git('-C', work, 'init');
+    git('-C', work, 'remote', 'add', 'origin', `https://github.com/${repository}.git`);
+    copy(release.local ?? release.dir, path.join(work, 'release'));
+
+    const outputFile = path.join(runner, 'output');
+    const envFile = path.join(runner, 'env');
+    const pathFile = path.join(runner, 'path');
+    for (const file of [outputFile, envFile, pathFile]) fs.writeFileSync(file, '');
+    const scope = {
+      ...publisherState(ev).scope,
+      contexts: {
+        github: open({ ...ev.github, token: 'fixture' }),
+        env: {},
+        needs: Object.fromEntries(needsOf(publisher).map((name) => [name, { result: 'success', outputs: { tag: release.tag } }])),
+        runner: { temp: runner, os: 'Linux' },
+        secrets: open({}),
+        vars: {},
+        steps: {},
+      },
+      status: { success: true, always: true, failure: false, cancelled: false },
+    };
+    const value = (raw) => {
+      const evaluated = template(raw, scope);
+      return isUnknown(evaluated) ? 'fixture' : toText(evaluated);
+    };
+    const shellEnv = {
+      ...env,
+      PATH: `${bin}${path.delimiter}${env.PATH}`,
+      TMPDIR: runner,
+      RUNNER_TEMP: runner,
+      GITHUB_WORKSPACE: work,
+      GITHUB_REPOSITORY: repository,
+      GITHUB_REF: ev.ref,
+      GITHUB_REF_NAME: ev.refName,
+      GITHUB_EVENT_NAME: ev.name,
+      GITHUB_OUTPUT: outputFile,
+      GITHUB_ENV: envFile,
+      GITHUB_PATH: pathFile,
+      GITHUB_SERVER_URL: 'https://github.com',
+      GITHUB_API_URL: `${server.url}/api`,
+      SKALD_GITHUB_API_URL: `${server.url}/api`,
+      SKALD_RELEASES_URL: `${server.url}/download`,
+    };
+    for (const [name, raw] of Object.entries({ ...workflow.env, ...publisher.env })) {
+      shellEnv[name] = scope.contexts.env[name] = value(raw);
+    }
+    for (const step of publisher.steps ?? []) {
+      if (stepSkipped(step, { ...publisherState(ev), scope })) continue;
+      const settings = step.with ?? {};
+      if (step.uses?.startsWith('actions/checkout@') && value(settings.repository) === tapName) {
+        const target = path.resolve(work, value(settings.path ?? tapName.split('/')[1]));
+        if (!target.startsWith(`${work}/`)) throw new Error('tap checkout must stay in the fixture');
+        git('clone', tap, target);
+      }
+      if (!step.run) continue;
+      const cwd = path.resolve(work, value(step['working-directory'] ?? publisher.defaults?.run?.['working-directory'] ?? '.'));
+      const stepEnv = Object.fromEntries(Object.entries(step.env ?? {}).map(([name, raw]) => [name, value(raw)]));
+      fs.writeFileSync(outputFile, '');
+      const result = await run('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', value(step.run)], {
+        cwd,
+        env: { ...shellEnv, ...stepEnv },
+      });
+      if (result.status !== 0 && !step['continue-on-error']) return result;
+      const fields = (file) => Object.fromEntries(fs.readFileSync(file, 'utf8').split('\n')
+        .filter((line) => /^[A-Za-z_][\w-]*=/.test(line))
+        .map((line) => [line.slice(0, line.indexOf('=')), line.slice(line.indexOf('=') + 1)]));
+      if (step.id) scope.contexts.steps[step.id] = { outputs: fields(outputFile) };
+      Object.assign(shellEnv, fields(envFile));
+      shellEnv.PATH = [...fs.readFileSync(pathFile, 'utf8').split('\n').filter(Boolean).reverse(), shellEnv.PATH].join(path.delimiter);
+      fs.writeFileSync(pathFile, '');
+    }
+    return { status: 0, output: '' };
+  };
+
+  // Assert the contents at the remote's head, and that exactly one tap commit was added.
+  const update = async (release) => {
+    const before = head();
+    const r = await publish(push(release.tag), release);
+    if (r.status !== 0) fail(`${release.tag} with verified assets cannot update the tap: ${tail(r.output)}`);
+    const commits = git('--git-dir', tap, 'rev-list', '--count', `${before}..main`);
+    if (commits !== '1' || git('--git-dir', tap, 'rev-parse', 'main^') !== before) {
+      fail(`${release.tag} does not advance the tap by one commit`);
+    }
+    const files = git('--git-dir', tap, 'ls-tree', '-r', '--name-only', 'main').split('\n');
+    const formulas = files.filter((file) => /(^|\/)skald\.rb$/.test(file));
+    if (formulas.length !== 1) {
+      fail(`${release.tag} publishes ${formulas.length} skald formulas instead of one`);
+      return;
+    }
+    const formula = git('--git-dir', tap, 'show', `main:${formulas[0]}`);
+    for (const [, , target] of platforms) {
+      const archive = archiveOf(target);
+      const url = `${releaseUrl}/${release.tag}/${archive}`;
+      const expected = sha256(path.join(release.dir, archive));
+      if (!formula.includes(url) || !formula.includes(expected)) {
+        fail(`${release.tag} formula is missing the versioned URL or checksum for ${target}`);
+      }
+    }
+  };
+  const unchanged = async (label, ev, release) => {
+    const before = head();
+    await publish(ev, release);
+    if (head() !== before) fail(`${label} changes the stable tap`);
+  };
+
+  await update(firstRelease);
+  await unchanged('a stable retry', push(stable), firstRelease);
+
+  // Isolate the real Homebrew executable, supporting files, trust settings, and cache. The curl
+  // stand-in routes the public URL in the actual formula to the exact local release bytes.
+  const brewOnPath = sync('sh', ['-c', 'command -v brew']).stdout.trim();
+  let brew;
+  let brewPrefix;
+  let brewEnv;
+  if (brewOnPath && localTarget && process.getuid?.() !== 0 && failed() === 0) {
+    brewPrefix = path.join(scratch, 'brew');
+    const brewTemp = path.join(scratch, 'brew-temp');
+    const brewHome = path.join(scratch, 'brew-home');
+    const source = checked(brewOnPath, ['--repository']);
+    for (const dir of [brewTemp, brewHome, path.join(brewPrefix, 'bin'), path.join(brewPrefix, 'Library')]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const brewCurl = path.join(brewPrefix, 'opt', 'curl', 'bin', 'curl');
+    fs.mkdirSync(path.dirname(brewCurl), { recursive: true });
+    fs.symlinkSync(path.join(bin, 'curl'), brewCurl);
+    brew = path.join(brewPrefix, 'bin', 'brew');
+    fs.copyFileSync(path.join(source, 'bin', 'brew'), brew);
+    copy(path.join(source, 'Library', 'Homebrew'), path.join(brewPrefix, 'Library', 'Homebrew'));
+    brewEnv = {
+      ...env,
+      HOME: brewHome,
+      HOMEBREW_CACHE: path.join(scratch, 'brew-cache'),
+      HOMEBREW_LOGS: path.join(scratch, 'brew-logs'),
+      HOMEBREW_TEMP: brewTemp,
+      HOMEBREW_FORCE_BREWED_CURL: '1',
+      HOMEBREW_NO_AUTO_UPDATE: '1',
+      HOMEBREW_NO_ANALYTICS: '1',
+      HOMEBREW_NO_INSTALL_FROM_API: '1',
+      HOMEBREW_NO_INSTALL_CLEANUP: '1',
+      HOMEBREW_NO_BOOTSNAP: '1',
+      HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY: '1',
+    };
+    if (checked(brew, ['--prefix'], { env: brewEnv }) !== brewPrefix) throw new Error('Homebrew escaped the fixture prefix');
+    const core = path.join(brewPrefix, 'Library', 'Taps', 'homebrew', 'homebrew-core');
+    fs.mkdirSync(path.dirname(core), { recursive: true });
+    git('clone', seed, core);
+    const tapped = await run(brew, ['tap', 'skald-so/tap', tap], { env: brewEnv });
+    if (tapped.status !== 0) throw new Error(`Homebrew could not tap the fixture: ${tail(tapped.output)}`);
+    if (sync(brew, ['command', 'trust'], { env: brewEnv }).status === 0) {
+      checked(brew, ['trust', '--formula', tapFormula], { env: brewEnv });
+    }
+  } else if (!brewOnPath || !localTarget || process.getuid?.() === 0) {
+    const message = 'isolated Homebrew needs brew and an unprivileged macOS or Linux host';
+    if (process.env.SKALD_TEST_REQUIRE_HOMEBREW === '1') fail(message);
+    else console.log(`release-homebrew-test: ${message}`);
+  }
+
+  const installed = async (command, tag) => {
+    const r = await run(brew, [command, tapFormula], { env: brewEnv });
+    if (r.status !== 0) {
+      const detail = tail(r.output);
+      if (command === 'install' && /Your (?:Xcode .* is|Command Line Tools are) too outdated/.test(detail) &&
+          process.env.SKALD_TEST_REQUIRE_HOMEBREW !== '1') {
+        console.log(`release-homebrew-test: isolated install and upgrade require newer Apple tools. ${detail}`);
+      } else {
+        fail(`brew ${command} failed for ${tag}: ${detail}`);
+      }
+      return false;
+    }
+    const skald = sync(path.join(brewPrefix, 'bin', 'skald'), ['--version'], { env: brewEnv });
+    const expected = `skald ${tag.slice(1)} ${localTarget}`;
+    if (skald.status !== 0 || skald.stdout.trim() !== expected) {
+      fail(`brew ${command} leaves skald --version without '${expected}'`);
+      return false;
+    }
+    return true;
+  };
+  let didInstall = false;
+  if (brew) {
+    // dist's formula can call the physical OS and CPU predicates. Simulate those only within the
+    // formula evaluation, as well as Homebrew's platform DSL. The install runs without simulation.
+    const resolveFormula = (system, arch) => `
+      require "formulary"
+      require "json"
+      require "simulate_system"
+      system = ${JSON.stringify(system)}.to_sym
+      arch = ${JSON.stringify(arch)}.to_sym
+      OS.define_singleton_method(:mac?) { system != :linux }
+      OS.define_singleton_method(:linux?) { system == :linux }
+      Hardware::CPU.define_singleton_method(:arm?) { arch == :arm }
+      Hardware::CPU.define_singleton_method(:intel?) { arch == :intel }
+      Homebrew::SimulateSystem.with(os: system, arch: arch) do
+        spec = Formulary.factory("skald-so/tap/skald").stable
+        puts JSON.generate([spec.url, spec.checksum&.hexdigest])
+      end
+    `;
+    for (const [system, arch, target] of platforms) {
+      const r = await run(brew, ['ruby', '-e', resolveFormula(system, arch)], { env: brewEnv });
+      const archive = archiveOf(target);
+      const expected = JSON.stringify([
+        `${releaseUrl}/${stable}/${archive}`,
+        sha256(path.join(firstRelease.dir, archive)),
+      ]);
+      if (r.status !== 0 || !r.output.split('\n').includes(expected)) {
+        fail(`Homebrew ${system}/${arch} does not resolve the URL and checksum for ${archive}: ${tail(r.output)}`);
+      }
+    }
+    didInstall = await installed('install', stable);
+  }
+
+  world.latest = next;
+  await update(nextRelease);
+  if (didInstall) {
+    const checkout = path.join(brewPrefix, 'Library', 'Taps', 'skald-so', 'homebrew-tap');
+    git('-C', checkout, 'pull', '--ff-only');
+    await installed('upgrade', next);
+  }
+  await unchanged('a stale stable retry', push(stable), firstRelease);
+  await unchanged('a beta release', push(beta), betaRelease);
+  await unchanged('a dry run on a stable tag', event('workflow_dispatch', `refs/tags/${next}`), nextRelease);
+  await unchanged('a pull request dry run', event('pull_request', 'refs/pull/7/merge'), nextRelease);
+
+  const unverified = { ...badRelease, local: path.join(scratch, 'intact-release') };
+  copy(badRelease.dir, unverified.local);
+  const affected = path.join(badRelease.dir, archiveOf('x86_64-unknown-linux-gnu'));
+  world.latest = broken;
+  fs.unlinkSync(affected);
+  await unchanged('a missing published archive', push(broken), unverified);
+  copy(path.join(unverified.local, path.basename(affected)), affected);
+  fs.appendFileSync(affected, 'different published archive bytes\n');
+  await unchanged('a published archive with a mismatched checksum', push(broken), unverified);
+  world.releases.pop();
+  await unchanged('a tag with no published release', push(broken), unverified);
+} catch (err) {
+  fail(err.message);
+} finally {
+  if (server) await server.close();
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+done();

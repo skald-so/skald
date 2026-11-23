@@ -352,6 +352,8 @@ if checks tooling; then
   script/pages-workflow-test
   script/release-check-test
   script/production-deploy-workflow-test
+  script/release-homebrew-test --workflow
+  script/release-homebrew-test
 fi
 
 # The website and docs: the build of docs/ and its link check, and the build's tests; the main page
