@@ -60,6 +60,7 @@ mod devices;
 mod forged;
 mod once;
 mod refusals;
+mod reuse;
 mod waiting;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), and the runs

@@ -1073,9 +1073,9 @@ impl Follower {
 
 /// What a revision this device signed changes in the one it was signed on, as a run signs it into
 /// a later one: the channels it adds, a default channel among them, the members it adds and
-/// removes, the devices it bars, the roles it sets, the members it adds to and removes from channels, the
-/// policy's `history` and `domain` it sets, the service agents it removes and adds, and the
-/// `service` devices it adds to channels.
+/// removes, the devices it bars, the roles it sets, the members it adds to and removes from
+/// channels, the policy's `history` and `domain` it sets, the service agents it removes and adds,
+/// and the `service` devices it adds to channels.
 #[derive(Debug, Default, PartialEq)]
 struct Change {
     default: Option<ChannelId>,
@@ -1191,14 +1191,14 @@ impl Change {
     /// has neither its account, its handle as a member's or a service agent owner's, nor its
     /// invite, and then puts it in the default channel, the first one, with `history` true, and in
     /// the other channels it added it to, but in no channel when it does not add it; a member it
-    /// removes leaves every channel; it bars a device, sets a role and adds a member to a channel only of a member of
-    /// `body`; it removes no member from the default channel, the first one, which keeps every
-    /// member; and it puts its default channel first, with every member, only if `needs_default`;
-    /// it sets the policy's `history` and `domain`; it removes a service agent's entry and its
-    /// device from every channel's `services`; it adds a service agent only while `body` has
-    /// neither its device nor its address, and its owner is no member's handle; and it adds a
-    /// `service` device to a channel's `services` only while `body` has the device's service agent
-    /// entry.
+    /// removes leaves every channel; it bars a device, sets a role and adds a member to a channel
+    /// only of a member of `body`; it removes no member from the default channel, the first one,
+    /// which keeps every member; and it puts its default channel first, with every member, only if
+    /// `needs_default`; it sets the policy's `history` and `domain`; it removes a service agent's
+    /// entry and its device from every channel's `services`; it adds a service agent only while
+    /// `body` has neither its device nor its address, and its owner is no member's handle; and it
+    /// adds a `service` device to a channel's `services` only while `body` has the device's service
+    /// agent entry.
     fn onto(&self, body: &mut RosterBody, needs_default: bool) {
         if let Some(history) = self.history {
             body.policy.history = history;
@@ -1220,12 +1220,11 @@ impl Change {
         }
         let mut fresh = Vec::new();
         for member in &self.added {
-            let taken = members.iter().any(|old| {
-                old.account == member.account
-                    || old.handle == member.handle
-                    || (member.invite.is_some() && old.invite == member.invite)
-            }) || (body.service_agents.iter())
-                .any(|agent| agent.owner == member.handle);
+            let taken = handle_taken(&members, &body.service_agents, &member.handle)
+                || members.iter().any(|old| {
+                    old.account == member.account
+                        || (member.invite.is_some() && old.invite == member.invite)
+                });
             if !taken {
                 members.push(member.clone());
                 fresh.push(member.account);
@@ -1620,6 +1619,12 @@ pub fn of_working_dir(
         devices,
     };
     Ok((synced, channel))
+}
+
+/// Whether `handle` is the handle of one of `members` or the owner of one of `agents`.
+pub fn handle_taken(members: &[Member], agents: &[ServiceAgent], handle: &Name) -> bool {
+    members.iter().any(|member| member.handle == *handle)
+        || agents.iter().any(|agent| agent.owner == *handle)
 }
 
 /// Whether `device` is a device of an admin in `roster`: one of `account`, an admin in it, whose

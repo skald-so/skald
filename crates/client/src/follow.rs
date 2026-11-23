@@ -101,9 +101,10 @@ pub struct Start {
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings,
 /// those of master keys ([`master_warnings`]) of `every_space` the device follows or only of this
-/// one, and the role changes, which it keeps for the person's run instead if `hold`: gives the space's last accepted revision, its devices and the revisions the server gives. A
-/// `service` device accepts those up to its roster's `start` ([`roster_start`]) without the check
-/// that their signer is not revoked.
+/// one, and the role changes, which it keeps for the person's run instead if `hold`: gives the
+/// space's last accepted revision, its devices and the revisions the server gives. A `service`
+/// device accepts those up to its roster's `start` ([`roster_start`]) without the check that their
+/// signer is not revoked.
 pub fn sync(
     connection: &mut Connection,
     (state, token): (&State, &str),

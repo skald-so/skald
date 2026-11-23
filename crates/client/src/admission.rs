@@ -9,28 +9,26 @@
 //! signs ([`Follower::checked_submit`]). An acceptance a revision already admitted is done.
 //!
 //! It tells its user which handle it admitted to which space, and warns of an acceptance it does
-//! not admit, with the handle and the check, and of each device of an admitted newcomer whose
-//! certificate is not chained to the acceptance's `master`, which then gets into no channel. A run
-//! that shows nothing of a space, an agent's of another one, keeps what it tells for the person's
-//! run. The newcomer's devices get into the channels as a new channel member's do
-//! ([`crate::groups`]).
+//! not admit, with the handle and the check. A run that shows nothing of a space, an agent's of
+//! another one, keeps what it tells for the person's run. The newcomer's devices get into the
+//! channels as a new channel member's do ([`crate::groups`]): only those chained to the `master`
+//! the revision gives it.
 
 use std::collections::BTreeSet;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
-use skald_crypto::{check_acceptance, check_device, check_invite, check_valid_device};
+use skald_crypto::{admins_device, check_acceptance, check_invite};
 use skald_proto::{
-    Acceptance, Cbor as _, ChannelId, ChannelMember, DeviceKind, Invite, InviteBody, Member, Name,
-    NonEmpty, Role, Roster, SpaceId, Unknown,
+    Acceptance, Cbor as _, ChannelId, ChannelMember, Invite, InviteBody, Member, NonEmpty, Roster,
+    SpaceId, Unknown,
 };
 
-use crate::devices;
 use crate::follow::{self, SpaceDevices};
 use crate::groups::Rosters;
 use crate::recv;
-use crate::spaces::{Follower, admin_device, now};
+use crate::spaces::{Follower, admin_device, handle_taken, now};
 use crate::state;
 
 /// `WaitingAcceptances` in the API spec.
@@ -39,21 +37,18 @@ struct WaitingAcceptances {
     acceptances: Vec<Waiting>,
 }
 
-/// `WaitingAcceptance` in the API spec.
+/// `WaitingAcceptance` in the API spec, without the account's devices: those get into channels by
+/// the `master` the revision admitting it gives ([`crate::groups`]).
 #[derive(Deserialize)]
 struct Waiting {
     invite: String,
     acceptance: String,
-    /// The account's devices and revocations, a `Devices` answer's fields.
-    #[serde(flatten)]
-    devices: serde_json::Map<String, serde_json::Value>,
 }
 
-/// An acceptance the server gives as waiting, decoded, with its account's devices.
+/// An acceptance the server gives as waiting, decoded.
 struct Given {
     invite: Invite,
     acceptance: Acceptance,
-    devices: SpaceDevices,
 }
 
 /// What the checks make of an acceptance.
@@ -155,14 +150,6 @@ fn admit_to(
                 apart,
                 &format!("skald: admitted {handle} to the space {name}"),
             );
-            for device in unchained(&given.devices, &member.master) {
-                let line = format!(
-                    "skald: warning: the device {device} of {handle}, admitted to the space \
-                     {name}, has no certificate chained to the master key of the acceptance, so it \
-                     gets into no channel"
-                );
-                tell(follower, apart, &line);
-            }
         }
         let held = follower.space(name)?;
         (latest, devices) = if apart {
@@ -219,23 +206,17 @@ fn waiting(follower: &mut Follower, space: &state::Space) -> Result<Vec<Given>, 
             );
             continue;
         };
-        let listed = serde_json::to_vec(&entry.devices).map_err(|err| err.to_string())?;
-        let devices = devices::decode(&listed)?;
-        given.push(Given {
-            invite,
-            acceptance,
-            devices,
-        });
+        given.push(Given { invite, acceptance });
     }
     Ok(given)
 }
 
 /// Checks 1 to 4 of "Invite" of `given` in `space`, at `latest`, its last accepted revision, with
 /// `devices`, its accounts': the invite, of the space, signed by an admin's device in `latest`, not
-/// expired and no member's invite in a revision the device accepted; the acceptance of that
-/// invite, signed with its `key`; its account no member and its handle no member's or service
-/// agent owner's. The newcomer's devices are checked against the acceptance's `master` as the
-/// revision admitting it gives it: those not chained to it get into no channel ([`unchained`]).
+/// expired and no member's invite in a revision the device accepted, each of which the server
+/// gives ([`accepted_given`]); the acceptance of that invite, signed with its `key`; its account
+/// no member and its handle no member's or service agent owner's. The newcomer's devices are
+/// checked against the acceptance's `master` as the revision admitting it gives it.
 fn judge(
     follower: &Follower,
     space: &state::Space,
@@ -255,16 +236,22 @@ fn judge(
     if invite.space != space.id || acceptance.invite != invite.invite {
         return refused("the server gives it with an invite of another space or ID");
     }
-    let earlier = (follower.given.get(&space.id).into_iter().flatten())
-        .filter(|roster| roster.body().revision <= body.revision);
-    if earlier
+    let Some(earlier) = accepted_given(follower, space.id) else {
+        return refused(
+            "the server does not give every revision of the space this device accepted, so it \
+             cannot tell whether a member joined with its invite",
+        );
+    };
+    if (earlier.iter())
         .flat_map(|roster| roster.body().members.iter())
         .any(|member| member.invite == Some(invite.invite))
     {
         return refused("a member joined with its invite before");
     }
     let signer = invite.signer;
-    let Some(signing) = admins_key(follower, (latest, devices), signer) else {
+    let listed = (&devices.certs[..], &devices.revocations[..]);
+    let master = |account| follow::master_of(latest, &follower.own, account);
+    let Some(signing) = admins_device(body, listed, signer, master) else {
         return Verdict::Refused(format!(
             "the signer {signer} of its invite is no admin's device in the space"
         ));
@@ -281,7 +268,7 @@ fn judge(
     if body.member(acceptance.account).is_some() {
         return refused("its account is already a member");
     }
-    if handle_taken(latest, &acceptance.handle) {
+    if handle_taken(&body.members, &body.service_agents, &acceptance.handle) {
         return refused("its handle is taken by a member or a service agent owner");
     }
     Verdict::Admit(Member {
@@ -295,42 +282,12 @@ fn judge(
     })
 }
 
-/// The signing key of `device` if it is an admin's device in `latest`: a `client` or `browser`
-/// device of an admin's account, which its `excluded` does not list, with a valid certificate
-/// among `devices`, checked against the master key [`follow::master_of`] gives.
-fn admins_key(
-    follower: &Follower,
-    (latest, devices): (&Roster, &SpaceDevices),
-    device: skald_proto::DeviceId,
-) -> Option<[u8; 32]> {
-    let body = latest.body();
-    (body.members.iter())
-        .filter(|member| member.role == Role::Admin)
-        .filter(|member| admin_device(latest, member.account, device))
-        .find_map(|admin| {
-            let master = follow::master_of(latest, &follower.own, admin.account)?;
-            let cert =
-                check_valid_device(&master, &devices.certs, &devices.revocations, device).ok()?;
-            let cert = cert.body();
-            (cert.account == admin.account
-                && matches!(cert.kind, DeviceKind::Client | DeviceKind::Browser))
-            .then_some(cert.signing)
-        })
-}
-
-/// Whether `handle` is a member's handle or a service agent owner's in `roster`.
-fn handle_taken(roster: &Roster, handle: &Name) -> bool {
-    let body = roster.body();
-    body.members.iter().any(|member| member.handle == *handle)
-        || (body.service_agents.iter()).any(|agent| agent.owner == *handle)
-}
-
-/// The devices among `devices` with a certificate that is not chained to `master`.
-fn unchained(devices: &SpaceDevices, master: &[u8; 32]) -> Vec<skald_proto::DeviceId> {
-    let mut seen = BTreeSet::new();
-    (devices.ids.iter().copied())
-        .filter(|device| seen.insert(*device))
-        .filter(|device| (devices.certs.iter()).any(|cert| cert.body().device == *device))
-        .filter(|device| check_device(master, &devices.certs, *device).is_err())
+/// The revisions of `space` the device accepted, each as the server gives it ([`Follower::given`]);
+/// `None` unless it gives each one, of which the state keeps only hashes.
+fn accepted_given(follower: &Follower, space: SpaceId) -> Option<Vec<&Roster>> {
+    let accepted = follower.state.accepted(space).ok()??;
+    let given = follower.given.get(&space)?;
+    (accepted.hashes.values())
+        .map(|hash| given.iter().find(|roster| roster.hash() == *hash))
         .collect()
 }
