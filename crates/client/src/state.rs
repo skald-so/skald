@@ -5973,6 +5973,74 @@ pub(crate) mod tests {
         }
     }
 
+    /// A failed key change write rolls back the roster, hashes and earlier writes in that batch.
+    #[test]
+    fn accepted_revisions_roll_back_if_a_key_change_cannot_be_kept() {
+        let dir = TestDir::new("state-accepted-rollback");
+        let state = State::open(&dir).unwrap();
+        let acme = SpaceId::generate();
+        state.add_space(acme, "acme", &[1]).unwrap();
+        let first_hash = (1, [1; 32]);
+        let existing = "an earlier key change".to_owned();
+        assert!(
+            state
+                .accept(
+                    acme,
+                    &[1],
+                    &[first_hash],
+                    &[2],
+                    std::slice::from_ref(&existing)
+                )
+                .unwrap()
+        );
+        state
+            .db
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_key_change BEFORE INSERT ON key_change
+                 WHEN NEW.line = 'the second change'
+                 BEGIN SELECT RAISE(ABORT, 'key change write failed'); END;",
+            )
+            .unwrap();
+        let hashes = [(2, [2; 32]), (3, [3; 32])];
+        let changes = [
+            "the first change".to_owned(),
+            "the second change".to_owned(),
+        ];
+        let err = state
+            .accept(acme, &[2], &hashes, &[4], &changes)
+            .unwrap_err();
+        assert!(err.to_string().contains("key change write failed"), "{err}");
+        drop(state);
+
+        let state = State::open(&dir).unwrap();
+        let sources = [String::new()];
+        assert_eq!(
+            state.accepted(acme).unwrap(),
+            Some(Accepted {
+                last: vec![2],
+                hashes: [first_hash].into(),
+            })
+        );
+        assert_eq!(
+            state.key_changes(&sources).unwrap(),
+            [(1, existing.clone())]
+        );
+
+        assert!(state.accept(acme, &[2], &hashes, &[4], &changes).unwrap());
+        assert_eq!(
+            state.accepted(acme).unwrap(),
+            Some(Accepted {
+                last: vec![4],
+                hashes: [first_hash].into_iter().chain(hashes).collect(),
+            })
+        );
+        let [first, second] = changes;
+        assert_eq!(
+            state.key_changes(&sources).unwrap(),
+            [(1, existing), (2, first), (3, second)]
+        );
+    }
+
     /// Another run accepts revisions of a space while `accepted` reads it, between its reads of the
     /// last accepted revision and of the hashes: the read holds the revision and the hashes from
     /// before, or both from after.

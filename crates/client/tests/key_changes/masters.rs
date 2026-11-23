@@ -1,14 +1,18 @@
-//! Master keys: a member's `master` that changes, also a verified one's; one account with two
-//! master keys in two spaces; the device's own account with another master key than it pinned.
+//! Account key changes: changed master keys, conflicting master keys and reassigned handles.
 
 use skald_crypto::account_fingerprint;
 use skald_proto::Role;
 
+use crate::agents::{ACME_DIR, CLAUDE};
+use crate::kit::assert_names_none;
 use crate::terminal::Terminal;
-use crate::world::{ACME, GLOBEX, MEMBERS, World, create, members, next_by, store, words};
+use crate::world::{
+    ACME, ADD_RULE, AGENT, GLOBEX, MEMBERS, World, create, dir_of, members, next_by, path, run,
+    store, words,
+};
 use crate::{
-    BOB_HOST, CAROL_HOST, Pair, assert_says_none, assert_waits_and_shows_once, member_with_master,
-    other_master,
+    BOB_HOST, CAROL_HOST, Pair, assert_says_none, assert_says_waiting, assert_waits_and_shows_once,
+    member_with_master, other_master, seen_at_terminal,
 };
 
 /// The command that shows a fingerprint and asks whether it matches, and the person's answer.
@@ -135,6 +139,57 @@ fn a_verified_members_handle_assigned_to_another_account_leaves_a_key_change() {
         carol.account.to_string(),
     ];
     assert_waits_and_shows_once(machine, &[MEMBERS, ACME], &names);
+}
+
+/// An agent discovers a handle reassignment while listing members. The person sees both accounts
+/// in the terminal notice. Once acknowledged, the count is gone from the agent's next listing.
+#[test]
+fn a_handle_reassignment_shows_only_the_count_to_the_agent() {
+    let pair = Pair::new(
+        [4_188_106_001, 4_188_106_002],
+        ["ada-before-agent-notice", "bob-reads-agent-notice"],
+    );
+    let (world, bob, ada) = (&pair.world, &pair.bob, &pair.ada);
+    let machine = &bob.machine;
+    let folder = dir_of(machine, ACME_DIR);
+    let bound = run(machine, &[ADD_RULE, path(&folder), ACME]);
+    assert!(bound.success, "{bound:?}");
+
+    let carol = world.sign_up(4_188_106_003, "carol-after-agent-notice", CAROL_HOST);
+    let mut replacement = carol.member(Role::Member);
+    replacement.handle = ada.handle.clone();
+    let next = next_by(&pair.third, bob, |list| {
+        let former = list.iter_mut().find(|member| member.account == ada.account);
+        *former.expect("Ada") = replacement;
+    });
+    store(&world.cloud, &bob.token, &next);
+
+    let handle = ada.handle.as_str();
+    let accounts = [ada.account.to_string(), carol.account.to_string()];
+    let list = || {
+        let listed = machine
+            .start_in(&folder, &[AGENT, CLAUDE, MEMBERS, ACME])
+            .finish();
+        assert!(listed.success, "{listed:?}");
+        listed
+    };
+    let listed = list();
+    let summary = assert_says_waiting(&listed.shown(), Some(1));
+    assert!(
+        !summary.contains(ACME) && !summary.contains(handle),
+        "{summary}"
+    );
+    assert_names_none(&listed, &accounts);
+
+    let shown = seen_at_terminal(machine);
+    assert!(
+        shown.text.lines().any(|line| {
+            line.contains(handle) && accounts.iter().all(|account| line.contains(account))
+        }),
+        "the notice does not name the handle and both accounts: {}",
+        shown.text
+    );
+    assert_says_none(&list().shown());
 }
 
 /// Bob's machine creates `acme` and `globex`; revision 3 of `acme` adds Ada with her master key and
