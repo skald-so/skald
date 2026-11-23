@@ -5,9 +5,10 @@ use std::process::{Child, Command};
 
 use serde_json::{Value, json};
 
-use super::{Hosted, PROMPT, host_on_path, output, run, until};
+use super::{Hosted, PROMPT, WakePath, host_on_path, output, run, until};
 use crate::claude::claude_code;
 use crate::plugin::put_json;
+use crate::wake_fallbacks::MOD_DIR;
 
 struct Daemon<'a> {
     host: &'a Path,
@@ -110,13 +111,29 @@ impl Drop for Daemon<'_> {
 #[test]
 #[ignore = "e2e: runs Paseo and the real Claude Code"]
 fn paseos_sdk_session_delivers_skald_messages() {
+    paseo_sdk_session(WakePath::Socket);
+}
+
+#[test]
+#[ignore = "e2e: runs Paseo and the real Claude Code"]
+fn paseos_sdk_session_wakes_through_async_rewake() {
+    paseo_sdk_session(WakePath::Rewake);
+}
+
+#[test]
+#[ignore = "e2e: runs Paseo and the real Claude Code"]
+fn paseos_sdk_session_wakes_through_the_mod() {
+    paseo_sdk_session(WakePath::Mod);
+}
+
+fn paseo_sdk_session(wake: WakePath) {
     let (Some(host), Some(claude)) = (host_on_path("paseo"), claude_code()) else {
         return;
     };
-    let session = Hosted::new(&claude, 4_919_102_001, "ada-claude-paseo");
+    let session = Hosted::new(&claude, 4_919_102_001, "ada-claude-paseo", wake);
     let daemon = Daemon::start(&host, &session);
 
-    let printed = daemon.run(&[
+    let mut launch = daemon.command(&[
         "run",
         "--provider",
         "claude",
@@ -127,8 +144,11 @@ fn paseos_sdk_session_delivers_skald_messages() {
         "--wait-timeout",
         "45s",
         "--json",
-        PROMPT,
     ]);
+    if wake == WakePath::Mod {
+        launch.args(["--env", &format!("CLAUDE_CODE_PLUGIN_DIRS={MOD_DIR}")]);
+    }
+    let printed = run(launch.arg(PROMPT));
     let agent: Value = serde_json::from_str(&printed).expect("Paseo's agent run result");
     let id = agent["agentId"].as_str().expect("Paseo's agent ID");
     let shown = || daemon.run(&["logs", id, "--tail", "20"]);
@@ -139,12 +159,24 @@ fn paseos_sdk_session_delivers_skald_messages() {
 #[test]
 #[ignore = "e2e: runs Paseo and the real Claude Code"]
 fn paseos_terminal_session_delivers_skald_messages_and_keeps_paseos_hook() {
+    paseo_terminal_session(WakePath::Socket);
+}
+
+#[test]
+#[ignore = "e2e: runs Paseo and the real Claude Code"]
+fn paseos_terminal_session_wakes_through_fallbacks() {
+    for wake in WakePath::FALLBACKS {
+        paseo_terminal_session(wake);
+    }
+}
+
+fn paseo_terminal_session(wake: WakePath) {
     let (Some(host), Some(claude), Some(_node)) =
         (host_on_path("paseo"), claude_code(), host_on_path("node"))
     else {
         return;
     };
-    let session = Hosted::new(&claude, 4_919_103_001, "ada-claude-paseo-terminal");
+    let session = Hosted::new(&claude, 4_919_103_001, "ada-claude-paseo-terminal", wake);
     let daemon = Daemon::start(&host, &session);
 
     let printed = run(daemon
@@ -157,7 +189,9 @@ fn paseos_terminal_session_delivers_skald_messages_and_keeps_paseos_hook() {
         .expect("Paseo's workspace ID");
     assert_ne!(daemon.workspace_status(workspace), "attention");
     let shown = || daemon.run(&["terminal", "capture", id]);
-    let open = format!("claude '{}'", PROMPT.replace('\'', "'\\''"));
+    let args = [PROMPT].into_iter().chain(wake.args().iter().copied());
+    let args = args.map(|arg| format!("'{}'", arg.replace('\'', "'\\''")));
+    let open = format!("claude {}", args.collect::<Vec<_>>().join(" "));
     daemon.run(&["terminal", "send-keys", id, &open, "Enter"]);
     session.assert_tools(shown);
     until("the model's reply in Paseo's terminal", || {

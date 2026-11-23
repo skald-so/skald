@@ -12,16 +12,17 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, a fallback wakes the session:
 - **Channels:** `skald mcp` declares Claude Code's channel capability and pushes each message as a channel event. Claude Code takes them only when you start it with its development channel flag for the `skald` server.
 - **`asyncRewake`:** `skald hook claude --wait <seconds>` on `SessionStart` and `Stop` waits in the background and, when messages come, wakes the session with them.
-- **The mod:** start Claude Code with `--plugin-dir` pointing to Skald's `crates/client/claude-mod`. In the Claude app, install the plugin from a marketplace. In VS Code, set `CLAUDE_CODE_PLUGIN_DIRS` to the mod directory in `claudeCode.environmentVariables`. It shows how many messages wait and, when no turn runs, submits a fixed prompt to call `inbox`. It runs `skald` from `PATH`.
+- **The mod:** start Claude Code with `--plugin-dir` pointing to Skald's `crates/client/claude-mod`. In the Claude app, install the mod from a [local marketplace](dev/agent-delivery.md#waking-an-idle-session). In VS Code, set `CLAUDE_CODE_PLUGIN_DIRS` to the mod directory in `claudeCode.environmentVariables`. It shows how many messages wait and, when no turn runs, submits a fixed prompt to call `inbox`. It runs `skald` from `PATH`.
 
 Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, goes by the next one; after the last, it waits for the hooks and `inbox`.
 
 ### Host checks
 
-Both checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub.
+The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub. Each session ran the Skald CLI, called its MCP `inbox` and returned a `read` receipt for each tested wake path.
 
-- **Paseo 0.17.1:** The SDK and terminal sessions ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Paseo's terminal hook marked the workspace as needing attention.
-- **Herdr 0.9.5:** The session ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Herdr's hook reported the Claude Code session ID.
+- **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
+- **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
+- [Channels](dev/agent-delivery.md#channels) needs an interactive terminal. The development flag did not open a channel in either host terminal with the stub. The separate CLI tests verify Channels.
 
 ### App checks
 
