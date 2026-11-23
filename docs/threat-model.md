@@ -307,6 +307,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - `skald invite` shows an invite link only at a terminal, run as the person, never through a pipe or as an agent, so no agent's output holds it. An agent that opens a terminal of its own, or hands the helper the command over its socket, which writes the link back, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald accept-invite` takes an invite link only from the person at a terminal, never as an argument, through a pipe, from the environment or as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald delete-account` refuses agent commands and takes the account's username only from a terminal. With a terminal of its own, an agent still needs the person's approval in the browser when the session's sign-in exceeds the server's `--link-sign-in-age` (`deleteAccount` in the [OpenAPI spec](../api/openapi.json)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.
