@@ -19,6 +19,7 @@ use crate::shared::acks_all;
 use crate::wire::query;
 
 const SIGN_UP_INVITE: &str = "00000000-0000-0000-0000-000000000001";
+const ORDINARY_INVITE: &str = "00000000-0000-0000-0000-000000000002";
 
 impl Kept {
     /// This, with `wraps`, wraps the account's devices signed to other accounts.
@@ -43,8 +44,8 @@ fn queue_key(channel: ChannelId, epoch: u64, signer: &Device) -> Item {
 
 /// Writes rows of alice's, of `s`, to the tables no request of these tests fills: a challenge of
 /// her laptop; a link run of her uncertified device, which her laptop waits for; a wrong user code
-/// and a wrong pairing of her account; her acceptance of an invite to `acme`; a used sign-up
-/// invite and its pending device code; a queue of `general` she created, with a task her laptop
+/// and a wrong pairing of her account; two invites to `acme` she accepted, one used for sign-up
+/// with its pending device code; a queue of `general` she created, with a task her laptop
 /// uploaded, a task of bob's laptop addressed to hers, and one her laptop claimed and released,
 /// which it waits to claim again.
 fn fill(s: &Scene) {
@@ -59,7 +60,6 @@ fn fill(s: &Scene) {
            addressed uuid := gen_random_uuid();
            released uuid := gen_random_uuid();
            claim uuid := gen_random_uuid();
-           invite uuid := gen_random_uuid();
            run bigint;
          BEGIN
            INSERT INTO device_challenges (challenge_hash, device_id, expires_at)
@@ -72,12 +72,13 @@ fn fill(s: &Scene) {
            INSERT INTO long_poll_link_runs (device_id, run_id) VALUES ('{laptop}', run);
            INSERT INTO wrong_user_codes (account_id) VALUES ('{alice}');
            INSERT INTO wrong_pairings (account_id) VALUES ('{alice}');
-           INSERT INTO invites (id, space_id, expires_at)
-           VALUES (invite, '{space}', now() + interval '1 day');
-           INSERT INTO acceptances (invite_id, account_id, acceptance)
-           VALUES (invite, '{alice}', '\\x01');
+           INSERT INTO invites (id, space_id, invite, created_at, expires_at)
+           VALUES ('{ORDINARY_INVITE}', '{space}', '\\x01', now(), now() + interval '1 day');
            INSERT INTO invites (id, space_id, invite, created_at, expires_at, sign_up_account_id)
            VALUES ('{SIGN_UP_INVITE}', '{space}', '\\x02', now(), now() + interval '1 day', '{alice}');
+           INSERT INTO acceptances (invite_id, account_id, acceptance)
+           VALUES ('{ORDINARY_INVITE}', '{alice}', '\\x01'),
+                  ('{SIGN_UP_INVITE}', '{alice}', '\\x02');
            INSERT INTO device_codes (device_code_hash, user_code_hash, expires_at, poll_interval,
                                      sign_up_account_id)
            VALUES (decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'),
@@ -211,23 +212,43 @@ fn until_erased(db: &TestDb, account: AccountId, space: SpaceId) {
 fn every_table_is_erased_but_for_handshake_messages_until_fetched() {
     let mut filled = Filled::new(3_304_050_001);
 
+    // Invite expiry locks the invite, then cascades to its acceptance. Require the same order
+    // during erasure without depending on the sweeps running concurrently in this test.
+    filled.db().execute(&format!(
+        "CREATE FUNCTION check_invite_delete_order() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF EXISTS (SELECT 1 FROM invites WHERE id = OLD.invite_id) THEN
+             RAISE EXCEPTION 'delete the sign-up invite before its acceptance';
+           END IF;
+           RETURN OLD;
+         END $$;
+         CREATE TRIGGER check_invite_delete_order BEFORE DELETE ON acceptances FOR EACH ROW
+         WHEN (OLD.invite_id = '{SIGN_UP_INVITE}'::uuid) EXECUTE FUNCTION check_invite_delete_order()"
+    ));
     filled.erased();
 
     let bob = filled.s.bob.id;
     let waiting = payloads(filled.db(), bob);
     assert_eq!(waiting, vec![filled.commit.clone()], "bob's mailbox");
-    // Both reservations go away so no other account can use the invite or approve the code.
-    let (invite, code): (bool, bool) = query(filled.db(), async |conn| {
-        sqlx::query_as(
+    let (sign_up_invite, code, acceptance, ordinary_invite): (bool, bool, bool, bool) = query(
+        filled.db(),
+        async |conn| {
+            sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM invites WHERE id = $1::uuid),
-                    EXISTS (SELECT 1 FROM device_codes WHERE device_code_hash = decode(repeat('01', 32), 'hex'))",
+                    EXISTS (SELECT 1 FROM device_codes WHERE device_code_hash = decode(repeat('01', 32), 'hex')),
+                    EXISTS (SELECT 1 FROM acceptances WHERE invite_id IN ($1::uuid, $2::uuid)),
+                    EXISTS (SELECT 1 FROM invites WHERE id = $2::uuid)",
         )
         .bind(SIGN_UP_INVITE)
+        .bind(ORDINARY_INVITE)
         .fetch_one(conn)
         .await
-    });
-    assert!(!invite, "alice's sign-up invite");
+        },
+    );
+    assert!(!sign_up_invite, "alice's sign-up invite");
     assert!(!code, "alice's pending sign-up code");
+    assert!(!acceptance, "alice's invite acceptances");
+    assert!(ordinary_invite, "the ordinary invite stays");
     acks_all(&mut filled.s.bob, filled.s.fixture.db());
     erased_within(filled.db(), &filled.alice, &filled.kept);
 }
