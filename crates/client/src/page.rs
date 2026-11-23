@@ -487,6 +487,15 @@ impl Page {
         page
     }
 
+    /// A page in `dir`, open already, as the link code step leaves it: showing a link code under
+    /// its "Fresh code" question, whose presses it gives.
+    pub fn showing_a_link_code_for_tests(dir: &Path) -> (Self, Receiver<Answer>) {
+        let page = Page::open_for_tests(dir);
+        let presses = page.ask("", &["Fresh code"], None, false).unwrap();
+        page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
+        (page, presses)
+    }
+
     /// Each version of the view so far, as the browser would take it.
     pub fn versions(&self) -> Vec<serde_json::Value> {
         self.shared.view().versions.clone()
@@ -1146,9 +1155,7 @@ mod tests {
     #[test]
     fn shown_text_and_its_question_change_in_one_view() {
         let dir = crate::test_dir::TestDir::new("page-show-asking");
-        let page = Page::open_for_tests(&dir);
-        let _presses = page.ask("", &["Fresh code"], None, false).unwrap();
-        page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
+        let (page, _presses) = Page::showing_a_link_code_for_tests(&dir);
         let before = page.versions().len();
 
         let answered = page.show_asking("KEY", "Write it down.", &["Written down"]);

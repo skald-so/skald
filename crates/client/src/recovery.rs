@@ -190,9 +190,7 @@ mod tests {
     #[test]
     fn page_shows_the_key_and_asks_whether_written_down_in_one_change() {
         let dir = TestDir::new("recovery-on-page");
-        let page = Page::open_for_tests(&dir);
-        let _presses = page.ask("", &["Fresh code"], None, false).unwrap();
-        page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
+        let (page, _presses) = Page::showing_a_link_code_for_tests(&dir);
         let key = RecoveryKey::generate();
         let answered = std::thread::scope(|scope| {
             let answered = scope.spawn(|| on_page(&page, &key));
