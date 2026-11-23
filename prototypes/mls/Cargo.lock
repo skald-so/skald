@@ -1606,9 +1606,9 @@ dependencies = [
 
 [[package]]
 name = "mls-rs-crypto-rustcrypto"
-version = "0.23.0"
+version = "0.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bbc57d8c47be09980f9dbb1f15ca2f83dfad1a3ddaac96257f85aa3dd3775d4"
+checksum = "4eeb87f8464d216b675f232a30b476cdfca13183de8b7dddd3f170e61c487e26"
 dependencies = [
  "aead 0.6.1",
  "aes-gcm 0.11.1",

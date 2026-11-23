@@ -34,7 +34,7 @@ jsonschema = { version = "0.61", default-features = false }
 # GroupInfo without extensions, as another implementation could send them, and KeyPackages that
 # break the checks the server runs.
 mls-rs = "0.57.1"
-mls-rs-crypto-rustcrypto = "0.23"
+mls-rs-crypto-rustcrypto = "0.24"
 serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
