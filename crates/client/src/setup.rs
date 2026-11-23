@@ -749,7 +749,11 @@ mod tests {
         let variables = config["mcp_servers"][SERVER]["env_vars"]
             .as_array()
             .expect("the MCP environment allowlist");
-        assert!(variables.iter().any(|name| name == "SKALD_RESEND_AFTER"));
+        assert!(
+            variables
+                .iter()
+                .any(|name| name.as_str() == Some("SKALD_RESEND_AFTER"))
+        );
     }
 
     #[test]
