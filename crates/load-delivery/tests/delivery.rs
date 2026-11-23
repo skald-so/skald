@@ -10,7 +10,7 @@ use std::time::Duration;
 use connections::Database;
 use relay::{Fault, Relay};
 use skald_github_stand_in::{App, GitHub};
-use skald_load_delivery::{Delivery, FIXTURE_SEND_LIMIT, FIXTURE_SERVER_NAME, Settings};
+use skald_load_delivery::{Delivery, FIXTURE_SEND_LIMIT, FIXTURE_SERVER_NAME, Report, Settings};
 use skald_server::{ClientSecret, GitHubApp, Settings as ServerSettings, SignInSettings};
 use sqlx::{Connection, PgConnection};
 use tokio::runtime::Runtime;
@@ -261,6 +261,17 @@ fn checking_the_history_rate_bound_stops_after_the_first_step() {
     assert!(step.errors.is_empty(), "{step:#?}");
 }
 
+fn late_push_p99(report: &Report) -> f64 {
+    let [step] = report.steps.as_slice() else {
+        panic!("{report:#?}")
+    };
+    assert_eq!(step.delivered, 4);
+    assert_eq!(step.acknowledged, 4);
+    assert_eq!(step.history_stored, 2);
+    assert!(step.errors.is_empty(), "{step:#?}");
+    step.push_latency_ms.as_ref().unwrap().p99
+}
+
 #[test]
 fn a_late_push_within_the_p99_bound_is_delivered_and_confirmed() {
     let fixture = Fixture::start_with(Some(Fault::DelaySecondPush));
@@ -271,14 +282,7 @@ fn a_late_push_within_the_p99_bound_is_delivered_and_confirmed() {
     let report = fixture.prepare(settings).run().unwrap();
     assert_eq!(report.first_failed_check, None, "{report:#?}");
     assert_eq!(report.maximum_passed_rate, Some(2));
-    let [step] = report.steps.as_slice() else {
-        panic!("{report:#?}")
-    };
-    assert_eq!(step.delivered, 4);
-    assert_eq!(step.acknowledged, 4);
-    assert_eq!(step.history_stored, 2);
-    assert_eq!(step.errors, Vec::<String>::new());
-    assert!((1_000.0..=2_000.0).contains(&step.push_latency_ms.as_ref().unwrap().p99));
+    assert!((1_000.0..=2_000.0).contains(&late_push_p99(&report)));
     assert_eq!(fixture.remaining(), 0);
 }
 
@@ -296,14 +300,7 @@ fn a_late_push_outside_the_p99_bound_stops_the_next_step() {
         "{report:#?}"
     );
     assert_eq!(report.maximum_passed_rate, None);
-    let [step] = report.steps.as_slice() else {
-        panic!("{report:#?}")
-    };
-    assert_eq!(step.delivered, 4);
-    assert_eq!(step.acknowledged, 4);
-    assert_eq!(step.history_stored, 2);
-    assert_eq!(step.errors, Vec::<String>::new());
-    assert!(step.push_latency_ms.as_ref().unwrap().p99 > 1_000.0);
+    assert!(late_push_p99(&report) > 1_000.0);
 }
 
 #[test]
