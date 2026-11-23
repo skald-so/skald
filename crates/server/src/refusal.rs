@@ -86,6 +86,8 @@ pub(crate) enum Refusal {
     SignatureRefused,
     /// A revoked device.
     DeviceRevoked,
+    /// A device that proved it holds the key in its server-held certificate on a deleted account.
+    AccountDeleted,
     /// A grant the server does not take, for the reason it holds.
     Grant(String),
     /// No such service token of the space.
@@ -299,6 +301,12 @@ impl IntoResponse for Refusal {
                 "device-revoked",
                 "Device revoked",
                 "The device is revoked.",
+            ),
+            Refusal::AccountDeleted => problem(
+                StatusCode::FORBIDDEN,
+                "account-deleted",
+                "Account deleted",
+                "The device's account is deleted.",
             ),
             Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
             Refusal::NoServiceToken => problem(

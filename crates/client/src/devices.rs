@@ -26,7 +26,7 @@ use crate::ssh_checks::{self, Results};
 use crate::state::{self, Link, State, StatusChange};
 
 /// What `skald devices` and `skald set-username` say when the machine has no session.
-const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
+pub const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
 
 /// `Devices` in the API spec, or `SpaceDevices` with its `records`.
 #[derive(Deserialize)]
