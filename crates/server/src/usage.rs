@@ -1,6 +1,6 @@
 //! What the web app's Usage section shows (`docs/dev/architecture.md`, "Cloud limits"): an
 //! account's owned spaces and devices, and a space's messages this month and service agents, each
-//! counted as its limit counts it, with the limit while the server has its setting.
+//! counted as its limit counts it, with the effective limits.
 
 use axum::Json;
 use axum::extract::State;
@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::AppState;
 use crate::mailboxes;
 use crate::refusal::{Answer, Refusal, SignedIn};
+use crate::space_plans::{self, SpacePlan};
 use crate::spaces::{Gotten, Space};
 
 /// `UsageCount` in the spec.
@@ -46,11 +47,21 @@ struct AccountUsage {
 /// `SpaceUsage` in the spec.
 #[derive(Serialize)]
 struct SpaceUsage {
+    #[serde(flatten)]
+    plan_usage: Option<PlanUsage>,
     monthly_messages: UsageCount,
     message_size: UsageLimit,
     mailbox_retention: UsageLimit,
     history_retention: UsageLimit,
     service_agents: UsageCount,
+}
+
+#[derive(Serialize)]
+struct PlanUsage {
+    plan: SpacePlan,
+    members: UsageLimit,
+    devices_per_member: UsageLimit,
+    attachment_size: UsageLimit,
 }
 
 /// A count the database gives, never negative.
@@ -103,6 +114,10 @@ pub(crate) async fn account(State(state): State<AppState>, SignedIn(account): Si
 /// limit counts them, the limits on its messages and history, and the service agent entries of its
 /// latest revision.
 pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
+    let plan = space_plans::resolve(&state.db, found.id, state.space_plans)
+        .await
+        .map_err(|err| Refusal::Database("read the space's plan", err))?;
+    let limits = plan.map(SpacePlan::limits);
     let messages: Option<(i64,)> = sqlx::query_as(
         "SELECT messages FROM message_counts
          WHERE space_id = $1::uuid AND month = date_trunc('month', now() AT TIME ZONE 'UTC')::date",
@@ -116,22 +131,44 @@ pub(crate) async fn space(State(state): State<AppState>, Gotten(found): Gotten) 
         .map_err(|err| Refusal::Database("read the latest revision", err))?;
     let agents = latest.map_or(0, |roster| roster.body().service_agents.len());
     Ok(Json(SpaceUsage {
+        plan_usage: plan.zip(limits).map(|(plan, limits)| PlanUsage {
+            plan,
+            members: UsageLimit {
+                limit: limits.members,
+            },
+            devices_per_member: UsageLimit {
+                limit: Some(limits.devices_per_member),
+            },
+            attachment_size: UsageLimit {
+                limit: Some(limits.attachment_size),
+            },
+        }),
         monthly_messages: UsageCount {
             count: messages.map_or(0, |(count,)| counted(count)),
-            limit: state.limits.monthly_messages,
+            limit: limits
+                .map(|limits| limits.monthly_messages)
+                .or(state.limits.monthly_messages),
         },
         message_size: UsageLimit {
-            limit: state.limits.message_size,
+            limit: limits
+                .map(|limits| limits.message_size)
+                .or(state.limits.message_size),
         },
         mailbox_retention: UsageLimit {
-            limit: state.mailbox_retention.map(|retention| retention.as_secs()),
+            limit: limits
+                .map(|limits| limits.mailbox_retention)
+                .or_else(|| state.mailbox_retention.map(|retention| retention.as_secs())),
         },
         history_retention: UsageLimit {
-            limit: state.history_retention.map(|retention| retention.as_secs()),
+            limit: limits
+                .map(|limits| limits.history_retention)
+                .or_else(|| state.history_retention.map(|retention| retention.as_secs())),
         },
         service_agents: UsageCount {
             count: agents as u64,
-            limit: state.service_agents_limit.map(u64::from),
+            limit: limits
+                .map(|limits| limits.service_agents)
+                .or_else(|| state.service_agents_limit.map(u64::from)),
         },
     })
     .into_response())

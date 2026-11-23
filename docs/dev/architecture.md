@@ -237,3 +237,5 @@ The public cloud applies these limits; a self-hosted server does not.
 | History kept | 90 days: the server setting `--history-retention` (`SKALD_HISTORY_RETENTION`), in seconds, each entry from when the server stored it ([Uploads](../protocol/membership.md#uploads)); unset, kept for good |
 
 The web app's Usage section shows the owned spaces, devices, monthly messages and service agents with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.
+
+`--space-plans` (`SKALD_SPACE_PLANS=true`) opts in to showing a space's plan and limits in `getSpaceUsage`. Spaces without an entitlement default to Free. The server continues to enforce the settings above.

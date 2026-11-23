@@ -876,6 +876,16 @@ export interface ServiceTokens {
 }
 
 /**
+ * The space's effective cloud plan.
+ */
+export type SpacePlan = (typeof SpacePlan)[keyof typeof SpacePlan];
+
+export const SpacePlan = {
+  free: "free",
+  team: "team",
+} as const;
+
+/**
  * A limit; `limit` is absent while no limit applies.
  */
 export interface UsageLimit {
@@ -884,18 +894,25 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.
+ * A space's messages this month and service agents, and its effective limits. The plan and its member, device and attachment limits appear when space plans are enabled.
  */
 export interface SpaceUsage {
-  /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
+  plan?: SpacePlan;
+  /** Members per space. Team has no member limit. */
+  members?: UsageLimit;
+  /** Devices per member of the space. */
+  devices_per_member?: UsageLimit;
+  /** The space's messages this calendar month in UTC. Each message counts once regardless of its envelopes. Handshake messages are excluded. With plans off, the limit comes from `--monthly-messages-limit`. */
   monthly_messages: UsageCount;
-  /** The longest payload of an envelope, in bytes: the value of `--message-size-limit`. */
+  /** The message text limit in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`. */
   message_size: UsageLimit;
-  /** How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`. */
+  /** The attachment size limit in bytes. */
+  attachment_size?: UsageLimit;
+  /** How long an undelivered message waits at most, in seconds. With plans off, the limit comes from `--mailbox-retention`. */
   mailbox_retention: UsageLimit;
-  /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
+  /** Channel history retention in seconds. With plans off, the limit comes from `--history-retention`. */
   history_retention: UsageLimit;
-  /** The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`. */
+  /** Service agent entries in the space's latest revision. Before the first revision the count is zero. With plans off, the limit comes from `--service-agents-limit`. */
   service_agents: UsageCount;
 }
 

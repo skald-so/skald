@@ -10797,8 +10797,8 @@
     "/spaces/{space}/usage": {
       "get": {
         "operationId": "getSpaceUsage",
-        "summary": "The space's messages this month and service agents, with their limits",
-        "description": "The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, its service agents, and the server's limits on the space's messages, history and service agents while it has their settings (docs/dev/architecture.md, \"Cloud limits\").",
+        "summary": "The space's usage and effective limits",
+        "description": "Shows the space's messages this calendar month in UTC, service agents and effective limits. With space plans enabled, the response gives the space's plan and its limits. Otherwise it gives the limits from the server settings.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -13144,6 +13144,11 @@
         "type": "string",
         "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
       },
+      "SpacePlan": {
+        "description": "The space's effective cloud plan.",
+        "type": "string",
+        "enum": ["free", "team"]
+      },
       "SpaceRequest": {
         "type": "object",
         "required": ["name"],
@@ -13155,7 +13160,7 @@
         "additionalProperties": false
       },
       "SpaceUsage": {
-        "description": "A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.",
+        "description": "A space's messages this month and service agents, and its effective limits. The plan and its member, device and attachment limits appear when space plans are enabled.",
         "type": "object",
         "required": [
           "monthly_messages",
@@ -13165,24 +13170,39 @@
           "service_agents"
         ],
         "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/SpacePlan"
+          },
+          "members": {
+            "description": "Members per space. Team has no member limit.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "devices_per_member": {
+            "description": "Devices per member of the space.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
           "monthly_messages": {
-            "description": "The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`.",
+            "description": "The space's messages this calendar month in UTC. Each message counts once regardless of its envelopes. Handshake messages are excluded. With plans off, the limit comes from `--monthly-messages-limit`.",
             "$ref": "#/components/schemas/UsageCount"
           },
           "message_size": {
-            "description": "The longest payload of an envelope, in bytes: the value of `--message-size-limit`.",
+            "description": "The message text limit in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`.",
+            "$ref": "#/components/schemas/UsageLimit"
+          },
+          "attachment_size": {
+            "description": "The attachment size limit in bytes.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "mailbox_retention": {
-            "description": "How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`.",
+            "description": "How long an undelivered message waits at most, in seconds. With plans off, the limit comes from `--mailbox-retention`.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "history_retention": {
-            "description": "How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`.",
+            "description": "Channel history retention in seconds. With plans off, the limit comes from `--history-retention`.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "service_agents": {
-            "description": "The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`.",
+            "description": "Service agent entries in the space's latest revision. Before the first revision the count is zero. With plans off, the limit comes from `--service-agents-limit`.",
             "$ref": "#/components/schemas/UsageCount"
           }
         },
