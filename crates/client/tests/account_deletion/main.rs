@@ -7,7 +7,8 @@
 //! has deleted the account, it deletes the device's keys from key storage, its secrets and its local
 //! state; killed after sending, its next run finds the account deleted and finishes. The account's
 //! other devices say the server reports the account deleted, naming the state directory that `skald
-//! delete-account` erases, and send nothing (`architecture.md`, "Data model"; `deleteAccount` in the OpenAPI spec).
+//! delete-account` erases, and send nothing (`architecture.md`, "Data model"; `deleteAccount` in
+//! the OpenAPI spec).
 //!
 //! Against a `skald-server` on PostgreSQL with GitHub sign-in through the stand-in, behind the
 //! front and the recording relay of the tests of sending, with the person approving codes on the
@@ -50,7 +51,9 @@
 //!   once its session is refused; its `skald delete-account` then deletes its local state.
 //! - A refused session alone deletes nothing: `skald delete-account` keeps the machine's state while
 //!   the account lives. A run whose request to delete the account gets no answer, or one that is not
-//!   the server's, says the deletion may have gone through.
+//!   the server's, says the deletion may have gone through. On a device without its certificate,
+//!   whose session is then refused, the next `skald delete-account` erases its keys and state only
+//!   once its person types the account's username.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
