@@ -43,11 +43,8 @@ impl TokenRecord {
         let grant = Grant::from_cbor(&URL_SAFE_NO_PAD.decode(&self.grant).ok()?).ok()?;
         let permission = |name| self.permissions.iter().any(|permission| permission == name);
         (grant.body.service == device
-            && grant.body.channels.iter().any(|id| *id == channel)
-            && self
-                .channels
-                .iter()
-                .any(|listed| listed == &channel.to_string())
+            && grant.body.channels.contains(&channel)
+            && self.channels.contains(&channel.to_string())
             && permission("send")
             && permission("receive")
             && (!queue || permission("queues")))
