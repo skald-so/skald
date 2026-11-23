@@ -49,7 +49,7 @@ use skald_proto::{ChannelId, DeviceId};
 
 use agents::{CLAUDE, CODEX, run_as_in};
 use at_terminal::{keys_in, sign_in};
-use browser::{APPROVE, CODE_FIELD, SIGN_IN_GITHUB};
+use browser::{APPROVE, Browser, CODE_FIELD, SIGN_IN_GITHUB};
 use cloud::{Cloud, WAIT};
 use fixtures::fronted;
 use kit::{assert_members, group, latest, received};
@@ -195,7 +195,8 @@ fn approve_opened(world: &World, user: &User, opener: &Opener, before: usize) {
         .get(before)
         .cloned()
         .expect("device authorization");
-    let page = world.browser.page();
+    let browser = Browser::launch();
+    let page = browser.page();
     assert_eq!(
         page.goto(&cloud.github.sign_in_url(user.id)).status,
         Some(200),
@@ -296,6 +297,13 @@ fn signs_up(world: &World, id: u64, login: &str) -> SignedUp {
         &["recovery key", "shown only once"],
     );
     assert_one_line(
+        "recovery key keep instruction",
+        &shown.text,
+        &[
+            "Keep it apart from your devices: it recovers the account and its history if all are lost.",
+        ],
+    );
+    assert_one_line(
         "recovery key confirmation",
         &shown.text,
         &["Press Enter", "written down"],
@@ -313,11 +321,9 @@ fn signs_up(world: &World, id: u64, login: &str) -> SignedUp {
 #[track_caller]
 fn signs_up_with_both_digits(world: &World) -> SignedUp {
     for attempt in 0..ACCOUNTS {
-        let signed_up = signs_up(
-            world,
-            4_610_500_001 + attempt,
-            &format!("{LOGIN}-{attempt}"),
-        );
+        let login = format!("{LOGIN}-{attempt:03}");
+        assert_eq!(login.len(), 39, "GitHub's maximum login length");
+        let signed_up = signs_up(world, 4_610_500_001 + attempt, &login);
         if signed_up.key.contains('0') && signed_up.key.contains('1') {
             return signed_up;
         }
@@ -534,6 +540,11 @@ fn an_account_signs_up_in_the_browser_links_by_a_code_and_recovers_by_a_pasted_k
     );
     fallback_line(cloud, &recovered.text);
     assert_short_and_unasked("skald sign-in --with-recovery-key", &recovered.text);
+    assert_one_line(
+        "recovery success",
+        &recovered.text,
+        &["Linked with the recovery key, which this device keeps nowhere."],
+    );
     let shown = recovered.text.to_uppercase();
     for form in [key.clone(), plain(key), swapped(key), plain(&swapped(key))] {
         assert!(!shown.contains(&form), "the recovery key was echoed");
