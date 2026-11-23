@@ -239,9 +239,10 @@ pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes)
         (request.device.parse()).map_err(|err| Refusal::Invalid(format!("device: {err}")))?;
     let failed = |err| Refusal::Database("open a link run", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
-    // A deletion of the device's account holds the account's lock until it commits, then locks
-    // its devices' rows and deletes their runs: taken in that order, this run waits for the
-    // deletion and is refused, or the deletion waits for the run and deletes it.
+    // A deletion of the device's account holds the account's lock until it commits, then revokes
+    // its devices under their rows' locks and deletes their runs: taken in that order, this run
+    // waits for the deletion and is refused, or the deletion waits for the run and deletes it. A
+    // device registered after the first read is refused once revoked under its row's lock.
     let owner: Option<(String,)> =
         sqlx::query_as("SELECT account_id::text FROM devices WHERE id = $1::uuid")
             .bind(device.to_string())
@@ -256,15 +257,17 @@ pub(crate) async fn open_sessionless(State(state): State<AppState>, body: Bytes)
         return Err(Refusal::DeviceRevoked);
     }
     start_run(&mut tx, device).await?;
-    let certified: Option<(bool,)> = sqlx::query_as(
-        "SELECT cert IS NOT NULL FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
+    let held: Option<(bool, bool)> = sqlx::query_as(
+        "SELECT cert IS NOT NULL, revoked FROM devices WHERE id = $1::uuid FOR NO KEY UPDATE",
     )
     .bind(device.to_string())
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
-    if certified.is_some_and(|(certified,)| certified) {
-        return Err(Refusal::DeviceCertified);
+    match held {
+        Some((true, _)) => return Err(Refusal::DeviceCertified),
+        Some((_, true)) => return Err(Refusal::DeviceRevoked),
+        _ => {}
     }
     let token = random_token();
     // A pairing an open or ended run holds is drawn again.

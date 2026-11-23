@@ -1,12 +1,12 @@
-//! A deletion held while it runs: the test holds a lock on the account's sign-in methods, which the
-//! deletion takes once it holds the account's row lock, so a request sent meanwhile runs while the
-//! deletion's transaction is open.
+//! Locks the test holds so that requests run in an order: one on an account's sign-in methods,
+//! which a deletion takes once it holds the account's row lock, so a request sent meanwhile runs
+//! while the deletion's transaction is open; and a device's lock for opening its link runs.
 
 use std::sync::mpsc::{self, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use skald_proto::AccountId;
+use skald_proto::{AccountId, DeviceId};
 use sqlx::{Connection as _, PgConnection};
 
 use crate::common::TestDb;
@@ -23,8 +23,22 @@ pub struct Held {
 impl Held {
     /// Holds a share lock on the sign-in methods of `account` in `db`.
     pub fn sign_in_methods(db: &TestDb, account: AccountId) -> Self {
+        let sql = "SELECT 1 FROM sign_in_methods WHERE account_id = $1::uuid FOR SHARE";
+        let held = Self::locking(db, sql, account.to_string());
+        assert!(held.1 > 0, "the account has a sign-in method");
+        held.0
+    }
+
+    /// Holds the lock of `device` that the server takes to open a link run of it, in `db`.
+    pub fn link_runs(db: &TestDb, device: DeviceId) -> Self {
+        let sql = "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))";
+        Self::locking(db, sql, format!("link run {device}")).0
+    }
+
+    /// Runs `sql`, which takes locks, `$1` bound to `bound`, in a transaction of its own until
+    /// released; gives the lock and the rows `sql` gave.
+    fn locking(db: &TestDb, sql: &'static str, bound: String) -> (Self, u64) {
         let url = db.url();
-        let account = account.to_string();
         let (locked, ready) = mpsc::channel();
         let (release, wait) = mpsc::channel::<()>();
         let locker = thread::spawn(move || {
@@ -35,14 +49,12 @@ impl Held {
             runtime.block_on(async {
                 let mut conn = PgConnection::connect(&url).await.expect("connect");
                 let mut tx = conn.begin().await.expect("begin");
-                let held = sqlx::query(
-                    "SELECT 1 FROM sign_in_methods WHERE account_id = $1::uuid FOR SHARE",
-                )
-                .bind(&account)
-                .execute(&mut *tx)
-                .await
-                .expect("lock the sign-in methods")
-                .rows_affected();
+                let held = sqlx::query(sql)
+                    .bind(&bound)
+                    .execute(&mut *tx)
+                    .await
+                    .expect("take the lock")
+                    .rows_affected();
                 locked.send(held).expect("tell of the lock");
                 // Released, or dropped.
                 let _ = wait.recv();
@@ -50,11 +62,11 @@ impl Held {
             });
         });
         let held = ready.recv().expect("the lock");
-        assert!(held > 0, "the account has a sign-in method");
-        Held {
+        let lock = Held {
             release: Some(release),
             locker: Some(locker),
-        }
+        };
+        (lock, held)
     }
 
     /// Releases the lock.

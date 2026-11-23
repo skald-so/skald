@@ -24,7 +24,6 @@ use crate::{AppState, revocations, sessions};
 #[derive(Clone, Copy)]
 pub(crate) enum Lock {
     Update,
-    NoKeyUpdate,
     KeyShare,
 }
 
@@ -40,9 +39,6 @@ pub(crate) async fn deleted(
     let sql = match lock {
         Lock::Update => {
             "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR UPDATE"
-        }
-        Lock::NoKeyUpdate => {
-            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE"
         }
         Lock::KeyShare => {
             "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR KEY SHARE"

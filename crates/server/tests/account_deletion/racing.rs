@@ -1,17 +1,21 @@
 //! Requests that run while a deletion of their account does, their session read before it ends:
 //! each waits for the deletion and then acts for no deleted account. A device code is not approved,
-//! a revocation does not serve the account's devices as unrevoked, and no device registers.
+//! a revocation does not serve the account's devices as unrevoked, and no device registers. A run
+//! without a session that its device registers and is deleted under does not open.
 
 use std::thread;
 
+use serde_json::json;
 use skald_proto::DeviceKind;
 
 use crate::common::device_flow::{Poll, pause, text};
 use crate::common::devices::{DEVICES, Device};
-use crate::common::{Response, TestDb, post_form};
-use crate::deletion::{VERIFICATION, assert_deleted, assert_refused, delete_by_token};
+use crate::common::{Response, post_form};
+use crate::deletion::{
+    VERIFICATION, assert_deleted, assert_refused, assert_revoked, count, delete_by_token, deletes,
+};
 use crate::held::{Held, until_waiting};
-use crate::runs::Fresh;
+use crate::runs::{Fresh, OPEN, register};
 use crate::sessions::Api;
 
 /// Starts a deletion of alice's account and holds it once it holds her account's row lock; `racing`
@@ -32,14 +36,6 @@ fn while_deleting(fresh: &Fresh, racing: impl FnOnce() -> Response + Send) -> Re
         assert_deleted(&deleting.join().expect("the deletion"));
         request.join().expect("the request")
     })
-}
-
-/// The count `sql` gives in `db`, `$1` bound to `id`.
-fn count(db: &TestDb, sql: &'static str, id: &str) -> i64 {
-    let (count,): (i64,) = db
-        .query(async |conn| sqlx::query_as(sql).bind(id).fetch_one(conn).await)
-        .unwrap_or_else(|err| panic!("{sql}: {err}"));
-    count
 }
 
 /// alice's web session approves a device code on the verification page while her account's
@@ -106,4 +102,37 @@ fn device_registered_during_a_deletion_is_refused() {
     let devices = "SELECT count(*) FROM devices WHERE id = $1::uuid";
     let held = count(&fresh.flow.stand.db, devices, &tablet.id.to_string());
     assert_eq!(held, 0, "the tablet");
+}
+
+/// A new tablet, registered nowhere, opens a run without a session; the request reads no account of
+/// the tablet, then waits on the tablet's lock for opening runs. Meanwhile alice's session registers
+/// the tablet and her account is deleted. The run is then refused with `device-revoked`, and the
+/// server holds no run of the tablet.
+#[test]
+fn run_whose_device_registers_and_is_deleted_meanwhile_is_refused() {
+    let fresh = Fresh::start(3_303_091_031);
+    let flow = &fresh.flow;
+    let db = &flow.stand.db;
+    let alice = &fresh.alice;
+    let tablet = Device::new("Tablet");
+    let nobody = fresh.nobody();
+    let body = json!({ "device": tablet.id.to_string() });
+    let held = Held::link_runs(db, tablet.id);
+
+    let opened = thread::scope(|scope| {
+        let opening = scope.spawn(|| nobody.call("post", OPEN, Some(&body)));
+        until_waiting(db, 1, "the run");
+        register(&alice.session, &tablet);
+        deletes(&Api::of(flow), alice);
+        held.release();
+        opening.join().expect("the run")
+    });
+
+    assert_revoked(&opened, "the tablet's run");
+    let runs = "SELECT count(*) FROM link_runs WHERE device_id = $1::uuid";
+    assert_eq!(
+        count(db, runs, &tablet.id.to_string()),
+        0,
+        "the tablet's runs"
+    );
 }

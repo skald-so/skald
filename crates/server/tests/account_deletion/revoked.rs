@@ -5,36 +5,18 @@
 use skald_proto::DeviceKind;
 
 use crate::by_key::sign_in_by_key;
+use crate::common::TestDb;
 use crate::common::devices::Device;
-use crate::common::{Response, TestDb};
-use crate::deletion::{assert_refused, deletes, problem_of};
+use crate::deletion::{assert_refused, assert_revoked, count, deletes};
 use crate::relay::request;
 use crate::runs::Fresh;
 use crate::sessions::Api;
 use crate::upload::issued_by;
 
-/// The problem of a revoked device.
-const DEVICE_REVOKED: &str = "https://skald.so/problems/device-revoked";
-
-/// Checks that `response` refuses a device as revoked: `403` with `device-revoked`.
-#[track_caller]
-fn assert_revoked(response: &Response, what: &str) {
-    assert_eq!(problem_of(response, what), DEVICE_REVOKED, "{what}");
-    assert_eq!(response.status, 403, "{what}");
-}
-
-/// The count `sql` gives in `db`, `$1` bound to `ids`, an array of IDs as text.
-fn count(db: &TestDb, sql: &'static str, ids: &[&str]) -> i64 {
-    let (count,): (i64,) = db
-        .query(async |conn| sqlx::query_as(sql).bind(ids).fetch_one(conn).await)
-        .unwrap_or_else(|err| panic!("{sql}: {err}"));
-    count
-}
-
 /// How many link runs `db` holds of `device`.
 fn runs_of(db: &TestDb, device: &Device) -> i64 {
-    let sql = "SELECT count(*) FROM link_runs WHERE device_id = ($1::text[])[1]::uuid";
-    count(db, sql, &[&device.id.to_string()])
+    let sql = "SELECT count(*) FROM link_runs WHERE device_id = $1::uuid";
+    count(db, sql, &device.id.to_string())
 }
 
 /// Marks `device` unrevoked in `db`.
@@ -69,21 +51,18 @@ fn device_a_deleted_accounts_device_certifies_gets_no_session() {
     let db = &flow.stand.db;
     let tablet = tablet.id.to_string();
     let desktop = desktop.id.to_string();
-    let devices = "SELECT count(*) FROM devices WHERE id = ($1::text[])[1]::uuid";
-    assert_eq!(count(db, devices, &[&tablet]), 0, "the tablet");
-    let certified = "SELECT count(*) FROM devices
-                     WHERE id = ($1::text[])[1]::uuid AND cert IS NOT NULL";
+    let devices = "SELECT count(*) FROM devices WHERE id = $1::uuid";
+    assert_eq!(count(db, devices, &tablet), 0, "the tablet");
+    let certified = "SELECT count(*) FROM devices WHERE id = $1::uuid AND cert IS NOT NULL";
     assert_eq!(
-        count(db, certified, &[&desktop]),
+        count(db, certified, &desktop),
         0,
         "the desktop's certificate"
     );
-    let sessions = "SELECT count(*) FROM sessions
-                    WHERE account_id = ($1::text[])[1]::uuid
-                        OR device_id = ANY(($1::text[])[2:]::uuid[])";
+    // A session by a device's key is of its certificate's account.
+    let sessions = "SELECT count(*) FROM sessions WHERE account_id = $1::uuid";
     let account = alice.account.to_string();
-    let ids: [&str; 3] = [&account, &tablet, &desktop];
-    assert_eq!(count(db, sessions, &ids), 0, "a session of her account");
+    assert_eq!(count(db, sessions, &account), 0, "a session of her account");
 }
 
 /// Once alice's account is deleted, her desktop, registered there without a certificate and marked
