@@ -9,6 +9,10 @@ license.workspace = true
 [package.metadata.dist]
 dist = true
 
+# Keep the Rust crate name when the release renames the package.
+[lib]
+name = "skald_client"
+
 [[bin]]
 name = "skald"
 path = "src/main.rs"
