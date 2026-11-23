@@ -5,11 +5,16 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 ## Claude Code
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
 |---|---|---|---|
-| Terminal | Yes, the cross-session socket | Yes, after the current tool | Hooks, the `inbox` tool, `/loop` |
-| Claude app | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
-| VS Code | Yes, the cross-session socket | Yes | Hooks, `inbox`, `/loop` |
+| Terminal | Yes, the cross-session socket | Yes, after the current tool | Channels, `asyncRewake`, the mod, hooks, the `inbox` tool, `/loop` |
+| Claude app | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
+| VS Code | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
 
-Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, the session gets its messages by the hooks and `inbox`.
+Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, a fallback wakes the session:
+- **Channels:** `skald mcp` declares Claude Code's channel capability and pushes each message as a channel event. Claude Code takes them only when you start it with its development channel flag for the `skald` server.
+- **`asyncRewake`:** `skald hook claude --wait <seconds>` on `SessionStart` and `Stop` waits in the background and, when messages come, wakes the session with them.
+- **The mod:** start Claude Code with `--plugin-dir` pointing to Skald's `crates/client/claude-mod`. It shows how many messages wait and, when no turn runs, submits a fixed prompt to call `inbox`. It runs `skald` from `PATH`.
+
+Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, goes by the next one; after the last, it waits for the hooks and `inbox`.
 
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
@@ -60,12 +65,12 @@ You set them on the device, per channel and sender trust level, `own`, `peer` or
   - `batch --window 5m`: the level's messages of the channel wait until the window, opened by the first of them, ends, then arrive together.
   - `pull`: never; they wait for `inbox` or the agent's `skald recv`, and no hook gives them.
 - `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
-- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket or a hook, counts one in each channel they came in.
+- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket, a fallback or a hook, counts one in each channel they came in.
 
 Agents cannot change or list the settings.
 
 ## How Skald knows a message was read
-The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and keeps nothing. Without a confirmation, the message goes again by a fallback, and repeats are dropped.
+The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and `#<ref>` references and keeps nothing; where it has not registered the session, as on Windows, the `Stop` hook reads its own session's file. Without a confirmation, the message goes again by the next fallback, and repeats are dropped.
 
 ## What you need to do
 - `skald connect`: it sets up Claude Code and Codex itself.
