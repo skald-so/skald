@@ -45,8 +45,8 @@ pub(crate) fn addressed(
 
 /// A channel's group as the server follows it.
 struct Group {
-    /// The device whose Commit of epoch 0 the server kept.
-    creator: DeviceId,
+    /// The device whose Commit of epoch 0 the server kept, until the server erases its account.
+    creator: Option<DeviceId>,
     epoch: u64,
     /// The saved view, from the first GroupInfo on.
     view: Option<Vec<u8>>,
@@ -55,7 +55,7 @@ struct Group {
 }
 
 /// A group as [`locked`] reads it: its creator, epoch, view and members.
-type Row = (String, i64, Option<Vec<u8>>, Vec<String>);
+type Row = (Option<String>, i64, Option<Vec<u8>>, Vec<String>);
 
 /// The group of `channel`, if it has one, locked on `tx` until it commits.
 async fn locked(tx: &mut PgConnection, channel: ChannelId) -> Result<Option<Group>, sqlx::Error> {
@@ -67,7 +67,7 @@ async fn locked(tx: &mut PgConnection, channel: ChannelId) -> Result<Option<Grou
     .fetch_optional(tx)
     .await?;
     Ok(found.map(|(creator, epoch, view, members)| Group {
-        creator: creator.parse().expect("a stored device ID"),
+        creator: creator.map(|creator| creator.parse().expect("a stored device ID")),
         epoch: u64::try_from(epoch).expect("a stored epoch from 1"),
         view,
         members: members
@@ -413,7 +413,10 @@ pub(crate) async fn upload(
                     "the channel's first GroupInfo is of epoch 1".to_owned(),
                 ));
             }
-            if !uploaders.contains(&group.creator) {
+            if !group
+                .creator
+                .is_some_and(|creator| uploaders.contains(&creator))
+            {
                 return Err(Refusal::NotAllowed(
                     "only the device of the channel's first Commit uploads its first GroupInfo"
                         .to_owned(),

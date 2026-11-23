@@ -26,6 +26,7 @@ mod device_certs;
 mod device_flow;
 mod device_sessions;
 mod devices;
+mod erasure;
 mod error_reports;
 mod events;
 mod expiry;
@@ -213,6 +214,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
     tokio::spawn(link_runs::sweep(db.clone()));
     tokio::spawn(invites::sweep(db.clone()));
     tokio::spawn(claims::run(db.clone(), settings.history_retention));
+    tokio::spawn(erasure::run(db.clone()));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
