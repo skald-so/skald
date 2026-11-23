@@ -22,7 +22,7 @@ The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback m
 
 - **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
 - **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
-- [Channels](dev/agent-delivery.md#channels) needs an interactive terminal. The development flag did not open a channel in either host terminal with the stub. The separate CLI tests verify Channels.
+- Skald's Channels development flag requires an interactive CLI. The Agent SDK ignores it. Channels remained unconfirmed in the hosted terminal checks with the stub. The separate CLI tests verify it. [Claude Code reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview) · [Skald Channels checks](dev/agent-delivery.md#channels)
 
 ### App checks
 
