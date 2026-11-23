@@ -171,7 +171,10 @@ impl Intake {
                 joined::follow(follower);
             }
             let admitting = due.clone();
-            recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced)?;
+            follower.hold_notices = !person;
+            let synced = recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced);
+            follower.hold_notices = false;
+            synced?;
             admission::admit(follower, &admitting, &mut checks.synced, |_| !person);
             due.extend(mailbox.waiting_notices(follower, &link.keys));
         }
