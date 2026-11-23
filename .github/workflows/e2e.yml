@@ -65,6 +65,7 @@ on:
       - crates/server/tests/common/browser.rs
       - crates/server/tests/common/connections.rs
       - crates/server/tests/key_packages/answers.rs
+      - script/lib/postgres.sh
       - .github/workflows/e2e.yml
 
 permissions:

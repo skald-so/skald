@@ -14,7 +14,7 @@
 //     of the adapters with SKALD_E2E_REQUIRED=1, so a skip fails, each in a step without a
 //     condition;
 //   - the Linux host job installs the latest Claude Code and pinned releases of Paseo and Herdr
-//     in a temporary directory; its host tests fail if an executable is missing;
+//     in a temporary directory. Its host tests fail if an executable is missing.
 //   - it needs no secret: it reads none, its token reads contents at most, a checkout keeps no
 //     credentials, and every action is pinned to a commit.
 import fs from 'node:fs';
@@ -109,6 +109,7 @@ for (const changed of [
   'plugins/claude-code/skills/skald/SKILL.md',
   ...modules('crates/client/tests/claude_code_e2e/main.rs', 10),
   ...modules('crates/adapters/tests/claude_code_executor/main.rs', 6),
+  'script/lib/postgres.sh',
   file,
 ]) {
   if (!pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} does not start it`);

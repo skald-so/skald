@@ -110,6 +110,17 @@ fn herdrs_claude_session_delivers_skald_messages_and_keeps_herdrs_hook() {
     until("the model's reply in Herdr's pane", || {
         shown().contains(DONE)
     });
+    server.run(&[
+        "agent",
+        "wait",
+        AGENT,
+        "--until",
+        "idle",
+        "--until",
+        "done",
+        "--timeout",
+        &WAIT.as_millis().to_string(),
+    ]);
 
     let agent = server.run(&["agent", "get", AGENT]);
     let status: Value = serde_json::from_str(&agent).expect("Herdr's agent status");

@@ -18,15 +18,16 @@ Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A 
 
 ### Host checks
 
-Claude Code 2.1.330 on macOS, with Skald's plugin and a loopback model stub:
+Both checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub.
 
 - **Paseo 0.17.1:** The SDK and terminal sessions ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Paseo's terminal hook marked the workspace as needing attention.
 - **Herdr 0.9.5:** The session ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Herdr's hook reported the Claude Code session ID.
 
 ### App checks
 
-- The [earlier app checks](dev/agent-delivery.md#waking-an-idle-session) confirmed socket delivery in the Claude app and Claude Code for VS Code. The Skald plugin also has end-to-end tests that run Claude Code in the apps' SDK mode on the loopback model stub.
-- The live Skald delivery checks were blocked by model limits in the Claude app (6.28899.6) and Claude Code for VS Code (extension 2.1.330).
+- The [earlier app checks](dev/agent-delivery.md#waking-an-idle-session) confirmed socket delivery in the Claude app and Claude Code for VS Code.
+- **VS Code 1.147.0, Claude Code 2.1.330:** With a loopback model stub, an own message woke the idle session with its text and got a `read` receipt. A peer message woke it with a signal. The text and the `read` receipt followed an MCP `inbox` call.
+- Model limits blocked the Skald delivery checks with the live model in both apps and with the project stub in the Claude app (6.28899.6).
 
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
