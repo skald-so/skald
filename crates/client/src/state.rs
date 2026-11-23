@@ -1847,14 +1847,16 @@ impl State {
 
     /// Records that the device accepted revisions of the space `id` after `from`, its last accepted
     /// revision until now, in CBOR: `hashes`, the number and hash of `from` and of each revision but
-    /// the last, and `last`, in CBOR, its new last accepted revision. Records nothing and gives
-    /// `false` if `from` is no longer the space's last accepted revision.
+    /// the last, and `last`, in CBOR, its new last accepted revision. Keeps `key_changes` with
+    /// those revisions. Records nothing and gives `false` if `from` is no longer the space's last
+    /// accepted revision.
     pub fn accept(
         &self,
         id: SpaceId,
         from: &[u8],
         hashes: &[(u64, [u8; 32])],
         last: &[u8],
+        key_changes: &[String],
     ) -> Result<bool, Error> {
         let tx = self.write()?;
         let id = id.to_string();
@@ -1873,6 +1875,9 @@ impl State {
                  ON CONFLICT DO NOTHING",
                 params![id, revision, hash.as_slice()],
             )?;
+        }
+        for line in key_changes {
+            add_key_change(&tx, (line, ""), line, false)?;
         }
         tx.commit()?;
         Ok(true)
@@ -2196,14 +2201,7 @@ impl State {
         line: &str,
         once: bool,
     ) -> Result<bool, Error> {
-        let kept = self.db.execute(
-            "INSERT INTO key_change (key, line, source) SELECT ?1, ?2, ?3
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM key_change WHERE key = ?1 AND source = ?3 AND (?4 OR seen = 0)
-             )",
-            params![key, line, source, once],
-        )?;
-        Ok(kept == 1)
+        add_key_change(&self.db, (key, source), line, once)
     }
 
     /// The key changes that wait for the person, found by one of `sources`, in order, each by its
@@ -5379,6 +5377,23 @@ fn add_revocation(tx: &Transaction, revocation: &[u8], pending: bool) -> Result<
     Ok(())
 }
 
+/// Keeps a key change, as [`State::keep_key_change`] does, also within a transaction.
+fn add_key_change(
+    db: &Connection,
+    (key, source): (&str, &str),
+    line: &str,
+    once: bool,
+) -> Result<bool, Error> {
+    let kept = db.execute(
+        "INSERT INTO key_change (key, line, source) SELECT ?1, ?2, ?3
+         WHERE NOT EXISTS (
+             SELECT 1 FROM key_change WHERE key = ?1 AND source = ?3 AND (?4 OR seen = 0)
+         )",
+        params![key, line, source, once],
+    )?;
+    Ok(kept == 1)
+}
+
 /// Records in `db` that the open permission prompt of the session `session`, if any, ended at
 /// `at`, in Unix seconds.
 fn end_prompts(db: &Connection, session: &str, at: u64) -> Result<(), Error> {
@@ -5901,24 +5916,35 @@ pub(crate) mod tests {
         accepted(&state, acme, &[1], &[]);
 
         let hashes = [(1, [1; 32]), (2, [2; 32])];
-        assert!(state.accept(acme, &[1], &hashes, &[3]).unwrap());
-        // Another run accepted from revision 1 meanwhile: nothing is recorded, not even a hash
-        // the state has none of yet.
+        let change = "a handle changed accounts".to_owned();
+        assert!(
+            state
+                .accept(acme, &[1], &hashes, &[3], std::slice::from_ref(&change))
+                .unwrap()
+        );
+        // Another run accepted from revision 1 meanwhile: its hashes and key changes are ignored.
         assert!(
             !state
-                .accept(acme, &[1], &[(1, [1; 32]), (3, [8; 32])], &[4])
+                .accept(
+                    acme,
+                    &[1],
+                    &[(1, [1; 32]), (3, [8; 32])],
+                    &[4],
+                    &["a key change in a stale run".to_owned()]
+                )
                 .unwrap()
         );
         accepted(&state, acme, &[3], &hashes);
 
         let state = State::open(&dir).unwrap();
         accepted(&state, acme, &[3], &hashes);
+        assert_eq!(state.key_changes(&[String::new()]).unwrap(), [(1, change)]);
         assert_eq!(state.spaces().unwrap()[0].anchor, vec![1]);
         accepted(&state, globex, &[7], &[]);
         // A hash already recorded stays.
         assert!(
             state
-                .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4])
+                .accept(acme, &[3], &[(2, [9; 32]), (3, [3; 32])], &[4], &[])
                 .unwrap()
         );
         accepted(
@@ -5974,7 +6000,7 @@ pub(crate) mod tests {
             let accepted = State::open(&dir)
                 .and_then(|state| {
                     state.db.busy_timeout(std::time::Duration::ZERO)?;
-                    state.accept(id, &[1], &[(1, [1; 32])], &[2])
+                    state.accept(id, &[1], &[(1, [1; 32])], &[2], &[])
                 })
                 .map_err(|err| err.to_string());
             RAN.with(|ran| *ran.borrow_mut() = Some(accepted));
