@@ -51,6 +51,9 @@ impl<'a> Daemon<'a> {
         until("Paseo's daemon", || {
             output(&mut daemon.command(&["daemon", "status"])).0
         });
+        let settings = session.home.dir.join("settings.json");
+        until("Paseo's Claude settings", || settings.is_file());
+        session.install_skald();
         daemon
     }
 
@@ -112,9 +115,6 @@ fn paseos_sdk_session_delivers_skald_messages() {
     };
     let session = Hosted::new(&claude, 4_919_102_001, "ada-claude-paseo");
     let daemon = Daemon::start(&host, &session);
-    let settings = session.home.dir.join("settings.json");
-    until("Paseo's Claude settings", || settings.is_file());
-    session.install_skald();
 
     let printed = daemon.run(&[
         "run",
@@ -146,9 +146,6 @@ fn paseos_terminal_session_delivers_skald_messages_and_keeps_paseos_hook() {
     };
     let session = Hosted::new(&claude, 4_919_103_001, "ada-claude-paseo-terminal");
     let daemon = Daemon::start(&host, &session);
-    let settings = session.home.dir.join("settings.json");
-    until("Paseo's Claude settings", || settings.is_file());
-    session.install_skald();
 
     let printed = run(daemon
         .command(&["terminal", "create", "--json", "--cwd"])

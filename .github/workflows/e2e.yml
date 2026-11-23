@@ -1,10 +1,8 @@
 name: E2E
 
-# The e2e tests of the agent adapters against the latest agent CLIs, on Linux, macOS and Windows:
-# today the client's claude_code_e2e tests and the adapters' claude_code_executor tests against
-# Claude Code, which run it on their model stub, so they need no secret. Outside script/test: daily,
-# on demand, and when a PR changes the adapter, the Claude Code plugin, its tests or this file. A
-# test that skips for want of the CLI fails (SKALD_E2E_REQUIRED).
+# E2E tests against the latest Claude Code on Linux, macOS and Windows, including a Linux job for
+# Paseo and Herdr. They use the model stub and need no secret. Outside script/test: daily, on demand,
+# and when a PR changes the adapter, the Claude Code plugin, its tests or this file.
 on:
   schedule:
     - cron: '30 4 * * *'
@@ -143,9 +141,76 @@ jobs:
         shell: bash
         env:
           SKALD_E2E_REQUIRED: '1'
-        run: cargo test -p skald-client --locked --test claude_code_e2e -- --ignored
+        run: |
+          cargo test -p skald-client --locked --test claude_code_e2e -- --ignored --skip hosts::
       - name: E2E tests of the Claude Code executor
         shell: bash
         env:
           SKALD_E2E_REQUIRED: '1'
         run: cargo test -p skald-adapters --locked --test claude_code_executor -- --ignored
+
+  claude-code-hosts:
+    name: Claude Code in Paseo and Herdr
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Chrome Headless Shell
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          node node_modules/playwright-core/cli.js install chromium-headless-shell
+      - name: Install the latest Claude Code
+        run: |
+          npm install --global @anthropic-ai/claude-code@latest
+          claude --version
+      - name: Start PostgreSQL
+        run: |
+          source script/lib/postgres.sh
+          postgres_start
+          echo "SKALD_HOSTS_POSTGRES=$postgres" >>"$GITHUB_ENV"
+          postgres_wait
+          echo "SKALD_TEST_DATABASE_URL=$SKALD_TEST_DATABASE_URL" >>"$GITHUB_ENV"
+      - name: Run Claude Code E2E in temporary host installations
+        shell: bash
+        env:
+          SKALD_E2E_REQUIRED: '1'
+          SKALD_E2E_REQUIRED_HOSTS: '1'
+        run: |
+          hosts=$(mktemp -d "$RUNNER_TEMP/skald-agent-hosts.XXXXXX")
+          trap 'rm -rf "$hosts"' EXIT
+          cd "$hosts"
+          curl --fail --silent --show-error --location --output paseo.tgz \
+            https://registry.npmjs.org/@getpaseo/cli/-/cli-0.17.1.tgz
+          curl --fail --silent --show-error --location --output herdr \
+            https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64
+          sha256sum --check <<'CHECKSUMS'
+          4601ce31a9efbf42c4bc176dfe997ef5acb3177899a663354c45ded9392d9eb5  paseo.tgz
+          14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  herdr
+          CHECKSUMS
+          npm install --prefix "$hosts" --no-audit --no-fund ./paseo.tgz
+          chmod +x herdr
+          export PATH="$hosts/node_modules/.bin:$hosts:$PATH"
+          paseo --version
+          herdr --version
+          cd "$GITHUB_WORKSPACE"
+          cargo test -p skald-client --locked --test claude_code_e2e -- --ignored hosts::
+      - name: Stop PostgreSQL
+        if: always() && env.SKALD_HOSTS_POSTGRES != ''
+        run: |
+          source script/lib/postgres.sh
+          postgres=$SKALD_HOSTS_POSTGRES
+          postgres_stop

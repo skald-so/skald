@@ -6,15 +6,27 @@ Skald delivers messages and tasks to an agent session you already have open, eve
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
 |---|---|---|---|
 | Terminal | Yes, the cross-session socket | Yes, after the current tool | Channels, `asyncRewake`, the mod, hooks, the `inbox` tool, `/loop` |
-| Claude app | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
-| VS Code | Yes, the cross-session socket | Yes | `asyncRewake`, hooks, `inbox`, `/loop` |
+| Claude app | Cross-session socket ([app checks](#app-checks)) | Yes, after the current tool | `asyncRewake`, installed mod, hooks, `inbox`, `/loop` |
+| VS Code | Cross-session socket ([app checks](#app-checks)) | Yes, after the current tool | `asyncRewake`, the mod, hooks, `inbox`, `/loop` |
 
 Where Claude Code offers no cross-session socket that Skald writes to, as on Windows, where it is a named pipe, or the socket does not take a message, a fallback wakes the session:
 - **Channels:** `skald mcp` declares Claude Code's channel capability and pushes each message as a channel event. Claude Code takes them only when you start it with its development channel flag for the `skald` server.
 - **`asyncRewake`:** `skald hook claude --wait <seconds>` on `SessionStart` and `Stop` waits in the background and, when messages come, wakes the session with them.
-- **The mod:** start Claude Code with `--plugin-dir` pointing to Skald's `crates/client/claude-mod`. It shows how many messages wait and, when no turn runs, submits a fixed prompt to call `inbox`. It runs `skald` from `PATH`.
+- **The mod:** start Claude Code with `--plugin-dir` pointing to Skald's `crates/client/claude-mod`. In the Claude app, install the plugin from a marketplace. In VS Code, set `CLAUDE_CODE_PLUGIN_DIRS` to the mod directory in `claudeCode.environmentVariables`. It shows how many messages wait and, when no turn runs, submits a fixed prompt to call `inbox`. It runs `skald` from `PATH`.
 
 Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, goes by the next one; after the last, it waits for the hooks and `inbox`.
+
+### Host checks
+
+Claude Code 2.1.330 on macOS, with Skald's plugin and a loopback model stub:
+
+- **Paseo 0.17.1:** The SDK and terminal sessions ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Paseo's terminal hook marked the workspace as needing attention.
+- **Herdr 0.9.5:** The session ran the Skald CLI, called its MCP `inbox` and woke through the cross-session socket with a `read` receipt. Herdr's hook reported the Claude Code session ID.
+
+### App checks
+
+- The [earlier app checks](dev/agent-delivery.md#waking-an-idle-session) confirmed socket delivery in the Claude app and Claude Code for VS Code. The Skald plugin also has end-to-end tests that run Claude Code in the apps' SDK mode on the loopback model stub.
+- The live Skald delivery checks were blocked by model limits in the Claude app (6.28899.6) and Claude Code for VS Code (extension 2.1.330).
 
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
