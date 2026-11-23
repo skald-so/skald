@@ -10,15 +10,14 @@
 //!   fallback. Confirmed, it is handed over, so its `read` goes ([`confirm`]). The client reads only
 //!   the registered session's rollout, only the references in `inbox`'s results, and keeps no line.
 //! - Its signal goes by the paths in their order: a hook of a turn, [`STOP`], [`QUEUE`], then
-//!   [`PROMPT`] ([`path`]). Without a confirmation within the timeout, [`resend_after`], from the
-//!   signal or from `inbox`, it waits again and goes by the next path; after the last, it waits
-//!   for `inbox`.
+//!   [`PROMPT`] ([`path`]). Without a confirmation within the timeout,
+//!   [`crate::resend::resend_after`], from the signal or from `inbox`, it waits again and goes by
+//!   the next path; after the last, it waits for `inbox`.
 
 use std::collections::BTreeSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -27,13 +26,6 @@ use skald_proto::{MessageId, SpaceId};
 use crate::forms::{BASE32, SHORTEST, whole_reference};
 use crate::session_file::Reader;
 use crate::state::{Error, Resend, State};
-
-/// The setting of how long a message a path gave waits for its confirmation, in seconds, before it
-/// goes by the next path; for tests.
-pub const RESEND_SETTING: &str = "SKALD_RESEND_AFTER";
-
-/// How long a message a path gave waits for its confirmation by default.
-pub const RESEND_AFTER: Duration = Duration::from_secs(30);
 
 /// The paths a signal goes by, in their order: `PostToolUse` or `UserPromptSubmit` within a turn,
 /// for a message whose signal did not go yet; `Stop`; `codex queue` once the session is idle; the
@@ -48,14 +40,6 @@ const SERVER: &str = "skald";
 
 /// How much of a rollout's first line [`readable`] reads at most.
 const FIRST_LINE_MOST: u64 = 1 << 20;
-
-/// How long a message a path gave waits for its confirmation: [`RESEND_SETTING`], or
-/// [`RESEND_AFTER`].
-pub fn resend_after() -> Duration {
-    (std::env::var(RESEND_SETTING).ok())
-        .and_then(|seconds| seconds.trim().parse().ok())
-        .map_or(RESEND_AFTER, Duration::from_secs)
-}
 
 /// The path by which a way that takes `first` for a message whose signal did not go, and `again`
 /// for one whose signal went, gives a message whose signal went as `resend` says, at `now`, with

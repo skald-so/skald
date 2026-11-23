@@ -138,9 +138,9 @@ pub fn confirms(state: &State, space: SpaceId, agent: &str) -> Result<bool, Stri
     )
 }
 
-/// Now and the resend timeout ([`codex_confirm::resend_after`]), in milliseconds.
+/// Now and the resend timeout ([`crate::resend::resend_after`]), in milliseconds.
 pub fn clock() -> (u64, u64) {
-    let timeout = codex_confirm::resend_after().as_millis();
+    let timeout = crate::resend::resend_after().as_millis();
     (
         crate::state::unix_millis(),
         u64::try_from(timeout).unwrap_or(u64::MAX),
