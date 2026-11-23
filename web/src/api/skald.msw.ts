@@ -1208,6 +1208,10 @@ export const getListSessionsResponseMock = (
   ).map(() => ({
     session: faker.string.uuid(),
     kind: faker.helpers.arrayElement(["web", "device"] as const),
+    sign_in_method: faker.helpers.arrayElement([
+      faker.helpers.arrayElement(Object.values(SignInProvider)),
+      undefined,
+    ]),
     browser: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
@@ -1240,6 +1244,10 @@ export const getListSessionsResponseMock200 = (
   ).map(() => ({
     session: faker.string.uuid(),
     kind: faker.helpers.arrayElement(["web", "device"] as const),
+    sign_in_method: faker.helpers.arrayElement([
+      faker.helpers.arrayElement(Object.values(SignInProvider)),
+      undefined,
+    ]),
     browser: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
       undefined,
@@ -1425,7 +1433,7 @@ export const getListSignInMethodsResponseMock = (
     (_, i) => i + 1,
   ).map(() => ({
     method: faker.string.uuid(),
-    provider: faker.helpers.arrayElement(["github", "google"] as const),
+    provider: faker.helpers.arrayElement(Object.values(SignInProvider)),
     linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     github_login: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),
@@ -1444,7 +1452,7 @@ export const getListSignInMethodsResponseMock200 = (
     (_, i) => i + 1,
   ).map(() => ({
     method: faker.string.uuid(),
-    provider: faker.helpers.arrayElement(["github", "google"] as const),
+    provider: faker.helpers.arrayElement(Object.values(SignInProvider)),
     linked_at: faker.date.past().toISOString().slice(0, 19) + "Z",
     github_login: faker.helpers.arrayElement([
       faker.string.alpha({ length: { min: 10, max: 20 } }),

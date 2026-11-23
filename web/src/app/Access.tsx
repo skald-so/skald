@@ -21,6 +21,7 @@ import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import styles from "./Access.module.css";
 import { signedIn, versioned } from "./api.ts";
 import { InviteLinks } from "./InviteLinks.tsx";
+import { providerNames } from "./names.ts";
 import { useInviteLinks, type InviteLinksData } from "./invites.ts";
 import { ago, date, until } from "./time.ts";
 
@@ -139,7 +140,15 @@ export function AccessScreen({
       sortable: true,
       width: "minmax(0, 0.8fr)",
       cell: (session) => (
-        <TwoLine>{session.kind === "web" ? "Web" : "CLI"}</TwoLine>
+        <TwoLine
+          detail={
+            session.kind === "web" &&
+            session.sign_in_method &&
+            providerNames[session.sign_in_method]
+          }
+        >
+          {session.kind === "web" ? "Web" : "CLI"}
+        </TwoLine>
       ),
     },
     {

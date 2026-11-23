@@ -405,7 +405,7 @@ fn due(read_at: Instant, now: Instant, key_refresh: Duration) -> bool {
 /// `issuer` as a URL, if it is an issuer: https, or http on a loopback address, with no user, query
 /// or fragment.
 pub fn issuer_url(issuer: &str) -> Result<Url, String> {
-    bare_url(issuer, "an issuer").map_err(|reason| format!("the issuer {issuer:?}: {reason}"))
+    bare_url(issuer, "an issuer")
 }
 
 /// `text` as a provider's URL with no user, query or fragment, such as an issuer or a bucket's

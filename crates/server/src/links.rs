@@ -15,9 +15,9 @@ use crate::accounts::{GITHUB, Method};
 use crate::refusal::{Refusal, answer};
 use crate::sessions::{self, WEB_LIFETIME};
 use crate::sign_in::{
-    self, Failure, Flow, Provider, SignInSettings, escape, flows, form_page, form_page_failed,
-    from_this_server, off, param, provider_off, refresh_page, session_hashes, sign_in_links,
-    signed_in, start_with,
+    self, Failure, Flow, Provider, ProviderKind, SignInSettings, escape, flows, form_page,
+    form_page_failed, from_this_server, off, param, provider_off, refresh_page, session_hashes,
+    sign_in_links, signed_in, start_with,
 };
 
 /// The page of the account's sign-in methods.
@@ -52,13 +52,8 @@ struct Stored {
 }
 
 impl Stored {
-    /// The provider's name in the API. The server's only OIDC provider is Google.
-    fn kind(&self) -> &'static str {
-        if self.provider == GITHUB {
-            "github"
-        } else {
-            "google"
-        }
+    fn kind(&self) -> ProviderKind {
+        ProviderKind::from_key(&self.provider)
     }
 }
 
@@ -121,9 +116,10 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
         .iter()
         .map(|method| {
             let name = match (method.kind(), &method.login) {
-                ("github", Some(login)) => format!("GitHub <strong>{}</strong>", escape(login)),
-                ("github", None) => "GitHub".to_owned(),
-                _ => "Google".to_owned(),
+                (ProviderKind::GitHub, Some(login)) => {
+                    format!("GitHub <strong>{}</strong>", escape(login))
+                }
+                (kind, _) => kind.label().to_owned(),
             };
             let at = &method.linked_at;
             format!(
@@ -135,11 +131,12 @@ pub(crate) async fn page(State(state): State<AppState>, headers: HeaderMap) -> R
         .collect();
     let forms: String = flows
         .iter()
-        .map(|flow| {
-            format!(
-                "<form method=\"post\" action=\"{}\"><button>Link {}</button></form>",
-                flow.link, flow.name
-            )
+        .filter_map(|flow| {
+            let link = flow.link?;
+            Some(format!(
+                "<form method=\"post\" action=\"{link}\"><button>Link {}</button></form>",
+                flow.name
+            ))
         })
         .collect();
     let body = format!(
@@ -163,7 +160,7 @@ struct SignInMethods {
 #[derive(Serialize)]
 struct SignInMethod {
     method: String,
-    provider: &'static str,
+    provider: ProviderKind,
     linked_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     github_login: Option<String>,
