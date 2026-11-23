@@ -36,6 +36,8 @@ struct Devices {
     revocations: Vec<String>,
     #[serde(default)]
     records: Vec<String>,
+    #[serde(default)]
+    deleted: Vec<String>,
     /// The server's web address, in `Devices` alone.
     #[serde(default)]
     web: Option<String>,
@@ -188,10 +190,10 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
-/// it gives with those `state` holds; a certificate or revocation that does not decode counts as
-/// none. Prints the warning of each device given with a certificate other than the one `state`
-/// keeps ([`kept_certs`]). Records the server's web address the list names
-/// ([`crate::acceptances::record_web`]).
+/// it gives with those `state` holds, and the accounts it reports deleted; a certificate,
+/// revocation or account ID that does not decode counts as none. Prints the warning of each device
+/// given with a certificate other than the one `state` keeps ([`kept_certs`]). Records the server's
+/// web address the list names ([`crate::acceptances::record_web`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
@@ -247,11 +249,15 @@ fn decoded(body: &[u8]) -> Result<(SpaceDevices, Option<String>), String> {
     let records = (decoded(&devices.records).iter())
         .filter_map(|bytes| AccountRecord::from_cbor(bytes).ok())
         .collect();
+    let deleted = (devices.deleted.iter())
+        .filter_map(|id| id.parse().ok())
+        .collect();
     let given = SpaceDevices {
         ids,
         certs,
         revocations,
         records,
+        deleted,
     };
     Ok((given, devices.web))
 }
@@ -488,6 +494,7 @@ mod tests {
             certs,
             revocations,
             records: Vec::new(),
+            deleted: Default::default(),
         }
     }
 

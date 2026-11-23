@@ -81,9 +81,10 @@ pub fn admit(
     };
     for space in spaces.iter().filter(|space| due.contains(&space.id)) {
         let apart = apart(space.id);
-        follower.hold_notices = apart;
+        let held_notices = follower.hold_notices;
+        follower.hold_notices = held_notices || apart;
         let admitted = admit_to(follower, space, synced, apart);
-        follower.hold_notices = false;
+        follower.hold_notices = held_notices;
         if let Err(err) = admitted {
             tell(follower, apart, &format!("skald: warning: {err}"));
         }

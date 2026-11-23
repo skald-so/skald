@@ -2199,6 +2199,7 @@ mod tests {
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
                 records: Vec::new(),
+                deleted: Default::default(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);
