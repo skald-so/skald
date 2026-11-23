@@ -11217,6 +11217,11 @@
             "items": {
               "$ref": "#/components/schemas/Revocation"
             }
+          },
+          "web": {
+            "description": "The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, \"Invite\"); absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false
@@ -12566,6 +12571,11 @@
           "sign_in_method": {
             "description": "The provider a web session signed in with; only for a web session.",
             "$ref": "#/components/schemas/SignInProvider"
+          },
+          "web": {
+            "description": "The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, \"Invite\"); absent on a server without sign-in.",
+            "type": "string",
+            "format": "uri"
           }
         },
         "additionalProperties": false

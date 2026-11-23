@@ -65,6 +65,9 @@ struct Token {
 pub struct Account {
     pub account: String,
     pub username: String,
+    /// The server's web address, which invite links start with.
+    #[serde(default)]
+    pub web: Option<String>,
 }
 
 /// Why a sign-in failed.
@@ -611,6 +614,7 @@ fn take(
         }
     }
     state.set_account(&account.account, &account.username)?;
+    crate::acceptances::record_web(state, connection.server(), account.web.as_deref());
     println!(
         "Signed in to {} as {}.",
         connection.server(),
