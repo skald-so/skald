@@ -272,11 +272,7 @@ fn accepted(
     let body = match connection.get_as(&invite_path(link.invite), &reader.token) {
         Ok(body) => body,
         Err(connection::Error::Refused { status: 404, .. }) => {
-            return Err(
-                "the invite ended: the server no longer holds it, as it expired, was \
-                 revoked or admitted another account"
-                    .to_owned(),
-            );
+            return Err("the invite ended or is reserved for another account".to_owned());
         }
         Err(err) => return Err(text(err)),
     };

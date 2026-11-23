@@ -10,8 +10,11 @@ mod at_terminal;
 mod grants;
 #[path = "../history_common/mod.rs"]
 mod history_common;
+#[path = "../link_codes/linking.rs"]
+mod linking;
 #[path = "../recovery_key/terminal.rs"]
 mod terminal;
+use grants as terminal_grants;
 
 use skald_crypto::{InviteLink, check_acceptance};
 use skald_proto::{Acceptance, Cbor as _, SpaceId};
@@ -19,7 +22,7 @@ use skald_server::{Listed, SignUp};
 
 use history_common::*;
 
-use browser::{APPROVE, SIGN_IN_GITHUB, SUBMIT};
+use browser::{APPROVE, DENY, SIGN_IN_GITHUB, SUBMIT};
 use machine::Machine;
 use terminal::Terminal;
 use world::{ACME, Person, assert_secret_nowhere, create};
@@ -226,4 +229,43 @@ fn a_fresh_device_discovers_the_public_api_from_the_invites_web_address() {
     }
     let bob = world.person(bob, fresh, BOB_HOST);
     assert_accepted(cloud, &ada, space, &link, &bob);
+}
+
+#[test]
+fn after_browser_denial_a_fresh_device_can_link_and_accept() {
+    let (world, _front) = fixtures::fronted_with(|_| {});
+    let cloud = &world.cloud;
+    let ada = world.sign_up(7_305_410_031, ADA, "ada-inviting-laptop");
+    let carol = world.sign_up(7_305_410_032, CAROL, "carol-workstation");
+    let space = create(cloud, &ada, ACME).body().space;
+    let link = make_invite(&ada);
+    let (grants, tokens) = (cloud.grants().len(), cloud.tokens().len());
+    let host = "carol-new-laptop";
+    let fresh = Machine::new().with_host_name(host);
+
+    let mut run = open_invite(&fresh, &link);
+    let shown = run.wait_for("a link code", |shown| !linking::codes_in(shown).is_empty());
+    let code = linking::codes_in(&shown).pop().expect("a link code");
+    let grant = grants::shown_grant(cloud, &mut run, grants);
+    cloud.decide(&world.browser.page(), &carol.user, &grant, DENY);
+    run.wait_to_show("The code still works.");
+    let linked = linking::link_with(&carol, &code, host, linking::YES);
+    assert!(linked.success, "{}", linked.text);
+    let device = cloud.new_device(&carol.token, &[carol.device]);
+    let cert = cloud.cert(&carol.token, device).expect("a certificate");
+    assert_eq!(cert.body().issuer, Some(carol.device));
+
+    confirm_invite(&mut run);
+    let accepted = run.finish();
+    assert!(
+        accepted.success,
+        "{}",
+        accepted.text.replace(link.shown().as_str(), "")
+    );
+    assert_eq!(
+        cloud.tokens().len(),
+        tokens,
+        "the browser gave no device session"
+    );
+    assert_accepted(cloud, &ada, space, &link, &carol);
 }

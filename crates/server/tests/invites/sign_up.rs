@@ -13,7 +13,7 @@ use crate::common::device_flow::{DeviceFlow, Grant, INTERVAL, Poll, text};
 use crate::common::devices::{Device, Key, account_id, assert_taken, b64, master_request};
 use crate::common::sign_in::Account;
 use crate::rosters::{channel, first, next};
-use crate::scene::{Made, acceptance, gets_no_invite, made, wait_past};
+use crate::scene::{Made, acceptance, gets_no_invite, made, signed_acceptance, wait_past};
 use crate::wire::now;
 
 const LISTED: &str = "alice-spaces-standin,eve-spaces-standin,frank-spaces-standin,listed-invitee";
@@ -231,6 +231,73 @@ fn an_invite_signs_up_one_account_and_only_that_account_reads_and_accepts_it() {
     let waiting = setup.alice.session.waiting(setup.space);
     assert_eq!(waiting.len(), 1);
     assert_eq!(waiting[0].acceptance, entry);
+}
+
+#[test]
+fn two_sign_ups_started_together_leave_only_one_account_with_the_invite() {
+    let setup = Setup::new(3_817_710_041, true);
+    let flow = &setup.flow;
+    let browser = Browser::launch();
+    let invite = setup.invite();
+    let bob = flow.stand.user(3_817_710_043, "bob-concurrent-invitee");
+    let chris = flow.stand.user(3_817_710_044, "chris-concurrent-invitee");
+    let attempts = [&bob, &chris].map(|user| {
+        let grant = authorize(flow, &invite);
+        let page = browser.page();
+        let visit = page.goto(&flow.stand.github.asking_sign_in_url(user.id));
+        assert_eq!(visit.status, Some(200), "{visit:?}");
+        let opened = page.goto_settled(&grant.verification_uri_complete);
+        assert_eq!(opened.status, Some(200), "{opened:?}");
+        let provider = page.click_settled(&format!("{SIGN_IN_GITHUB} >> nth=0"));
+        assert_eq!(provider.status, Some(200), "{provider:?}");
+        (user, grant, page)
+    });
+    // Both browsers reach the provider's confirmation before either sends its callback.
+    let clicks = attempts.each_ref().map(|(_, _, page)| (page, "#authorize"));
+    let visits = browser.click_all(&clicks);
+    let mut statuses: Vec<_> = visits.iter().map(|visit| visit.status).collect();
+    statuses.sort_unstable();
+    assert_eq!(statuses, [Some(200), Some(403)], "{visits:?}");
+
+    gets_no_invite(&setup.eve, invite.id, Some(&invite), "reserved by sign-up");
+    assert_refused(
+        &setup
+            .eve
+            .session
+            .accept(invite.id, &acceptance(&invite, &setup.eve)),
+        "another account's acceptance",
+    );
+    for ((user, grant, page), visit) in attempts.into_iter().zip(visits) {
+        if visit.status == Some(403) {
+            assert_closed(flow, user, &page, &visit);
+            assert_eq!(flow.wait(&grant), Poll::Error("sign_up_closed".to_owned()));
+            continue;
+        }
+        let token = flow.approve(&page, &grant);
+        let account = flow.account_of(&token);
+        assert_eq!(account.github_login, user.login);
+        let session = Session::of_token(flow, &token);
+        assert_eq!(session.invite_response(invite.id).status, 200);
+        let master = Key::generate();
+        certify(&session, &account, &master);
+        let body = AcceptanceBody {
+            invite: invite.id,
+            account: account_id(&account),
+            master: master.public(),
+            handle: "newcomer".parse().expect("a handle"),
+            unknown: Unknown::default(),
+        };
+        let entry = signed_acceptance(&body, &invite.secret.invite_key());
+        assert_taken(&session.accept(invite.id, &entry));
+        let waiting: Vec<_> = setup
+            .alice
+            .session
+            .waiting(setup.space)
+            .into_iter()
+            .map(|item| item.acceptance)
+            .collect();
+        assert_eq!(waiting, [entry]);
+    }
 }
 
 #[test]

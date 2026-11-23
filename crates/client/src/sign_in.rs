@@ -489,7 +489,11 @@ impl Both<'_> {
             let token = match flow.taken() {
                 None => return Ok(false),
                 Some(Ok(token)) => token,
-                Some(Err(err)) if recovery || invite.is_some() => return Err(err),
+                Some(Err(err))
+                    if recovery || (invite.is_some() && matches!(err, Error::SignUpClosed)) =>
+                {
+                    return Err(err);
+                }
                 Some(Err(err)) => {
                     println!("The browser sign-in failed: {err}. The code still works.");
                     return Ok(false);
