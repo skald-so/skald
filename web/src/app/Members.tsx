@@ -48,10 +48,11 @@ function found(member: ListedMember, query: string): boolean {
   );
 }
 
-/** Whether the session's account is the only admin among `members`, and they are more than it. */
+/** Whether the session's account is the only remaining admin and has another remaining member. */
 function onlyAdmin(members: readonly ListedMember[]): boolean {
-  const admins = members.filter((member) => member.role === "admin");
-  return members.length > 1 && admins.length === 1 && admins[0]!.you === true;
+  const remaining = members.filter((member) => !member.deleted);
+  const admins = remaining.filter((member) => member.role === "admin");
+  return remaining.length > 1 && admins.length === 1 && admins[0]!.you === true;
 }
 
 const columns = (now: number): Column<ListedMember>[] => [
