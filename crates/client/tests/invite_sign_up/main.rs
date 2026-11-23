@@ -23,6 +23,7 @@ use skald_server::{Listed, SignUp};
 use history_common::*;
 
 use browser::{APPROVE, DENY, SIGN_IN_GITHUB, SUBMIT};
+use cloud::Providers;
 use machine::Machine;
 use terminal::Terminal;
 use world::{ACME, Person, assert_secret_nowhere, create};
@@ -85,7 +86,16 @@ fn assert_accepted(
 
 #[test]
 fn an_unlisted_person_signs_up_from_the_terminal_and_accepts() {
-    let (world, _front) = fixtures::fronted_with(|settings| {
+    unlisted_person_signs_up_and_accepts(Providers::GitHub);
+}
+
+#[test]
+fn with_corporate_enabled_an_unlisted_github_user_can_still_sign_up_with_an_invite() {
+    unlisted_person_signs_up_and_accepts(Providers::All);
+}
+
+fn unlisted_person_signs_up_and_accepts(providers: Providers) {
+    let (world, _front) = fixtures::fronted_for(providers, |settings| {
         settings.sign_up = SignUp::Closed(Listed {
             github_logins: vec![ADA.to_owned()],
             ..Listed::default()

@@ -1,17 +1,19 @@
 use skald_oidc_stand_in::{Key, Person, Provider};
 
-use super::common::browser::Browser;
+use super::common::browser::{
+    Browser, CODE_FIELD, SIGN_IN_CORPORATE, SIGN_IN_GITHUB, SIGN_IN_GOOGLE,
+};
 use super::common::google::HOST;
 use super::common::spa::{Spa, wait_for_cabinet, wait_until};
 use super::{Site, TestDb};
 
 #[test]
-fn the_first_corporate_cabinet_guides_machine_sign_in_only_when_available() {
+fn the_first_corporate_cabinet_guides_machine_sign_in() {
     let browser = Browser::launch();
     let key = Key::rsa();
     let person = Person::new("new-worker", "new-worker@example.test");
 
-    for github in [false, true] {
+    for github in [true, false] {
         let db = TestDb::create();
         let provider = Provider::start(std::slice::from_ref(&key));
         let spa = Spa::start(&browser, HOST);
@@ -33,23 +35,33 @@ fn the_first_corporate_cabinet_guides_machine_sign_in_only_when_available() {
             text.contains("No space yet.") && text.contains("No machines yet.")
         });
         let text = page.text();
-        for follow_up in ["to make your personal space", "to list it here"] {
-            assert_eq!(text.contains(follow_up), github, "{text}");
-        }
-        let prerequisite = "You need a linked GitHub sign-in method.";
-        assert_eq!(
-            text.matches(prerequisite).count(),
-            if github { 2 } else { 0 }
-        );
         page.goto(&spa.at("/access"));
         wait_until(&page, "Corporate in the Access session row", |page| {
             page.count("role=row >> text=Corporate") == 1
         });
-        if github {
-            let visit = page.goto(&spa.at("/device"));
-            assert_eq!(visit.status, Some(200), "{visit:?}");
-            assert_eq!(page.count("role=button[name=Approve]"), 0);
-            assert_eq!(page.count("role=link[name=/sign in with GitHub/i]"), 1);
+        let visit = page.goto_settled(&spa.at("/device"));
+        assert_eq!(visit.status, Some(200), "{visit:?}");
+        assert_eq!(page.count(CODE_FIELD), 1, "{}", page.text());
+        assert!(page.text().contains("new-worker"), "{}", page.text());
+
+        let signed_out = browser.page();
+        let visit = signed_out.goto_settled(&spa.at("/device"));
+        assert_eq!(visit.status, Some(200), "{visit:?}");
+        assert_eq!(
+            signed_out.count(SIGN_IN_CORPORATE),
+            1,
+            "{}",
+            signed_out.text()
+        );
+        assert_eq!(signed_out.count(SIGN_IN_GITHUB), usize::from(github));
+        assert_eq!(signed_out.count(SIGN_IN_GOOGLE), 0);
+
+        for follow_up in ["to make your personal space", "to list it here"] {
+            assert!(text.contains(follow_up), "{text}");
         }
+        assert!(
+            !text.contains("You need a linked GitHub sign-in method."),
+            "{text}"
+        );
     }
 }

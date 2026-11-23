@@ -28,6 +28,7 @@ pub const SUBMIT: &str = "role=button >> nth=0";
 pub const SIGN_IN_LINK: &str = "a:has-text('sign in'), button:has-text('sign in')";
 pub const SIGN_IN_GITHUB: &str = "a:has-text('GitHub'), button:has-text('GitHub')";
 pub const SIGN_IN_GOOGLE: &str = "a:has-text('Google'), button:has-text('Google')";
+pub const SIGN_IN_CORPORATE: &str = "a:has-text('Corporate'), button:has-text('Corporate')";
 
 /// A test's share of the browser: the pages and servers it opens, closed on drop.
 pub struct Browser {
