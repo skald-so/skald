@@ -25,6 +25,7 @@ pub const MAX_STEPS: usize = 3;
 pub const MAX_SECONDS: u64 = 5;
 pub const FIXTURE_SEND_LIMIT: u64 = 12;
 pub const FIXTURE_SERVER_NAME: &str = "skald.test";
+const MAX_P99_PUSH: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -53,7 +54,7 @@ impl Settings {
         if !(1..=MAX_SECONDS).contains(&self.seconds) || !(1..=256).contains(&self.text_bytes) {
             return Err(format!("use 1 to {MAX_SECONDS} seconds and 1 to 256 text bytes").into());
         }
-        if self.max_p99_push > Duration::from_secs(2)
+        if self.max_p99_push > MAX_P99_PUSH
             || !self.min_history_per_second.is_finite()
             || self.min_history_per_second < 0.0
         {
@@ -138,6 +139,7 @@ pub struct Step {
     pub stored: usize,
     pub expected_pushes: usize,
     pub delivered: usize,
+    /// Message deliveries confirmed by the server's Delivered status for the recipient.
     pub acknowledged: usize,
     pub history_stored: usize,
     pub errors: Vec<String>,

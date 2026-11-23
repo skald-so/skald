@@ -1,24 +1,41 @@
 //! Paced sends, history uploads and per-recipient delivery checks.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 use std::time::{Duration, Instant};
 
-use skald_proto::{DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope};
+use skald_proto::{
+    DeliveryStatus, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, ServerStatus,
+};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::time::{Instant as TokioInstant, sleep_until, timeout_at};
 
 use crate::http::{Http, json as read_json, unb64};
 use crate::population::{ChannelAt, Device};
 use crate::socket::Socket;
-use crate::{Percentiles, Report, Result, Settings, Step};
+use crate::{MAX_P99_PUSH, Percentiles, Report, Result, Settings, Step};
 
-const DRAIN: Duration = Duration::from_millis(800);
+// After the last offer, leave room for Stored, the largest allowed push bound and its ACK.
+// Also collect out-of-bound pushes when the configured bound is tighter.
+const STORE_GRACE: Duration = Duration::from_secs(1);
+const ACK_GRACE: Duration = Duration::from_secs(1);
 const QUIET: Duration = Duration::from_millis(80);
 
-struct Event {
-    device: usize,
-    observed: Instant,
-    response: Result<Frame>,
+enum Event {
+    Frame {
+        device: usize,
+        observed: Instant,
+        frame: Frame,
+    },
+    AckFault {
+        device: usize,
+        seq: NonZeroU64,
+        error: String,
+    },
+    SocketFault {
+        device: usize,
+        error: String,
+    },
 }
 
 async fn serve(
@@ -36,10 +53,17 @@ async fn serve(
                 }
                 received = socket.next() => {
                     let (observed, frame) = received?;
-                    if let Frame::Push(Push::Message { seq, .. } | Push::Status { seq, .. }) = &frame {
-                        socket.send(&Frame::Ack { seq: *seq }).await?;
+                    let ack = match &frame {
+                        Frame::Push(Push::Message { seq, .. } | Push::Status { seq, .. }) => Some(*seq),
+                        _ => None,
+                    };
+                    if events.send(Event::Frame { device, observed, frame }).is_err() {
+                        return Ok(());
                     }
-                    if events.send(Event { device, observed, response: Ok(frame) }).is_err() {
+                    if let Some(seq) = ack
+                        && let Err(error) = socket.send(&Frame::Ack { seq }).await
+                    {
+                        let _ = events.send(Event::AckFault { device, seq, error: error.to_string() });
                         return Ok(());
                     }
                 }
@@ -48,10 +72,9 @@ async fn serve(
     }
     .await;
     if let Err(err) = result {
-        let _ = events.send(Event {
+        let _ = events.send(Event::SocketFault {
             device,
-            observed: Instant::now(),
-            response: Err(err),
+            error: err.to_string(),
         });
     }
 }
@@ -63,7 +86,12 @@ struct Sent {
     upload: u64,
     stored: Option<Instant>,
     history_answered: bool,
-    pushes: BTreeMap<usize, Instant>,
+    pushes: BTreeMap<usize, Received>,
+}
+
+struct Received {
+    observed: Instant,
+    acknowledged: bool,
 }
 
 struct Checks {
@@ -71,6 +99,7 @@ struct Checks {
     order: Vec<Vec<MessageId>>,
     highest: Vec<u64>,
     errors: Vec<String>,
+    ack_errors: Vec<String>,
     last: Instant,
 }
 
@@ -81,20 +110,34 @@ impl Checks {
             order: vec![Vec::new(); devices],
             highest: vec![0; devices],
             errors: Vec::new(),
+            ack_errors: Vec::new(),
             last: start,
         }
     }
 
-    fn observe(&mut self, event: Event, at: ChannelAt, workers: &[UnboundedSender<Frame>]) {
-        let Event {
-            device,
-            observed,
-            response,
-        } = event;
-        let frame = match response {
-            Ok(frame) => frame,
-            Err(err) => {
-                self.errors.push(format!("device {device}: {err}"));
+    fn observe(
+        &mut self,
+        event: Event,
+        at: ChannelAt,
+        devices: &[DeviceId],
+        workers: &[UnboundedSender<Frame>],
+    ) {
+        let (device, observed, frame) = match event {
+            Event::Frame {
+                device,
+                observed,
+                frame,
+            } => (device, observed, frame),
+            Event::AckFault { device, seq, error } => {
+                self.ack_errors.push(format!(
+                    "ACK write for mailbox sequence {seq} on {} failed: {error}",
+                    devices[device]
+                ));
+                return;
+            }
+            Event::SocketFault { device, error } => {
+                self.errors
+                    .push(format!("device {}: {error}", devices[device]));
                 return;
             }
         };
@@ -176,20 +219,52 @@ impl Checks {
                     ));
                 }
                 self.highest[device] = seq.get();
-                sent.pushes.insert(device, observed);
+                sent.pushes.insert(
+                    device,
+                    Received {
+                        observed,
+                        acknowledged: false,
+                    },
+                );
                 self.order[device].push(msg);
                 self.last = self.last.max(observed);
             }
+            Frame::Push(Push::Status { status, .. }) => self.confirm(device, status, devices),
             _ => {}
+        }
+    }
+
+    fn confirm(&mut self, sender: usize, status: DeliveryStatus, devices: &[DeviceId]) {
+        let message = status.msg_id;
+        let recipient = status.device;
+        let push = self
+            .sent
+            .get_mut(&message)
+            .filter(|sent| sent.device == sender)
+            .and_then(|sent| {
+                devices
+                    .iter()
+                    .position(|&id| id == recipient)
+                    .and_then(|device| sent.pushes.get_mut(&device))
+            });
+        match push {
+            Some(push) if status.status == ServerStatus::Delivered && !push.acknowledged => {
+                push.acknowledged = true;
+            }
+            _ => self.ack_errors.push(format!(
+                "unexpected {:?} confirmation of {message} for device {recipient}",
+                status.status
+            )),
         }
     }
 
     fn complete(&self, attempted: usize, devices: usize) -> bool {
         self.sent.len() == attempted
-            && self
-                .sent
-                .values()
-                .all(|sent| sent.history_answered && sent.pushes.len() == devices - 1)
+            && self.sent.values().all(|sent| {
+                sent.history_answered
+                    && sent.pushes.len() == devices - 1
+                    && sent.pushes.values().all(|push| push.acknowledged)
+            })
     }
 
     fn check_order(&mut self, devices: &[DeviceId]) {
@@ -242,12 +317,13 @@ impl Checks {
         let mut stored = 0;
         let mut history_stored = 0;
         let mut delivered = 0;
+        let mut acknowledged = 0;
         for (id, sent) in &self.sent {
             if let Some(stored_at) = sent.stored {
                 stored += 1;
-                for &observed in sent.pushes.values() {
-                    before += usize::from(observed < stored_at);
-                    latencies.push(observed.saturating_duration_since(stored_at));
+                for push in sent.pushes.values() {
+                    before += usize::from(push.observed < stored_at);
+                    latencies.push(push.observed.saturating_duration_since(stored_at));
                 }
             } else {
                 self.errors.push(format!("no Stored for {id}"));
@@ -266,8 +342,15 @@ impl Checks {
                 if recipient == sent.device {
                     continue;
                 }
-                if sent.pushes.contains_key(&recipient) {
+                if let Some(push) = sent.pushes.get(&recipient) {
                     delivered += 1;
+                    if push.acknowledged {
+                        acknowledged += 1;
+                    } else {
+                        self.ack_errors.push(format!(
+                            "no ACK confirmation for message {id} on device {device}"
+                        ));
+                    }
                 } else {
                     self.errors
                         .push(format!("lost message {id} for device {device}"));
@@ -282,6 +365,8 @@ impl Checks {
         let push_latency_ms = percentiles(&mut latencies);
         let failed_check = if !self.errors.is_empty() {
             Some("delivery_integrity")
+        } else if !self.ack_errors.is_empty() {
+            Some("acknowledgement")
         } else if push_latency_ms
             .as_ref()
             .is_some_and(|latency| latency.p99 > millis(settings.max_p99_push))
@@ -292,6 +377,7 @@ impl Checks {
         } else {
             None
         };
+        self.errors.append(&mut self.ack_errors);
         Step {
             offered_messages_per_second: rate,
             offered_seconds: settings.seconds,
@@ -304,7 +390,7 @@ impl Checks {
             stored,
             expected_pushes: self.sent.len() * (devices.len() - 1),
             delivered,
-            acknowledged: delivered,
+            acknowledged,
             history_stored,
             errors: self.errors,
             failed_check,
@@ -384,23 +470,38 @@ impl Work<'_> {
         Ok(())
     }
 
-    async fn observe_until(&mut self, checks: &mut Checks, deadline: Instant) {
+    async fn observe_next(&mut self, checks: &mut Checks, deadline: Instant) -> bool {
         let deadline = TokioInstant::from_std(deadline);
-        loop {
-            if TokioInstant::now() >= deadline {
-                return;
+        if TokioInstant::now() >= deadline {
+            return false;
+        }
+        match timeout_at(deadline, self.events.recv()).await {
+            Ok(Some(event)) => {
+                checks.observe(event, self.at, &self.ids, &self.workers);
+                true
             }
-            match timeout_at(deadline, self.events.recv()).await {
-                Ok(Some(event)) => checks.observe(event, self.at, &self.workers),
-                Err(_) => return,
-                Ok(None) => {
-                    checks
-                        .errors
-                        .push("all fixture connections ended".to_owned());
-                    sleep_until(deadline).await;
-                    return;
-                }
+            Err(_) => false,
+            Ok(None) => {
+                checks
+                    .errors
+                    .push("all fixture connections ended".to_owned());
+                false
             }
+        }
+    }
+
+    async fn observe_until(&mut self, checks: &mut Checks, deadline: Instant) {
+        while self.observe_next(checks, deadline).await {}
+        sleep_until(TokioInstant::from_std(deadline)).await;
+    }
+
+    async fn drain(&mut self, checks: &mut Checks, stops: Instant, planned: usize) {
+        let deadline = stops + STORE_GRACE + MAX_P99_PUSH + ACK_GRACE;
+        while !checks.complete(planned, self.devices.len())
+            && self.observe_next(checks, deadline).await
+        {}
+        if checks.complete(planned, self.devices.len()) {
+            self.observe_until(checks, Instant::now() + QUIET).await;
         }
     }
 
@@ -424,12 +525,7 @@ impl Work<'_> {
             scheduled = attempted_at + interval;
         }
         self.observe_until(&mut checks, stops).await;
-        let drain = if checks.complete(planned as usize, self.devices.len()) {
-            QUIET
-        } else {
-            DRAIN
-        };
-        self.observe_until(&mut checks, stops + drain).await;
+        self.drain(&mut checks, stops, planned as usize).await;
         let kept = match read_history(self.http, self.at, &self.devices[0]) {
             Ok(kept) => kept,
             Err(err) => {
