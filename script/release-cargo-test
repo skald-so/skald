@@ -163,6 +163,16 @@ try {
   }
 
   const cli = packages.get('skald-so');
+  const sourceMigrations = path.join(root, 'crates/client/migrations');
+  const packedMigrations = path.join(cli.dir, 'migrations');
+  const migrations = fs.readdirSync(sourceMigrations).filter((file) => file.endsWith('.sql')).sort();
+  assert.deepEqual(fs.readdirSync(packedMigrations).sort(), migrations,
+    'skald-so must contain every release migration');
+  for (const file of migrations) {
+    assert(fs.readFileSync(path.join(packedMigrations, file)).equals(fs.readFileSync(path.join(sourceMigrations, file))),
+      `skald-so migration ${file} differs from the release source`);
+  }
+
   const localNames = new Set([...workspace.map((pkg) => pkg.name), ...packages.keys()]);
   const runtimeDeps = (pkg) => pkg.dependencies.filter((dep) => dep.kind !== 'dev' && localNames.has(dep.name));
   const needed = new Set(['skald-so']);
