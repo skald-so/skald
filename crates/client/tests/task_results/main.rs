@@ -37,22 +37,21 @@ mod dropped;
 mod stateless;
 mod taken;
 
-// The modules the tests of the channel history share (`history_common/mod.rs`), the second
-// machines of the tests of the history on new devices and the helpers of the tests of reading the
-// history they need.
+// The modules the tests of the channel history share (`history_common/mod.rs`).
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
-#[path = "../history_devices/devices.rs"]
-mod devices;
-#[path = "../history_reading/reading.rs"]
-mod reading;
 
 // The modules the tests of tasks after their claim share (`task_common/mod.rs`): Ada's agents,
-// what an agent reads, the senders, the queue commands, the task states and the claims.
+// what an agent reads, the senders, the queue commands, the task states, the claims, Ada's second
+// machine and the helpers of reading the history.
 #[path = "../task_common/mod.rs"]
 mod task_common;
 use task_common::*;
+
+// The scene of the acceptance tests of task results.
+#[path = "../task_results_acceptance/returns.rs"]
+mod returns;
 
 // The stateless service agent of the tests of stateless agents, with the member agents and the
 // commands and secrets of the tests of service agents it needs.

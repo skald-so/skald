@@ -1544,8 +1544,7 @@ pub(crate) fn kept_line(
                 .and_then(|reply_to| reply_to.parse::<MessageId>().ok())
                 .map(|reply_to| references.of(reply_to));
             let shown_id = match &record.result {
-                Some(result) => (result.task.parse::<TaskId>())
-                    .map_or(msg_id, |task| MessageId::from_bytes(*task.as_bytes())),
+                Some(result) => (result.task.parse::<TaskId>()).map_or(msg_id, forms::as_message),
                 None => msg_id,
             };
             let line = record.shown(form, &references.of(shown_id), answered.as_deref());

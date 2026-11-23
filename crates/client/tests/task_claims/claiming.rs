@@ -22,8 +22,8 @@ use crate::fixtures::{CHANNEL, hex};
 use crate::machine::{Finished, Machine};
 use crate::played::Played;
 use crate::queuing::{
-    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks_path,
-    the_one_task,
+    default_queue, enqueued, proved, proved_with, queues_path, refers_to_task, run_in, tasks,
+    tasks_path, the_one_task,
 };
 use crate::senders::{LAPTOP_AGENT, Senders};
 use crate::states;
@@ -37,10 +37,10 @@ pub const COMPLETE: &str = "complete";
 pub const FAIL: &str = "fail";
 
 /// Their options.
-pub const QUEUE_FLAG: &str = "--queue";
+pub use crate::lines::JSON_FLAG;
+pub use crate::queuing::QUEUE_FLAG;
 pub const PROGRESS_FLAG: &str = "--progress";
 pub const RETRY_FLAG: &str = "--retry";
-pub const JSON_FLAG: &str = "--json";
 
 /// The states, progress and reasons of a task as the server gives them.
 pub use crate::states::{
@@ -85,6 +85,19 @@ impl Claims {
             channel: at.1.to_string(),
             queue,
         }
+    }
+
+    /// As [`Claims::new`], the server's copy of the queue `default` given a lease of `seconds`,
+    /// which may be below the range a queue's settings take, so the claims it hands out carry it.
+    #[track_caller]
+    pub fn with_lease(ids: [u64; 2], logins: [&str; 2], seconds: u64) -> Self {
+        let claims = Claims::new(ids, logins);
+        claims.cloud().execute(&format!(
+            "ALTER TABLE queues DROP CONSTRAINT IF EXISTS queues_lease_check;
+             UPDATE queues SET lease = {seconds} WHERE id = '{}'::uuid",
+            claims.queue
+        ));
+        claims
     }
 
     pub fn talk(&self) -> &Talk {
@@ -187,6 +200,38 @@ impl Claims {
         let claude = (self.senders.agents.folder.as_path(), Some(CLAUDE));
         enqueued(&self.ada().machine, claude, &[CHANNEL, &self.channel, text]);
         the_one_task(self.cloud(), self.ada(), self.at, self.queue).task
+    }
+
+    /// As `agent`, or the person with none, on `machine` in `dir`, `skald enqueue --channel
+    /// <channel> <args>`, which must succeed; gives the one task it added to `channel`'s queue
+    /// `default`.
+    #[track_caller]
+    pub fn enqueues(
+        &self,
+        (machine, dir, agent): (&Machine, &Path, Option<&str>),
+        channel: ChannelId,
+        args: &[&str],
+    ) -> TaskId {
+        let (cloud, ada) = (self.cloud(), self.ada());
+        let at = (self.at.0, channel);
+        let queue = default_queue(cloud, ada, at);
+        let ids = || -> Vec<TaskId> {
+            (tasks(cloud, ada, at, queue).iter())
+                .map(|stored| stored.task.task)
+                .collect()
+        };
+        let before = ids();
+        let named = channel.to_string();
+        let mut all = vec![CHANNEL, named.as_str()];
+        all.extend_from_slice(args);
+        enqueued(machine, (dir, agent), &all);
+        let added: Vec<TaskId> = (ids().into_iter())
+            .filter(|task| !before.contains(task))
+            .collect();
+        let [one] = added.as_slice() else {
+            panic!("not one task enqueued in {channel}: {added:?}");
+        };
+        *one
     }
 
     /// A task `craft` makes, written as Ada's first device and uploaded with its proof; fails

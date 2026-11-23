@@ -7,22 +7,26 @@ function amount(value: number): string {
 }
 
 /**
- * A count against its limit, a card of 11-usage.png: what it counts, the count "of" the limit and
- * a bar that fills up to the limit. Without a limit, the count and "No limit", with no bar.
+ * The count against its limit or plan allowance, with a bar. An unlimited count has no bar.
  */
 export function UsageCard({
   label,
   count,
   limit,
+  planAllowance,
 }: {
   /** What it counts, as "Devices"; the bar's name starts with it. */
   label: string;
   count: number;
   /** None while no limit applies. */
   limit?: number;
+  /** Whether the limit comes from the plan's allowances. */
+  planAllowance?: boolean;
 }) {
   const id = useId();
   const full = limit !== undefined && count >= limit;
+  const limitText = limit === undefined ? "No limit" : `of ${amount(limit)}`;
+  const allowance = planAllowance ? " (plan allowance)" : "";
   // A count above zero shows on the bar, however small its share.
   const share =
     limit === undefined
@@ -35,9 +39,7 @@ export function UsageCard({
       </span>
       <span className={styles.value}>
         {amount(count)}{" "}
-        <span className={styles.limit}>
-          {limit === undefined ? "No limit" : `of ${amount(limit)}`}
-        </span>
+        <span className={styles.limit}>{limitText + allowance}</span>
       </span>
       {limit !== undefined && (
         <div
@@ -46,7 +48,7 @@ export function UsageCard({
           aria-valuemin={0}
           aria-valuemax={limit}
           aria-valuenow={count}
-          aria-valuetext={`${amount(count)} of ${amount(limit)}`}
+          aria-valuetext={`${amount(count)} ${limitText}${allowance}`}
           className={styles.bar}
         >
           <div

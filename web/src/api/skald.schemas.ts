@@ -310,12 +310,26 @@ export const ListedSessionKind = {
 } as const;
 
 /**
+ * The sign-in provider: GitHub, Google, or the corporate OpenID Connect issuer.
+ */
+export type SignInProvider =
+  (typeof SignInProvider)[keyof typeof SignInProvider];
+
+export const SignInProvider = {
+  github: "github",
+  google: "google",
+  corporate: "corporate",
+} as const;
+
+/**
  * A session of the account: a web session, from a sign-in in the browser, or a device session, from the device flow. No IP address or location.
  */
 export interface ListedSession {
   session: SessionId;
   /** `web` for a web session, `device` for a device session. */
   kind: ListedSessionKind;
+  /** The provider a web session signed in with; only for a web session. */
+  sign_in_method?: SignInProvider;
   /** A web session's browser, as the `User-Agent` of its sign-in names it, such as `Chrome`; only when it names a known one. */
   browser?: string;
   /** A web session's operating system, as the `User-Agent` of its sign-in names it, such as `macOS`; only when it names a known one. */
@@ -342,23 +356,11 @@ export interface Sessions {
 export type SignInMethodId = string;
 
 /**
- * `github`, or `google` for the server's OIDC provider.
- */
-export type SignInMethodProvider =
-  (typeof SignInMethodProvider)[keyof typeof SignInMethodProvider];
-
-export const SignInMethodProvider = {
-  github: "github",
-  google: "google",
-} as const;
-
-/**
  * A sign-in method: a provider and the subject it gives the person, which the server does not show.
  */
 export interface SignInMethod {
   method: SignInMethodId;
-  /** `github`, or `google` for the server's OIDC provider. */
-  provider: SignInMethodProvider;
+  provider: SignInProvider;
   /** When the method was linked, or the account created with it. */
   linked_at: string;
   /** A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub. */
@@ -426,17 +428,6 @@ export type SignInProvidersSignUp =
 export const SignInProvidersSignUp = {
   open: "open",
   closed: "closed",
-} as const;
-
-/**
- * A sign-in provider: `github`, or `google` for the server's OIDC provider.
- */
-export type SignInProvider =
-  (typeof SignInProvider)[keyof typeof SignInProvider];
-
-export const SignInProvider = {
-  github: "github",
-  google: "google",
 } as const;
 
 export interface SignInProviders {
@@ -876,6 +867,16 @@ export interface ServiceTokens {
 }
 
 /**
+ * The space's effective cloud plan.
+ */
+export type SpacePlan = (typeof SpacePlan)[keyof typeof SpacePlan];
+
+export const SpacePlan = {
+  free: "free",
+  team: "team",
+} as const;
+
+/**
  * A limit; `limit` is absent while no limit applies.
  */
 export interface UsageLimit {
@@ -884,18 +885,25 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.
+ * A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.
  */
 export interface SpaceUsage {
-  /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
+  plan?: SpacePlan;
+  /** The plan allowance for space members. Team has no member limit. */
+  members?: UsageLimit;
+  /** The plan allowance for devices per space member. */
+  devices_per_member?: UsageLimit;
+  /** The space's messages this calendar month in UTC. Each message counts once regardless of its envelopes. Handshake messages are excluded. With plans off, the limit comes from `--monthly-messages-limit`. */
   monthly_messages: UsageCount;
-  /** The longest payload of an envelope, in bytes: the value of `--message-size-limit`. */
+  /** The message text size allowance in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`. */
   message_size: UsageLimit;
-  /** How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`. */
+  /** The plan allowance for attachment size in bytes. */
+  attachment_size?: UsageLimit;
+  /** Undelivered message retention in seconds. With plans off, the limit comes from `--mailbox-retention`. */
   mailbox_retention: UsageLimit;
-  /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
+  /** Channel history retention in seconds. With plans off, the limit comes from `--history-retention`. */
   history_retention: UsageLimit;
-  /** The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`. */
+  /** Service agent entries in the space's latest revision. Before the first revision the count is zero. With plans off, the limit comes from `--service-agents-limit`. */
   service_agents: UsageCount;
 }
 

@@ -10,6 +10,7 @@
 		path /account/personal-space /account/revocations
 		path /account/sessions /account/sessions/end-others /account/sessions/*
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
+		path /auth/corporate /auth/corporate/callback
 		path /auth/device /auth/device/invite /auth/github /auth/github/callback /auth/github/link
 		path /auth/google /auth/google/callback /auth/google/link /auth/providers /auth/token
 		path /device /devices /devices/*/cert /devices/*/challenge /devices/*/key-packages
