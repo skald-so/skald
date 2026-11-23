@@ -11245,7 +11245,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "skald_session",
-        "description": "The web session that a sign-in in the browser gives, with GitHub or Google."
+        "description": "Cookie for a web session established in the browser through any configured sign-in provider."
       },
       "bearer": {
         "type": "http",
