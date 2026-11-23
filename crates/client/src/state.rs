@@ -2900,12 +2900,7 @@ impl State {
             .db
             .prepare("SELECT seq, channel, level, COALESCE(came, 0) FROM kept WHERE space = ?1")?;
         let rows = query.query_map(params![space.to_string()], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
+            <(i64, Option<String>, Option<String>, i64)>::try_from(row)
         })?;
         rows.map(|row| {
             let (seq, channel, level, came) = row?;
