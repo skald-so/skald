@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use skald_crypto::SealedState;
 use skald_proto::{
-    AccountId, ChannelId, DeviceId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId, TaskId,
-    WrapRecipient,
+    AccountId, ChannelId, DeviceId, InviteId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId,
+    TaskId, WrapRecipient,
 };
 
 use crate::gaps::{Counters, Source};
@@ -74,6 +74,19 @@ pub struct Session {
     pub account: Option<String>,
     /// The account's username, as the latest sign-in or `skald set-username` recorded it.
     pub username: Option<String>,
+}
+
+/// The acceptance of an invite the device accepted that no revision has admitted its account by
+/// yet ([`crate::acceptances`]).
+#[derive(Debug, PartialEq)]
+pub struct Acceptance {
+    pub invite: InviteId,
+    /// The space the device follows meanwhile.
+    pub space: SpaceId,
+    /// In CBOR.
+    pub acceptance: Vec<u8>,
+    /// Whether the server took it.
+    pub taken: bool,
 }
 
 /// The machine's own device, as the state holds it.
@@ -484,6 +497,20 @@ pub struct TaskOutgoing {
     pub queue: QueueId,
     /// Its `queued-task`, as it is uploaded every time.
     pub record: Vec<u8>,
+}
+
+/// A task the device enqueued, as its results are checked against it ([`crate::results`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Enqueued {
+    pub space: SpaceId,
+    /// Its channel and queue, and its content's `from`; none for a task an older client kept.
+    pub channel: Option<ChannelId>,
+    pub queue: Option<QueueId>,
+    pub author: Option<String>,
+    /// Its content's `to`, if any.
+    pub addressee: Option<String>,
+    /// The `msg_id` of the `done` result the device took as the task's, once it took one.
+    pub result: Option<MessageId>,
 }
 
 /// A claim the device holds ([`crate::claims`]).
@@ -1614,14 +1641,118 @@ impl State {
     /// Forgets the space `id`.
     pub fn remove_space(&self, id: SpaceId) -> Result<(), Error> {
         let tx = self.write()?;
-        let id = id.to_string();
-        tx.execute(
-            "DELETE FROM accepted_revision WHERE space = ?1",
-            params![id],
-        )?;
-        tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+        delete_space(&tx, id)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Follows the space `id` named `name` from `anchor`, in CBOR, unless it follows it already, and
+    /// records `acceptance`, in CBOR, of the invite `invite` to it, unless it holds one of the
+    /// invite: gives the acceptance it then holds of the invite.
+    pub fn add_acceptance(
+        &self,
+        (id, name, anchor): (SpaceId, &str, &[u8]),
+        invite: InviteId,
+        acceptance: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let tx = self.write()?;
+        tx.execute(
+            "INSERT INTO space (space, name, anchor, accepted, personal) VALUES (?1, ?2, ?3, ?3, 0)
+             ON CONFLICT (space) DO NOTHING",
+            params![id.to_string(), name, anchor],
+        )?;
+        tx.execute(
+            "INSERT INTO invite_acceptance (invite, space, acceptance) VALUES (?1, ?2, ?3)
+             ON CONFLICT (invite) DO NOTHING",
+            params![invite.to_string(), id.to_string(), acceptance],
+        )?;
+        let held = tx.query_row(
+            "SELECT acceptance FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(held)
+    }
+
+    /// The acceptances of the invites the device accepted that no revision has admitted its
+    /// account by yet.
+    pub fn acceptances(&self) -> Result<Vec<Acceptance>, Error> {
+        let mut query = self
+            .db
+            .prepare("SELECT invite, space, acceptance, taken FROM invite_acceptance")?;
+        let rows = query.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get(2)?,
+                row.get(3)?,
+            ))
+        })?;
+        rows.map(|row| {
+            let (invite, space, acceptance, taken) = row?;
+            let malformed = |what: &str| Error::Malformed(format!("the {what} of an acceptance"));
+            Ok(Acceptance {
+                invite: invite.parse().map_err(|_| malformed("invite"))?,
+                space: space.parse().map_err(|_| malformed("space"))?,
+                acceptance,
+                taken,
+            })
+        })
+        .collect()
+    }
+
+    /// Records that the server took the acceptance of the invite `invite`.
+    pub fn acceptance_taken(&self, invite: InviteId) -> Result<(), Error> {
+        self.db.execute(
+            "UPDATE invite_acceptance SET taken = 1 WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the acceptance of the invite `invite`: a revision admitted the device's account.
+    pub fn drop_acceptance(&self, invite: InviteId) -> Result<(), Error> {
+        self.db.execute(
+            "DELETE FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Forgets the acceptance of the invite `invite` and the space `id` it followed meanwhile: the
+    /// invite ended before a revision admitted the device's account.
+    pub fn end_acceptance(&self, invite: InviteId, id: SpaceId) -> Result<(), Error> {
+        let tx = self.write()?;
+        tx.execute(
+            "DELETE FROM invite_acceptance WHERE invite = ?1",
+            params![invite.to_string()],
+        )?;
+        delete_space(&tx, id)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Records `web`, an origin, as the web address of the server at `server`.
+    pub fn set_web(&self, server: &str, web: &str) -> Result<(), Error> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO server_web (server, web) VALUES (?1, ?2)",
+            params![server, web],
+        )?;
+        Ok(())
+    }
+
+    /// The web address of the server at `server`, if the state recorded it.
+    pub fn web(&self, server: &str) -> Result<Option<String>, Error> {
+        let web = self
+            .db
+            .query_row(
+                "SELECT web FROM server_web WHERE server = ?1",
+                params![server],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(web)
     }
 
     /// What the state holds of the space `id`, if it holds it: its last accepted revision and the
@@ -3932,9 +4063,15 @@ impl State {
     }
 
     /// Keeps `outgoing`, a task enqueued as `agent`, if any, until the server answers it, and
-    /// whose it is for good; the agent's next message or task counts only the `hops` of what is
-    /// handed to it from now on, as a message it sends does.
-    pub fn keep_task(&self, outgoing: &TaskOutgoing, agent: Option<&str>) -> Result<(), Error> {
+    /// whose it is for good, with its content's `from` and `to`, if any; the agent's next message
+    /// or task counts only the `hops` of what is handed to it from now on, as a message it sends
+    /// does.
+    pub fn keep_task(
+        &self,
+        outgoing: &TaskOutgoing,
+        agent: Option<&str>,
+        (author, addressee): (&str, Option<&str>),
+    ) -> Result<(), Error> {
         let tx = self.write()?;
         let space = outgoing.space.to_string();
         tx.execute(
@@ -3949,8 +4086,17 @@ impl State {
             ],
         )?;
         tx.execute(
-            "INSERT INTO enqueued_task (task, space, agent) VALUES (?1, ?2, ?3)",
-            params![outgoing.task.to_string(), space, agent],
+            "INSERT INTO enqueued_task (task, space, agent, channel, queue, author, addressee)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                outgoing.task.to_string(),
+                space,
+                agent,
+                outgoing.channel.to_string(),
+                outgoing.queue.to_string(),
+                author,
+                addressee
+            ],
         )?;
         if let Some(agent) = agent {
             tx.execute(
@@ -3996,6 +4142,56 @@ impl State {
             row.get::<_, String>(0)
         })?;
         tasks.map(|task| id("task ID", &task?)).collect()
+    }
+
+    /// The task `task`, if the device enqueued it.
+    pub fn enqueued(&self, task: TaskId) -> Result<Option<Enqueued>, Error> {
+        let row = self
+            .db
+            .query_row(
+                "SELECT space, channel, queue, author, addressee, result FROM enqueued_task
+                 WHERE task = ?1",
+                params![task.to_string()],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        [row.get::<_, Option<String>>(1)?, row.get(2)?],
+                        [row.get::<_, Option<String>>(3)?, row.get(4)?],
+                        row.get::<_, Option<String>>(5)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((space, [channel, queue], [author, addressee], result)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(Enqueued {
+            space: id("space ID", &space)?,
+            channel: channel.map(|it| id("channel ID", &it)).transpose()?,
+            queue: queue.map(|it| id("queue ID", &it)).transpose()?,
+            author,
+            addressee,
+            result: result.map(|it| id("message ID", &it)).transpose()?,
+        }))
+    }
+
+    /// Takes the `done` result `msg_id` as the result of the task `task` the device enqueued,
+    /// unless it took another one: whether it is the task's result.
+    pub fn take_result(&self, task: TaskId, msg_id: MessageId) -> Result<bool, Error> {
+        let (task, msg_id) = (task.to_string(), msg_id.to_string());
+        self.db.execute(
+            "UPDATE enqueued_task SET result = ?2 WHERE task = ?1 AND result IS NULL",
+            params![task, msg_id],
+        )?;
+        let taken: Option<Option<String>> = self
+            .db
+            .query_row(
+                "SELECT result FROM enqueued_task WHERE task = ?1",
+                params![task],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(taken.flatten() == Some(msg_id))
     }
 
     /// Takes the task `task` out of the outbox: the server answered it.
@@ -4767,6 +4963,17 @@ pub fn current(dir: &Path) -> bool {
     version.is_ok_and(|version| usize::try_from(version) == Ok(latest))
 }
 
+/// Forgets the space `id` in `tx`: its last accepted revision and the hashes of the earlier ones.
+fn delete_space(tx: &Transaction<'_>, id: SpaceId) -> Result<(), rusqlite::Error> {
+    let id = id.to_string();
+    tx.execute(
+        "DELETE FROM accepted_revision WHERE space = ?1",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM space WHERE space = ?1", params![id])?;
+    Ok(())
+}
+
 /// Applies the migrations `db` lacks, each in a transaction with its new `user_version`.
 fn migrate(db: &mut Connection) -> Result<(), Error> {
     let latest = u32::try_from(MIGRATIONS.len()).expect("migrations fit in u32");
@@ -5023,6 +5230,86 @@ pub(crate) mod tests {
         assert_eq!(
             state.device().unwrap().unwrap().account.as_deref(),
             Some("0190")
+        );
+    }
+
+    #[test]
+    fn an_acceptance_is_kept_with_its_space_until_admitted_or_ended() {
+        let dir = TestDir::new("state-acceptances");
+        let state = State::open(&dir).unwrap();
+        let (acme, globex) = (SpaceId::generate(), SpaceId::generate());
+        let (first, second) = (InviteId::generate(), InviteId::generate());
+        let held = state
+            .add_acceptance((acme, "acme", &[1]), first, &[7])
+            .unwrap();
+        assert_eq!(held, vec![7]);
+        // A second acceptance of the invite keeps the first.
+        let held = state
+            .add_acceptance((acme, "other", &[2]), first, &[8])
+            .unwrap();
+        assert_eq!(held, vec![7]);
+        state
+            .add_acceptance((globex, "globex", &[3]), second, &[9])
+            .unwrap();
+        let spaces = State::open(&dir).unwrap().spaces().unwrap();
+        let names: Vec<_> = spaces
+            .iter()
+            .map(|space| (space.name.as_str(), &space.anchor[..]))
+            .collect();
+        assert_eq!(names, vec![("acme", &[1][..]), ("globex", &[3][..])]);
+        state.acceptance_taken(first).unwrap();
+        let mut held = state.acceptances().unwrap();
+        held.sort_by_key(|acceptance| acceptance.acceptance.clone());
+        assert_eq!(
+            held,
+            vec![
+                Acceptance {
+                    invite: first,
+                    space: acme,
+                    acceptance: vec![7],
+                    taken: true
+                },
+                Acceptance {
+                    invite: second,
+                    space: globex,
+                    acceptance: vec![9],
+                    taken: false
+                },
+            ]
+        );
+        // Admitted: the space stays; ended: it goes.
+        state.drop_acceptance(first).unwrap();
+        state.end_acceptance(second, globex).unwrap();
+        assert_eq!(state.acceptances().unwrap(), vec![]);
+        let spaces = state.spaces().unwrap();
+        assert_eq!(
+            spaces.iter().map(|space| space.id).collect::<Vec<_>>(),
+            vec![acme]
+        );
+    }
+
+    #[test]
+    fn the_web_address_is_kept_per_server() {
+        let dir = TestDir::new("state-web");
+        let state = State::open(&dir).unwrap();
+        assert_eq!(state.web("https://api.one.test").unwrap(), None);
+        state
+            .set_web("https://api.one.test", "https://app.one.test")
+            .unwrap();
+        state
+            .set_web("https://api.one.test", "https://web.one.test")
+            .unwrap();
+        state
+            .set_web("https://two.test", "https://two.test")
+            .unwrap();
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.web("https://api.one.test").unwrap().as_deref(),
+            Some("https://web.one.test")
+        );
+        assert_eq!(
+            state.web("https://two.test").unwrap().as_deref(),
+            Some("https://two.test")
         );
     }
 
@@ -5708,12 +5995,16 @@ pub(crate) mod tests {
         let (first, second, third) = (task(1), task(2), task(3));
         assert_eq!(state.task_outbox().unwrap(), []);
 
-        state.keep_task(&first, None).unwrap();
+        let from = ("acme/ada@skald.test", None);
+        state.keep_task(&first, None, from).unwrap();
         assert_eq!(state.handed_hops(space, "claude").unwrap(), Some(3));
-        state.keep_task(&second, Some("claude")).unwrap();
+        state.keep_task(&second, Some("claude"), from).unwrap();
         assert_eq!(state.handed_hops(space, "claude").unwrap(), None);
-        state.keep_task(&third, Some("codex")).unwrap();
-        assert!(state.keep_task(&first, None).is_err(), "a task kept twice");
+        state.keep_task(&third, Some("codex"), from).unwrap();
+        assert!(
+            state.keep_task(&first, None, from).is_err(),
+            "a task kept twice"
+        );
         state.remove_task(second.task).unwrap();
 
         let state = State::open(&dir).unwrap();
@@ -5725,6 +6016,50 @@ pub(crate) mod tests {
         assert_eq!(own("gemini"), BTreeSet::new());
         let elsewhere = state.enqueued_by(SpaceId::generate(), "claude").unwrap();
         assert_eq!(elsewhere, BTreeSet::new());
+    }
+
+    /// A task the device enqueued keeps its channel, queue, `from` and `to` after it leaves the
+    /// outbox; the first `done` result taken is its result, again when taken again, and no other
+    /// one is. A task the device did not enqueue has none.
+    #[test]
+    fn enqueued_task_keeps_where_and_whose_it_is_and_its_first_taken_result() {
+        let dir = TestDir::new("state-task-result");
+        let state = State::open(&dir).unwrap();
+        let outgoing = TaskOutgoing {
+            task: TaskId::generate(),
+            space: SpaceId::generate(),
+            channel: ChannelId::generate(),
+            queue: QueueId::generate(),
+            record: vec![1; 3],
+        };
+        let (author, addressee) = ("acme/ada/claude@skald.test", "acme/ada/codex@skald.test");
+        state
+            .keep_task(&outgoing, Some("claude"), (author, Some(addressee)))
+            .unwrap();
+        state.remove_task(outgoing.task).unwrap();
+        let (first, second) = (MessageId::generate(), MessageId::generate());
+        let expected = |result| Enqueued {
+            space: outgoing.space,
+            channel: Some(outgoing.channel),
+            queue: Some(outgoing.queue),
+            author: Some(author.to_owned()),
+            addressee: Some(addressee.to_owned()),
+            result,
+        };
+        assert_eq!(state.enqueued(outgoing.task).unwrap(), Some(expected(None)));
+
+        assert!(state.take_result(outgoing.task, first).unwrap());
+        assert!(!state.take_result(outgoing.task, second).unwrap());
+        assert!(state.take_result(outgoing.task, first).unwrap());
+
+        let state = State::open(&dir).unwrap();
+        assert_eq!(
+            state.enqueued(outgoing.task).unwrap(),
+            Some(expected(Some(first)))
+        );
+        let other = TaskId::generate();
+        assert_eq!(state.enqueued(other).unwrap(), None);
+        assert!(!state.take_result(other, first).unwrap());
     }
 
     /// The highest `hops` handed over to an agent in a space counts until the device sends a

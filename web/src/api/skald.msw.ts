@@ -1785,6 +1785,7 @@ export const getGetDevicesResponseMock = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -1807,6 +1808,7 @@ export const getGetDevicesResponseMock200 = (
     { length: faker.number.int({ min: 1, max: 10 }) },
     (_, i) => i + 1,
   ).map(() => faker.helpers.fromRegExp("^[A-Za-z0-9_-]+$")),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2726,6 +2728,7 @@ export const getGetSessionResponseMock = (
     faker.helpers.arrayElement(Object.values(SignInProvider)),
     undefined,
   ]),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2744,6 +2747,7 @@ export const getGetSessionResponseMock200 = (
     faker.helpers.arrayElement(Object.values(SignInProvider)),
     undefined,
   ]),
+  web: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 

@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 use skald_crypto::{SigningKey, sign_anchors};
 use skald_proto::{AccountId, Anchors, AnchorsBody, Cbor as _, DeviceId, Roster, SpaceId, Unknown};
 
+pub use crate::anchors::anchored;
 use crate::{
-    anchors::held,
     cloud::Cloud,
     devices::second_machine,
     fixtures::fronted,
@@ -171,14 +171,6 @@ pub fn next_run(machine: &Machine) -> (Finished, Vec<String>) {
 pub fn warn_of(warnings: &[String], (name, space): (&str, SpaceId)) -> bool {
     let id = space.to_string().to_lowercase();
     (warnings.iter()).any(|line| line.contains(name) || line.contains(&id))
-}
-
-/// The hash of the revision of `space` that the anchors object the server holds of `person`'s
-/// device names, if the server holds one that names `space`.
-pub fn anchored(cloud: &Cloud, person: &Person, space: SpaceId) -> Option<[u8; 32]> {
-    (held(cloud, &person.token).into_iter())
-        .find(|object| object.device == person.device)
-        .and_then(|object| object.anchors.get(&space).copied())
 }
 
 /// Ada's third device is linked, and her second machine runs. Her first machine creates `acme`, so

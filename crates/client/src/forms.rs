@@ -127,6 +127,16 @@ pub struct Message {
     /// The agents of this device it is for whose inbound mode refused it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refused: Vec<String>,
+    /// The task and outcome, if it is a task's result: its line then names the task's reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ResultOf>,
+}
+
+/// What a task's result names: the task, by its ID in text form, and `done` or `failed`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResultOf {
+    pub task: String,
+    pub outcome: String,
 }
 
 /// The level of a kept message that has none.
@@ -149,8 +159,8 @@ mod level {
 }
 
 impl Message {
-    /// How `form` shows it, `reference` its reference and `answered` that of the message it
-    /// answers, if it is a reply.
+    /// How `form` shows it, `reference` its reference, or its task's if it is a result, and
+    /// `answered` that of the message it answers, if it is a reply.
     pub fn shown(&self, form: Form, reference: &str, answered: Option<&str>) -> String {
         match form {
             Form::Full => {
@@ -166,10 +176,16 @@ impl Message {
                     [agent] => format!(", refused for its agent {agent}"),
                     agents => format!(", refused for its agents {}", agents.join(", ")),
                 };
+                let what = match &self.result {
+                    Some(result) => format!(
+                        "The {} result {} of the task {}",
+                        result.outcome, self.msg_id, result.task
+                    ),
+                    None => format!("The message {}", self.msg_id),
+                };
                 format!(
-                    "The message {} in the channel {} from {} ({}), by the device {} ({}){after}\
-                     {reply}{refused}:\n  {}",
-                    self.msg_id,
+                    "{what} in the channel {} from {} ({}), by the device {} ({}){after}{reply}\
+                     {refused}:\n  {}",
                     self.channel,
                     self.from,
                     self.level,
@@ -186,8 +202,10 @@ impl Message {
                 };
                 let reply = answered
                     .map_or_else(String::new, |answered| format!(" (reply to #{answered})"));
+                let outcome = (self.result.as_ref())
+                    .map_or_else(String::new, |result| format!(" (task {})", result.outcome));
                 format!(
-                    "[{} · {} · {}] #{reference}{after}{reply}: {}",
+                    "[{} · {} · {}] #{reference}{after}{reply}{outcome}: {}",
                     self.sender(),
                     bracketed(&self.device_name),
                     self.level,
@@ -211,7 +229,14 @@ impl Message {
                 if !self.refused.is_empty() {
                     fields["refused"] = json!(self.refused);
                 }
-                object("message", fields)
+                match &self.result {
+                    Some(result) => {
+                        fields["task"] = json!(result.task);
+                        fields["outcome"] = json!(result.outcome);
+                        object("result", fields)
+                    }
+                    None => object("message", fields),
+                }
             }
         }
     }
@@ -474,6 +499,7 @@ mod tests {
             after_missing: false,
             reply_to: None,
             refused: Vec::new(),
+            result: None,
         }
     }
 
@@ -532,6 +558,45 @@ mod tests {
         ));
         let json: Value = serde_json::from_str(&message.shown(Form::Json, "6bx7", None)).unwrap();
         assert_eq!(json["refused"], json!(["claude"]));
+    }
+
+    /// A result's lines name its task and outcome: the person's the task's ID, an agent's the
+    /// reference it is given, the task's; its JSON object is a `result` with both.
+    #[test]
+    fn result_shows_its_task_and_outcome() {
+        let mut message = message();
+        let plain = message.clone();
+        message.result = Some(ResultOf {
+            task: "01a1dcab-eecf-768d-821b-95f7a4a8bd20".to_owned(),
+            outcome: "done".to_owned(),
+        });
+
+        let shown = |message: &Message, form| message.shown(form, "q2rd", None);
+        assert_eq!(
+            shown(&message, Form::Full),
+            shown(&plain, Form::Full).replacen(
+                "The message 01a1dcab-eecf-768d-821b-95f7a4a8bd19",
+                "The done result 01a1dcab-eecf-768d-821b-95f7a4a8bd19 of the task \
+                 01a1dcab-eecf-768d-821b-95f7a4a8bd20",
+                1
+            )
+        );
+        assert_eq!(
+            shown(&message, Form::Short),
+            shown(&plain, Form::Short).replacen("#q2rd:", "#q2rd (task done):", 1)
+        );
+        let json: Value = serde_json::from_str(&message.shown(Form::Json, "q2rd", None)).unwrap();
+        assert_eq!(json["type"], "result");
+        assert_eq!(json["ref"], "q2rd");
+        assert_eq!(json["task"], "01a1dcab-eecf-768d-821b-95f7a4a8bd20");
+        assert_eq!(json["outcome"], "done");
+        assert_eq!(json["msg_id"], "01a1dcab-eecf-768d-821b-95f7a4a8bd19");
+
+        let record = serde_json::to_vec(&message).unwrap();
+        assert_eq!(serde_json::from_slice::<Message>(&record).unwrap(), message);
+        message.result = None;
+        let record = serde_json::to_value(&message).unwrap();
+        assert!(record.get("result").is_none(), "{record}");
     }
 
     /// An agent's line names an agent sender as `owner/agent` and the level after the device,
