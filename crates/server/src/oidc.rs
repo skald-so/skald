@@ -8,13 +8,13 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ring::signature::{
     ECDSA_P256_SHA256_FIXED, RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents,
 };
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use url::{Host, Url};
+use url::{Host, Url, form_urlencoded};
 
 use crate::github::ClientSecret;
 use crate::http_client::{agent, json_body, printable};
@@ -191,6 +191,44 @@ struct Metadata {
     token_endpoint: String,
     jwks_uri: String,
     id_token_signing_alg_values_supported: Vec<String>,
+    token_endpoint_auth_methods_supported: Option<serde_json::Value>,
+}
+
+impl Metadata {
+    fn token_auth(&self) -> Result<TokenAuth, OidcError> {
+        // OIDC Discovery §3 defaults to Basic when the list is absent.
+        let Some(methods) = &self.token_endpoint_auth_methods_supported else {
+            return Ok(TokenAuth::Basic);
+        };
+        let methods = Vec::<&str>::deserialize(methods).map_err(|_| {
+            OidcError::Provider(
+                "the metadata's token authentication methods are malformed".to_owned(),
+            )
+        })?;
+        if methods.contains(&"client_secret_basic") {
+            Ok(TokenAuth::Basic)
+        } else if methods.contains(&"client_secret_post") {
+            Ok(TokenAuth::Post)
+        } else {
+            Err(OidcError::Provider(
+                "the metadata lists no supported token authentication method".to_owned(),
+            ))
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TokenAuth {
+    Basic,
+    Post,
+}
+
+/// The RFC 6749 §2.3.1 Basic credentials, with each component form-encoded separately.
+fn basic_credentials(client_id: &str, client_secret: &str) -> String {
+    let form_encode =
+        |value: &str| form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>();
+    let pair = format!("{}:{}", form_encode(client_id), form_encode(client_secret));
+    format!("Basic {}", STANDARD.encode(pair))
 }
 
 /// An OIDC provider, discovered; it checks the ID tokens it signs.
@@ -198,6 +236,7 @@ pub struct OidcProvider {
     settings: OidcSettings,
     authorization_endpoint: Url,
     token_endpoint: Url,
+    token_auth: TokenAuth,
     jwks_uri: Url,
     /// The algorithms of the metadata that the server verifies.
     algs: Vec<Alg>,
@@ -209,6 +248,20 @@ pub struct OidcProvider {
 impl OidcProvider {
     /// The provider of `settings`: checks the issuer, reads its metadata and its keys. Blocks.
     pub fn discover(settings: OidcSettings) -> Result<OidcProvider, OidcError> {
+        Self::discover_for_client(settings, Some(TokenAuth::Post))
+    }
+
+    /// Discovers a provider and selects the token endpoint's client authentication method.
+    pub(crate) fn discover_with_token_auth(
+        settings: OidcSettings,
+    ) -> Result<OidcProvider, OidcError> {
+        Self::discover_for_client(settings, None)
+    }
+
+    fn discover_for_client(
+        settings: OidcSettings,
+        registered_auth: Option<TokenAuth>,
+    ) -> Result<OidcProvider, OidcError> {
         let issuer = &settings.issuer;
         let url = issuer_url(issuer).map_err(OidcError::Issuer)?;
         let metadata_url = format!("{}{METADATA_PATH}", url.as_str().trim_end_matches('/'));
@@ -235,11 +288,16 @@ impl OidcProvider {
                 "the provider's metadata lists neither RS256 nor ES256 for ID tokens".to_owned(),
             ));
         }
+        let token_auth = match registered_auth {
+            Some(method) => method,
+            None => metadata.token_auth()?,
+        };
         let keys = read_keys(&jwks_uri).map_err(OidcError::Provider)?;
         Ok(OidcProvider {
             settings,
             authorization_endpoint,
             token_endpoint,
+            token_auth,
             jwks_uri,
             algs,
             keys: RwLock::new(Arc::new(keys)),
@@ -294,17 +352,27 @@ impl OidcProvider {
                 self.token_endpoint
             ))
         };
-        let response = agent()
+        let mut form = vec![
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("code_verifier", verifier),
+        ];
+        let request = agent()
             .post(self.token_endpoint.as_str())
-            .header("accept", "application/json")
-            .send_form([
-                ("grant_type", "authorization_code"),
-                ("code", code),
-                ("redirect_uri", redirect_uri),
-                ("client_id", self.settings.client_id.as_str()),
-                ("client_secret", self.settings.client_secret.expose()),
-                ("code_verifier", verifier),
-            ]);
+            .header("accept", "application/json");
+        let client_id = self.settings.client_id.as_str();
+        let client_secret = self.settings.client_secret.expose();
+        let request = match self.token_auth {
+            TokenAuth::Basic => {
+                request.header("authorization", basic_credentials(client_id, client_secret))
+            }
+            TokenAuth::Post => {
+                form.extend([("client_id", client_id), ("client_secret", client_secret)]);
+                request
+            }
+        };
+        let response = request.send_form(form);
         let mut response = response.map_err(|err| failed(format!("is unreachable: {err}")))?;
         let status = response.status();
         let body = response

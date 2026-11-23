@@ -4,8 +4,10 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+mod client_auth;
 mod flow;
 mod settings;
+mod web;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -25,8 +27,8 @@ const CALLBACK: &str = "/auth/corporate/callback";
 const ISSUER_FLAG: &str = "--corporate-issuer";
 const CLIENT_FLAG: &str = "--corporate-client-id";
 const SECRET_ENV: &str = "SKALD_CORPORATE_CLIENT_SECRET";
-const CLIENT_ID: &str = "skald-stand-in-corporate-client";
-const CLIENT_SECRET: &str = "stand-in-corporate-secret-9baf0637f00e";
+const CLIENT_ID: &str = "skald+stand-in:corporate";
+const CLIENT_SECRET: &str = "stand-in-corporate-secret-9baf0637f00e+%&:";
 const PROVIDERS: &str = "/auth/providers";
 const SESSION: &str = "/session";
 const SESSIONS: &str = "/account/sessions";
@@ -40,8 +42,18 @@ struct Site {
 
 impl Site {
     fn start(db: &TestDb, corporate: &Provider, google: Option<&Provider>, github: bool) -> Self {
+        Self::with_web(db, corporate, google, github, None)
+    }
+
+    fn with_web(
+        db: &TestDb,
+        corporate: &Provider,
+        google: Option<&Provider>,
+        github: bool,
+        web: Option<&str>,
+    ) -> Self {
         on_free_port(Duration::from_secs(30), |port| {
-            let web = format!("http://skald.test:{port}");
+            let web = web.map_or_else(|| format!("http://skald.test:{port}"), str::to_owned);
             corporate.register(Client {
                 client_id: CLIENT_ID.to_owned(),
                 client_secret: CLIENT_SECRET.to_owned(),

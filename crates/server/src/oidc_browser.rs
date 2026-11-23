@@ -78,9 +78,15 @@ impl<I: Issuer> OidcSignIn<I> {
             return Ok(provider);
         }
         let settings = self.settings.clone();
-        let provider = blocking(Self::NAME, move || OidcProvider::discover(settings))
-            .await?
-            .map_err(|err| Self::failed(err, "could not discover the issuer"))?;
+        let provider = blocking(Self::NAME, move || {
+            if I::KIND == ProviderKind::Corporate {
+                OidcProvider::discover_with_token_auth(settings)
+            } else {
+                OidcProvider::discover(settings)
+            }
+        })
+        .await?
+        .map_err(|err| Self::failed(err, "could not discover the issuer"))?;
         let provider = Arc::new(provider);
         *self.provider.lock().unwrap_or_else(PoisonError::into_inner) = Some(provider.clone());
         Ok(provider)

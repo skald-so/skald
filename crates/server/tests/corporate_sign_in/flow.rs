@@ -198,6 +198,7 @@ fn start_callback_session_and_methods_match_openapi() {
     let sessions = body["sessions"].as_array().expect("a session list");
     assert_eq!(sessions.len(), 1, "{body}");
     assert_eq!(sessions[0]["kind"], "web", "{body}");
+    assert_eq!(sessions[0]["sign_in_method"], "corporate", "{body}");
     assert_eq!(sessions[0]["current"], true, "{body}");
 }
 

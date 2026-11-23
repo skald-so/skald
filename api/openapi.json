@@ -3096,7 +3096,7 @@
             }
           },
           "502": {
-            "description": "The corporate issuer is unreachable, or its metadata or keys are malformed.",
+            "description": "The corporate issuer is unreachable, its metadata or keys are malformed, or it advertises no supported client authentication method.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -3117,7 +3117,7 @@
       "get": {
         "operationId": "finishCorporateSignIn",
         "summary": "The corporate sign-in callback",
-        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` using the client credentials and PKCE verifier, and validates the ID token and its `nonce`. With open sign-up the first sign-in creates an account bound to the validated issuer and subject. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The server keeps no email or tokens from the issuer.",
+        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` with the PKCE verifier and client credentials, and validates the ID token and its `nonce`. With open sign-up the first sign-in creates an account bound to the validated issuer and subject. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The token request uses `client_secret_basic` by default or when advertised, and `client_secret_post` when the issuer advertises it without Basic. The server keeps no email or tokens from the issuer.",
         "parameters": [
           {
             "name": "code",

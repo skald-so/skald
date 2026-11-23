@@ -4,6 +4,7 @@ import a11y from "../ui/a11y.module.css";
 import { Button } from "../ui/Button.tsx";
 import { GitHubIcon, GoogleIcon, LogoIcon } from "../ui/icons.tsx";
 import styles from "./SignInPage.module.css";
+import { machineSignIn } from "./machine-sign-in.ts";
 import { providerNames, signInPaths } from "./names.ts";
 
 const faces: Record<SignInProvider, { icon?: ReactNode; look?: string }> = {
@@ -29,9 +30,6 @@ export function SignInPage({
   const terminal = useId();
   const field = useId();
   const back = new URLSearchParams({ return_to: returnTo }).toString();
-  const deviceSignIn = providers.providers.some(
-    (provider) => provider !== "corporate",
-  );
 
   return (
     <CenteredPage>
@@ -64,7 +62,7 @@ export function SignInPage({
           )}
         </p>
       </section>
-      {deviceSignIn && (
+      {machineSignIn(providers.providers) !== "off" && (
         <section aria-labelledby={terminal} className={styles.card}>
           <h2 id={terminal}>Signing in from a terminal?</h2>
           <p className={styles.hint}>

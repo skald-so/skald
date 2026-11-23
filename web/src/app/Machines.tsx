@@ -12,6 +12,7 @@ import { sortRows, type Sort } from "../ui/sort.ts";
 import { StatusDot, type Tone } from "../ui/Status.tsx";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import { signedIn, versioned } from "./api.ts";
+import { MachineSignInHint } from "./MachineSignInHint.tsx";
 import { date } from "./time.ts";
 
 /** Each kind of device for people. */
@@ -127,8 +128,8 @@ export function MachinesScreen({
         loadingLabel="Loading devices"
         empty={
           <EmptyState>
-            No machines yet. Sign in a machine with <code>skald</code> to list
-            it here.
+            No machines yet.
+            <MachineSignInHint purpose="to list it here" />
           </EmptyState>
         }
         minWidth={560}

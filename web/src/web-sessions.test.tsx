@@ -41,6 +41,7 @@ const endOthersUrl = "/account/sessions/end-others";
 interface Listed {
   session: string;
   kind: "web" | "device";
+  sign_in_method?: "corporate";
   browser?: string;
   os?: string;
   device_name?: string;
@@ -322,10 +323,11 @@ test("Sign out in the account menu ends this web session and shows the sign-in p
 
 test("Access shows the current web session after corporate sign-in", async () => {
   signedInWith = "corporate";
+  listed = [{ ...chrome, sign_in_method: "corporate" }];
   await openAccess(userEvent.setup());
 
   const row = rowOf(/this session/i);
-  for (const part of ["Web", "Chrome", "macOS"])
+  for (const part of ["Web", "Corporate", "Chrome", "macOS"])
     expect(row.textContent).toContain(part);
   expect(revokes(row)).toHaveLength(0);
 });
