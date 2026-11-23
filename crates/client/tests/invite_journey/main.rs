@@ -36,6 +36,7 @@ mod terminal;
 mod world;
 use grants as terminal_grants;
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -73,6 +74,7 @@ fn journey(secret_file: &Path) {
         ..Listed::default()
     });
     let cloud = Cloud::fronted_with(HOST, spa.port, 120, 1, |settings| settings.sign_up = closed);
+    privacy::record_database(&cloud);
     spa.serve(&browser, &cloud.relay.url);
 
     let admin = browser.page_of_width(360);
@@ -103,7 +105,6 @@ fn journey(secret_file: &Path) {
         Terminal::start(&ada1, &["invite", ACME, "--channel", &other.to_string()]).finish();
     assert!(issued.success, "the admin creates the invite");
     let invite = Invite::from_terminal(&issued.text, &spa, secret_file);
-    invite.check_database(&cloud, "after the admin issued it");
     open_members(&admin, &spa);
     wait_until(&admin, "the pending invite in Members", |page| {
         page.count("main >> role=button[name=/^revoke member invite link/i]") == 1
@@ -126,7 +127,6 @@ fn journey(secret_file: &Path) {
     // The link the terminal shows carries the authorization into GitHub sign-in.
     grant.verification_uri = format!("{}?user_code={}", grant.verification_uri, grant.user_code);
     accept.wait_to_show(&grant.verification_uri);
-    invite.check_database(&cloud, "before approving the newcomer's sign-in");
     cloud.decide(&newcomer, &bob, &grant, APPROVE);
     accept.wait_to_show("Press Enter once it is written down:");
     accept.enter();
@@ -143,7 +143,6 @@ fn journey(secret_file: &Path) {
         "the new account accepts the invite"
     );
     let bob2 = link_device(&cloud, &bob1, HOSTS[3]);
-    invite.check_database(&cloud, "with the newcomer waiting");
 
     let admitted = command(&ada1, &["recv"]).shown();
     let announcement = format!("admitted {BOB} to the space {ACME}");
@@ -187,7 +186,7 @@ fn journey(secret_file: &Path) {
         "Members fits a narrow screen"
     );
 
-    invite.check_database(&cloud, "after admission");
+    invite.check_database(&cloud);
     invite.check_requests(&cloud, [&admin, &newcomer]);
 }
 
@@ -362,21 +361,44 @@ impl<'a> Agent<'a> {
             &["--agent", self.name],
             mcp::CLIENT,
         );
-        let listed = session.tools();
+        let mut cursors = HashSet::new();
+        let mut cursor = None;
+        let mut names = Vec::new();
+        loop {
+            let listed = session.tools_page(cursor.as_deref());
+            let tools = listed["tools"].as_array().expect("an MCP tool list");
+            for tool in tools {
+                names.push(tool["name"].as_str().expect("a tool name").to_owned());
+                assert!(
+                    !tool.to_string().to_lowercase().contains("invit"),
+                    "MCP advertises an invite capability"
+                );
+            }
+            let Some(next) = listed.get("nextCursor").filter(|next| !next.is_null()) else {
+                break;
+            };
+            let next = next.as_str().expect("an MCP pagination cursor").to_owned();
+            assert!(
+                cursors.insert(next.clone()),
+                "MCP repeated a pagination cursor"
+            );
+            cursor = Some(next);
+        }
         let (stdout, stderr) = session.finish();
         invite.assert_clean(&stdout, "MCP stdout");
         invite.assert_clean(&stderr, "MCP stderr");
-        let tools = listed["tools"].as_array().expect("an MCP tool list");
-        let names: Vec<_> = tools
-            .iter()
-            .map(|tool| tool["name"].as_str().expect("a tool name"))
-            .collect();
-        assert!(names.contains(&mcp::INBOX) && names.contains(&mcp::SEND_TOOL));
+        names.sort_unstable();
         assert!(
-            tools
-                .iter()
-                .all(|tool| !tool.to_string().to_lowercase().contains("invit")),
-            "MCP advertises an invite capability"
+            names
+                == [
+                    "agents",
+                    mcp::INBOX,
+                    "message_status",
+                    mcp::REPLY_TOOL,
+                    mcp::SEND_TOOL,
+                    "set_status"
+                ],
+            "MCP advertised an unexpected tool set"
         );
     }
 }

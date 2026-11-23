@@ -226,7 +226,17 @@ impl Session {
     /// The result of `tools/list`; fails unless there is one.
     #[track_caller]
     pub fn tools(&mut self) -> Value {
-        match self.request("tools/list", json!({})) {
+        self.tools_page(None)
+    }
+
+    /// Requests one `tools/list` page, starting from the supplied cursor if there is one.
+    #[track_caller]
+    pub fn tools_page(&mut self, cursor: Option<&str>) -> Value {
+        let params = match cursor {
+            Some(cursor) => json!({ "cursor": cursor }),
+            None => json!({}),
+        };
+        match self.request("tools/list", params) {
             Ok(result) => result,
             Err(error) => panic!("tools/list failed: {error}: {}", self.errors()),
         }

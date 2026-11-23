@@ -63,6 +63,42 @@ pub fn with_server_log(journey: fn(&Path)) {
     );
 }
 
+/// Keep every committed insert and update in the disposable database, even if the original row
+/// changes again or is deleted before the privacy check. The row history is read via `Cloud::rows`.
+pub fn record_database(cloud: &Cloud) {
+    cloud.execute(
+        "CREATE SCHEMA invite_journey_audit;
+         CREATE TABLE invite_journey_audit.row_writes (recorded_row jsonb NOT NULL);
+         CREATE FUNCTION invite_journey_audit.record_write() RETURNS trigger
+         LANGUAGE plpgsql SET bytea_output = 'hex' AS $$
+         BEGIN
+             INSERT INTO invite_journey_audit.row_writes VALUES (to_jsonb(NEW));
+             RETURN NULL;
+         END;
+         $$;",
+    );
+    // Release each table lock before taking the next, while the server's sweepers are running.
+    cloud.execute(
+        "DO $$
+         DECLARE target record;
+         BEGIN
+             FOR target IN
+                 SELECT table_schema, table_name FROM information_schema.tables
+                 WHERE table_type = 'BASE TABLE'
+                   AND table_schema NOT IN ('pg_catalog', 'information_schema', 'invite_journey_audit')
+                   AND table_name <> '_sqlx_migrations'
+             LOOP
+                 EXECUTE format('CREATE TRIGGER invite_journey_record_write
+                     AFTER INSERT OR UPDATE ON %I.%I FOR EACH ROW
+                     EXECUTE FUNCTION invite_journey_audit.record_write()',
+                     target.table_schema, target.table_name);
+                 COMMIT;
+             END LOOP;
+         END;
+         $$;",
+    );
+}
+
 pub struct Invite {
     link: Zeroizing<String>,
     parsed: InviteLink,
@@ -102,13 +138,15 @@ impl Invite {
         );
     }
 
-    pub fn check_database(&self, cloud: &Cloud, when: &str) {
+    pub fn check_database(&self, cloud: &Cloud) {
         let rows = cloud.rows();
         assert!(
-            rows.iter().any(|table| table.contains("<row>")),
-            "the database is populated"
+            rows.iter().any(|table| table.contains("<recorded_row>")),
+            "the row audit recorded database writes"
         );
-        self.assert_clean(rows.join("\n").as_bytes(), &format!("database rows {when}"));
+        for table in rows {
+            self.assert_clean(table.as_bytes(), "database rows and their write history");
+        }
     }
 
     pub fn check_requests(&self, cloud: &Cloud, [admin, newcomer]: [&Page; 2]) {
