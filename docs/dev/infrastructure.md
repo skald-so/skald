@@ -5,6 +5,7 @@
 PR (agent or contributor) → CI checks → dev → staging (automatic, :edge image)
 dev → a Release PR stays open (version + CHANGELOG)
 merge Release PR → tag vX.Y.Z → dist builds → GitHub Releases, npm, GHCR
+                                            → Homebrew tap (stable only)
                               → release check on every OS → main moves to the tag
                               → production (same image, one click)
 ```
@@ -18,6 +19,7 @@ A human takes one action per release: merging the Release PR.
 | Repository | Access | Contents |
 |---|---|---|
 | `skald-so/skald` | Public | Monorepo: code, docs, `docker-compose.yml` for self-hosting, Claude Code plugin marketplace |
+| `skald-so/homebrew-tap` | Public | Homebrew formula for the latest stable CLI |
 | `skald-so/skald-cloud` | Private | Production and staging configs, deployment, anti-abuse rules, runbooks, approved UI designs (`design/`) |
 
 ## Branches
@@ -46,6 +48,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - `script/changed-parts` marks it for the paths of the part `image`, `web/package.json`, `web/package-lock.json`, the paths of the web app's build, `docker-compose.yml`, `Caddyfile`, the guide and its tests.
 - **`cargo-deny`:** dependency licenses and vulnerabilities of every workspace crate, run by `script/deny`.
 - **Tooling:** tests of the scripts in `script/`, the staging deploy's against a local sshd and the staging status check's on recorded GitHub API responses, of the CI workflow (`script/ci-workflow-test`), of how the workflows a PR starts treat a draft (`script/draft-prs-workflow-test`), of the edge image and staging deploy workflow, of the Release PR workflow (`script/release-pr-workflow-test`, `script/release-tag-workflow-test`, `script/release-tag-step-test`) and of `script/install-git-cliff` and of the release workflow (`script/release-workflow-test`, `script/release-jobs-test`, `script/release-step-test`, `script/release-attest-test`, `script/release-image-test`, `script/release-npm-workflow-test`, `script/release-web-workflow-test`, `script/move-main-workflow-test`), and the move of `main` on fixture repositories (`script/move-main-test`); the release check against stand-ins for a release and the verification commands, and its jobs (`script/release-check-test`, `script/release-check-steps-test`, `script/release-check-workflow-test`); the Pages workflow (`script/pages-workflow-test`); the production deploy job (`script/production-deploy-workflow-test`); the installers and the npm package against a stand-in release on the machine that runs them (`script/installers-test`, `script/npm-package-test`); Renovate config validation.
+  - `script/release-homebrew-test` runs the publisher on a disposable Git tap and release fixtures. CI requires Homebrew to install and upgrade in an isolated prefix. The fixture checks the archive and checksum for each supported platform.
 - **Release PR and tag:** in the Rust code's part `repository`, on fixture repositories: `script/release-pr-test` and `script/release-tag-test`. `script/release-pr-test` also checks the section git-cliff writes for `v0.1.0` against `CHANGELOG.md`, so the Rust jobs check out the whole history and the tags.
 - **Website and docs:** `script/site-test`, the part `site`: `docs/` builds with `site/build.mjs`, which fails on a broken internal link: to a page, to a heading of one, or to a repository file outside `docs/` or its heading. `script/site-browser-test` checks the main page and a docs page in Chrome Headless Shell; `script/site-references-test`, the main page against its reference screenshots ("Website and docs"). `script/changed-parts` marks the part for `docs/`, `site/`, any Markdown file, a removed path that `docs/` links to or that lies in a directory it links to, and what the website and its tests take from `web/`: `src/theme/`, `kit-browser.ts`, `kit-references.ts` and its packages.
 - **Migrations:** `script/check-migrations`, in the Rust code's part `repository`, keeps the schema migrations append-only: [CONTRIBUTING.md](../../CONTRIBUTING.md#schema-migrations).
@@ -108,7 +111,11 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`).
   - It publishes with provenance; npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens.
   - The job's token writes nothing but `id-token`.
-- **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
+- **Homebrew:** `script/release-homebrew` downloads the latest stable immutable GitHub Release's four macOS and Linux archives and their checksums. It verifies their checksums and attestations, then generates `Formula/skald.rb` with the pinned dist release archive installed by `script/install-dist`.
+  - `script/publish-homebrew` fast-forwards the tap's `main` with one commit. A retry leaves an identical formula or a newer stable version in place.
+  - Before the first publish, initialize the public tap with a `main` branch. Add a write-enabled deploy key scoped to the tap and store its private key in `HOMEBREW_TAP_DEPLOY_KEY` in the source repository's `homebrew` environment. Restrict the environment to `v*` tags. Only the tap update step reads the key after verification.
+  - Set the source repository variable `HOMEBREW_TAP_ENABLED` to `true` once the tap and key are ready. Stable release checks wait for the publisher only when enabled.
+- **Release check:** on a push of a `v*` tag, once the GitHub Release, npm package, image and enabled stable Homebrew formula are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
   - Each runner installs the release with `install.sh`, or `install.ps1` on Windows, and with `npx skald-so`, and each `skald` prints the release's version. For a stable release with an earlier one, the release published before it, a beta included, that release's `skald` updates itself with `skald update` and then prints the release's version.
   - `skald update` asks GitHub's API without a token, so a runner's shared address can use up its rate limit. The check then waits for the limit's reset, at most 20 minutes, and runs it again; a later reset fails the step, naming the rate limit.
   - The `ubuntu-22.04` runner also verifies the release with the commands of "Trust in builds", pinned to its tag: the release is immutable, every file matches its checksum and has its attestation, the web app's archive matches its bundle, the image has its signature and attestation, and the npm package its provenance and the dist-tag `latest`, or `next` for a beta.
@@ -120,7 +127,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - The job's token writes nothing, and it requests no OIDC token.
 - **npm package:** `npx skald-so` downloads the release's archive for the machine's OS and architecture, checks it against its `.sha256` and runs `skald`; on a mismatch or a missing or empty checksum it stops and runs nothing. It unpacks the archive into the package's directory once, with a file `installed-by-npm` beside `skald`. `SKALD_DOWNLOAD_URL` sets where the release's files are, as for the installers.
   - It needs Node.js 22.11 or later; behind a proxy, 24.14 or later, or 25.4 or later: its downloads go through `HTTPS_PROXY` ([Network](architecture.md#network)) by Node.js's own proxy support, and on an older Node.js with a proxy set it stops and runs nothing.
-- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing. dist's own installers are not used.
+- **Installers:** `installers/install.sh` (macOS, Linux) and `installers/install.ps1` (Windows), with the release tag set by `script/release-installers`, download the release's archive for the machine's OS and architecture, check it against its `.sha256` and install `skald` so a new shell runs it. On a mismatch or a missing or empty checksum they stop and install nothing.
   - `install.sh`: into `~/.local/bin`. Unless that directory is on the running shell's `PATH` already, it adds it to `PATH` in `~/.profile`, in `~/.bash_profile` if there is one, in `~/.bashrc` if bash is installed, and in `.zshenv` if zsh is installed.
   - `install.ps1`: into `%LOCALAPPDATA%\Programs\skald`, added to the user's `PATH`.
   - `SKALD_INSTALL_DIR` sets the directory; `SKALD_DOWNLOAD_URL`, where the release's files are instead of GitHub.
@@ -149,6 +156,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 | Web app, `skald-web.tar.gz` | GitHub Releases + checksum + attestation bundle, `skald-web.tar.gz.sigstore.json` ("Release", "Web app") |
 | `install.sh`, `install.ps1` | GitHub Releases. The command with a code on the website downloads them and runs `skald connect` |
 | `npx skald-so` | npm |
+| `brew install skald-so/tap/skald` | Homebrew tap, stable macOS and Linux archives on x86_64 and arm64 |
 | `skald-server` image | GHCR. Each release publishes `:X.Y.Z`, a beta `:X.Y.Z-beta.N` ("Release", "Image"); every push to `dev` publishes `:edge` and a tag with its commit: `.github/workflows/edge.yml` |
 | Claude Code plugin | Monorepo marketplace, `.claude-plugin/marketplace.json`: `/plugin marketplace add skald-so/skald`. The plugin, `plugins/claude-code/`, comes from `main`, the latest stable release ("Release", "Main"), never from `dev` |
 | Website and docs | GitHub Pages, built from `docs/`: "Website and docs" below |
@@ -183,7 +191,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - The npm package's provenance, here of `vX.Y.Z`, with gh 2.97.0 or later: `npm pack skald-so@X.Y.Z`; `curl -fsSL https://registry.npmjs.org/-/npm/v1/attestations/skald-so@X.Y.Z | jq -c '.attestations[] | select(.predicateType == "https://slsa.dev/provenance/v1") | .bundle' >skald-so.jsonl`; then `gh attestation verify skald-so-X.Y.Z.tgz --bundle skald-so.jsonl --digest-alg sha512 --repo skald-so/skald --signer-workflow skald-so/skald/.github/workflows/release.yml --source-ref refs/tags/vX.Y.Z`. Provenance made on any other ref, or by another workflow or repository, fails it.
 - The release check runs these commands for every release once it is published ("Release", "Release check").
 - Workflows pin actions to a full commit SHA, and a repository setting requires it; the tools they install with `taiki-e/install-action` are pinned to exact versions and checked against checksums; git-cliff is installed from its release archive, checked against a SHA-256 ("Release").
-- dist is built from the commit of its release tag, each dependency checked against its `Cargo.lock`.
+- The release's binaries use dist built from the commit of its release tag, with dependencies checked against its `Cargo.lock`. The Homebrew publisher uses the same dist version with a pinned SHA-256.
 - Releases are immutable, a repository setting: a published release's files and checksums never change.
 - We publish to npm and crates.io via **trusted publishing** (OIDC); there are no long-lived tokens in CI.
 - The repository has `SECURITY.md`; private vulnerability reporting is enabled on GitHub.

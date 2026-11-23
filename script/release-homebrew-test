@@ -10,8 +10,8 @@ import { fileURLToPath } from 'node:url';
 import { reporter } from './lib/report.mjs';
 import { imageName, localTarget, releaseWorkflow, repository, serve, standInTools } from './lib/release-check-stub.mjs';
 import {
-  allNeeds, commands, event, isUnknown, jobsFor, needsOf, open, readWorkflow,
-  stepSkipped, template, toText,
+  allNeeds, commands, condition, event, isUnknown, jobsFor, needsOf, open, readWorkflow,
+  stepSkipped, template, toText, truth, usesStatus,
 } from './lib/workflows.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -35,17 +35,46 @@ if (publishers.length !== 1) {
 }
 
 const [[key, publisher]] = publishers;
-const publisherState = (ev) => jobsFor(workflow, ev)[key];
-const writesTap = (ev) => (publisher.steps ?? []).some((step) => step.run && !stepSkipped(step, publisherState(ev)));
+const varsFor = (enabled) => enabled ? { HOMEBREW_TAP_ENABLED: 'true' } : {};
+const publisherState = (ev, enabled = true) => {
+  const state = jobsFor(workflow, ev)[key];
+  const scope = { ...state.scope, contexts: { ...state.scope.contexts, vars: varsFor(enabled) } };
+  return { scope, skipped: state.skipped || truth(condition(publisher.if, scope)) === false };
+};
+const writesTap = (ev, enabled) => (publisher.steps ?? []).some((step) => step.run && !stepSkipped(step, publisherState(ev, enabled)));
 if (workflowOnly) {
-  if (!writesTap(push(stable))) fail(`${stable} does not run the Homebrew publisher`);
+  if (!writesTap(push(stable), true)) fail(`${stable} does not run the enabled Homebrew publisher`);
+  if (writesTap(push(stable), false)) fail(`${stable} runs the disabled Homebrew publisher`);
+  if (writesTap(push(beta), true)) fail(`${beta} runs the enabled Homebrew publisher`);
   const releaseJobs = Object.entries(workflow.jobs).filter(([, job]) =>
     (job.steps ?? []).some((step) => commands(step.run).some((line) => /\bgh\s+release\s+create\b/.test(line))));
   const needs = allNeeds(workflow.jobs, key);
   if (releaseJobs.length !== 1 || !needs.has(releaseJobs[0][0])) {
     fail('the tap can update before the GitHub release is published');
   }
+  const checker = Object.values(workflow.jobs).find((job) => job.uses === './.github/workflows/release-check.yml');
+  if (!checker) {
+    fail('the release workflow has no release check');
+  } else {
+    for (const [tag, enabled, tapResult, expected] of [
+      [stable, false, 'skipped', true],
+      [stable, true, 'success', true],
+      [stable, true, 'skipped', false],
+      [stable, true, 'failure', false],
+      [beta, true, 'skipped', true],
+    ]) {
+      const needs = Object.fromEntries(needsOf(checker).map((name) => [name, { result: name === key ? tapResult : 'success' }]));
+      const success = Object.values(needs).every((need) => need.result === 'success');
+      const scope = {
+        contexts: { github: push(tag).github, needs, vars: varsFor(enabled) },
+        status: { success, always: true, failure: tapResult === 'failure', cancelled: false },
+      };
+      const runs = (success || usesStatus(checker.if)) && truth(condition(checker.if, scope)) === true;
+      if (runs !== expected) fail(`wrong release check state for ${tag}, Homebrew enabled=${enabled}, result=${tapResult}`);
+    }
+  }
   done();
+  process.exit(0);
 }
 
 const platforms = [
@@ -178,13 +207,14 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
     const work = path.join(runner, 'checkout');
     fs.mkdirSync(work);
     for (const name of fs.readdirSync(root)) {
-      if (name === 'Cargo.toml' || name === 'release' || name === 'target' || name.startsWith('.')) continue;
+      if (name === 'Cargo.toml' || name === 'Cargo.lock' || name === 'release' || name === 'target' || name.startsWith('.')) continue;
       fs.symlinkSync(path.join(root, name), path.join(work, name));
     }
     const cargo = fs.readFileSync(path.join(root, 'Cargo.toml'), 'utf8').replace(
       /(\[workspace\.package\]\r?\nversion\s*=\s*)"[^"]+"/, `$1"${release.tag.slice(1)}"`,
     );
     fs.writeFileSync(path.join(work, 'Cargo.toml'), cargo);
+    fs.copyFileSync(path.join(root, 'Cargo.lock'), path.join(work, 'Cargo.lock'));
     git('-C', work, 'init');
     git('-C', work, 'remote', 'add', 'origin', `https://github.com/${repository}.git`);
     copy(release.local ?? release.dir, path.join(work, 'release'));
@@ -201,7 +231,7 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
         needs: Object.fromEntries(needsOf(publisher).map((name) => [name, { result: 'success', outputs: { tag: release.tag } }])),
         runner: { temp: runner, os: 'Linux' },
         secrets: open({}),
-        vars: {},
+        vars: varsFor(true),
         steps: {},
       },
       status: { success: true, always: true, failure: false, cancelled: false },
@@ -284,9 +314,11 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
       }
     }
   };
-  const unchanged = async (label, ev, release) => {
+  const unchanged = async (label, ev, release, refused = false) => {
     const before = head();
-    await publish(ev, release);
+    const r = await publish(ev, release);
+    if (refused && r.status === 0) fail(`${label} does not fail the publisher`);
+    else if (!refused && r.status !== 0) fail(`${label} fails the publisher: ${tail(r.output)}`);
     if (head() !== before) fail(`${label} changes the stable tap`);
   };
 
@@ -412,12 +444,12 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
   const affected = path.join(badRelease.dir, archiveOf('x86_64-unknown-linux-gnu'));
   world.latest = broken;
   fs.unlinkSync(affected);
-  await unchanged('a missing published archive', push(broken), unverified);
+  await unchanged('a missing published archive', push(broken), unverified, true);
   copy(path.join(unverified.local, path.basename(affected)), affected);
   fs.appendFileSync(affected, 'different published archive bytes\n');
-  await unchanged('a published archive with a mismatched checksum', push(broken), unverified);
+  await unchanged('a published archive with a mismatched checksum', push(broken), unverified, true);
   world.releases.pop();
-  await unchanged('a tag with no published release', push(broken), unverified);
+  await unchanged('a tag with no published release', push(broken), unverified, true);
 } catch (err) {
   fail(err.message);
 } finally {

@@ -1,6 +1,8 @@
 [package]
 name = "skald-client"
 description = "Skald client: CLI, MCP server and local helper."
+homepage = "https://skald.so"
+repository = "https://github.com/skald-so/skald"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +10,7 @@ license.workspace = true
 # dist builds and releases this package only: dist-workspace.toml.
 [package.metadata.dist]
 dist = true
+formula = "skald"
 
 [[bin]]
 name = "skald"

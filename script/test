@@ -31,7 +31,8 @@
 #              tags, of the release workflow, its release notes, the attestations of its files and
 #              its image, its npm package, the move of main to a stable release, on fixture
 #              repositories too, and of the installers in installers/ and the npm package on this
-#              machine; of the release check and its jobs, against stand-ins for a release and the
+#              machine, and of the Homebrew publisher on a disposable tap; of the release check
+#              and its jobs, against stand-ins for a release and the
 #              verification commands; of the Pages workflow; of how the release workflow builds and
 #              publishes the web app's archive; of the production deploy job; Renovate config
 #              validation
@@ -353,7 +354,9 @@ if checks tooling; then
   script/release-check-test
   script/production-deploy-workflow-test
   script/release-homebrew-test --workflow
-  script/release-homebrew-test
+  script/install-dist >/dev/null
+  cargo metadata --locked --format-version 1 >/dev/null
+  CARGO_HOME=${CARGO_HOME:-$HOME/.cargo} RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup} script/release-homebrew-test
 fi
 
 # The website and docs: the build of docs/ and its link check, and the build's tests; the main page
