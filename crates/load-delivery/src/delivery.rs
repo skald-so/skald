@@ -596,3 +596,74 @@ pub async fn run(
     }
     Ok(report)
 }
+
+#[cfg(test)]
+mod tests {
+    use futures_util::SinkExt;
+    use skald_proto::{Cbor, ChannelId, SpaceId};
+    use tokio_tungstenite::tungstenite::Message;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_ack_write_keeps_observed_delivery() {
+        let at = ChannelAt {
+            space: SpaceId::from_bytes([1; 16]),
+            id: ChannelId::from_bytes([2; 16]),
+        };
+        let devices = [DeviceId::from_bytes([3; 16]), DeviceId::from_bytes([4; 16])];
+        let id = MessageId::from_bytes([5; 16]);
+        let envelope = at.envelope(id, vec![6], None).unwrap();
+        let seq = NonZeroU64::MIN;
+        let entry = vec![7];
+        let start = Instant::now();
+        let mut checks = Checks::new(devices.len(), start);
+        checks.sent.insert(
+            id,
+            Sent {
+                device: 0,
+                envelope: envelope.clone(),
+                entry: entry.clone(),
+                upload: 1,
+                stored: Some(start),
+                history_answered: true,
+                pushes: BTreeMap::new(),
+            },
+        );
+        let (socket, mut peer) = Socket::with_closed_writer().await;
+        let push = Frame::Push(Push::Message { seq, envelope });
+        peer.send(Message::Binary(push.to_cbor().into()))
+            .await
+            .unwrap();
+        let (_commands, incoming) = mpsc::unbounded_channel();
+        let (publish, mut events) = mpsc::unbounded_channel();
+        tokio::time::timeout(Duration::from_secs(2), serve(1, socket, incoming, publish))
+            .await
+            .expect("the failed write ends the worker");
+        while let Some(event) = events.recv().await {
+            checks.observe(event, at, &devices, &[]);
+        }
+        let settings = Settings {
+            devices: devices.len(),
+            rates: vec![1],
+            seconds: 1,
+            text_bytes: 1,
+            max_p99_push: Duration::from_secs(1),
+            min_history_per_second: 0.0,
+        };
+        let step = checks.finish(&devices, &BTreeMap::from([(entry, 1)]), start, 1, &settings);
+        assert_eq!(step.delivered, 1, "{step:#?}");
+        assert_eq!(step.acknowledged, 0);
+        assert_eq!(step.failed_check, Some("acknowledgement"));
+        let write_error = format!(
+            "ACK write for mailbox sequence {seq} on {} failed: IO error",
+            devices[1]
+        );
+        assert!(
+            step.errors
+                .iter()
+                .any(|error| error.starts_with(&write_error)),
+            "{step:#?}"
+        );
+    }
+}

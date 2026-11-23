@@ -17,6 +17,30 @@ const IO_TIMEOUT: Duration = Duration::from_secs(4);
 pub struct Socket(WebSocketStream<MaybeTlsStream<TcpStream>>);
 
 impl Socket {
+    #[cfg(test)]
+    pub async fn with_closed_writer() -> (Self, WebSocketStream<TcpStream>) {
+        use std::net::Ipv4Addr;
+
+        use tokio::io::AsyncWriteExt;
+        use tokio::net::TcpListener;
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let (client, peer) = tokio::join!(
+            TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let mut client = client.unwrap();
+        let (peer, _) = peer.unwrap();
+        // The peer can send a push while any client write fails at the transport.
+        client.shutdown().await.unwrap();
+        let socket =
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await;
+        let peer = WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+        (Self(socket), peer)
+    }
+
     pub async fn connect(address: SocketAddrV4) -> Result<Self> {
         let mut request = format!("ws://{address}/ws").into_client_request()?;
         let protocol = subprotocol(PROTOCOL_VERSION);
