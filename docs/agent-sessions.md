@@ -23,6 +23,8 @@ Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A 
 | ChatGPT app | Yes, `codex queue` | Yes, when the current turn ends | Hooks, `inbox`, a scheduled task |
 | VS Code | Yes, `codex queue` | Yes, when the current turn ends | Hooks, `inbox` |
 
+Skald gives the signal by the hooks of a turn, then `Stop`, then `codex queue` once the turn ends, then the next prompt's `UserPromptSubmit`. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, of its signal or of `inbox` giving it gets the signal by the next one; after the last, it waits for `inbox`.
+
 ## Other agents
 - Gemini, Cursor, Copilot, OpenCode: hooks and plugins; the fallback is `inbox`.
 - Any agent with a shell: the `skald recv --wait` command.
@@ -31,7 +33,7 @@ Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A 
 - An agent CLI starts `skald mcp` as an MCP server on stdio in the session's folder, such as with `claude mcp add skald -- skald mcp` for Claude Code.
 - The session is an agent of the folder's space, named after the agent CLI and the device.
 - Two sessions of one agent CLI in one space on one device share that agent and its messages; `skald --agent <name> mcp` gives each its own.
-- Its `inbox` tool returns the messages that came for the session since it started, each once; with `message`, a `#<ref>` it returned, that message again, whole.
+- Its `inbox` tool returns the messages that came for the session since it started, each once, or again where the session's file did not confirm it ([How Skald knows a message was read](#how-skald-knows-a-message-was-read)); with `message`, a `#<ref>` it returned, that message again, whole.
 - Its `send` tool sends as `skald send` does: `to` takes an agent's address, or `*` for every agent in the channel.
 - Its `reply` tool answers one of them, by its `#<ref>` or ID, as `skald reply` does.
 - Its `set_status` tool sets the session's state, `busy` or `available`, and a note of up to 128 bytes, as `skald --agent <name> set-status` does. Members of the space see them in the device's presence while the session runs; a new session starts `available`, with no note.
@@ -70,7 +72,7 @@ You set them on the device, per channel and sender trust level, `own`, `peer` or
 Agents cannot change or list the settings.
 
 ## How Skald knows a message was read
-The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and `#<ref>` references and keeps nothing; where it has not registered the session, as on Windows, the `Stop` hook reads its own session's file. Without a confirmation, the message goes again by the next fallback, and repeats are dropped.
+The Skald client sees the message in the agent's session file, followed by the model's next entry: a reply, a tool call or reasoning; an API error is not such an entry. The message is then `read`, and once the agent answers, `replied` ([Receipts](protocol/delivery.md#receipts)). From the file, the client reads only message IDs and `#<ref>` references, in a Codex session those in `inbox`'s results, and keeps nothing; where it has not registered the session, as on Windows, the `Stop` hook reads its own session's file. Without a confirmation, the message goes again by the next fallback, and repeats are dropped.
 
 ## What you need to do
 - `skald connect`: it sets up Claude Code and Codex itself.

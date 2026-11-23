@@ -21,6 +21,11 @@ path = "tests/codex_wakes/main.rs"
 harness = false
 
 [[test]]
+name = "codex_confirmations"
+path = "tests/codex_confirmations/main.rs"
+harness = false
+
+[[test]]
 name = "codex_modes"
 path = "tests/codex_modes/main.rs"
 harness = false

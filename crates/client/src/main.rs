@@ -41,6 +41,7 @@ mod clock;
 mod codex;
 #[cfg(unix)]
 mod codex_app_server;
+mod codex_confirm;
 mod connection;
 mod copies;
 mod delivery;
@@ -97,6 +98,7 @@ mod secrets;
 mod send;
 mod service;
 mod service_agents;
+mod session_file;
 mod set_username;
 mod sign_in;
 mod sign_out;
