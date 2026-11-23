@@ -121,19 +121,18 @@ const head = () => git('--git-dir', tap, 'rev-parse', 'main');
 const copy = (source, destination) => fs.cpSync(source, destination, { recursive: true, verbatimSymlinks: true });
 const world = { releases: [], latest: stable, requests: [] };
 const attestations = [];
+const attestation = (tag, file) => ({
+  digest: sha256(file),
+  repo: repository,
+  workflow: releaseWorkflow,
+  ref: `refs/tags/${tag}`,
+  predicateType: 'https://slsa.dev/provenance/v1',
+});
 const addRelease = (tag) => {
   const work = path.join(scratch, tag);
   checked('bash', ['-c', 'source script/lib/release-files.sh; stand_in_release "$1" "$2"', 'bash', work, tag.slice(1)]);
   const dir = path.join(work, 'release');
-  for (const file of fs.readdirSync(dir)) {
-    attestations.push({
-      digest: sha256(path.join(dir, file)),
-      repo: repository,
-      workflow: releaseWorkflow,
-      ref: `refs/tags/${tag}`,
-      predicateType: 'https://slsa.dev/provenance/v1',
-    });
-  }
+  for (const file of fs.readdirSync(dir)) attestations.push(attestation(tag, path.join(dir, file)));
   const release = { tag, dir, immutable: true, prerelease: tag.includes('-') };
   world.releases.push(release);
   return release;
@@ -178,10 +177,11 @@ try {
   server = await serve(world);
   const state = path.join(scratch, 'state.json');
   const curl = checked('sh', ['-c', 'command -v curl']);
-  fs.writeFileSync(state, JSON.stringify({
+  const stubState = {
     server: server.url, curl, calls: path.join(scratch, 'calls.jsonl'),
     image: { name: imageName, tags: {} }, signatures: [], attestations,
-  }));
+  };
+  fs.writeFileSync(state, JSON.stringify(stubState));
   standInTools(bin, state);
   fs.writeFileSync(path.join(bin, 'curl'), `#!${process.execPath}
 const { spawnSync } = require('node:child_process');
@@ -448,6 +448,15 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
   copy(path.join(unverified.local, path.basename(affected)), affected);
   fs.appendFileSync(affected, 'different published archive bytes\n');
   await unchanged('a published archive with a mismatched checksum', push(broken), unverified, true);
+  const checksum = `${affected}.sha256`;
+  fs.writeFileSync(checksum, `${sha256(affected)} *${path.basename(affected)}\n\n`);
+  attestations.push(attestation(broken, checksum));
+  fs.writeFileSync(state, JSON.stringify(stubState));
+  await unchanged('a published archive with a matching attested checksum but no archive attestation', push(broken), unverified, true);
+  copy(path.join(unverified.local, path.basename(affected)), affected);
+  copy(path.join(unverified.local, path.basename(checksum)), checksum);
+  fs.appendFileSync(checksum, '\n');
+  await unchanged('a correct published checksum with no checksum attestation', push(broken), unverified, true);
   world.releases.pop();
   await unchanged('a tag with no published release', push(broken), unverified, true);
 } catch (err) {
