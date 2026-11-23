@@ -21,7 +21,7 @@
 import { App } from "./App.tsx";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
 import { getSkaldAPIMock } from "./api/skald.msw.ts";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http, HttpResponse, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
@@ -280,9 +280,11 @@ test("the Free quota is labeled separately from the list of all owned spaces", a
   await usageOf(user, team.name);
 
   await expect.poll(() => bar(/^free spaces\b/i)).toEqual([1, 2]);
-  const list = screen.getByRole("region", { name: "Spaces you own" });
-  expect(list.textContent).toMatch(/\bkovac\b/);
-  expect(list.textContent).toMatch(/\bblue-river\b/);
+  const owned = screen.getByRole("region", { name: "Spaces you own" });
+  const names = within(owned)
+    .getAllByRole("listitem")
+    .map((item) => item.textContent);
+  expect(names).toEqual([own.name, team.name]);
 });
 
 test("without the settings, each count shows that no limit applies, without a bar", async () => {

@@ -76,7 +76,11 @@ export function UsageScreen({
                   {...usage.monthly_messages}
                   planAllowance={planAllowance}
                 />
-                <UsageCard label="Service agents" {...usage.service_agents} />
+                <UsageCard
+                  label="Service agents"
+                  {...usage.service_agents}
+                  planAllowance={planAllowance}
+                />
               </>
             )}
           </section>
