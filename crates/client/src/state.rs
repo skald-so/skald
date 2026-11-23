@@ -7440,17 +7440,22 @@ pub(crate) mod tests {
         };
         save(&state, 1).unwrap();
 
+        // Opening the state takes a write lock to check the schema.
+        let readers: Vec<_> = (0..8).map(|_| State::open(&verbatim).unwrap()).collect();
+        let writer = State::open(&verbatim).unwrap();
+        let start = std::sync::Barrier::new(readers.len() + 1);
         std::thread::scope(|scope| {
-            for _ in 0..8 {
-                scope.spawn(|| {
-                    let reader = State::open(&verbatim).unwrap();
+            let start = &start;
+            for reader in readers {
+                scope.spawn(move || {
+                    start.wait();
                     for _ in 0..300 {
                         reader.session().unwrap();
                     }
                 });
             }
-            scope.spawn(|| {
-                let writer = State::open(&verbatim).unwrap();
+            scope.spawn(move || {
+                start.wait();
                 for n in 0..300 {
                     writer
                         .start_session(&format!("https://{n}.example"))
