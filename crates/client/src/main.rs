@@ -59,6 +59,7 @@ mod heartbeat;
 mod held;
 mod helper;
 mod history;
+mod history_export;
 mod history_reading;
 mod hook;
 mod inbound;
@@ -118,6 +119,7 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::ffi::OsString;
 use std::io::IsTerminal as _;
 use std::io::Write as _;
 use std::num::NonZeroU64;
@@ -1037,6 +1039,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Saves verified history this device can read to a local file, oldest first. As an agent,
+    /// exports only from the space of the agent's folder.
+    /// Reports entries it could not read or verify.
+    #[command(group(clap::ArgGroup::new("export_scope").args(["space", "channel"]).required(true)))]
+    Export {
+        /// The name of the space to export.
+        #[arg(long, value_name = "SPACE")]
+        space: Option<String>,
+        /// The ID of a single channel to export, as skald channels shows it.
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The file format.
+        #[arg(long)]
+        format: history_export::Format,
+        /// The local file to save. Replaces an existing file after the export is complete.
+        #[arg(long, value_name = "FILE")]
+        output: OsString,
+    },
     /// Lists the agents of the working directory's space, or of the space named, from the presence
     /// values its devices keep in its channels: each agent once per device, with its state, since
     /// when, runtime and note, and its device's name and trust level; one that two devices of an
@@ -1375,6 +1395,7 @@ impl Command {
                     | Command::RevokeDevice { .. }
                     | Command::SetUsername { .. }
                     | Command::History { .. }
+                    | Command::Export { .. }
                     | Command::FingerprintStep {
                         step: fingerprints::Step::Sync { .. }
                     }
@@ -2768,6 +2789,21 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 (speaks, timeout),
                 &channel,
                 text.as_deref(),
+                agent.is_some(),
+            )
+        }),
+        Command::Export {
+            space,
+            channel,
+            format,
+            output,
+        } => state::dir(state_dir).and_then(|dir| {
+            history_export::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                (space.as_deref(), channel.as_deref()),
+                (format, Path::new(&output)),
                 agent.is_some(),
             )
         }),

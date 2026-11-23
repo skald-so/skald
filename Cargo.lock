@@ -3328,6 +3328,7 @@ dependencies = [
  "sqlx",
  "ssh-key",
  "tar",
+ "tempfile",
  "tokio",
  "toml",
  "tungstenite 0.30.0",
