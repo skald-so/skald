@@ -225,7 +225,7 @@ fn idle_session_without_the_channel_flag_gets_own_text_by_async_rewake() {
 
 /// The default name of the agent that a session's `skald mcp` registers without `--agent` on
 /// Ada's machine: Claude Code's client name, her device's name and its reference.
-fn default_agent(solo: &Solo) -> String {
+pub(super) fn default_agent(solo: &Solo) -> String {
     let device = reference(MessageId::from_bytes(*solo.talk.ada.device.as_bytes()));
     format!("{CLIENT}-{ADA_HOST}-{}", &device[..6])
 }

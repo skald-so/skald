@@ -177,7 +177,7 @@ For users, per surface, with what reaches a session from whom: [Delivery to agen
 
 | Agent | Primary path | Fallback |
 |---|---|---|
-| Claude Code | Cross-session socket: CLI, desktop app, VS Code extension. Channels: CLI | `asyncRewake` hook, mod, `/loop`, `Stop` and `PostToolUse` hooks with `additionalContext`, MCP `inbox`: CLI, desktop app, VS Code extension |
+| Claude Code | Cross-session socket: CLI, Paseo, Herdr, desktop app, VS Code extension | Channels with the CLI development flag. `asyncRewake`, the mod, `/loop`, `Stop`, `PostToolUse` and MCP `inbox` by surface in [Delivery to agent sessions](../agent-sessions.md#claude-code) |
 | Codex | `codex queue`, `PostToolUse` and `Stop` hooks: CLI, desktop app, VS Code extension | `UserPromptSubmit` hook, MCP `inbox`: CLI, desktop app, VS Code extension. Scheduled task: desktop app |
 | Codex threads a program starts | App-server: CLI | — |
 | Gemini, Cursor, Copilot, OpenCode | Hooks, plugins | MCP `inbox` |
