@@ -645,6 +645,8 @@ export interface SpaceRequest {
 }
 
 export interface WaitingAcceptance {
+  /** The invite the acceptance is of, as the server got it. */
+  invite: Invite;
   /** The acceptance as the server got it. */
   acceptance: Acceptance;
   /** The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none. */

@@ -519,7 +519,7 @@ An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
 3. checks that the account is not a member and the handle is free;
 4. checks each of the newcomer's devices: a valid certificate chained to `master` from the acceptance, not to one the server gives.
 
-It then signs the next revision with the member, its `invite` and the invite's role and channels. The newcomer's devices join the channels: [Group changes](#group-changes).
+It then signs the next revision with the member, its `invite` and the invite's role, and the newcomer in the default channel with `history` true and in the invite's other channels that the revision has, with their `history`. The default channel is the latest revision's first one: it may have changed since the invite. An acceptance a revision already admitted is done. The newcomer's devices join the channels: [Group changes](#group-changes).
 
 ## Admin actions from a browser
 A linked browser is not an MLS member, but an admin's browser signs revisions like a `client` device: invites, accepting newcomers, roles, removing members, policy.
