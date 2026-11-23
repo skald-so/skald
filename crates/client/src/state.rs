@@ -16,18 +16,19 @@ use skald_proto::{
 };
 
 use crate::gaps::{Counters, Source};
-use crate::plain_path::plain;
+use crate::plain_path::plain_with_room_for;
 
 /// The database's file in the state directory.
 pub const FILE: &str = "state.sqlite3";
 
 /// The database's file in the state directory `dir`, as SQLite opens it: on Windows without a
 /// verbatim prefix (`\\?\C:\…`, as `canonicalize` gives), where it names the same file without
-/// it ([`plain`]). SQLite takes a path that starts with `\\` for a UNC one, whose connections in a
-/// process lock the `-shm` through one shared handle, and threads that read at once can leave a
-/// read lock on it held, so no checkpoint can truncate the WAL until the process closes the state.
+/// it and leaves room for the longest suffix (`-journal`). SQLite takes a path that starts with
+/// `\\` for a UNC one. Its connections in a process lock the `-shm` through one shared handle.
+/// Threads that read at once can leave a read lock held, so no checkpoint can truncate the WAL
+/// until the process closes the state.
 fn file(dir: &Path) -> PathBuf {
-    plain(&dir.join(FILE))
+    plain_with_room_for(&dir.join(FILE), "-journal")
 }
 
 /// The schema's migrations, in order: the database's `user_version` counts those applied. Each is
@@ -8441,6 +8442,29 @@ pub(crate) mod tests {
             .into_iter()
             .find(|(name, _)| name.ends_with("-wal"));
         assert_eq!(wal.map(|(_, bytes)| bytes.len()), Some(0), "the WAL");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn state_opens_and_writes_with_long_sidecar_paths() {
+        let root = TestDir::new("state-long");
+        let verbatim = root.canonicalize().unwrap();
+        let plain_root = verbatim.to_str().unwrap().strip_prefix(r"\\?\").unwrap();
+        // The unprefixed database name fits MAX_PATH, but its -wal and -shm names do not.
+        let db_units = 256usize;
+        let used = plain_root.encode_utf16().count() + FILE.encode_utf16().count() + 2;
+        let padding = db_units.checked_sub(used).unwrap();
+        assert!(padding > 0, "{verbatim:?}");
+        let dir = verbatim.join("a".repeat(padding));
+        fs::create_dir(&dir).unwrap();
+
+        let state = State::open(&dir).unwrap();
+        let path = state.db.path().unwrap().strip_prefix(r"\\?\").unwrap();
+        assert_eq!(path.encode_utf16().count(), db_units);
+        let server = "https://example.test";
+        state.start_session(server).unwrap();
+        let reopened = State::open(&dir).unwrap();
+        assert_eq!(reopened.session().unwrap().unwrap().server, server);
     }
 
     #[test]
