@@ -79,20 +79,15 @@ fn assert_metadata_only(body: &Value, link: &InviteLink) {
 #[test]
 fn members_and_access_receive_only_invite_metadata_for_an_admin() {
     let Harness { world, spa } = Harness::start();
-    let admin = world.browser.page();
-    let member = world.browser.page();
-    let ada = sign_up_on(
-        &world,
-        &admin,
-        (3_819_813_001, "ada-invite-answers"),
-        DEVICE,
-    );
-    let bob = sign_up_on(
-        &world,
-        &member,
-        (3_819_813_002, "bob-invite-answers"),
-        "bob-answers-laptop",
-    );
+    let [(admin, ada), (member, bob)] = [
+        (3_819_813_001, "ada-invite-answers", DEVICE),
+        (3_819_813_002, "bob-invite-answers", "bob-answers-laptop"),
+    ]
+    .map(|(id, login, device)| {
+        let page = world.browser.page();
+        let person = sign_up_on(&world, &page, (id, login), device);
+        (page, person)
+    });
     let roster = create_with_member(&world.cloud, &ada, ACME, &bob);
     let url = spa.at(&format!("/spaces/{}/invites", roster.body().space));
     let link = InviteLink::parse(&create_invite(&ada, &spa)).expect("an invite link");
