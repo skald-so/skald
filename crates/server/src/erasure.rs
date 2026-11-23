@@ -75,11 +75,14 @@ async fn sweep(db: &PgPool) -> Result<(), sqlx::Error> {
 /// with the signer's certificate, revoked or not, and only a member device of its epoch could make
 /// another (`docs/protocol/membership.md`, "Wraps", "Uploads").
 async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error> {
-    let due: Option<(i32,)> =
-        sqlx::query_as("SELECT 1 FROM accounts WHERE id = $1::uuid AND NOT erased FOR UPDATE")
-            .bind(account)
-            .fetch_optional(&mut *conn)
-            .await?;
+    // Serialize erasers while allowing a roster revision holding the space's lock to take
+    // KEY SHARE on this account. Erasure leaves the account's key in place.
+    let due: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM accounts WHERE id = $1::uuid AND NOT erased FOR NO KEY UPDATE",
+    )
+    .bind(account)
+    .fetch_optional(&mut *conn)
+    .await?;
     if due.is_none() {
         return Ok(());
     }

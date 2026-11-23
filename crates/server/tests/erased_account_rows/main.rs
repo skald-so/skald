@@ -24,5 +24,10 @@ use erasure_common::*;
 #[path = "../mailbox_https/https.rs"]
 mod https;
 
+// The locks that the tests of account deletion hold.
+#[path = "../account_deletion/held.rs"]
+mod held;
+
 mod removed;
+mod roster;
 mod rows;
