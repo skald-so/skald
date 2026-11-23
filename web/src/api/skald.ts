@@ -32,6 +32,7 @@ import type {
   LinkMessages,
   LinkSession,
   ListedDevices,
+  ListedInvites,
   ListedMembers,
   MasterKey,
   MasterKeyRequest,
@@ -3439,6 +3440,79 @@ export const getSpaceDevices = async (
   } as getSpaceDevicesResponse;
 };
 
+export type listSpaceInvitesResponse200 = {
+  data: ListedInvites;
+  status: 200;
+};
+
+export type listSpaceInvitesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSpaceInvitesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSpaceInvitesResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listSpaceInvitesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listSpaceInvitesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSpaceInvitesResponseSuccess = listSpaceInvitesResponse200 & {
+  headers: Headers;
+};
+export type listSpaceInvitesResponseError = (
+  | listSpaceInvitesResponse400
+  | listSpaceInvitesResponse401
+  | listSpaceInvitesResponse403
+  | listSpaceInvitesResponse404
+  | listSpaceInvitesResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSpaceInvitesResponse =
+  listSpaceInvitesResponseSuccess | listSpaceInvitesResponseError;
+
+export const getListSpaceInvitesUrl = (space: string) => {
+  return `/spaces/${space}/invites`;
+};
+
+/**
+ * The space's stored, active invites, oldest first, with their metadata and waiting state. Only for a web session of an admin in the space's latest revision.
+ * @summary The space's active invites
+ */
+export const listSpaceInvites = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listSpaceInvitesResponse> => {
+  const res = await fetch(getListSpaceInvitesUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSpaceInvitesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSpaceInvitesResponse;
+};
+
 export type createInviteResponse201 = {
   data: NewInvite;
   status: 201;
@@ -3510,6 +3584,82 @@ export const createInvite = async (
     status: res.status,
     headers: res.headers,
   } as createInviteResponse;
+};
+
+export type revokeSpaceInviteResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type revokeSpaceInviteResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type revokeSpaceInviteResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type revokeSpaceInviteResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type revokeSpaceInviteResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type revokeSpaceInviteResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type revokeSpaceInviteResponseSuccess = revokeSpaceInviteResponse204 & {
+  headers: Headers;
+};
+export type revokeSpaceInviteResponseError = (
+  | revokeSpaceInviteResponse400
+  | revokeSpaceInviteResponse401
+  | revokeSpaceInviteResponse403
+  | revokeSpaceInviteResponse404
+  | revokeSpaceInviteResponse500
+) & {
+  headers: Headers;
+};
+
+export type revokeSpaceInviteResponse =
+  revokeSpaceInviteResponseSuccess | revokeSpaceInviteResponseError;
+
+export const getRevokeSpaceInviteUrl = (space: string, invite: string) => {
+  return `/spaces/${space}/invites/${invite}`;
+};
+
+/**
+ * Deletes a stored, active invite and its acceptance, if any. Only for a web session of an admin in the space's latest revision, from a page of the web URL: a request whose `Origin` is any other, or that has none, revokes nothing. Members already admitted by a stored revision keep their access.
+ * @summary Revoke an invite
+ */
+export const revokeSpaceInvite = async (
+  space: string,
+  invite: string,
+  options?: RequestInit,
+): Promise<revokeSpaceInviteResponse> => {
+  const res = await fetch(getRevokeSpaceInviteUrl(space, invite), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: revokeSpaceInviteResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as revokeSpaceInviteResponse;
 };
 
 export type storeInviteResponse200 = {
