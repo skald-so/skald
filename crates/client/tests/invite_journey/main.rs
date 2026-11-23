@@ -120,9 +120,7 @@ fn journey(secret_file: &Path) {
     let bob1 = Machine::new().with_host_name(HOSTS[2]);
     let before = cloud.grants().len();
     let mut accept = Terminal::start(&bob1, &["accept-invite"]);
-    accept.wait_for("a prompt for the invite link", |text| {
-        text.to_lowercase().contains("link")
-    });
+    accept.wait_to_show("Paste the invite link:");
     accept.type_line(invite.link());
     let mut grant = grants::shown_grant(&cloud, &mut accept, before);
     // The link the terminal shows carries the authorization into GitHub sign-in.
@@ -130,7 +128,7 @@ fn journey(secret_file: &Path) {
     accept.wait_to_show(&grant.verification_uri);
     invite.check_database(&cloud, "before approving the newcomer's sign-in");
     cloud.decide(&newcomer, &bob, &grant, APPROVE);
-    accept.wait_to_show("Press Enter");
+    accept.wait_to_show("Press Enter once it is written down:");
     accept.enter();
     let confirmation = accept.wait_for("the invite confirmation", |text| {
         text.to_lowercase().contains("accept the invite?")
@@ -212,10 +210,10 @@ fn link_device(cloud: &Cloud, first: &Machine, host: &str) -> Machine {
     };
 
     let mut link = Terminal::start(first, &["link"]);
-    link.wait_to_show(linking::OWN_DEVICE);
+    link.wait_to_show("Link code:");
     link.type_line(&linking::typed(code));
     link.wait_for("the new device's name and kind", |text| {
-        linking::says(text, &[host, "client"])
+        linking::says(text, &[host, "client"]) && text.contains("Link it to this account?")
     });
     link.type_line("yes");
     assert!(link.finish().success, "the first device links {host}");
