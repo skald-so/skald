@@ -9,7 +9,8 @@
 //     is published before each target's installer passed;
 //   - the dry run of a PR and of a manual run tests `skald update` on a macOS and a Windows runner:
 //     `cargo test -p skald-client --test update`, in a step that may run and whose failure fails the
-//     run.
+//     run;
+//   - the dry run and tagged releases require the strict Homebrew fixture on Arm64 macOS.
 import fs from 'node:fs';
 import path from 'node:path';
 import { reporter } from './lib/report.mjs';
@@ -38,11 +39,15 @@ const files = [
   releaseFile,
   'dist-workspace.toml',
   'Cargo.toml',
+  'Cargo.lock',
   'installers/install.sh',
   'installers/install.ps1',
   'crates/client/src/update.rs',
   'crates/client/tests/update/main.rs',
   'crates/client/tests/update/release.rs',
+  'script/lib/release-check-stub.mjs',
+  'script/lib/report.mjs',
+  'script/lib/workflows.mjs',
 ];
 for (const crate of fs.readdirSync(path.join(root, 'crates'))) {
   const manifest = `crates/${crate}/Cargo.toml`;
@@ -103,6 +108,21 @@ for (const [name, ref] of dryRunEvents) {
       fail(`the dry run of a ${name} does not run cargo test -p skald-client --test update on a ${os} runner`);
     }
   }
+}
+
+const testsBrew = (line) => /\bscript\/release-homebrew-test\s*$/.test(line);
+const brewJobs = Object.keys(jobs).filter((key) => jobs[key]['runs-on'] === 'macos-15' && runs(jobs[key]).some(testsBrew));
+if (brewJobs.length !== 1) {
+  fail('the release workflow needs one native Homebrew fixture job on macos-15');
+} else {
+  const [key] = brewJobs;
+  const job = jobs[key];
+  const step = job.steps.find((step) => commands(step.run).some(testsBrew));
+  if (String(step.env?.SKALD_TEST_REQUIRE_HOMEBREW) !== '1') fail('the macOS fixture must require a native install and upgrade');
+  for (const [name, ref] of [...dryRunEvents, ['push', 'refs/tags/v1.2.3'], ['push', 'refs/tags/v1.2.3-beta.1']]) {
+    if (!jobsRunning(release, event(name, ref), testsBrew).includes(key)) fail(`the macOS Homebrew check cannot fail the ${name} on ${ref}`);
+  }
+  if (creator && !needed(creator).has(key)) fail('the release can publish without the macOS Homebrew check');
 }
 
 done();

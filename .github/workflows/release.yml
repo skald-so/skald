@@ -27,6 +27,7 @@ on:
       - dist-workspace.toml
       # dist's settings in Cargo.toml: [profile.dist], and the package it releases.
       - Cargo.toml
+      - Cargo.lock
       - crates/client/Cargo.toml
       # skald update, which installs the release's archives, and its tests.
       - crates/client/src/update.rs
@@ -37,12 +38,15 @@ on:
       - script/deploy-production
       - script/install-dist
       - script/installers-test
+      - script/lib/release-check-stub.mjs
       - script/lib/release-files.sh
       - script/lib/release-tag-args.sh
       - script/lib/proxy.mjs
+      - script/lib/report.mjs
       - script/lib/serve.mjs
       - script/lib/ssh-deploy.sh
       - script/lib/start-server.sh
+      - script/lib/workflows.mjs
       - script/move-main
       - script/npm-package-test
       - script/publish-homebrew
@@ -203,9 +207,39 @@ jobs:
           path: web-release/skald-web.tar.gz*
           if-no-files-found: error
 
+  homebrew-fixture:
+    name: Homebrew fixture on macOS
+    needs: plan
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.1
+          package-manager-cache: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Prepare the Homebrew fixture
+        run: |
+          command -v brew
+          script/install-dist >/dev/null
+          cargo metadata --locked --format-version 1 >/dev/null
+      - name: Install and upgrade in an isolated prefix
+        env:
+          SKALD_TEST_REQUIRE_HOMEBREW: '1'
+        run: |
+          CARGO_HOME=${CARGO_HOME:-$HOME/.cargo} RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup} script/release-homebrew-test
+
   release:
     name: Release
-    needs: [plan, check, web]
+    needs: [plan, check, web, homebrew-fixture]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Attests the release's files and creates the release.

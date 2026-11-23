@@ -75,7 +75,6 @@ export const readOutputs = (file) => {
 //   options.bin     a directory first on PATH, of the stand-ins;
 //   options.runner  RUNNER_TEMP, also for the step files;
 //   options.env     variables of every step, over those GitHub sets;
-//   options.vars    the repository's configuration variables by name, none without it;
 //   options.secrets the run's secrets by name, besides GITHUB_TOKEN; none without it;
 //   options.action  ({step, kind, index, key, where, input, env}) => {outputs, passed, problem}:
 //                   what an action step does; <kind> is its action without the version, <input>
@@ -150,7 +149,7 @@ export function runJobs(workflow, keys, options) {
       always: true,
       cancelled: false,
     };
-    const jobContexts = { github, needs, inputs: eventName === 'workflow_dispatch' ? open({}) : {}, vars: options.vars ?? {} };
+    const jobContexts = { github, needs, inputs: eventName === 'workflow_dispatch' ? open({}) : {}, vars: {} };
     let runs = usesStatus(job.if) ? true : jobStatus.success;
     if (job.if !== undefined && truth(condition(job.if, { contexts: jobContexts, status: jobStatus })) === false) runs = false;
     if (!runs) {

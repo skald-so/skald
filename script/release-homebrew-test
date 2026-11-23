@@ -434,7 +434,10 @@ process.exit(spawnSync(${JSON.stringify(curl)}, args, { stdio: 'inherit' }).stat
     git('-C', checkout, 'pull', '--ff-only');
     nativeVerified = await installed('upgrade', next);
   }
-  await unchanged('a stale stable retry', push(stable), firstRelease);
+  await unchanged('a stale stable retry with a newer GitHub release', push(stable), firstRelease);
+  world.latest = stable;
+  await unchanged('a stale stable retry with a newer tap formula', push(stable), firstRelease);
+  world.latest = next;
   await unchanged('a beta release', push(beta), betaRelease);
   await unchanged('a dry run on a stable tag', event('workflow_dispatch', `refs/tags/${next}`), nextRelease);
   await unchanged('a pull request dry run', event('pull_request', 'refs/pull/7/merge'), nextRelease);
