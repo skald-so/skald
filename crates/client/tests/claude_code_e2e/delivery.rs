@@ -154,7 +154,7 @@ pub fn other_channel(solo: &Solo) -> ChannelId {
 /// <channel>` on `machine` in `dir`; fails unless it succeeds and the front saw one message in
 /// `channel` meanwhile. Gives its `msg_id`.
 #[track_caller]
-fn sends_in(
+pub fn sends_in(
     solo: &Solo,
     (machine, dir, agent): (&Machine, &Path, &str),
     channel: ChannelId,
