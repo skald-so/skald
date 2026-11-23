@@ -1,9 +1,10 @@
 //! Erasing a deleted account's data, in the tables the tests of erasing an account's data
 //! (`account_erasure/main.rs`) leave empty: the account's devices' waiting messages, counted
-//! messages, link runs, challenges, wrong codes and pairings, acceptances, tasks, claims and
-//! queues, the queue key objects and the wraps its devices signed, and the long-polls of a space
-//! that removed it before its deletion. Against a `skald-server` on PostgreSQL with the GitHub
-//! stand-in, the scene of the tests of a channel's history and the team of the spaces tests.
+//! messages, link runs, challenges, wrong codes and pairings, acceptances, sign-up reservations,
+//! tasks, claims and queues, the queue key objects and the wraps its devices signed, and the
+//! long-polls of a space that removed it before its deletion. Against a `skald-server` on PostgreSQL
+//! with the GitHub stand-in, the scene of the tests of a channel's history and the team of the
+//! spaces tests.
 //!
 //! The interfaces, as these tests use them, besides those of the tests of erasing an account's
 //! data:

@@ -18,6 +18,8 @@ use crate::sessions::Api;
 use crate::shared::acks_all;
 use crate::wire::query;
 
+const SIGN_UP_INVITE: &str = "00000000-0000-0000-0000-000000000001";
+
 impl Kept {
     /// This, with `wraps`, wraps the account's devices signed to other accounts.
     fn with_wraps(self, wraps: &[&Item]) -> Self {
@@ -41,9 +43,10 @@ fn queue_key(channel: ChannelId, epoch: u64, signer: &Device) -> Item {
 
 /// Writes rows of alice's, of `s`, to the tables no request of these tests fills: a challenge of
 /// her laptop; a link run of her uncertified device, which her laptop waits for; a wrong user code
-/// and a wrong pairing of her account; her acceptance of an invite to `acme`; a queue of `general`
-/// she created, with a task her laptop uploaded, a task of bob's laptop addressed to hers, and one
-/// her laptop claimed and released, which it waits to claim again.
+/// and a wrong pairing of her account; her acceptance of an invite to `acme`; a used sign-up
+/// invite and its pending device code; a queue of `general` she created, with a task her laptop
+/// uploaded, a task of bob's laptop addressed to hers, and one her laptop claimed and released,
+/// which it waits to claim again.
 fn fill(s: &Scene) {
     let t = &s.fixture.team;
     let (alice, laptop, uncertified) = (t.alice.account, t.alice.laptop.id, t.alice.uncertified.id);
@@ -73,6 +76,12 @@ fn fill(s: &Scene) {
            VALUES (invite, '{space}', now() + interval '1 day');
            INSERT INTO acceptances (invite_id, account_id, acceptance)
            VALUES (invite, '{alice}', '\\x01');
+           INSERT INTO invites (id, space_id, invite, created_at, expires_at, sign_up_account_id)
+           VALUES ('{SIGN_UP_INVITE}', '{space}', '\\x02', now(), now() + interval '1 day', '{alice}');
+           INSERT INTO device_codes (device_code_hash, user_code_hash, expires_at, poll_interval,
+                                     sign_up_account_id)
+           VALUES (decode(repeat('01', 32), 'hex'), decode(repeat('02', 32), 'hex'),
+                   now() + interval '1 day', 1, '{alice}');
            INSERT INTO queues (id, channel_id, name, mode, lease, max_attempts, creator_id)
            VALUES (queue, '{general}', 'alices', 'at-least-once', 300, 5, '{alice}');
            INSERT INTO tasks (id, queue_id, uploader_id, queued_task)
@@ -207,6 +216,18 @@ fn every_table_is_erased_but_for_handshake_messages_until_fetched() {
     let bob = filled.s.bob.id;
     let waiting = payloads(filled.db(), bob);
     assert_eq!(waiting, vec![filled.commit.clone()], "bob's mailbox");
+    // Both reservations go away so no other account can use the invite or approve the code.
+    let (invite, code): (bool, bool) = query(filled.db(), async |conn| {
+        sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM invites WHERE id = $1::uuid),
+                    EXISTS (SELECT 1 FROM device_codes WHERE device_code_hash = decode(repeat('01', 32), 'hex'))",
+        )
+        .bind(SIGN_UP_INVITE)
+        .fetch_one(conn)
+        .await
+    });
+    assert!(!invite, "alice's sign-up invite");
+    assert!(!code, "alice's pending sign-up code");
     acks_all(&mut filled.s.bob, filled.s.fixture.db());
     erased_within(filled.db(), &filled.alice, &filled.kept);
 }

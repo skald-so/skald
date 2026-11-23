@@ -118,10 +118,13 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
          WHERE account_id = $1::uuid OR device_id = ANY($2::text[]::uuid[])
              OR key_device = ANY($2::text[]::uuid[])",
         "DELETE FROM service_tokens WHERE device_id = ANY($2::text[]::uuid[])",
-        "DELETE FROM device_codes WHERE account_id = $1::uuid",
+        "DELETE FROM device_codes WHERE account_id = $1::uuid OR sign_up_account_id = $1::uuid",
         "DELETE FROM wrong_user_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_pairings WHERE account_id = $1::uuid",
         "DELETE FROM acceptances WHERE account_id = $1::uuid",
+        // An invite used to sign up must end with the account. Clearing the reservation would
+        // make it reusable.
+        "DELETE FROM invites WHERE sign_up_account_id = $1::uuid",
         // Tasks its devices uploaded or that only one of them could claim, and its claims.
         "DELETE FROM tasks
          WHERE uploader_id = ANY($2::text[]::uuid[]) OR addressee = ANY($2::text[]::uuid[])",
