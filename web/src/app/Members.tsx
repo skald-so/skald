@@ -101,9 +101,9 @@ export interface MembersScreenProps {
 /**
  * The Members section of 09-members.png: a row per member of the chosen space with its handle and
  * GitHub login, or that the server reports its account deleted, role, linked devices and when it
- * joined, in the server's order until a click on a
- * column sorts them; filter buttons by role and a search by handle or login, in the browser. It
- * only shows them: an admin changes them with `skald`.
+ * joined, in the server's order until a click on a column sorts them; filter buttons by role and a
+ * search by handle or login, in the browser. It only shows them: an admin changes them with
+ * `skald`.
  */
 export function MembersScreen({
   space,

@@ -68,7 +68,7 @@ export interface AccountScreenProps {
  * The Account page: the username with the GitHub login; the account's sign-in methods, each with
  * when it was linked and Remove while the account has two or more; a link for each provider the
  * server has, which returns here. Remove asks first and, for the method of this web session, says
- * that it signs this browser out.
+ * that it signs this browser out. Under them, the account's deletion (`DeletionPart`).
  */
 export function AccountScreen({
   session,
