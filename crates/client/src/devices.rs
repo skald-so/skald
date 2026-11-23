@@ -30,7 +30,7 @@ const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --
 
 /// `Devices` in the API spec, or `SpaceDevices` with its `records`.
 #[derive(Deserialize)]
-pub struct Devices {
+struct Devices {
     devices: Vec<Entry>,
     #[serde(default)]
     revocations: Vec<String>,
@@ -223,11 +223,6 @@ pub fn decode(body: &[u8]) -> Result<SpaceDevices, String> {
 fn decoded(body: &[u8]) -> Result<(SpaceDevices, Option<String>), String> {
     let devices: Devices = serde_json::from_slice(body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
-    settle(devices, state)
-}
-
-/// What `devices`, a device list the server gave, holds, as [`fetch`] takes it.
-pub fn settle(devices: Devices, state: &State) -> Result<SpaceDevices, String> {
     let ids = devices
         .devices
         .iter()

@@ -44,8 +44,9 @@ struct WaitingAcceptances {
 struct Waiting {
     invite: String,
     acceptance: String,
+    /// The account's devices and revocations, a `Devices` answer's fields.
     #[serde(flatten)]
-    devices: devices::Devices,
+    devices: serde_json::Map<String, serde_json::Value>,
 }
 
 /// An acceptance the server gives as waiting, decoded, with its account's devices.
@@ -218,7 +219,8 @@ fn waiting(follower: &mut Follower, space: &state::Space) -> Result<Vec<Given>, 
             );
             continue;
         };
-        let devices = devices::settle(entry.devices, &follower.state)?;
+        let listed = serde_json::to_vec(&entry.devices).map_err(|err| err.to_string())?;
+        let devices = devices::decode(&listed)?;
         given.push(Given {
             invite,
             acceptance,
