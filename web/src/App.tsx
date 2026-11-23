@@ -35,11 +35,13 @@ type View =
 
 /**
  * The web app. With a web session, the cabinet of its account on every page; without one, or when
- * the API refuses it, the sign-in page, which returns to the page opened.
+ * the API refuses it, the sign-in page, which returns to the page opened and, after the account's
+ * deletion, says it was deleted.
  */
 export function App() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [deleted, setDeleted] = useState(false);
   /** Loads the web app again, as when it starts. */
   const reload = useCallback(() => {
     setView({ kind: "loading" });
@@ -47,6 +49,11 @@ export function App() {
   }, []);
   /** Loads the session again behind the page shown: the sign-in page once it has ended. */
   const refresh = useCallback(() => setAttempt((attempt) => attempt + 1), []);
+  /** Shows the sign-in page, saying the account was deleted. */
+  const onDeleted = useCallback(() => {
+    setDeleted(true);
+    reload();
+  }, [reload]);
 
   useEffect(() => {
     const request = new AbortController();
@@ -69,6 +76,7 @@ export function App() {
       return (
         <SignInPage
           providers={view.providers}
+          deleted={deleted}
           returnTo={
             window.location.pathname +
             window.location.search +
@@ -109,6 +117,7 @@ export function App() {
                   <Account
                     session={view.session}
                     onChanged={refresh}
+                    onDeleted={onDeleted}
                     onSignedOut={reload}
                   />
                 }

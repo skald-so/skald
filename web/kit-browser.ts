@@ -16,8 +16,9 @@ export const widths = [1440, 360];
 /**
  * The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu
  * open, and the web app's sign-in page, cabinet of an account with no space, Machines section,
- * Members section, Access section and its question before "Sign out everywhere else", Account page
- * and its question before removing this session's sign-in method, and Usage section.
+ * Members section, Access section and its question before "Sign out everywhere else", Account page,
+ * its question before removing this session's sign-in method, the page with a space blocking the
+ * deletion and its question before deleting the account, and Usage section.
  */
 export type Screen =
   | "kit"
@@ -31,6 +32,8 @@ export type Screen =
   | "access-confirm"
   | "account-page"
   | "account-page-confirm"
+  | "account-page-blocked"
+  | "account-page-delete"
   | "usage";
 
 export interface KitView {

@@ -20,7 +20,9 @@ import "../theme/index.ts";
 // ?screen=members the Members section, ?screen=access the Access section,
 // ?screen=access-confirm its question before "Sign out everywhere else", ?screen=account-page the
 // Account page, ?screen=account-page-confirm its question before removing this session's sign-in
-// method and ?screen=usage the Usage section. Without it, the kit page.
+// method, ?screen=account-page-blocked the Account page with a space blocking the deletion,
+// ?screen=account-page-delete its question before deleting the account and ?screen=usage the Usage
+// section. Without it, the kit page.
 const params = new URLSearchParams(location.search);
 const param = params.get("theme");
 const theme: Theme | undefined =
@@ -42,8 +44,14 @@ createRoot(document.getElementById("root")!).render(
       <KitMembers />
     ) : screen === "access" || screen === "access-confirm" ? (
       <KitAccess asking={screen === "access-confirm"} />
-    ) : screen === "account-page" || screen === "account-page-confirm" ? (
-      <KitAccountPage asking={screen === "account-page-confirm"} />
+    ) : screen === "account-page" ? (
+      <KitAccountPage />
+    ) : screen === "account-page-confirm" ? (
+      <KitAccountPage view="confirm" />
+    ) : screen === "account-page-blocked" ? (
+      <KitAccountPage view="blocked" />
+    ) : screen === "account-page-delete" ? (
+      <KitAccountPage view="delete" />
     ) : screen === "usage" ? (
       <KitUsage />
     ) : (

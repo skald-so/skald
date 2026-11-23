@@ -55,8 +55,12 @@ const columns = (now: number): Column<ListedMember>[] => [
     cell: (member) => (
       <TwoLine
         detail={
-          member.github_login !== undefined && `GitHub · ${member.github_login}`
+          member.deleted
+            ? "Account deleted, the server says"
+            : member.github_login !== undefined &&
+              `GitHub · ${member.github_login}`
         }
+        detailTone={member.deleted ? "danger" : "muted"}
       >
         {member.handle}
       </TwoLine>
@@ -96,7 +100,8 @@ export interface MembersScreenProps {
 
 /**
  * The Members section of 09-members.png: a row per member of the chosen space with its handle and
- * GitHub login, role, linked devices and when it joined, in the server's order until a click on a
+ * GitHub login, or that the server reports its account deleted, role, linked devices and when it
+ * joined, in the server's order until a click on a
  * column sorts them; filter buttons by role and a search by handle or login, in the browser. It
  * only shows them: an admin changes them with `skald`.
  */
