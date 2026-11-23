@@ -16,14 +16,6 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 
 Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, goes by the next one; after the last, it waits for the hooks and `inbox`.
 
-### Host checks
-
-The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub. Each session ran the Skald CLI, called its MCP `inbox` and returned a `read` receipt for each tested wake path.
-
-- **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
-- **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
-- Skald's Channels development flag requires an interactive CLI. The Agent SDK ignores it. Channels remained unconfirmed in the hosted terminal checks with the stub. The separate CLI tests verify it. [Claude Code reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview) · [Skald Channels checks](dev/agent-delivery.md#channels)
-
 ### App checks
 
 - The [earlier app checks](dev/agent-delivery.md#waking-an-idle-session) confirmed socket delivery in the Claude app and Claude Code for VS Code.
@@ -44,7 +36,17 @@ Skald gives the signal by the hooks of a turn, then `Stop`, then `codex queue` o
 - Any agent with a shell: the `skald recv --wait` command.
 
 ## Agent hosts
-Apps that run Claude Code or Codex sessions for you. Results of the [live checks](../crates/client/tests/codex_hosts/main.rs) on a model stub, the session set up by `skald setup codex` in a config home the host wrote its hooks into:
+### Claude Code checks
+
+The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub. Each session ran the Skald CLI, called its MCP `inbox` and returned a `read` receipt for each tested wake path.
+
+- **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
+- **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
+- Skald's Channels development flag requires an interactive CLI. The Agent SDK ignores it. Channels remained unconfirmed in the hosted terminal checks with the stub. The separate CLI tests verify it. [Claude Code reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview) · [Skald Channels checks](dev/agent-delivery.md#channels)
+
+### Codex checks
+
+The [live checks](../crates/client/tests/codex_hosts/main.rs) used a loopback model stub and ran `skald setup codex` in a config home the host wrote its hooks into.
 
 | Host | Agent | MCP server, CLI, hooks | Idle session wakes | The host's hooks |
 |---|---|---|---|---|
