@@ -54,6 +54,7 @@ mod service_tokens;
 mod sessions;
 mod sign_in;
 mod sign_up;
+mod space_plans;
 mod spaces;
 mod sweeps;
 mod unread_bodies;
@@ -122,6 +123,8 @@ pub struct Settings {
     /// The privacy policy that the answer on sign-in and the server's pages that start one link;
     /// none without it.
     pub privacy_policy_url: Option<PrivacyPolicyUrl>,
+    /// Show effective cloud plans and their limits in space usage.
+    pub space_plans: bool,
     /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
     /// limit without it.
     pub owned_spaces_limit: Option<u32>,
@@ -173,6 +176,7 @@ struct AppState {
     google: Option<Arc<Google>>,
     sign_up: Arc<SignUp>,
     privacy_policy_url: Option<Arc<PrivacyPolicyUrl>>,
+    space_plans: bool,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
@@ -575,6 +579,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .with_state(AppState {
             db,
             versions,
+            space_plans: settings.space_plans,
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,

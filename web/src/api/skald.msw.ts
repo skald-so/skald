@@ -10,7 +10,7 @@ import type {
   RequestHandlerOptions,
 } from "msw";
 
-import { ServicePermission, SignInProvider } from "./skald.schemas";
+import { ServicePermission, SignInProvider, SpacePlan } from "./skald.schemas";
 import type {
   AcceptanceRequest,
   AccountAnchors,
@@ -4643,6 +4643,28 @@ export const getRevokeServiceTokenResponseMock500 = (
 export const getGetSpaceUsageResponseMock = (
   overrideResponse: Partial<Extract<SpaceUsage, object>> = {},
 ): SpaceUsage => ({
+  plan: faker.helpers.arrayElement([
+    faker.helpers.arrayElement(Object.values(SpacePlan)),
+    undefined,
+  ]),
+  members: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  devices_per_member: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
   monthly_messages: {
     count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
@@ -4656,6 +4678,15 @@ export const getGetSpaceUsageResponseMock = (
       undefined,
     ]),
   },
+  attachment_size: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
   mailbox_retention: {
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
@@ -4681,6 +4712,28 @@ export const getGetSpaceUsageResponseMock = (
 export const getGetSpaceUsageResponseMock200 = (
   overrideResponse: Partial<Extract<SpaceUsage, object>> = {},
 ): SpaceUsage => ({
+  plan: faker.helpers.arrayElement([
+    faker.helpers.arrayElement(Object.values(SpacePlan)),
+    undefined,
+  ]),
+  members: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
+  devices_per_member: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
   monthly_messages: {
     count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
@@ -4694,6 +4747,15 @@ export const getGetSpaceUsageResponseMock200 = (
       undefined,
     ]),
   },
+  attachment_size: faker.helpers.arrayElement([
+    {
+      limit: faker.helpers.arrayElement([
+        faker.number.int({ min: 1 }),
+        undefined,
+      ]),
+    },
+    undefined,
+  ]),
   mailbox_retention: {
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),

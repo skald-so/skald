@@ -192,6 +192,10 @@ struct Cli {
     #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
     privacy_policy_url: Option<PrivacyPolicyUrl>,
 
+    /// Show effective cloud plans and their limits in space usage.
+    #[arg(long, env = "SKALD_SPACE_PLANS")]
+    space_plans: bool,
+
     /// The number of spaces an account may own: the ones it created, its personal space included,
     /// which counts also before it is created [default: no limit].
     #[arg(
@@ -527,6 +531,7 @@ impl Cli {
             sign_in,
             sign_up,
             privacy_policy_url: self.privacy_policy_url,
+            space_plans: self.space_plans,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
