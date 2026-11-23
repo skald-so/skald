@@ -18,6 +18,7 @@ mod keys;
 mod kit;
 #[path = "../sign_in/machine.rs"]
 mod machine;
+mod regressions;
 #[path = "../sign_in/relay.rs"]
 mod relay;
 #[path = "../../../server/tests/common/spa.rs"]
