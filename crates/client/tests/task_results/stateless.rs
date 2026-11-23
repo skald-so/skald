@@ -1,18 +1,17 @@
 //! Results on a stateless run of a service agent: it keeps no tasks, so it checks a result against
 //! the server.
 
-use std::num::NonZeroU64;
-
 use serde_json::json;
 use skald_crypto::{SigningKey, seal_message};
 use skald_proto::{
     Cbor as _, ClaimId, Envelope, MessageId, Outcome, QueuedTask, RawEnvelope, Scheme,
 };
 
-use crate::claiming::{Craft, address, sealed_by, tampers, uploads};
+use crate::claiming::{Craft, sealed_by, tampers, uploads};
 use crate::played::mls_envelope;
 use crate::queuing::default_queue;
-use crate::results::{Named, assert_dropped, named, result, result_objects};
+use crate::results::{Named, assert_dropped, named, result_objects};
+use crate::returns::Answer;
 use crate::scene::Scene;
 use crate::service_kit::key_of;
 use crate::states;
@@ -89,21 +88,28 @@ impl Bot {
         self.bob_said += 1;
         let talk = &self.scene.talk;
         let bob = &talk.played[0];
-        let from = address(&format!(
-            "{}/{}/{BOB_AGENT}@{}",
-            crate::world::ACME,
-            bob.person.handle,
-            crate::world::HOST
-        ));
-        let to = address(to);
+        let (claim_id, generation) = named;
+        let answer = Answer {
+            task,
+            claim_id,
+            generation,
+            outcome,
+            from: format!(
+                "{}/{}/{BOB_AGENT}@{}",
+                crate::world::ACME,
+                bob.person.handle,
+                crate::world::HOST
+            ),
+            to: to.to_owned(),
+            text: text.to_owned(),
+        };
         let mut header = mls_envelope(talk.at(), &[], &[self.scene.device])
             .envelope()
             .header
             .clone();
         header.scheme = Scheme::Hpke;
         let msg_id = header.msg_id;
-        let counter = NonZeroU64::new(self.bob_said).expect("a counter");
-        let content = result(task, named, (outcome, text), msg_id).content((from, to), counter, 1);
+        let content = answer.content(msg_id, self.bob_said);
         let payload = seal_message(
             &header,
             &content,

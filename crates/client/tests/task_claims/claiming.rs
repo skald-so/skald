@@ -37,10 +37,10 @@ pub const COMPLETE: &str = "complete";
 pub const FAIL: &str = "fail";
 
 /// Their options.
-pub const QUEUE_FLAG: &str = "--queue";
+pub use crate::lines::JSON_FLAG;
+pub use crate::queuing::QUEUE_FLAG;
 pub const PROGRESS_FLAG: &str = "--progress";
 pub const RETRY_FLAG: &str = "--retry";
-pub const JSON_FLAG: &str = "--json";
 
 /// The states, progress and reasons of a task as the server gives them.
 pub use crate::states::{
@@ -85,6 +85,19 @@ impl Claims {
             channel: at.1.to_string(),
             queue,
         }
+    }
+
+    /// As [`Claims::new`], the server's copy of the queue `default` given a lease of `seconds`,
+    /// which may be below the range a queue's settings take, so the claims it hands out carry it.
+    #[track_caller]
+    pub fn with_lease(ids: [u64; 2], logins: [&str; 2], seconds: u64) -> Self {
+        let claims = Claims::new(ids, logins);
+        claims.cloud().execute(&format!(
+            "ALTER TABLE queues DROP CONSTRAINT IF EXISTS queues_lease_check;
+             UPDATE queues SET lease = {seconds} WHERE id = '{}'::uuid",
+            claims.queue
+        ));
+        claims
     }
 
     pub fn talk(&self) -> &Talk {

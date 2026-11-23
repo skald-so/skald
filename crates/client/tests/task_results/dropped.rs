@@ -10,7 +10,8 @@ use crate::claiming::address;
 use crate::fixtures::TO;
 use crate::lines::AFTER_MISSING;
 use crate::queuing::tasks_path;
-use crate::results::{Results, assert_dropped, assert_result_line, named};
+use crate::results::{assert_dropped, assert_result_line, named};
+use crate::returns::Returns;
 use crate::senders::{LAPTOP_AGENT, labelled_of};
 use crate::states::{self, CLAIMED, Held};
 
@@ -40,11 +41,11 @@ const AFTER_DROPPED: &str = "drop test: bob asks claude whether the result came"
 /// next run shows it, not after missing ones: the dropped result's counter counts.
 #[test]
 fn result_from_another_device_than_the_claiming_one_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_111_001, 4_268_111_002],
         ["ada-drops-a-stolen-result", "bob-claims-the-laptop-s-work"],
     );
-    let task = results.claude_enqueues(&[BUILD]);
+    let task = results.claude_enqueues(BUILD);
     results.claims.codex_claimed(&[]);
     let claim = results.claims.read(task).held().clone();
     let held = Held {
@@ -81,11 +82,11 @@ fn result_from_another_device_than_the_claiming_one_is_dropped() {
 /// third.
 #[test]
 fn result_naming_another_claim_or_generation_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_112_001, 4_268_112_002],
         ["ada-checks-the-claim-named", "bob-names-other-claims"],
     );
-    let task = results.claude_enqueues(&[BUILD]);
+    let task = results.claude_enqueues(BUILD);
     let held = results.bob_claims();
     results.bob_completes(&held);
     let (claim_id, generation) = named(&held);
@@ -115,11 +116,11 @@ fn result_naming_another_claim_or_generation_is_dropped() {
 /// with the server's answer as it is, is shown.
 #[test]
 fn done_result_while_the_server_or_a_proxy_gives_the_task_not_done_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_113_001, 4_268_113_002],
         ["ada-waits-for-done", "bob-answers-too-early"],
     );
-    let task = results.claude_enqueues(&[BUILD]);
+    let task = results.claude_enqueues(BUILD);
     let held = results.bob_claims();
     let early = results.bob_results_to_claude(&held, (Outcome::Done, EARLY));
 
@@ -157,17 +158,17 @@ fn done_result_while_the_server_or_a_proxy_gives_the_task_not_done_is_dropped() 
 /// drops both with a warning each.
 #[test]
 fn result_whose_to_or_from_is_not_the_task_s_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_114_001, 4_268_114_002],
         ["ada-checks-whose-result", "bob-answers-the-wrong-agent"],
     );
-    let task = results.claude_enqueues(&[BUILD]);
+    let task = results.claude_enqueues(BUILD);
     let held = results.bob_claims();
     results.bob_completes(&held);
     let codex = results.claims.codex();
     let to_codex = results.bob_results((task, named(&held)), &codex, (Outcome::Done, TO_CODEX));
     let addressee = format!("{}/{LAPTOP_AGENT}", results.claims.ada().handle);
-    let for_codex = results.claude_enqueues(&[TO, &addressee, FOR_CODEX]);
+    let for_codex = results.claude_enqueues_in(results.channel(), &[TO, &addressee], FOR_CODEX);
     let claude = results.claims.claude();
     let from_bob = results.bob_results(
         (for_codex, (ClaimId::generate(), 1)),
@@ -187,7 +188,7 @@ fn result_whose_to_or_from_is_not_the_task_s_is_dropped() {
 /// Claude's `skald recv` on Ada's first machine drops both with a warning each.
 #[test]
 fn result_of_a_task_the_device_did_not_enqueue_or_of_another_channel_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_115_001, 4_268_115_002],
         ["ada-drops-foreign-results", "bob-answers-foreign-tasks"],
     );
@@ -197,19 +198,12 @@ fn result_of_a_task_the_device_did_not_enqueue_or_of_another_channel_is_dropped(
         results.claims.senders.laptop_folder.as_path(),
         Some(LAPTOP_AGENT),
     );
-    let laptop_s = results.enqueues(codex, results.claims.at, &[LAPTOP_S]);
+    let laptop_s = results.enqueues(codex, results.channel(), &[LAPTOP_S]);
     let held = results.bob_claims();
     assert_eq!(held.task, laptop_s, "Bob claimed another task");
     results.bob_completes(&held);
     let not_enqueued = results.bob_results_to_claude(&held, (Outcome::Done, NOT_ENQUEUED));
-    let (space, default) = (results.claims.at.0, results.claims.talk().space.default);
-    let agents = &results.claims.senders.agents;
-    let claude = (
-        &agents.talk.ada.machine,
-        agents.folder.as_path(),
-        Some(crate::agents::CLAUDE),
-    );
-    let in_default = results.enqueues(claude, (space, default), &[IN_DEFAULT]);
+    let in_default = results.claude_enqueues_in(results.default_channel(), &[], IN_DEFAULT);
     let to = results.claims.claude();
     let other_channel = results.bob_results(
         (in_default, (ClaimId::generate(), 1)),
@@ -227,7 +221,7 @@ fn result_of_a_task_the_device_did_not_enqueue_or_of_another_channel_is_dropped(
 /// body. Claude's `skald recv` drops it with a warning.
 #[test]
 fn message_with_a_task_body_is_dropped() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_116_001, 4_268_116_002],
         ["ada-drops-a-task-message", "bob-writes-a-task-message"],
     );

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroU64;
+use std::path::Path;
 
 use serde_json::{Value, json};
 use skald_proto::{
@@ -16,7 +17,7 @@ use crate::claiming::{Claims, address};
 use crate::fixtures::CHANNEL;
 use crate::kit::{RECV, received};
 use crate::lines::{JSON_FLAG, json_objects, refers_to};
-use crate::machine::Finished;
+use crate::machine::{Finished, Machine};
 use crate::played::mls_envelope;
 use crate::queuing::{default_queue, enqueued, refers_to_task, run_in, tasks};
 use crate::senders::holds_word;
@@ -132,10 +133,16 @@ impl Returns {
         self.claims.bob().device()
     }
 
-    /// As claude on Ada's first machine, `skald enqueue --channel <channel> <extra> <text>`, which
-    /// must succeed; gives the one task it added to `channel`'s queue `default`.
+    /// As `agent`, or the person with none, on `machine` in `dir`, `skald enqueue --channel
+    /// <channel> <args>`, which must succeed; gives the one task it added to `channel`'s queue
+    /// `default`.
     #[track_caller]
-    pub fn claude_enqueues_in(&self, channel: ChannelId, extra: &[&str], text: &str) -> TaskId {
+    pub fn enqueues(
+        &self,
+        (machine, dir, agent): (&Machine, &Path, Option<&str>),
+        channel: ChannelId,
+        args: &[&str],
+    ) -> TaskId {
         let (cloud, ada) = (self.claims.cloud(), self.claims.ada());
         let (at, queue) = (self.at(channel), self.queue_of(channel));
         let ids = || -> Vec<TaskId> {
@@ -145,11 +152,9 @@ impl Returns {
         };
         let before = ids();
         let named = channel.to_string();
-        let mut args = vec![CHANNEL, named.as_str()];
-        args.extend_from_slice(extra);
-        args.push(text);
-        let folder = self.claims.senders.agents.folder.as_path();
-        enqueued(&ada.machine, (folder, Some(CLAUDE)), &args);
+        let mut all = vec![CHANNEL, named.as_str()];
+        all.extend_from_slice(args);
+        enqueued(machine, (dir, agent), &all);
         let added: Vec<TaskId> = (ids().into_iter())
             .filter(|task| !before.contains(task))
             .collect();
@@ -157,6 +162,19 @@ impl Returns {
             panic!("not one task enqueued in {channel}: {added:?}");
         };
         *one
+    }
+
+    /// As claude on Ada's first machine, [`Returns::enqueues`] of `<extra> <text>`.
+    #[track_caller]
+    pub fn claude_enqueues_in(&self, channel: ChannelId, extra: &[&str], text: &str) -> TaskId {
+        let mut args = extra.to_vec();
+        args.push(text);
+        let claude = (
+            &self.claims.ada().machine,
+            self.claims.senders.agents.folder.as_path(),
+            Some(CLAUDE),
+        );
+        self.enqueues(claude, channel, &args)
     }
 
     /// As [`Returns::claude_enqueues_in`], in the talk's channel.
