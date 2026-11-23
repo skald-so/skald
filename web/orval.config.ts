@@ -23,6 +23,7 @@ export default defineConfig({
           "startGoogleLink",
           "getSignInMethodsPage",
           "authorizeDevice",
+          "attachDeviceInvite",
           "requestDeviceToken",
           "getDeviceVerificationPage",
           "decideDeviceCode",

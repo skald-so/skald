@@ -613,6 +613,8 @@ export type ServerName = string;
 export interface Server {
   /** The server's name; `null` without a valid one, such as with no public address or an IP address as its host. */
   name: ServerName | null;
+  /** The server's public address as an origin, for devices starting sign-in from the web address. Absent on a server without sign-in. */
+  public?: string;
 }
 
 export interface Session {
@@ -645,6 +647,8 @@ export interface SpaceRequest {
 }
 
 export interface WaitingAcceptance {
+  /** The invite the acceptance is of, as the server got it. */
+  invite: Invite;
   /** The acceptance as the server got it. */
   acceptance: Acceptance;
   /** The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none. */

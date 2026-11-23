@@ -589,9 +589,16 @@ async fn finish<P: Provider>(
                 .get(header::USER_AGENT)
                 .and_then(|agent| agent.to_str().ok())
                 .unwrap_or_default();
-            let session = accounts::sign_in(db, &method, &identity.source, may_sign_up, agent)
-                .await
-                .map_err(Failure::Database)?;
+            let session = accounts::sign_in(
+                db,
+                &method,
+                &identity.source,
+                may_sign_up,
+                &return_to,
+                agent,
+            )
+            .await
+            .map_err(Failure::Database)?;
             let Some(session) = session else {
                 device_flow::refuse_sign_up(db, &return_to)
                     .await

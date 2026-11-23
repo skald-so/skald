@@ -323,6 +323,10 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
         .route(
+            "/auth/device/invite",
+            put(device_flow::attach_invite).layer(checked(Statement::Header)),
+        )
+        .route(
             "/auth/providers",
             get(sign_in::providers).layer(checked(Statement::Header)),
         )
@@ -673,10 +677,13 @@ async fn protocol_versions(State(state): State<AppState>) -> Json<Protocol> {
 #[derive(Serialize)]
 struct Server {
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public: Option<String>,
 }
 
 async fn server(State(state): State<AppState>) -> Json<Server> {
     Json(Server {
         name: state.server_name.as_ref().map(ToString::to_string),
+        public: sign_in::settings(&state).map(|settings| settings.public_url.origin()),
     })
 }

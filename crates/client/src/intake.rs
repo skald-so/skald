@@ -23,6 +23,7 @@ use std::time::SystemTime;
 
 use skald_proto::{Name, SpaceId};
 
+use crate::admission;
 use crate::forms::Form;
 use crate::groups::{self, Link};
 use crate::joined;
@@ -137,13 +138,14 @@ impl Intake {
         Ok(told)
     }
 
-    /// Runs `run`, for agents' sessions if `agents`: such a run holds back its warnings and keeps
-    /// them for the person ([`recv::holding_warnings`]).
+    /// Runs `run`, keeping warnings and follow notices for the person if only agents wait.
     fn holding<R>(&mut self, agents: bool, run: impl FnOnce(&mut Self) -> R) -> R {
         if !agents {
             return run(self);
         }
+        let held_notices = std::mem::replace(&mut self.follower.hold_notices, true);
         let (ran, held) = output::holding_warnings(|| run(self));
+        self.follower.hold_notices = held_notices;
         if !held.is_empty() {
             recv::keep_held(self.follower.state.keep_warnings(&held), &held);
         }
@@ -163,11 +165,15 @@ impl Intake {
         let mut mailbox = recv::catch_up_noting(follower, None, timeout, &mut due)?;
         marks.push(("caught up", SystemTime::now()));
         let roster_changed = !due.is_empty();
+        // What only agents' sessions take in shows the person nothing.
+        let person = scopes.contains(&Scope::All);
         while !due.is_empty() {
             if joined::names_unfollowed(follower, &due) {
                 joined::follow(follower);
             }
+            let admitting = due.clone();
             recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced)?;
+            admission::admit(follower, &admitting, &mut checks.synced, |_| !person);
             due.extend(mailbox.waiting_notices(follower, &link.keys));
         }
         drop(mailbox);
