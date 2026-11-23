@@ -2,9 +2,10 @@
 //! sends what is left in the outbox and the history entries of the messages the server stored
 //! ([`crate::history`]), then states its cursor, writes each entry it gets after the cursor to the
 //! local state with the new cursor at once, acks, and stops once catch-up has sent every entry. As
-//! the person, it then follows the spaces other devices of the account joined ([`crate::joined`]).
-//! It then accepts the revisions of each space it follows, and those of the space of each
-//! `space-notice` that came meanwhile ("Frames"), following first a noticed space it does not. It
+//! the person, it then follows the spaces other devices of the account joined ([`crate::joined`])
+//! and settles the invites it accepted ([`crate::acceptances`]). It then accepts the revisions of
+//! each space it follows, and those of the space of each `space-notice` that came meanwhile
+//! ("Frames"), following first a noticed space it does not. It
 //! then goes through the Welcomes, Commits and `mls` application messages it wrote, decrypting
 //! each message in its channel's group, and brings the group of each channel of those spaces in
 //! line ([`crate::groups`]), uploading the links of their key chains the server lacks
@@ -34,6 +35,10 @@
 //! The device's own channel messages are kept so too, once the server stored them
 //! ([`own_message`]).
 //!
+//! A task result that passes the checks is kept as a message only once the checks of
+//! [`crate::results`] pass too; otherwise it is dropped with a warning and counts in gap detection.
+//! A message whose content holds a `task` body is dropped.
+//!
 //! A receipt that passes the checks counts in gap detection and is shown to no one: of each
 //! message it lists that this device sent in the receipt's channel, `to` the receipt's `from`, a
 //! `read`, or a `refused` with its reason, is kept as a status, once; any other is dropped without
@@ -61,12 +66,15 @@ use skald_crypto::{
 use skald_proto::{
     AccountId, Address, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Envelope,
     Frame, Header, MessageId, Name, Push, Receipt, ReceiptStatus, Roster, RosterBody, ServerName,
-    ServerStatus, ServiceAgent, SpaceId, TrustLevel, VersionRange,
+    ServerStatus, ServiceAgent, SpaceId, TaskId, TaskResult, TrustLevel, VersionRange,
 };
 
+use crate::acceptances;
+use crate::admission;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
+use crate::codex;
 use crate::connection::printable;
 use crate::delivery;
 use crate::devices::text;
@@ -89,6 +97,8 @@ use crate::queue_keys;
 use crate::queues;
 use crate::receipts;
 use crate::reply;
+use crate::resend;
+use crate::results;
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
@@ -189,7 +199,7 @@ pub fn inbox(
 
 /// A run of `agent`'s hook ([`crate::hook`]) on `event` of `session`, with Claude Code's cap `cap`
 /// of `Stop` continuations in a row: in a folder in no space, nothing; on `Stop`, first what the
-/// session file of a registered session confirms ([`claude_socket::confirm`]); at the cap,
+/// session file confirms ([`claude_socket::confirm`]); at the cap,
 /// nothing, leaving every message waiting; otherwise [`run`] as the agent, which hands over what
 /// [`hook::compose`] gives, in one write, and only if the run did not fail.
 pub fn hook(
@@ -205,8 +215,8 @@ pub fn hook(
         };
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
-        if let (hook::Event::Stop { .. }, Some(session)) = (event, &session.id) {
-            claude_socket::confirm(&state, session).map_err(text)?;
+        if let hook::Event::Stop { .. } = event {
+            claude_socket::confirm(&state, agent, session).map_err(text)?;
         }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
@@ -236,27 +246,36 @@ pub fn hook(
 }
 
 /// A run of the helper for the Claude Code sessions of `agent` it serves
-/// ([`crate::claude_socket`]): [`run`] as the agent, which writes what waits for it into the
-/// socket of its last registered session that still runs, and only if the run did not fail;
-/// leaves what takes in what comes next. Gives whether the run did not fail; [`due`] then gives
-/// when a run next pushes what `batch` holds back.
+/// ([`crate::claude_socket`]): [`run`] as the agent, which gives what waits for it to the next path
+/// of its session ([`resend::hand_over`]), the paths beside the socket the helper holds as `held`
+/// says, each waiting `resend` for its confirmation, and only if the run did not fail; leaves what
+/// takes in what comes next. Gives whether the run did not fail, and what it gives the paths the
+/// helper holds, with when a run next pushes what `batch` holds back.
 pub fn to_sessions(
     dir: &Path,
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-) -> Result<bool, String> {
-    DUE.with(|due| due.set(None));
+    held: (resend::Held, Duration),
+) -> Result<resend::Pushed, String> {
+    let pushed = std::cell::RefCell::new(resend::Pushed::default());
     holding_warnings(dir, true, || {
         received(
             dir,
             storage,
             settings,
             Some(agent),
-            (true, Form::Short, Some(&hand_over_socket)),
+            (
+                true,
+                Form::Short,
+                Some(&|follower, ran_as| {
+                    resend::hand_over(follower, ran_as, held, &mut pushed.borrow_mut())
+                }),
+            ),
             true,
         )
-    })
+    })?;
+    Ok(pushed.into_inner())
 }
 
 /// Shows the message `message` names, by `#<ref>`, `<ref>` or its `msg_id`, whole, in `form`, as
@@ -482,6 +501,7 @@ fn receive(
     let keys = follower.keys()?;
     if scope == Scope::All {
         joined::follow(follower);
+        acceptances::settle(follower);
     }
     // By the end of catch-up the server sends the connection its notices: a revision stored before
     // these fetches is in them, and one stored later comes as a notice. A notice in catch-up names a
@@ -494,7 +514,9 @@ fn receive(
         .map(|space| space.id)
         .collect();
     while !due.is_empty() {
+        let admitting = due.clone();
         sync_due(follower, scope, &mut due, synced)?;
+        admission::admit(follower, &admitting, synced, |space| scope.excludes(space));
         due.extend(mailbox.waiting_notices(follower, &keys));
         if scope == Scope::All && joined::names_unfollowed(follower, &due) {
             joined::follow(follower);
@@ -695,20 +717,38 @@ pub fn show(
                                 );
                             }
                         }
+                        let counters = (counted.as_ref())
+                            .map(|(source, accepted)| (source, &accepted.counters));
                         if let Some(receipt) = &message.receipt {
                             let reads =
                                 reads(follower, checks, (header, sender), &message.from, receipt)?;
-                            let counted = (counted.as_ref())
-                                .map(|(source, accepted)| (source, &accepted.counters));
                             let (held, reads) = &reads;
                             (follower.state)
                                 .take_receipt(
                                     seq,
-                                    (counted, (sender, header.msg_id)),
+                                    (counters, (sender, header.msg_id)),
                                     (*held, reads),
                                 )
                                 .map_err(text)?;
                             continue;
+                        }
+                        // A result its checks drop still counts in gap detection.
+                        if let Some(result) = &message.result {
+                            let ours = run_agent(follower, checks, header.space);
+                            let addresses = (&message.from, message.to.as_ref(), ours.as_ref());
+                            let judged =
+                                results::judge(follower, (header, sender), addresses, result)?;
+                            if let Err(why) = judged {
+                                say_dropped(follower, checks, (header, Some(sender)), &why, agent)?;
+                                (follower.state)
+                                    .take_receipt(
+                                        seq,
+                                        (counters, (sender, header.msg_id)),
+                                        (false, &[]),
+                                    )
+                                    .map_err(text)?;
+                                continue;
+                            }
                         }
                         let kept = kept(follower, checks, (seq, header, sender), &message, gap)?;
                         match counted {
@@ -723,20 +763,7 @@ pub fn show(
                     }
                     Verdict::Repeat => follower.state.remove_entry(seq).map_err(text)?,
                     Verdict::Drop(sender, why) => {
-                        let from = sender.map_or_else(String::new, |sender| {
-                            format!(" from the device {sender}")
-                        });
-                        eprintln!(
-                            "skald: warning: dropped the message {} in the channel {}{from}: \
-                             {why}; it is not shown",
-                            header.msg_id, header.channel
-                        );
-                        if agent {
-                            let reference = reference(follower, header.msg_id)?;
-                            let name =
-                                sender.and_then(|sender| device_name(checks, header.space, sender));
-                            eprintln!("skald: {}", dropped(&reference, name.as_deref(), &why));
-                        }
+                        say_dropped(follower, checks, (header, sender), &why, agent)?;
                         follower.state.remove_entry(seq).map_err(text)?;
                     }
                 }
@@ -774,6 +801,38 @@ pub fn show(
         }
     }
     Ok(())
+}
+
+/// Warns that the message with `header` from the device `sender`, if known, is dropped for `why`;
+/// as an agent, if `agent`, also in a short line.
+fn say_dropped(
+    follower: &Follower,
+    checks: &Checks,
+    (header, sender): (&Header, Option<DeviceId>),
+    why: &str,
+    agent: bool,
+) -> Result<(), String> {
+    let from = sender.map_or_else(String::new, |sender| format!(" from the device {sender}"));
+    eprintln!(
+        "skald: warning: dropped the message {} in the channel {}{from}: {why}; it is not shown",
+        header.msg_id, header.channel
+    );
+    if agent {
+        let reference = reference(follower, header.msg_id)?;
+        let name = sender.and_then(|sender| device_name(checks, header.space, sender));
+        eprintln!("skald: {}", dropped(&reference, name.as_deref(), why));
+    }
+    Ok(())
+}
+
+/// The address of the agent of a stateless run of a service agent in `space`, as the space's last
+/// accepted revision in `checks` lists its device; none for any other run.
+fn run_agent(follower: &Follower, checks: &Checks, space: SpaceId) -> Option<Address> {
+    let server = checks.server.as_ref().and_then(Option::as_ref)?;
+    let (roster, _) = checks.synced.get(&space)?;
+    (follower.stateless())
+        .then(|| claims::service_address(roster, follower.this, server))
+        .flatten()
 }
 
 /// The `read`, `refused` or `held` statuses, as JSON by `msg_id`, that `receipt`, from `from` in
@@ -857,6 +916,7 @@ fn kept(
         after_missing: gap.is_some(),
         reply_to: message.reply_to.map(|reply_to| reply_to.to_string()),
         refused: refusing,
+        result: message.result.as_ref().map(results::result_of),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
     let at = (header.space, header.channel);
@@ -881,6 +941,7 @@ fn kept(
         wait: agent_wait(header.ttl),
         hops: message.hops,
         agents,
+        level: message.level,
         held,
         read,
         replied,
@@ -947,6 +1008,14 @@ pub fn own_message(
         )),
         _ => None,
     };
+    // The device's own result's text is its response's.
+    let result = (content.task_result())
+        .transpose()
+        .map_err(|err| format!("its task result breaks the protocol: {err}"))?;
+    let text = match &result {
+        Some(result) => message_text(&result.response, msg_id)?,
+        None => a2a_text(content, msg_id)?,
+    };
     let record = forms::Message {
         msg_id: msg_id.to_string(),
         space: space.to_string(),
@@ -955,10 +1024,11 @@ pub fn own_message(
         device: follower.this.to_string(),
         device_name: name.clone(),
         level: TrustLevel::Own,
-        text: a2a_text(content, msg_id)?,
+        text,
         after_missing: false,
         reply_to: content.reply_to.map(|reply_to| reply_to.to_string()),
         refused: refusing.clone(),
+        result: result.as_ref().map(results::result_of),
     };
     let record = serde_json::to_vec(&record).expect("a message encodes");
     let reply = ((space, channel), follower.this, from, name.as_str());
@@ -980,6 +1050,7 @@ pub fn own_message(
             wait: agent_wait(None),
             hops: content.hops,
             agents: Vec::new(),
+            level: TrustLevel::Own,
             held: Vec::new(),
             replied,
             read: None,
@@ -1094,20 +1165,29 @@ pub fn hand_over(
 }
 
 /// As [`hand_over`], gathering the lines and writing them in one write, after which it marks
-/// each status and message handed over; a failed write marks none.
+/// each status and message handed over; a failed write marks none. Where the agent's Codex session
+/// confirms what it gets ([`codex::confirms`]), each message it shows waits for its confirmation
+/// instead, from before the write ([`crate::codex_confirm`]).
 fn hand_over_whole(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
     form: Form,
 ) -> Result<usize, String> {
     let state = &follower.state;
+    let (now, timeout) = codex::clock();
+    (state.end_confirmation_waits(now.saturating_sub(timeout))).map_err(text)?;
+    let confirms = codex::confirms(state, space, agent.as_str())?;
     let mut lines = String::new();
-    let (mut statuses, mut messages) = (Vec::new(), Vec::new());
+    let (mut statuses, mut messages, mut unopened) = (Vec::new(), Vec::new(), Vec::new());
+    // Whether a message's line was put since the last message was marked: one that does not open
+    // has none.
+    let put = std::cell::Cell::new(false);
     let shown = handing_over(
         follower,
         (space, agent),
         form,
-        |_, line| {
+        |what, line| {
+            put.set(what == "a message");
             lines.push_str(&line);
             Ok(())
         },
@@ -1117,20 +1197,35 @@ fn hand_over_whole(
                 Ok(())
             },
             &mut |seq| {
-                messages.push(seq);
+                match put.replace(false) || !confirms {
+                    true => messages.push(seq),
+                    false => unopened.push(seq),
+                }
                 Ok(())
             },
         ),
     )?;
-    if !lines.is_empty() {
-        output::write(Stream::Out, lines.as_bytes())
-            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+    let waits = |waits| state.await_confirmation(&messages, agent.as_str(), (waits, now));
+    if confirms {
+        waits(true).map_err(text)?;
+    }
+    if !lines.is_empty()
+        && let Err(err) = output::write(Stream::Out, lines.as_bytes())
+    {
+        if confirms {
+            waits(false).map_err(text)?;
+        }
+        return Err(format!("cannot write the messages to the output: {err}"));
     }
     for seq in statuses {
         state.status_taken_by_agent(seq).map_err(text)?;
     }
-    for seq in messages {
-        state.handed_over(seq, agent.as_str()).map_err(text)?;
+    let handed = match confirms {
+        true => &unopened,
+        false => &messages,
+    };
+    for seq in handed {
+        state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(shown)
 }
@@ -1207,21 +1302,9 @@ fn hand_over_hook(
     Ok(handed.len())
 }
 
-thread_local! {
-    /// When the first window of `batch` that holds back a message for the last socket run of this
-    /// thread ends, in Unix milliseconds, if one does.
-    static DUE: Cell<Option<u64>> = const { Cell::new(None) };
-}
-
-/// When the first window of `batch` that held back a message for the last run of
-/// [`to_sessions`] on this thread ends, in Unix milliseconds, if one did: a run then pushes it.
-pub fn due() -> Option<u64> {
-    DUE.with(Cell::get)
-}
-
 /// How a kept message goes into a session by a push path.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Goes {
+pub(crate) enum Goes {
     /// As its line, labelled as a request from the person's own agent: `own`.
     Own,
     /// As its line, labelled as data from its sender, after the warning line: `inline`.
@@ -1231,36 +1314,56 @@ enum Goes {
 }
 
 /// A kept message a push path pushes now, opened.
-struct Pushed {
-    seq: u64,
-    opened: zeroize::Zeroizing<Vec<u8>>,
-    channel: Option<String>,
-    msg_id: Option<MessageId>,
-    goes: Goes,
+pub(crate) struct Pushed {
+    pub seq: u64,
+    pub opened: zeroize::Zeroizing<Vec<u8>>,
+    pub channel: Option<String>,
+    pub msg_id: Option<MessageId>,
+    pub goes: Goes,
 }
 
 /// What a push path takes of the kept messages that wait for an agent.
-struct Pushing {
+pub(crate) struct Pushing {
     /// Those it pushes now, by `seq`.
-    messages: Vec<Pushed>,
+    pub messages: Vec<Pushed>,
     /// Those that do not open, by `seq`.
-    unopened: Vec<u64>,
+    pub unopened: Vec<u64>,
     /// When the first window of `batch` that holds one back ends, in Unix milliseconds.
-    due: Option<u64>,
+    pub due: Option<u64>,
 }
 
 /// Of `kept`, kept messages in `space` by `seq` with their sealed lines, those a push path pushes
 /// now, as the person's delivery settings say ([`delivery::Settings::plan`]), each with how it
 /// goes; and those that do not open.
-fn pushed(
+pub(crate) fn pushed(
     follower: &Follower,
     space: SpaceId,
     kept: Vec<(u64, Vec<u8>)>,
 ) -> Result<Pushing, String> {
+    pushing(follower, space, kept, true)
+}
+
+/// Of `kept`, as [`pushed`] gives them, each that opens, whatever the delivery mode: messages a
+/// path already took, which go by the next one.
+pub(crate) fn pushed_again(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+) -> Result<Pushing, String> {
+    pushing(follower, space, kept, false)
+}
+
+/// Of `kept`, as [`pushed`] gives them, those the delivery mode pushes now if `planned`, or each.
+fn pushing(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+    planned: bool,
+) -> Result<Pushing, String> {
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
-    let came = state.kept_came(space).map_err(text)?;
+    let came = state.kept_waiting(space).map_err(text)?;
     let (mut opened, mut unopened) = (Vec::new(), Vec::new());
     for (seq, sealed) in kept {
         let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
@@ -1274,13 +1377,19 @@ fn pushed(
             seq,
             channel: record.map(|record| record.channel),
             level,
-            came: came.get(&seq).copied().unwrap_or(0),
+            came: came.get(&seq).map_or(0, |kept| kept.came),
         };
         opened.push((waiting, open, msg_id));
     }
     let waiting: Vec<delivery::Waiting> =
         opened.iter().map(|(waiting, ..)| waiting.clone()).collect();
-    let plan = settings.plan(&waiting, state::unix_millis());
+    let plan = match planned {
+        true => settings.plan(&waiting, state::unix_millis()),
+        false => delivery::Plan {
+            goes: waiting.iter().map(|waiting| waiting.seq).collect(),
+            due: None,
+        },
+    };
     let messages = (opened.into_iter())
         .filter(|(waiting, ..)| plan.goes.contains(&waiting.seq))
         .map(|(waiting, opened, msg_id)| {
@@ -1303,92 +1412,6 @@ fn pushed(
         unopened,
         due: plan.due,
     })
-}
-
-/// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
-/// still runs ([`claude_socket::runs`]; a newer one that does not is no longer registered),
-/// with [`claude_socket::write`], each kept message that waits for it that no socket took and a
-/// push path pushes now ([`pushed`]): one at `own`, or under `inline`, as its line, the latter
-/// after the warning line, within the limit ([`hook::fitted`]); the others whose signal did not
-/// go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the write, and as
-/// before it if the write fails, which ends the registration; a write counts one wake for each
-/// channel whose messages or signal it carries, unless the session says none of its lines reached
-/// the model ([`State::socket_wakes`]). Hands nothing over: the session file confirms what
-/// the socket took ([`claude_socket`]). Gives 0.
-fn hand_over_socket(
-    follower: &Follower,
-    (space, agent): (SpaceId, &Name),
-) -> Result<usize, String> {
-    let state = &follower.state;
-    let sessions = state.claude_sessions().map_err(text)?;
-    let mut theirs = (sessions.iter().rev())
-        .filter(|session| session.space == space && session.agent == agent.as_str());
-    let session = loop {
-        let Some(session) = theirs.next() else {
-            return Ok(0);
-        };
-        if claude_socket::runs(&session.socket) {
-            break session;
-        }
-        state.end_claude(&session.session).map_err(text)?;
-    };
-    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
-    let written: BTreeSet<u64> = state
-        .written(agent.as_str())
-        .map_err(text)?
-        .into_iter()
-        .collect();
-    let signalled: BTreeSet<u64> = (state.signalled(agent.as_str()).map_err(text)?)
-        .into_iter()
-        .collect();
-    let kept: Vec<_> = (kept.into_iter())
-        .filter(|(seq, _)| !written.contains(seq) && !signalled.contains(seq))
-        .collect();
-    if kept.is_empty() {
-        return Ok(0);
-    }
-    let references = References::new(state.kept_ids().map_err(text)?);
-    // One that does not open waits for the hooks, which warn of it.
-    let pushing = pushed(follower, space, kept)?;
-    DUE.with(|due| due.set(pushing.due));
-    let (mut lines, mut taken, mut below) = (Vec::new(), Vec::new(), Vec::new());
-    let mut channels = BTreeSet::new();
-    for message in pushing.messages {
-        let (line, _) = kept_line(&message.opened, Form::Short, &references);
-        match (message.goes, message.msg_id) {
-            (Goes::Own | Goes::Inline, Some(msg_id)) => {
-                let line = match message.goes {
-                    Goes::Inline => format!("{}\n{line}", forms::DATA_WARNING),
-                    _ => line,
-                };
-                lines.push((
-                    msg_id.to_string(),
-                    hook::fitted(&line, &references.of(msg_id)),
-                ));
-                taken.push(message.seq);
-            }
-            _ => below.push(message.seq),
-        }
-        channels.extend(message.channel);
-    }
-    let signal = MessageId::generate().to_string();
-    if !below.is_empty() {
-        lines.push((signal.clone(), hook::SIGNAL.to_owned()));
-    }
-    if lines.is_empty() {
-        return Ok(0);
-    }
-    let session_agent = (&session.session[..], agent.as_str());
-    (state.socket_takes(session_agent, &taken, (&below, &signal))).map_err(text)?;
-    if claude_socket::write(session, &lines).is_err() {
-        let seqs: Vec<u64> = taken.into_iter().chain(below).collect();
-        state.socket_failed(&seqs, agent.as_str()).map_err(text)?;
-        state.end_claude(&session.session).map_err(text)?;
-        return Ok(0);
-    }
-    let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
-    (state.socket_wakes(&session.session, &ids, &channels)).map_err(text)?;
-    Ok(0)
 }
 
 /// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits
@@ -1508,7 +1531,11 @@ fn shown_kept(
 
 /// The line of a kept message, `opened` its record, in `form` with `references`, and its sending
 /// device's trust level; one an older client kept is its line as it is, at the level `peer`.
-fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, TrustLevel) {
+pub(crate) fn kept_line(
+    opened: &[u8],
+    form: Form,
+    references: &References,
+) -> (String, TrustLevel) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
@@ -1516,7 +1543,12 @@ fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, Tru
             let answered = (record.reply_to.as_deref())
                 .and_then(|reply_to| reply_to.parse::<MessageId>().ok())
                 .map(|reply_to| references.of(reply_to));
-            let line = record.shown(form, &references.of(msg_id), answered.as_deref());
+            let shown_id = match &record.result {
+                Some(result) => (result.task.parse::<TaskId>())
+                    .map_or(msg_id, |task| MessageId::from_bytes(*task.as_bytes())),
+                None => msg_id,
+            };
+            let line = record.shown(form, &references.of(shown_id), answered.as_deref());
             (line, record.level)
         }
         _ => (
@@ -1783,6 +1815,8 @@ struct Received {
     reply_to: Option<MessageId>,
     /// Its receipt, if it is one: it holds no text.
     receipt: Option<Receipt>,
+    /// Its task result, if it is one: its text is the response's.
+    result: Option<TaskResult>,
 }
 
 /// The valid certificate of `device` of an account of the space in `context`'s revision that its
@@ -1882,10 +1916,21 @@ fn check(
             return Err("its content has no counter".to_owned());
         }
     }
-    // A receipt holds no A2A message: check 4 is the A2A message's.
-    let (text, receipt) = match content.body {
-        Some(Body::Receipt(receipt)) => (String::new(), Some(receipt)),
-        _ => (a2a_text(&content, header.msg_id)?, None),
+    if content.task().is_some() {
+        return Err("its content holds a task body, which only a task may".to_owned());
+    }
+    // A receipt holds no A2A message: check 4 is the A2A message's, a result's its response's.
+    let result = (content.task_result())
+        .transpose()
+        .map_err(|err| format!("its task result breaks the protocol: {err}"))?;
+    let text = match (&content.body, &result) {
+        (Some(Body::Receipt(_)), None) => String::new(),
+        (_, Some(result)) => message_text(&result.response, header.msg_id)?,
+        (_, None) => a2a_text(&content, header.msg_id)?,
+    };
+    let receipt = match content.body {
+        Some(Body::Receipt(receipt)) => Some(receipt),
+        _ => None,
     };
     Ok(Received {
         from: content.from,
@@ -1897,6 +1942,7 @@ fn check(
         hops: content.hops,
         reply_to: content.reply_to,
         receipt,
+        result,
     })
 }
 
@@ -1972,6 +2018,12 @@ pub fn a2a_text(content: &Content, msg_id: MessageId) -> Result<String, String> 
     let Some(Body::A2a(json)) = &content.body else {
         return Err("it holds no A2A message".to_owned());
     };
+    message_text(json, msg_id)
+}
+
+/// The text of `json`, an A2A message in JSON, its text parts each on a line, once its `messageId`
+/// is `msg_id` in text form.
+pub fn message_text(json: &str, msg_id: MessageId) -> Result<String, String> {
     let message: serde_json::Value =
         serde_json::from_str(json).map_err(|_| "its A2A message is no JSON".to_owned())?;
     if message["messageId"].as_str() != Some(msg_id.to_string().as_str()) {
@@ -2147,6 +2199,7 @@ mod tests {
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
                 records: Vec::new(),
+                deleted: Default::default(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);
@@ -2180,6 +2233,7 @@ mod tests {
                 hops: content.hops,
                 reply_to: None,
                 receipt: None,
+                result: None,
             })
         );
     }
@@ -2450,6 +2504,7 @@ mod tests {
                 hops: receipt.hops,
                 reply_to: None,
                 receipt: Some(read),
+                result: None,
             })
         );
         for (content, why) in [
@@ -2470,6 +2525,50 @@ mod tests {
                 "{why}"
             );
         }
+    }
+
+    /// A task result passes with its response's text; one whose response has another `messageId`
+    /// than `msg_id` fails.
+    #[test]
+    fn task_result_gives_its_response_s_text() {
+        let world = World::new();
+        let header = world.header();
+        let result = TaskResult {
+            task: TaskId::generate(),
+            claim_id: skald_proto::ClaimId::generate(),
+            generation: 2,
+            outcome: skald_proto::Outcome::Done,
+            response: World::a2a(&header, &["deployed", "build 412"]),
+            unknown: Unknown::default(),
+        };
+        let from = "acme/bob/claude@skald.example".parse().unwrap();
+        let to: Address = "acme/ada/codex@skald.example".parse().unwrap();
+        let counter = NonZeroU64::MIN;
+        let content = result.content((from, to.clone()), counter, 3);
+
+        assert_eq!(
+            world.checked(&header, &content),
+            Ok(Received {
+                from: content.from.clone(),
+                to: Some(to.clone()),
+                device: "laptop".to_owned(),
+                level: TrustLevel::Peer,
+                text: "deployed\nbuild 412".to_owned(),
+                counter: Some(counter),
+                hops: 3,
+                reply_to: None,
+                receipt: None,
+                result: Some(result.clone()),
+            })
+        );
+        let other = Header {
+            msg_id: MessageId::generate(),
+            ..header.clone()
+        };
+        assert_eq!(
+            world.checked(&other, &content),
+            Err("its A2A messageId is not its msg_id".to_owned())
+        );
     }
 
     /// A `delivered` of a message of this device.

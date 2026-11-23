@@ -281,9 +281,15 @@ pub fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Q
     let answer = (follower.connection)
         .get_proved(&queues_path(at), (&follower.token, &proof))
         .map_err(|err| refused("the channel's queues are not listed", err))?;
-    let Queues { mut queues } = serde_json::from_slice(&answer)
-        .map_err(|_| "unexpected answer from the server: a channel's queues".to_owned())?;
+    let mut queues = queues_of(&answer)?;
     queues.sort_by(|one, other| one.name.cmp(&other.name));
+    Ok(queues)
+}
+
+/// The queues `answer`, the server's answer to a listing of a channel's queues, gives.
+pub fn queues_of(answer: &[u8]) -> Result<Vec<Queue>, String> {
+    let Queues { queues } = serde_json::from_slice(answer)
+        .map_err(|_| "unexpected answer from the server: a channel's queues".to_owned())?;
     Ok(queues)
 }
 
@@ -413,6 +419,7 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         let claimers = Claimers::of((&roster, &devices), channel, addressee);
         claimers.others(follower.own.account).then_some(now + WEEK)
     });
+    let whose = (from.to_string(), to.as_ref().map(ToString::to_string));
     let task = TaskId::generate();
     let request = json!({
         "messageId": task.to_string(),
@@ -459,7 +466,11 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         record: record.to_cbor(),
     };
     (follower.state)
-        .keep_task(&outgoing, agent.map(Name::as_str))
+        .keep_task(
+            &outgoing,
+            agent.map(Name::as_str),
+            (&whose.0, whose.1.as_deref()),
+        )
         .map_err(text)?;
     let answered = upload_waiting(&mut follower, scope);
     let reference = reference(&follower.state, task);

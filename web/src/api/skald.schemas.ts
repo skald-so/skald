@@ -461,6 +461,8 @@ export interface Devices {
   devices: Device[];
   /** The stored revocations of the listed devices' accounts, each as the server got it, once. */
   revocations: Revocation[];
+  /** The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
+  web?: string;
 }
 
 export type DeviceRegistrationKind =
@@ -611,6 +613,8 @@ export type ServerName = string;
 export interface Server {
   /** The server's name; `null` without a valid one, such as with no public address or an IP address as its host. */
   name: ServerName | null;
+  /** The server's public address as an origin, for devices starting sign-in from the web address. Absent on a server without sign-in. */
+  public?: string;
 }
 
 export interface Session {
@@ -620,6 +624,8 @@ export interface Session {
   github_login?: string;
   /** The provider a web session signed in with; only for a web session. */
   sign_in_method?: SignInProvider;
+  /** The server's web URL, an origin, which invite links start with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
+  web?: string;
 }
 
 /**
@@ -641,6 +647,8 @@ export interface SpaceRequest {
 }
 
 export interface WaitingAcceptance {
+  /** The invite the acceptance is of, as the server got it. */
+  invite: Invite;
   /** The acceptance as the server got it. */
   acceptance: Acceptance;
   /** The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none. */
@@ -710,6 +718,37 @@ export interface SpaceDevices {
  * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
  */
 export type InviteId = string;
+
+export type ListedInviteRole =
+  (typeof ListedInviteRole)[keyof typeof ListedInviteRole];
+
+export const ListedInviteRole = {
+  admin: "admin",
+  member: "member",
+} as const;
+
+/**
+ * An active invite without its key or signed bytes.
+ */
+export interface ListedInvite {
+  invite: InviteId;
+  role: ListedInviteRole;
+  /** The invite's creator, while their account exists. */
+  username?: Username;
+  /** The name of the device that signed the invite, while its account exists. */
+  device_name?: string;
+  /** When the server stored the invite. For invites stored before this date was recorded, when the server issued its ID. */
+  created_at: string;
+  expires_at: string;
+  /** An acceptance waits for an admin device to admit the newcomer. */
+  acceptance_waiting: boolean;
+  /** The newcomer's requested handle, present when an acceptance is waiting. */
+  acceptance_handle?: string;
+}
+
+export interface ListedInvites {
+  invites: ListedInvite[];
+}
 
 export interface NewInvite {
   invite: InviteId;

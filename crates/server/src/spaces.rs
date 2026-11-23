@@ -107,7 +107,11 @@ pub(crate) struct Found {
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
-pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
+pub(crate) async fn find(
+    db: impl sqlx::PgExecutor<'_>,
+    space: &str,
+    account: &str,
+) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
     let found: Option<(String, String, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)
@@ -823,6 +827,7 @@ async fn insert(
         let stored = stored(db, space, number).await?.unwrap_or_default();
         return again(space, number, sent, &stored);
     }
+    invites::admitted(&mut tx, space, roster, previous).await?;
     let (accounts, admins): (Vec<String>, Vec<bool>) = body
         .members
         .iter()
@@ -843,13 +848,6 @@ async fn insert(
     history::added(&mut tx, roster, previous)
         .await
         .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
-    // An invite ends once a stored revision lists a member with it.
-    let invites: Vec<String> = (body.members.iter())
-        .filter_map(|member| member.invite.map(|invite| invite.to_string()))
-        .collect();
-    invites::admitted(&mut tx, space, &invites)
-        .await
-        .map_err(|err| Refusal::Database("end the invites of admitted members", err))?;
     // A token ends once the latest revision lists its device in no service agent entry.
     let agents: Vec<String> = body
         .service_agents

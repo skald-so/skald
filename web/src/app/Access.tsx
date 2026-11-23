@@ -20,6 +20,8 @@ import { sortRows, type Sort } from "../ui/sort.ts";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import styles from "./Access.module.css";
 import { signedIn, versioned } from "./api.ts";
+import { InviteLinks } from "./InviteLinks.tsx";
+import { useInviteLinks, type InviteLinksData } from "./invites.ts";
 import { ago, date, until } from "./time.ts";
 
 /** What follows "skald" for a CLI session: its device. */
@@ -88,6 +90,7 @@ export interface AccessScreenProps {
    * they load or when it is an admin of no space, which hides them.
    */
   tokens?: readonly SpaceToken[];
+  invites?: InviteLinksData;
   /** The time the sessions' relative times count from, in milliseconds since the epoch. */
   now: number;
   /** The time the tokens' relative times count from, as `now`; `now` without it. */
@@ -113,6 +116,7 @@ export interface AccessScreenProps {
 export function AccessScreen({
   sessions,
   tokens,
+  invites,
   now,
   tokensNow = now,
   failed,
@@ -221,6 +225,7 @@ export function AccessScreen({
         empty={<EmptyState>No sessions.</EmptyState>}
         minWidth={720}
       />
+      {invites && <InviteLinks {...invites} showSpace />}
       {tokens && (
         <Tokens tokens={tokens} now={tokensNow} onRevoke={onRevokeToken} />
       )}
@@ -426,6 +431,7 @@ export function Access({
   spaces: readonly ListedSpace[];
   onSignedOut: () => void;
 }) {
+  const invites = useInviteLinks(spaces, onSignedOut);
   const [listed, setListed] = useState<{
     sessions: ListedSession[];
     at: number;
@@ -486,6 +492,7 @@ export function Access({
     <AccessScreen
       sessions={listed?.sessions}
       tokens={tokens?.tokens}
+      invites={invites}
       now={listed?.at ?? 0}
       tokensNow={tokens?.at}
       failed={failed}

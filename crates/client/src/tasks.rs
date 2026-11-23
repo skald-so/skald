@@ -28,19 +28,21 @@ use crate::spaces::Follower;
 
 /// `Task` in the OpenAPI spec.
 #[derive(Deserialize)]
-struct Answered {
-    queued_task: String,
-    state: String,
-    progress: Option<String>,
-    reason: Option<String>,
-    attempts: u64,
-    claim: Option<Claim>,
+pub struct Answered {
+    pub queued_task: String,
+    pub state: String,
+    pub progress: Option<String>,
+    pub reason: Option<String>,
+    pub attempts: u64,
+    pub claim: Option<Claim>,
 }
 
 /// A task's last claim, as the server gives it.
 #[derive(Deserialize)]
-struct Claim {
-    device: String,
+pub struct Claim {
+    pub claim_id: String,
+    pub generation: u64,
+    pub device: String,
 }
 
 /// `Tasks` in the OpenAPI spec.
