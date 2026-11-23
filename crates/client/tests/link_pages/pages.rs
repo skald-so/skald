@@ -169,7 +169,7 @@ impl Opening {
 }
 
 /// The path of the file an argument of the stand-in names, as a path or a `file:` URL.
-fn named_file(arg: &str) -> PathBuf {
+pub fn named_file(arg: &str) -> PathBuf {
     let Some(rest) = arg.strip_prefix("file://") else {
         return PathBuf::from(arg);
     };

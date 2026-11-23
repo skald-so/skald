@@ -1,5 +1,5 @@
-// Members when a space's members fail to load and that space is chosen again, and when the API
-// refuses the session.
+// Members when a space's members fail to load and that space is chosen again, when the API
+// refuses the session, and the only admin's banner.
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
@@ -7,7 +7,7 @@ import { setupServer } from "msw/node";
 import { MemoryRouter } from "react-router";
 import { afterAll, afterEach, beforeAll, expect, test, vi } from "vitest";
 import { Cabinet } from "./Cabinet.tsx";
-import { Members } from "./Members.tsx";
+import { Members, MembersScreen } from "./Members.tsx";
 
 const own = { space: "01968a2e-0000-7000-8000-000000000601", name: "ana" };
 const team = { space: "01968a2e-0000-7000-8000-000000000602", name: "team-b" };
@@ -18,7 +18,7 @@ const refused = {
 };
 const member = (handle: string) => ({
   handle,
-  role: "member",
+  role: "member" as const,
   linked_devices: 1,
   joined_at: "2026-11-01T10:00:00Z",
 });
@@ -95,3 +95,23 @@ test("when the API refuses the session, Members shows the sign-in page", async (
   await expect.poll(() => onSignedOut.mock.calls.length).toBe(1);
   expect(screen.queryByText("The members did not load.")).toBeNull();
 });
+
+test.each(["team-a", "ops"])(
+  "the only admin's banner in %s names the command for that space on the admin's device",
+  (name) => {
+    render(
+      <MembersScreen
+        space={name}
+        members={[
+          { ...member("ana"), role: "admin", you: true },
+          member("lee"),
+        ]}
+        now={0}
+      />,
+    );
+    const text = screen.getByRole("alert").textContent!.replace(/\s+/g, " ");
+    expect(text).toContain(
+      `run skald make-admin ${name} <handle> on your device.`,
+    );
+  },
+);

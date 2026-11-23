@@ -260,7 +260,8 @@ mod tests {
                     acme_id,
                     &acme.to_cbor(),
                     &[(1, acme.hash())],
-                    &next.to_cbor()
+                    &next.to_cbor(),
+                    &[]
                 )
                 .unwrap()
         );

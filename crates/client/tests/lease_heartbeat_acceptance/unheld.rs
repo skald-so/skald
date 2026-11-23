@@ -9,7 +9,7 @@ use skald_proto::TaskId;
 use crate::agents::{CLAUDE, run_as_in};
 use crate::claiming::{CLAIM, COMPLETE, DONE, EXTEND, QUEUED, STARTED};
 use crate::fixtures::CHANNEL;
-use crate::queuing::{enqueued, run_in, tasks};
+use crate::queuing::run_in;
 use crate::scene::{Scene, THIRD, assert_held, waits};
 use crate::values::GEMINI;
 
@@ -19,23 +19,17 @@ const KEPT_DONE: &str = "heartbeat test: codex finished the report its session k
 const PERSON_S: &str = "heartbeat test: claude asks for a backup ada claims herself";
 const GEMINI_S: &str = "heartbeat test: claude asks for a cleanup gemini claims without a session";
 
-/// As claude on Ada's first machine, `skald enqueue --channel <channel> <text>`, which must
-/// succeed; gives the task the queue `default` holds that it did not before.
+/// As claude on Ada's first machine, [`Claims::enqueues`](crate::claiming::Claims::enqueues) of
+/// `<text>` in the talk's channel.
 #[track_caller]
 fn claude_enqueues(scene: &Scene, text: &str) -> TaskId {
     let claims = &scene.claims;
-    let before = tasks(claims.cloud(), claims.ada(), claims.at, claims.queue);
-    let claude = (claims.senders.agents.folder.as_path(), Some(CLAUDE));
-    let args = [CHANNEL, claims.channel.as_str(), text];
-    enqueued(&claims.ada().machine, claude, &args);
-    let after = tasks(claims.cloud(), claims.ada(), claims.at, claims.queue);
-    let new: Vec<TaskId> = (after.iter().map(|stored| stored.task.task))
-        .filter(|task| !before.iter().any(|stored| stored.task.task == *task))
-        .collect();
-    let [one] = new.as_slice() else {
-        panic!("not one new task: {new:?}");
-    };
-    *one
+    let claude = (
+        &claims.ada().machine,
+        claims.senders.agents.folder.as_path(),
+        Some(CLAUDE),
+    );
+    claims.enqueues(claude, claims.at.1, &[text])
 }
 
 /// The second machine runs through a helper, codex's `skald mcp` runs through it, and gemini has

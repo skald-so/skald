@@ -336,6 +336,7 @@ A client MUST warn its user when:
 - an account record's `recovery` changes, or a record the server gives fails the check of [Account](#account), once per record; one that names the master key of the record the client holds and verifies with it does not count, as an account's records stay so after its `master` changes;
 - a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
+- a member handle names different accounts in two consecutive accepted roster revisions.
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate)), or a device with certificates of two bodies ([Device certificate](#device-certificate));
