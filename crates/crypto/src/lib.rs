@@ -50,7 +50,7 @@ pub use queue::{
     sign_queue_key, sign_task,
 };
 pub use revocation::{check_valid_device, counts, marked_stolen, revoked_devices, sign_revocation};
-pub use roster::{RosterError, accept_next, check_roster, sign_roster};
+pub use roster::{RosterError, accept_next, admins_device, check_roster, sign_roster};
 pub use sealed::{SealedState, StateKey};
 pub use sign::{SignatureError, SigningKey, verify};
 pub use ssh::{SshCheck, check_ssh_signature};

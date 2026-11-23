@@ -23,6 +23,11 @@
 //!   signal for its thread, by the session's Codex process's executable, on its config home
 //!   ([`Served::wake`]). A session has one queued signal until its next hook; messages a
 //!   `codex queue` failed for wait for the hooks and `inbox`.
+//! - A message's signal goes by a hook or `codex queue` only as the person's delivery mode of its
+//!   channel and sender trust level says: `now` at once, `batch` once its window ends, `pull`
+//!   never ([`crate::delivery`]); `inline` changes nothing, as only the signal goes in. Each signal
+//!   that goes, a hook's output or a `codex queue` that succeeded, counts one wake for each
+//!   channel whose messages it covers.
 //! - `PermissionRequest` records that the session waits on its permission prompt, and its next
 //!   hook that the prompt ended ([`crate::permission_prompts`]); so does the session's app-server,
 //!   to which the helper keeps a client ([`crate::codex_app_server`]), and the end of the session.
@@ -44,7 +49,7 @@ use crate::devices::text;
 use crate::mailbox::Came;
 use crate::output::{self, Stream};
 use crate::state::{CodexSession, State};
-use crate::{claude_socket, hook, permission_prompts, recv};
+use crate::{claude_socket, delivery, hook, permission_prompts, recv};
 
 /// How long a hook waits for its run before it prints nothing.
 pub const PATIENCE: Duration = Duration::from_secs(3);
@@ -101,7 +106,8 @@ pub fn hook(
     // Any other hook of the session comes after its prompt ended.
     (state.prompts_ended(thread, crate::state::unix_now())).map_err(text)?;
     // What waits goes to a session before this one counts as the one whose hook ran last.
-    let mut signalled = signals(&state, &this)?;
+    let mut routed = route(&state, this.space, &this.agent, Some(&this.thread))?;
+    let mut signalled = routed.to.remove(&this.thread).unwrap_or_default();
     if event == hook::Event::SessionStart {
         signalled.clear();
     }
@@ -109,6 +115,7 @@ pub fn hook(
         output::write(Stream::Out, output_of(event).as_bytes())
             .map_err(|err| format!("cannot write the signal to the output: {err}"))?;
         (state.signals_given(&signalled, agent.as_str())).map_err(text)?;
+        (state.count_wakes(&routed.channels(&signalled))).map_err(text)?;
     }
     this.busy = busy_after(event, !signalled.is_empty());
     state.register_codex(&this).map_err(text)
@@ -129,33 +136,49 @@ fn busy_after(event: hook::Event, signalled: bool) -> bool {
     }
 }
 
-/// The `seq` of each kept message that waits for the agent of `this`, a session whose hook runs,
-/// whose signal goes to it and did not go yet ([`route`]).
-fn signals(state: &State, this: &CodexSession) -> Result<Vec<u64>, String> {
-    let mut routed = route(state, this.space, &this.agent, Some(&this.thread))?;
-    Ok(routed.remove(&this.thread).unwrap_or_default())
+/// The kept messages that wait for an agent whose signal did not go yet and goes now, by the
+/// session it goes to ([`route`]).
+#[derive(Default)]
+struct Routed {
+    /// Their `seq`, by the thread of the session their signal goes to.
+    to: BTreeMap<String, Vec<u64>>,
+    /// Each one's channel, if kept, by `seq`.
+    of: BTreeMap<u64, Option<String>>,
+    /// When the first window of `batch` that holds back another ends, in Unix milliseconds.
+    due: Option<u64>,
 }
 
-/// The `seq` of each kept message that waits for `agent` in `space` and whose signal did not go
-/// yet, by the thread of the session its signal goes to: the live session it went to, or else the
-/// live session of the agent whose hook ran last. `this`, a session whose hook runs, counts as
-/// live, and as the one whose hook ran last when no other lives. Sessions whose Codex process ended
-/// end.
-fn route(
-    state: &State,
-    space: SpaceId,
-    agent: &str,
-    this: Option<&str>,
-) -> Result<BTreeMap<String, Vec<u64>>, String> {
+impl Routed {
+    /// The channels of `seqs`, each counting one wake when their signal goes.
+    fn channels(&self, seqs: &[u64]) -> BTreeSet<String> {
+        (seqs.iter())
+            .filter_map(|seq| self.of.get(seq).cloned().flatten())
+            .collect()
+    }
+}
+
+/// The kept messages that wait for `agent` in `space`, whose signal did not go yet and goes now as
+/// the person's delivery settings say ([`delivery::Settings::plan`]), by the thread of the session
+/// their signal goes to: the live session it went to, or else the live session of the agent whose
+/// hook ran last. `this`, a session whose hook runs, counts as live, and as the one whose hook ran
+/// last when no other lives. Sessions whose Codex process ended end.
+fn route(state: &State, space: SpaceId, agent: &str, this: Option<&str>) -> Result<Routed, String> {
     let signalled: BTreeSet<u64> = state.signalled(agent).map_err(text)?.into_iter().collect();
-    let waiting: Vec<u64> = (state.for_agent(space, agent, crate::state::unix_now()))
+    let kept = state.kept_waiting(space).map_err(text)?;
+    let waiting: Vec<delivery::Waiting> = (state.for_agent(space, agent, crate::state::unix_now()))
         .map_err(text)?
         .into_iter()
-        .map(|(seq, _)| seq)
-        .filter(|seq| !signalled.contains(seq))
+        .filter(|(seq, _)| !signalled.contains(seq))
+        .filter_map(|(seq, _)| kept.get(&seq).cloned())
         .collect();
-    let mut routed: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    let mut routed = Routed::default();
     if waiting.is_empty() {
+        return Ok(routed);
+    }
+    let settings = delivery::Settings::load(state)?;
+    let plan = settings.plan(&waiting, crate::state::unix_millis());
+    routed.due = plan.due;
+    if plan.goes.is_empty() {
         return Ok(routed);
     }
     let mut live = Vec::new();
@@ -179,7 +202,11 @@ fn route(
         .into_iter()
         .collect();
     let mut moved = Vec::new();
-    for seq in waiting {
+    for message in waiting {
+        let seq = message.seq;
+        if !plan.goes.contains(&seq) {
+            continue;
+        }
         let to = match going.get(&seq) {
             Some(to) if live.contains(to) => to.clone(),
             _ => {
@@ -187,7 +214,8 @@ fn route(
                 latest.clone()
             }
         };
-        routed.entry(to).or_default().push(seq);
+        routed.to.entry(to).or_default().push(seq);
+        routed.of.insert(seq, message.channel);
     }
     state.signal_to(&moved, agent, &latest).map_err(text)?;
     Ok(routed)
@@ -457,14 +485,18 @@ pub struct Served {
     queuing: BTreeMap<String, Queuing>,
     /// Of each session, the messages a `codex queue` failed for: they wake it no more.
     unqueued: BTreeMap<String, BTreeSet<u64>>,
+    /// When the first window of `batch` that held back a message at the last wake ends, in Unix
+    /// milliseconds: the helper wakes the sessions again then.
+    batch: Option<u64>,
 }
 
 /// A `codex queue` the helper runs: its process, the agent and the messages whose signal it
-/// queues, and when it started.
+/// queues, their channels, each of which its success counts one wake, and when it started.
 struct Queuing {
     child: Child,
     agent: String,
     seqs: Vec<u64>,
+    channels: BTreeSet<String>,
     started: Instant,
 }
 
@@ -501,6 +533,7 @@ impl Served {
             due: true,
             queuing: BTreeMap::new(),
             unqueued: BTreeMap::new(),
+            batch: None,
         }
     }
 
@@ -565,17 +598,20 @@ impl Served {
             }
         }
         self.queued(dir);
-        if std::mem::take(&mut self.due) || !runs.is_empty() {
+        let batched = (self.batch).is_some_and(|at| at <= crate::state::unix_millis());
+        if std::mem::take(&mut self.due) || batched || !runs.is_empty() {
             self.wake(dir);
         }
         Some(!runs.is_empty())
     }
 
     /// Wakes each idle session in the state in `dir` that has no signal queued and whose agent has
-    /// messages whose signal goes to it ([`route`]) and did not go yet: runs `codex queue` with
+    /// messages whose signal goes to it now ([`route`]) and did not go yet: runs `codex queue` with
     /// the signal for its thread ([`queue`]). Messages a `codex queue` failed for wake it no more;
-    /// they wait for its hooks and `inbox`.
+    /// they wait for its hooks and `inbox`. Notes when the first window of `batch` that holds back
+    /// a message ends.
     fn wake(&mut self, dir: &Path) {
+        self.batch = None;
         let Ok(state) = State::open(dir) else {
             return;
         };
@@ -589,7 +625,11 @@ impl Served {
             let Ok(routed) = route(&state, space, agent, None) else {
                 continue;
             };
-            for (thread, seqs) in routed {
+            if let Some(due) = routed.due {
+                self.batch = Some(self.batch.map_or(due, |batch| batch.min(due)));
+            }
+            for (thread, seqs) in &routed.to {
+                let (thread, seqs) = (thread.clone(), seqs.clone());
                 let Some(session) = sessions.iter().find(|session| session.thread == thread) else {
                     continue;
                 };
@@ -613,10 +653,12 @@ impl Served {
                     Ok(child) => {
                         let started = Instant::now();
                         let agent = agent.to_owned();
+                        let channels = routed.channels(&seqs);
                         let queuing = Queuing {
                             child,
                             agent,
                             seqs,
+                            channels,
                             started,
                         };
                         self.queuing.insert(thread, queuing);
@@ -636,10 +678,33 @@ impl Served {
         self.unqueued.entry(thread).or_default().extend(seqs);
     }
 
-    /// Takes the end of each `codex queue` that ended in the state in `dir`, or kills one that ran
-    /// for [`QUEUE_PATIENCE`]: one that failed did not give its messages' signal
-    /// ([`Served::failed_queue`]).
+    /// Takes the end of each `codex queue` that ended in the state in `dir` ([`Served::ended`]): one
+    /// that succeeded counts one wake for each channel of its messages; one that failed did not
+    /// give its messages' signal ([`Served::failed_queue`]).
     fn queued(&mut self, dir: &Path) {
+        let ended = self.ended();
+        if ended.is_empty() {
+            return;
+        }
+        let state = State::open(dir);
+        for (thread, succeeded) in ended {
+            let Some(queuing) = self.queuing.remove(&thread) else {
+                continue;
+            };
+            let Ok(state) = &state else {
+                continue;
+            };
+            if succeeded {
+                let _ = state.count_wakes(&queuing.channels);
+            } else {
+                self.failed_queue(state, thread, &queuing.agent, queuing.seqs);
+            }
+        }
+    }
+
+    /// The thread of each `codex queue` that ended, and whether it succeeded; one that ran for
+    /// [`QUEUE_PATIENCE`] is killed, as failed.
+    fn ended(&mut self) -> Vec<(String, bool)> {
         let mut ended = Vec::new();
         for (thread, queuing) in &mut self.queuing {
             let succeeded = match queuing.child.try_wait() {
@@ -654,18 +719,7 @@ impl Served {
             };
             ended.push((thread.clone(), succeeded));
         }
-        if ended.is_empty() {
-            return;
-        }
-        let state = State::open(dir);
-        for (thread, succeeded) in ended {
-            let Some(queuing) = self.queuing.remove(&thread) else {
-                continue;
-            };
-            if let (false, Ok(state)) = (succeeded, &state) {
-                self.failed_queue(state, thread, &queuing.agent, queuing.seqs);
-            }
-        }
+        ended
     }
 
     /// Takes the registrations from the state in `dir`, keeping what it has of each it served.

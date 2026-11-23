@@ -105,14 +105,15 @@ pub struct Start {
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings,
 /// those of master keys ([`master_warnings`]) of `every_space` the device follows or only of this
-/// one: gives the space's last accepted revision, its devices and the revisions the server gives. A
-/// `service` device accepts those up to its roster's `start` ([`roster_start`]) without the check
-/// that their signer is not revoked.
+/// one. Gives the space's last accepted revision, its devices and the revisions the server gives.
+/// If `hold`, role changes and reported deletions wait for the person's run. A `service` device
+/// accepts revisions up to its roster's `start` ([`roster_start`]) without checking their signer
+/// for revocation.
 pub fn sync(
     connection: &mut Connection,
     (state, token): (&State, &str),
     space: &state::Space,
-    (own, every_space): (&Own, bool),
+    (own, every_space, hold): (&Own, bool, bool),
     start: Option<&Start>,
 ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
@@ -159,11 +160,19 @@ pub fn sync(
     }
     // A stateless run accepts the same revisions each time.
     if !crate::service::stateless() {
-        for notice in notices
+        let lines: Vec<String> = notices
             .iter()
             .chain(&deletion_notices(state, &current, &devices, own)?)
-        {
-            eprintln!("skald: {notice}");
+            .map(|notice| format!("skald: {notice}"))
+            .collect();
+        if hold {
+            if !lines.is_empty() {
+                crate::recv::keep_held(state.keep_warnings(&lines), &lines);
+            }
+        } else {
+            for line in lines {
+                eprintln!("{line}");
+            }
         }
     }
     Ok((current, devices, given))

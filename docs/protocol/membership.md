@@ -113,7 +113,7 @@ device-kind = &(client: 1, browser: 2, service: 3)  ; 4 and 5 are reserved
   - `github`: GitHub's user ID of that user.
   - A certificate carries both or neither; one with only one of them is malformed.
   - Only a `client` device's certificate carries them; a client ignores them on other kinds.
-  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither.
+  - A `client` device that issues its own certificate, as the account's first device or with the recovery key, makes them with an SSH key GitHub lists for the GitHub user of the account's GitHub sign-in method, or one its person names, when it finds one; otherwise its certificate carries neither. A `client` device linked with a link code makes them the same way, once it has a session, and sends them in its request: [Link code](#link-code). One without a session learns its account only from the grant, so it sends neither and says so.
   - A client checks `ssh` against the SSH keys GitHub's API lists publicly for that user, authentication and signing keys, never against keys the Skald server gives:
     - it passes when its key is on the list and it verifies with that key;
     - it is a key change when it is malformed, of another version or namespace, by a key not on the list, or does not verify;
@@ -161,7 +161,7 @@ A one-time code the new device shows keys a run of CPace [[draft-irtf-cfrg-cpace
 - **Attempts at the new device:** a run is one attempt. The new device runs a code at most 3 times, each time with a fresh `session` and scalar, and spends an attempt when it takes a reply. After the third failed run the code ends: the new device tells its user that the code failed 3 times, and that someone else may have tried if its user did not.
 - **Expiry:** a code ends 5 minutes after the new device shows it, and once a run with it succeeds. A run still open then fails.
 - **Fresh codes:** the new device MUST NOT show a fresh code unless its user asks for one, after a code ends or at any time; asking ends the current code.
-- **Attempts at the issuing device:** it MUST reject an entry that is not 6 or 12 characters of the alphabet, read as above, without a run. It runs each entry once. After 3 failed runs in a row it stops, tells its user to get a new code on the new device, and runs no entry until its user confirms the new device shows one.
+- **Attempts at the issuing device:** it MUST reject an entry that is not 6 or 12 characters of the alphabet, read as above, without a run. It runs each entry once. After 3 failed runs in a row it stops, tells its user to get a new code on the new device, and runs no entry until its user confirms the new device shows one. A run that fails on a key change in the request's `ssh` does not count: the code was right.
 
 ```cddl
 link-message = link-hello / link-reply / link-request / link-grant / link-abort
@@ -181,6 +181,8 @@ link-request-body = {
   2 => bstr .size 32,      ; signing
   3 => bstr .size 32,      ; hpke
   4 => tstr .size (1..64), ; name
+  ? 5 => bstr,             ; ssh: as a certificate's
+  ? 6 => uint,             ; github: as a certificate's
   * int => any,            ; fields of later versions
 }
 
@@ -195,7 +197,7 @@ link-grant-body = {
 
 - **Relay:** each message is a CBOR item carried as [Encoding](README.md#encoding) says. The new device sends a hello for each run, and the server relays the run's later messages by `session`. A device's new hello replaces its open run. Paths: [api/openapi.json](../../api/openapi.json).
   - With a session, the new device sends its hello as its account's, naming its device registered there; a `client` device of the account takes the account's latest hello.
-  - Without a session, it first opens the run, naming its device, which has no certificate. The server answers with the run's pairing and a token for the run's messages, which is no session. The device then sends its hello as the run's first message with the token; until then no account pairs the run. The first account whose session enters the pairing takes the hello, and the run is then its account's. The server refuses the pairing to other accounts. Once the run's device registers on an account, only that account pairs the run, and a run paired with another account ends.
+  - Without a session, it first opens the run, naming its device, which has no certificate and is on no deleted account. The server answers with the run's pairing and a token for the run's messages, which is no session. The device then sends its hello as the run's first message with the token; until then no account pairs the run. The first account whose session enters the pairing takes the hello, and the run is then its account's. The server refuses the pairing to other accounts. Once the run's device registers on an account, only that account pairs the run, and a run paired with another account ends, as does the run once that account is deleted.
   - A run without a session is not given as waiting until its device registers on an account; it goes on after that.
   - The server bounds runs without a session: a run's token sends at most 8 later messages, each of at most 4096 bytes; an account enters at most 10 pairings the server does not hold within 15 minutes, then none until the oldest is 15 minutes old.
 - **CPace:** cipher suite CPACE-RISTR255-SHA512, initiator-responder: the new device is A, the issuing device B. PRS is the code's 6 characters as read above, in uppercase ASCII; CI the encoded `["skald link code", account]`, the account ID as a byte string, or in a run started without a session `["skald link code", pairing]`, the pairing's 6 characters in uppercase ASCII as a byte string, also after its device signs in; sid `session`; ADa and ADb empty. A side MUST fail the run on a share that does not decode or a K that is the identity, and MUST NOT reuse a scalar.
@@ -203,14 +205,15 @@ link-grant-body = {
 
 The new device:
 1. sends a hello and takes the first reply with its `session`;
-2. sends the request: its kind, keys and `name`;
-3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check. Without a session it cannot list the issuer's certificate, so it keeps the grant as unchecked and checks `signature` and the link object once its device key session gives it one. If that check fails, it drops the grant, ends the session and pins nothing;
+2. sends the request: its kind, keys and `name`, and, when it has them, `ssh` and `github`, made as [Device certificate](#device-certificate) says, both or neither. Without a session it sends neither: it knows no account to sign for;
+3. MUST fail the run unless the grant opens, `cert` holds its account, ID, kind, keys and `name`, and either `ssh` and `github` as its request carried them or neither, `signature` verifies with the certificate of `issuer`, that certificate passes checks 1 and 2 of [Device checks](#device-checks) with `master`, and the link object passes its check. Without a session it cannot list the issuer's certificate, so it keeps the grant as unchecked and checks `signature` and the link object once its device key session gives it one. If that check fails, it drops the grant, ends the session and pins nothing;
 4. then signs `proof` and stores the complete certificate on the server: with its session, or without one in the request for its [device key session](#device-key-session). It pins `master` only once step 3 passed.
 
 The issuing device:
 1. tells its user to enter only a code shown on their own device, takes the account's latest hello, or for 12 characters the hello of their pairing, and sends a reply;
-2. MUST fail the run unless the request opens, and takes the new device's kind, keys and `name` only from it, never from the server;
-3. shows its user that `name` and kind, and once its user confirms, issues the certificate for them and sends the grant.
+2. MUST fail the run unless the request opens, and takes the new device's kind, keys, `name`, `ssh` and `github` only from it, never from the server;
+3. checks `ssh` against GitHub as [Device certificate](#device-certificate) says, over the new device's account, ID and `signing`. A key change fails the run, and it tells its user so;
+4. shows its user that `name` and kind, with the GitHub login of an `ssh` that passed or that `ssh` is not checked, and once its user confirms, issues the certificate for them, with `ssh` and `github` for a `client` device, and sends the grant.
 
 - A side whose run fails sends a `link-abort` and tells its user. A `link-abort` is not authenticated: it only ends the run, and the new device spent the attempt when it took the reply.
 
@@ -224,6 +227,7 @@ The server issues the session only if:
 - the challenge is one it issued for the device less than a minute ago, and no other request used it;
 - the certificate is the one it holds of the device, or it holds none and stores the one sent;
 - the device is a `client` device that checks 3 and 4 of [Device checks](#device-checks) do not revoke, against the account's revocations;
+- the certificate's account is not deleted;
 - the signature verifies with the certificate's `signing` over `origin` set to the origin of the server's public address.
 
 It stores the certificate sent only if the certificate is of the device as a `client` device, issued by a `client` device of its account, passes the proof check and checks 1 and 2 of [Device checks](#device-checks) against that account's master key and the certificates its devices hold, and matches the device's registration if there is one: on that account, with its keys and `name`. A device without a registration is registered by it. With the devices limit, a certificate the account has no place for is refused and gives no session.
@@ -515,7 +519,7 @@ An admin's device, `client` or `browser`, MUST NOT admit a newcomer unless it:
 3. checks that the account is not a member and the handle is free;
 4. checks each of the newcomer's devices: a valid certificate chained to `master` from the acceptance, not to one the server gives.
 
-It then signs the next revision with the member, its `invite` and the invite's role and channels. The newcomer's devices join the channels: [Group changes](#group-changes).
+It then signs the next revision with the member, its `invite` and the invite's role, and the newcomer in the default channel with `history` true and in the invite's other channels that the revision has, with their `history`. The default channel is the latest revision's first one: it may have changed since the invite. An acceptance a revision already admitted is done. The newcomer's devices join the channels: [Group changes](#group-changes).
 
 ## Admin actions from a browser
 A linked browser is not an MLS member, but an admin's browser signs revisions like a `client` device: invites, accepting newcomers, roles, removing members, policy.

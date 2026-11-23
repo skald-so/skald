@@ -13,12 +13,12 @@ use skald_proto::DeviceKind;
 
 use crate::cloud::Cloud;
 use crate::fixtures::{Issuer, add_device_of_kind, fronted_with};
-use crate::grants::{Granted, answer_paired};
 use crate::linking::{
     EXPIRED, LIFETIME_SETTING, LINK, NEW_CODE, OWN_DEVICE, STORE_CERT, THREE_TIMES, YES, codes_in,
     failures, link_failing, link_with, says, typed,
 };
 use crate::machine::{DEVICES, Machine, SERVER, SIGN_IN};
+use crate::played_issuer::{Granted, answer_paired};
 use crate::relay::strings_named;
 use crate::terminal::{Shown, Terminal};
 use crate::world::{Person, run};

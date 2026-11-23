@@ -70,6 +70,7 @@ use skald_proto::{
 };
 
 use crate::acceptances;
+use crate::admission;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
@@ -512,7 +513,9 @@ fn receive(
         .map(|space| space.id)
         .collect();
     while !due.is_empty() {
+        let admitting = due.clone();
         sync_due(follower, scope, &mut due, synced)?;
+        admission::admit(follower, &admitting, synced, |space| scope.excludes(space));
         due.extend(mailbox.waiting_notices(follower, &keys));
         if scope == Scope::All && joined::names_unfollowed(follower, &due) {
             joined::follow(follower);
@@ -937,6 +940,7 @@ fn kept(
         wait: agent_wait(header.ttl),
         hops: message.hops,
         agents,
+        level: message.level,
         held,
         read,
         replied,
@@ -1045,6 +1049,7 @@ pub fn own_message(
             wait: agent_wait(None),
             hops: content.hops,
             agents: Vec::new(),
+            level: TrustLevel::Own,
             held: Vec::new(),
             replied,
             read: None,
@@ -1333,7 +1338,7 @@ fn pushing(
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
-    let came = state.kept_came(space).map_err(text)?;
+    let came = state.kept_waiting(space).map_err(text)?;
     let (mut opened, mut unopened) = (Vec::new(), Vec::new());
     for (seq, sealed) in kept {
         let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
@@ -1347,7 +1352,7 @@ fn pushing(
             seq,
             channel: record.map(|record| record.channel),
             level,
-            came: came.get(&seq).copied().unwrap_or(0),
+            came: came.get(&seq).map_or(0, |kept| kept.came),
         };
         opened.push((waiting, open, msg_id));
     }

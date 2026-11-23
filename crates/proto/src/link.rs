@@ -69,6 +69,10 @@ pub struct LinkRequestBody {
     pub hpke: [u8; 32],
     /// 1 to 64 bytes.
     pub name: String,
+    /// The new device's SSH signature for its certificate's `ssh`. Set exactly when `github` is.
+    pub ssh: Option<Vec<u8>>,
+    /// GitHub's user ID for its certificate's `github`. Set exactly when `ssh` is.
+    pub github: Option<u64>,
     pub unknown: Unknown,
 }
 
@@ -79,12 +83,14 @@ impl Codec for LinkRequestBody {
             .put(2, cbor::bytes(&self.signing))
             .put(3, cbor::bytes(&self.hpke))
             .put(4, cbor::text(&self.name))
+            .put_some(5, self.ssh.as_deref().map(cbor::bytes))
+            .put_some(6, self.github.map(cbor::uint))
             .finish()
     }
 
     fn decode(item: &Item<'_>) -> Result<Self, DecodeError> {
         let mut fields = item.map("link-request-body")?;
-        Ok(Self {
+        let body = Self {
             kind: DeviceKind::decode(
                 fields.required(1, "link-request-body.kind")?,
                 "link-request-body.kind",
@@ -99,8 +105,25 @@ impl Codec for LinkRequestBody {
                 fields.required(4, "link-request-body.name")?,
                 "link-request-body.name",
             )?,
+            ssh: fields
+                .take(5)
+                .map(|item| item.bytes("link-request-body.ssh").map(<[u8]>::to_vec))
+                .transpose()?,
+            github: fields
+                .take(6)
+                .map(|item| item.uint("link-request-body.github"))
+                .transpose()?,
             unknown: fields.unknown(),
-        })
+        };
+        // `ssh` and `github` come both or neither, as in a certificate.
+        match (&body.ssh, body.github) {
+            (Some(_), None) => Err(field_error(
+                "link-request-body.github",
+                FieldProblem::Missing,
+            )),
+            (None, Some(_)) => Err(field_error("link-request-body.ssh", FieldProblem::Missing)),
+            _ => Ok(body),
+        }
     }
 }
 
@@ -265,6 +288,26 @@ mod tests {
         want.extend([0x58, 0x20]);
         want.extend([9; 32]);
         assert_eq!(hello.to_cbor(), want);
+    }
+
+    /// As in a certificate, a request carries `ssh` and `github` both or neither.
+    #[test]
+    fn a_request_with_only_one_of_ssh_and_github_is_refused() {
+        let request = |ssh: Option<Vec<u8>>, github: Option<u64>| LinkRequestBody {
+            kind: DeviceKind::Client,
+            signing: [1; 32],
+            hpke: [2; 32],
+            name: "Laptop".to_owned(),
+            ssh,
+            github,
+            unknown: Unknown::default(),
+        };
+        for (ssh, github) in [(Some(vec![3; 8]), None), (None, Some(583_231))] {
+            let encoded = request(ssh, github).to_cbor();
+            assert!(LinkRequestBody::from_cbor(&encoded).is_err());
+        }
+        let both = request(Some(vec![3; 8]), Some(583_231));
+        assert_eq!(LinkRequestBody::from_cbor(&both.to_cbor()), Ok(both));
     }
 
     #[test]

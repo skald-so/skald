@@ -64,8 +64,8 @@ You set them on the device, per channel and sender trust level, `own`, `peer` or
   - `now`, the default: at once.
   - `batch --window 5m`: the level's messages of the channel wait until the window, opened by the first of them, ends, then arrive together.
   - `pull`: never; they wait for `inbox` or the agent's `skald recv`, and no hook gives them.
-- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
-- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages into a session, by the socket, a fallback or a hook, counts one in each channel they came in.
+- `skald set-delivery-text <channel> <level> <text>`, for `peer` and `service`: `signal`, the default, or `inline`, the text at once, marked as data from its sender. Codex sessions get only the signal under `inline` too. Its risk: [threat model, "Prompt injection and loops"](threat-model.md#prompt-injection-and-loops).
+- `skald delivery-modes`: the settings of each channel, and its wakes: each time Skald pushed messages or their signal into a session, by the socket, a fallback, a hook or `codex queue`, counts one in each channel they came in. `--json` gives them too.
 
 Agents cannot change or list the settings.
 

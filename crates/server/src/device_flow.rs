@@ -13,6 +13,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use sqlx::PgPool;
 
+use crate::deletion::{Lock, deleted};
 use crate::sign_in::{
     self, Session, digest, escape, flows, off, param, random_token, sign_in_links, web_session,
 };
@@ -447,6 +448,8 @@ enum Outcome {
     Wrong,
     /// The account typed too many wrong codes of late.
     Locked,
+    /// The account is deleted, its sessions with it.
+    SignedOut,
 }
 
 /// `POST /device`: the person's decision on a user code, from the verification page.
@@ -467,15 +470,16 @@ pub(crate) async fn decide(
             &format!("<p>Refused: the decision did not come from this server's page. {again}</p>"),
         );
     }
+    let signed_out = || {
+        page_of(
+            StatusCode::FORBIDDEN,
+            "Not signed in",
+            &format!("<p>Not signed in. {}</p>", sign_in_here(&state, "")),
+        )
+    };
     let session = match web_session(&state.db, &headers).await {
         Ok(Some(session)) => session,
-        Ok(None) => {
-            return page_of(
-                StatusCode::FORBIDDEN,
-                "Not signed in",
-                &format!("<p>Not signed in. {}</p>", sign_in_here(&state, "")),
-            );
-        }
+        Ok(None) => return signed_out(),
         Err(err) => return failed("read a session", err),
     };
     let fields = form(&body).unwrap_or_default();
@@ -514,6 +518,7 @@ pub(crate) async fn decide(
             "Too many wrong codes",
             "<p>Too many wrong codes: try again in 15 minutes.</p>",
         ),
+        Ok(Outcome::SignedOut) => signed_out(),
         Err(err) => failed("record a decision on a device code", err),
     }
 }
@@ -528,11 +533,11 @@ async fn record(
 ) -> Result<Outcome, sqlx::Error> {
     let window = WRONG_CODE_WINDOW.as_secs_f64();
     let mut tx = db.begin().await?;
-    // The account's lock makes its decisions wait for each other, so none slips past the limit.
-    sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR UPDATE")
-        .bind(account)
-        .execute(&mut *tx)
-        .await?;
+    // The account's lock makes its decisions wait for each other, so none slips past the limit,
+    // and for a deletion of the account, which ends its sessions.
+    if deleted(&mut tx, account, Lock::Update).await? {
+        return Ok(Outcome::SignedOut);
+    }
     let (wrong,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM wrong_user_codes
          WHERE account_id = $1::uuid AND typed_at > now() - make_interval(secs => $2)",
