@@ -439,6 +439,18 @@ pub struct Resend {
     pub since: Option<u64>,
 }
 
+/// The messages a Codex queue attempt could reserve and the values a failed attempt restores.
+pub struct CodexQueue {
+    token: Vec<u8>,
+    previous: Vec<(u64, Resend)>,
+}
+
+impl CodexQueue {
+    pub fn seqs(&self) -> impl Iterator<Item = u64> + '_ {
+        self.previous.iter().map(|(seq, _)| *seq)
+    }
+}
+
 /// A kept message that waits for the person's decision for the agent `agent`, by its entry's
 /// `seq`, with its space, when the device took it in, in Unix seconds, and its sealed line.
 #[derive(Debug, Clone, PartialEq)]
@@ -3368,7 +3380,7 @@ impl State {
                  file = COALESCE(excluded.file, file), home = COALESCE(excluded.home, home),
                  process = COALESCE(excluded.process, process),
                  codex = COALESCE(excluded.codex, codex), busy = excluded.busy, queued = 0,
-                 hooked = excluded.hooked",
+                 queue_attempt = NULL, hooked = excluded.hooked",
             params![
                 session.thread,
                 session.space.to_string(),
@@ -3483,23 +3495,55 @@ impl State {
         Ok(())
     }
 
-    /// Marks a signal queued for the Codex session `thread` unless a turn of it runs or one is
-    /// queued already; gives whether it did.
-    pub fn queue_codex(&self, thread: &str) -> Result<bool, Error> {
-        let changed = self.db.execute(
-            "UPDATE codex_session SET queued = 1 WHERE thread = ?1 AND busy = 0 AND queued = 0",
-            params![thread],
+    /// Reserves a wake for an idle Codex session and records only signals that still match the
+    /// path and time the helper planned. The attempt still owns them if the session ends.
+    pub fn queue_codex(
+        &self,
+        (thread, agent): (&str, &str),
+        candidates: &[(u64, Resend)],
+        now: u64,
+    ) -> Result<Option<CodexQueue>, Error> {
+        let tx = self.write()?;
+        let token: Vec<u8> = tx.query_row("SELECT randomblob(16)", [], |row| row.get(0))?;
+        let claimed = tx.execute(
+            "UPDATE codex_session SET queued = 1, queue_attempt = ?3
+             WHERE thread = ?1 AND agent = ?2 AND busy = 0 AND queued = 0",
+            params![thread, agent, token],
         )?;
-        Ok(changed == 1)
-    }
-
-    /// Records that the signal queued for the Codex session `thread` failed to queue.
-    pub fn unqueue_codex(&self, thread: &str) -> Result<(), Error> {
-        self.db.execute(
-            "UPDATE codex_session SET queued = 0 WHERE thread = ?1",
-            params![thread],
-        )?;
-        Ok(())
+        if claimed == 0 {
+            return Ok(None);
+        }
+        let queue = sql_u64(crate::codex_confirm::QUEUE)?;
+        let now = sql_u64(now)?;
+        let mut previous = Vec::new();
+        for &(seq, resend) in candidates {
+            let claimed = tx.execute(
+                "UPDATE handover
+                 SET signalled = 1, went_by = ?7, since = ?8, queue_attempt = ?9,
+                     queue_owns_since = 1
+                 WHERE seq = ?1 AND agent = ?2 AND thread = ?3 AND confirming = 0
+                     AND signalled = ?4 AND went_by = ?5 AND since IS ?6",
+                params![
+                    sql_seq(seq)?,
+                    agent,
+                    thread,
+                    resend.signalled,
+                    sql_u64(resend.went_by)?,
+                    resend.since.map(sql_u64).transpose()?,
+                    queue,
+                    now,
+                    token,
+                ],
+            )?;
+            if claimed == 1 {
+                previous.push((seq, resend));
+            }
+        }
+        if previous.is_empty() {
+            return Ok(None);
+        }
+        tx.commit()?;
+        Ok(Some(CodexQueue { token, previous }))
     }
 
     /// The `seq` of each kept message that waits for the agent `agent` whose signal goes to a
@@ -3512,13 +3556,13 @@ impl State {
         )
     }
 
-    /// Records that a hook of the agent `agent`, or a `codex queue` for it, gave the signal of each
-    /// of the kept messages `seqs`.
+    /// Records that a hook of `agent` gave the signal of each of the kept messages `seqs`.
     pub fn signals_given(&self, seqs: &[u64], agent: &str) -> Result<(), Error> {
         let tx = self.write()?;
         for seq in seqs {
             tx.execute(
-                "UPDATE handover SET signalled = 1 WHERE seq = ?1 AND agent = ?2",
+                "UPDATE handover SET signalled = 1, queue_attempt = NULL, queue_owns_since = 0
+                 WHERE seq = ?1 AND agent = ?2",
                 params![sql_seq(*seq)?, agent],
             )?;
         }
@@ -3529,35 +3573,31 @@ impl State {
     /// Restores what went before a failed `codex queue`, keeping any later `inbox` time or signal.
     pub fn codex_queue_failed(
         &self,
-        thread: &str,
-        agent: &str,
-        previous: &[(u64, Resend)],
-        queued_at: u64,
+        (thread, agent): (&str, &str),
+        attempt: &CodexQueue,
     ) -> Result<(), Error> {
         let tx = self.write()?;
-        let queue = sql_u64(crate::codex_confirm::QUEUE)?;
-        let queued_at = sql_u64(queued_at)?;
-        for (seq, resend) in previous {
+        for (seq, resend) in &attempt.previous {
             tx.execute(
                 "UPDATE handover
-                 SET signalled = ?5, went_by = ?6,
-                     since = CASE WHEN since = ?7 AND confirming = 0 THEN ?8 ELSE since END
-                 WHERE seq = ?1 AND agent = ?2 AND thread = ?3 AND went_by = ?4",
+                 SET signalled = ?4, went_by = ?5,
+                     since = CASE WHEN queue_owns_since = 1 THEN ?6 ELSE since END,
+                     queue_attempt = NULL, queue_owns_since = 0
+                 WHERE seq = ?1 AND agent = ?2 AND queue_attempt = ?3",
                 params![
                     sql_seq(*seq)?,
                     agent,
-                    thread,
-                    queue,
+                    attempt.token,
                     resend.signalled,
                     sql_u64(resend.went_by)?,
-                    queued_at,
                     resend.since.map(sql_u64).transpose()?,
                 ],
             )?;
         }
         tx.execute(
-            "UPDATE codex_session SET queued = 0 WHERE thread = ?1",
-            params![thread],
+            "UPDATE codex_session SET queued = 0, queue_attempt = NULL
+             WHERE thread = ?1 AND queue_attempt = ?2",
+            params![thread, attempt.token],
         )?;
         tx.commit()?;
         Ok(())
@@ -3612,7 +3652,8 @@ impl State {
         let tx = self.write()?;
         for (seq, path) in went {
             tx.execute(
-                "UPDATE handover SET signalled = 1, went_by = ?3, since = ?4
+                "UPDATE handover SET signalled = 1, went_by = ?3, since = ?4,
+                     queue_attempt = NULL, queue_owns_since = 0
                  WHERE seq = ?1 AND agent = ?2",
                 params![sql_seq(*seq)?, agent, sql_u64(*path)?, sql_u64(now)?],
             )?;
@@ -3635,7 +3676,8 @@ impl State {
         for seq in seqs {
             match waits {
                 true => tx.execute(
-                    "UPDATE handover SET confirming = 1, since = ?3 WHERE seq = ?1 AND agent = ?2",
+                    "UPDATE handover SET confirming = 1, since = ?3, queue_owns_since = 0
+                     WHERE seq = ?1 AND agent = ?2",
                     params![sql_seq(*seq)?, agent, sql_u64(now)?],
                 )?,
                 false => tx.execute(
@@ -6572,9 +6614,14 @@ pub(crate) mod tests {
     fn a_codex_session_has_one_queued_signal_until_its_next_hook() {
         let dir = TestDir::new("state-codex-queue");
         let state = State::open(&dir).unwrap();
+        let message = kept(&["web"]);
+        let sender = DeviceId::from_signing_key(&[2; 32]);
+        state.keep(1, (sender, message.msg_id), &message).unwrap();
+        state.signal_to(&[1], "web", "thread").unwrap();
+        let reserve = || state.queue_codex(("thread", "web"), &[(1, Resend::default())], 10);
         let mut session = CodexSession {
             thread: "thread".to_owned(),
-            space: SpaceId::generate(),
+            space: message.space,
             agent: "web".to_owned(),
             folder: PathBuf::from("/w"),
             file: None,
@@ -6587,7 +6634,7 @@ pub(crate) mod tests {
         };
         let queued = || state.codex_sessions().unwrap()[0].queued;
         state.register_codex(&session).unwrap();
-        assert!(!state.queue_codex("thread").unwrap(), "queued while busy");
+        assert!(reserve().unwrap().is_none(), "queued while busy");
         session.busy = false;
         session.codex = None;
         state.register_codex(&session).unwrap();
@@ -6595,19 +6642,20 @@ pub(crate) mod tests {
             state.codex_sessions().unwrap()[0].codex.as_deref(),
             Some(Path::new("/apps/codex"))
         );
-        assert!(state.queue_codex("thread").unwrap());
+        let first = reserve().unwrap().unwrap();
         assert!(queued());
-        assert!(!state.queue_codex("thread").unwrap(), "queued twice");
-        state.unqueue_codex("thread").unwrap();
+        assert!(reserve().unwrap().is_none(), "queued twice");
+        state.codex_queue_failed(("thread", "web"), &first).unwrap();
         assert!(!queued());
-        assert!(state.queue_codex("thread").unwrap());
+        assert!(reserve().unwrap().is_some());
         state.register_codex(&session).unwrap();
         assert!(!queued(), "still queued after a hook");
-        assert!(!state.queue_codex("other").unwrap());
+        assert!(reserve().unwrap().is_none(), "accepted stale signal state");
+        assert!(!queued(), "queued with no claimed messages");
     }
 
     #[test]
-    fn failed_codex_queue_restores_the_last_signal_and_keeps_a_new_inbox_wait() {
+    fn failed_codex_queue_restores_its_signals_after_the_session_ends() {
         use crate::codex_confirm::{PROMPT, QUEUE, STOP};
 
         let dir = TestDir::new("state-failed-codex-queue");
@@ -6619,7 +6667,7 @@ pub(crate) mod tests {
             .add_device(DeviceId::from_signing_key(&[5; 32]), "laptop", "0193")
             .unwrap();
         state.add_agent(space, agent).unwrap();
-        let seqs = [1u8, 2, 3, 4];
+        let seqs = [1u8, 2, 3, 4, 5, 6];
         state
             .write_entries(&seqs.map(|seq| (u64::from(seq), vec![seq])))
             .unwrap();
@@ -6628,36 +6676,63 @@ pub(crate) mod tests {
             let message = kept(&[agent]);
             state.keep(seq, (sender, message.msg_id), &message).unwrap();
         }
+        let mut session = CodexSession {
+            thread: "thread".to_owned(),
+            space,
+            agent: agent.to_owned(),
+            folder: PathBuf::from("/w"),
+            file: None,
+            home: None,
+            process: None,
+            codex: None,
+            busy: false,
+            queued: false,
+            hooked: 0,
+        };
+        state.register_codex(&session).unwrap();
         state.signal_to(&seqs, agent, "thread").unwrap();
         state
             .signals_went(&[(2, STOP), (3, STOP), (4, STOP)], agent, 100)
             .unwrap();
-        let previous = state.resends(agent).unwrap();
-        state
-            .signals_went(&seqs.map(|seq| (seq, QUEUE)), agent, 200)
+        let candidates: Vec<_> = state.resends(agent).unwrap().into_iter().collect();
+        let old = state
+            .queue_codex(("thread", agent), &candidates, 200)
+            .unwrap()
             .unwrap();
-        state.await_confirmation(&[3], agent, (true, 210)).unwrap();
+        state.end_codex("thread").unwrap();
+        assert!(state.codex_signals(agent).unwrap().is_empty());
+        session.thread = "sibling".to_owned();
+        state.register_codex(&session).unwrap();
+        state.signal_to(&seqs, agent, "sibling").unwrap();
+
+        state.await_confirmation(&[3], agent, (true, 200)).unwrap();
+        state.end_confirmation_waits(199).unwrap();
+        assert_eq!(state.confirming(space, agent).unwrap()[0].0, 3);
+        state.end_confirmation_waits(200).unwrap();
         state.signals_went(&[(4, PROMPT)], agent, 220).unwrap();
-        state
-            .codex_queue_failed(
-                "thread",
-                agent,
-                &previous.into_iter().collect::<Vec<_>>(),
-                200,
-            )
+        state.handed_over(5, agent).unwrap();
+        let candidate = (6, state.resends(agent).unwrap()[&6]);
+        let _new = state
+            .queue_codex(("sibling", agent), &[candidate], 200)
+            .unwrap()
             .unwrap();
+        state.codex_queue_failed(("thread", agent), &old).unwrap();
 
         let restored = state.resends(agent).unwrap();
         assert_eq!(restored[&1], Resend::default());
+        assert_eq!(
+            crate::codex_confirm::path(QUEUE, Some(QUEUE), &restored[&1], (230, 20)),
+            Some(QUEUE),
+        );
         assert_eq!(restored[&2].went_by, STOP);
         assert_eq!(restored[&2].since, Some(100));
         assert_eq!(restored[&3].went_by, STOP);
-        assert_eq!(restored[&3].since, Some(210));
+        assert_eq!(restored[&3].since, Some(200));
         assert_eq!(restored[&4].went_by, PROMPT);
         assert_eq!(restored[&4].since, Some(220));
-        state.end_confirmation_waits(209).unwrap();
-        assert_eq!(state.confirming(space, agent).unwrap()[0].0, 3);
-        state.end_confirmation_waits(210).unwrap();
+        assert!(!restored.contains_key(&5));
+        assert_eq!(restored[&6], candidate.1);
+        assert!(state.codex_sessions().unwrap()[0].queued);
         assert!(state.confirming(space, agent).unwrap().is_empty());
     }
 
