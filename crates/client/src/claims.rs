@@ -668,7 +668,7 @@ pub fn extend(
             ));
         }
         found_lost(&follower.state, &held, &reference)?;
-        lapsed(&follower.state, &held, &reference)?;
+        lapsed(&follower.state, &held, &reference, state::unix_now())?;
         let sent = state::unix_now();
         let body = json!({ "progress": progress.name() });
         match fence(&mut follower, &held.fencing(), "extend", body) {
@@ -730,7 +730,7 @@ pub fn end(
             let _changing = changing();
             held = again(&follower, held, &reference)?;
             found_lost(&follower.state, &held, &reference)?;
-            lapsed(&follower.state, &held, &reference)?;
+            lapsed(&follower.state, &held, &reference, state::unix_now())?;
             held.record.end = Some(End {
                 done: ending == Ending::Complete,
                 retry: ending == Ending::Fail(true),
@@ -1117,8 +1117,8 @@ fn drop_claim(state: &State, task: TaskId) {
 }
 
 /// Fails, dropping it, if the lease of `held` passed on the device's clock ([`lease_passed`]).
-fn lapsed(state: &State, held: &Held, reference: &str) -> Result<(), String> {
-    let Some(why) = lease_passed(held) else {
+fn lapsed(state: &State, held: &Held, reference: &str, now: u64) -> Result<(), String> {
+    let Some(why) = lease_passed(held, now) else {
         return Ok(());
     };
     drop_claim(state, held.row.task);
@@ -1127,9 +1127,9 @@ fn lapsed(state: &State, held: &Held, reference: &str) -> Result<(), String> {
 
 /// Why `held` is lost, if its lease passed on the device's clock since the last answered request
 /// that started it.
-pub(crate) fn lease_passed(held: &Held) -> Option<String> {
+pub(crate) fn lease_passed(held: &Held, now: u64) -> Option<String> {
     let lease = held.record.lease;
-    (state::unix_now() >= held.row.since.saturating_add(lease)).then(|| {
+    (now >= held.row.since.saturating_add(lease)).then(|| {
         format!("its lease of {lease} s passed on this device's clock without an answered extend")
     })
 }
@@ -1335,11 +1335,11 @@ mod tests {
         };
         let live = held(now - 29);
         state.keep_claim(&live.row, None).unwrap();
-        assert_eq!(lapsed(&state, &live, "abcd"), Ok(()));
+        assert_eq!(lapsed(&state, &live, "abcd", now), Ok(()));
         assert_eq!(state.claims(None).unwrap(), std::slice::from_ref(&live.row));
         let gone = held(now - 30);
         state.keep_claim(&gone.row, None).unwrap();
-        let err = lapsed(&state, &gone, "abcd").unwrap_err();
+        let err = lapsed(&state, &gone, "abcd", now).unwrap_err();
         assert!(err.contains("lost"), "{err}");
         assert_eq!(state.claims(None).unwrap(), [live.row]);
     }
