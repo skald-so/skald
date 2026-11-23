@@ -15,16 +15,17 @@ export const widths = [1440, 360];
 
 /**
  * The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu
- * open, and the web app's sign-in page, cabinet of an account with no space, Machines section,
- * Members section, Access section and its question before "Sign out everywhere else", Account page,
- * its question before removing this session's sign-in method, the page with a space blocking the
- * deletion and its question before deleting the account, and Usage section.
+ * open, and the web app's sign-in and invite link pages, cabinet of an account with no space,
+ * Machines section, Members section, Access section and its question before "Sign out everywhere
+ * else", Account page and its removal confirmation, the page with a space blocking deletion,
+ * the deletion confirmation, and Usage section.
  */
 export type Screen =
   | "kit"
   | "cabinet"
   | "cabinet-menu"
   | "sign-in"
+  | "invite"
   | "account"
   | "machines"
   | "members"

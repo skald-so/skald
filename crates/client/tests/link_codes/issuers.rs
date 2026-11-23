@@ -4,8 +4,8 @@
 use skald_proto::DeviceKind;
 
 use crate::fixtures::{Issuer, add_device_of_kind};
-use crate::grants::{Granted, answer};
 use crate::linking::{NewDevice, STORE_CERT};
+use crate::played_issuer::{Granted, answer};
 use crate::world::World;
 
 /// Ada's account has a valid `browser` device. The played issuing device grants her new device an

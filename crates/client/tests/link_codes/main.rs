@@ -62,6 +62,7 @@ mod limit;
 mod limit_problem;
 mod linked;
 mod linking;
+mod played_issuer;
 mod proxy;
 mod refusals;
 #[path = "../recovery_key/terminal.rs"]

@@ -15,6 +15,7 @@ import { Access } from "./app/Access.tsx";
 import { Account } from "./app/Account.tsx";
 import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
+import { InvitePage } from "./app/InvitePage.tsx";
 import { Machines } from "./app/Machines.tsx";
 import { Members } from "./app/Members.tsx";
 import { accountPath } from "./app/names.ts";
@@ -33,12 +34,15 @@ type View =
   | { kind: "signed-out"; providers: SignInProviders }
   | { kind: "signed-in"; session: Session; spaces: ListedSpace[] };
 
-/**
- * The web app. With a web session, the cabinet of its account on every page; without one, or when
- * the API refuses it, the sign-in page, which returns to the page opened and, after the account's
- * deletion, says it was deleted.
- */
+/** Invite links open outside the cabinet, before sign-in or any API calls. */
 export function App() {
+  if (/^\/invite\/[^/]+\/?$/.test(window.location.pathname))
+    return <InvitePage />;
+  return <SessionApp />;
+}
+
+/** The cabinet with a session, or the sign-in page, which returns to the page opened. */
+function SessionApp() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   const [deleted, setDeleted] = useState(false);

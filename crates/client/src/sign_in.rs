@@ -11,17 +11,17 @@
 //! or keeps waiting for the code.
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use skald_crypto::{InviteLink, sign_invite_sign_up};
 use skald_proto::AccountId;
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
-
-use crate::connection::{self, Connection, printable};
+use crate::connection::{self, Connection, origin, printable};
 use crate::device::{self, Keys, Setup};
 use crate::devices;
 use crate::key_packages;
@@ -188,8 +188,18 @@ pub struct Options<'p> {
     /// With the recovery key, the devices its person names: then, waiting for linking, the device
     /// links with the account's recovery key.
     pub recovery: Option<recovery_link::Named>,
-    /// How the device signs its key if it issues its own certificate.
+    /// The invite whose proof goes with a new device authorization.
+    pub invite: Option<&'p InviteLink>,
+    /// How the device signs its key if it issues its own certificate or links with a link code.
     pub ssh: ssh_signing::Options,
+}
+
+/// The machine's host name, which tests can set.
+pub fn host_name() -> String {
+    std::env::var_os("SKALD_HOST_NAME")
+        .unwrap_or_else(gethostname::gethostname)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Signs the machine in to the server of `connection`, keeping the state in `dir` and the secrets
@@ -273,6 +283,8 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
                 keys: &keys,
                 person,
                 recovery: options.recovery.is_some(),
+                invite: options.invite,
+                ssh: &options.ssh,
             };
             match both.run(connection, &mut stored)? {
                 Some(session) => session,
@@ -280,7 +292,7 @@ pub fn run(connection: &mut Connection, dir: &Path, options: &Options<'_>) -> Re
             }
         }
         (None, _, _) => {
-            let token = device_flow(connection, dir)?;
+            let token = device_flow(connection, dir, options.invite)?;
             keep(
                 connection,
                 (&state, &secrets),
@@ -418,11 +430,17 @@ struct Both<'a> {
     keys: &'a Keys,
     person: Person<'a>,
     recovery: bool,
+    invite: Option<&'a InviteLink>,
+    /// How the device signs its key: once signed in, for the requests of its link codes.
+    ssh: &'a ssh_signing::Options,
 }
 
 /// What the device says once signed in on an account whose device links it.
 const SIGNED_IN_WAITS: &str =
     "Not linked yet: type its link code in skald link on a linked device.";
+/// What it says once linked without a session: it knew no account to sign its key for.
+const UNSIGNED_WITHOUT_SESSION: &str =
+    "No SSH key signs this device's certificate: it linked without a session.";
 /// What it says before its first code.
 const OR_CODE: &str = "Or run skald link on a linked device and type this code there:";
 
@@ -441,6 +459,8 @@ impl Both<'_> {
             keys,
             person,
             recovery,
+            invite,
+            ssh,
         } = self;
         let device = state.device()?.ok_or_else(|| {
             Error::Unexpected("no device recorded before its link code".to_owned())
@@ -460,7 +480,7 @@ impl Both<'_> {
         } else {
             person.presses("Fresh code").map_err(Error::Io)?
         };
-        let flow = Flow::start(connection, dir, terminal)?;
+        let flow = Flow::start(connection, dir, terminal, invite)?;
         let mut session = None;
         let mut goes_on = false;
         let mut new = NewDevice {
@@ -471,12 +491,17 @@ impl Both<'_> {
             device: &device,
             keys,
             sessionless: true,
+            signed: None,
         };
         let tick = |new: &mut NewDevice<'_>| -> Result<bool, Error> {
             let token = match flow.taken() {
                 None => return Ok(false),
                 Some(Ok(token)) => token,
-                Some(Err(err)) if recovery => return Err(err),
+                Some(Err(err))
+                    if recovery || (invite.is_some() && matches!(err, Error::SignUpClosed)) =>
+                {
+                    return Err(err);
+                }
                 Some(Err(err)) => {
                     println!("The browser sign-in failed: {err}. The code still works.");
                     return Ok(false);
@@ -513,6 +538,7 @@ impl Both<'_> {
             }
             new.token = Some(token);
             new.account = Some(account);
+            new.sign(ssh);
             Ok(false)
         };
         let shown = link_code::show(&mut new, (person, &presses), OR_CODE, tick)?;
@@ -520,6 +546,9 @@ impl Both<'_> {
         match shown {
             Shown::Linked => Ok(session),
             Shown::ByKey(token) => {
+                if !ssh.off {
+                    println!("{UNSIGNED_WITHOUT_SESSION}");
+                }
                 // Its certificate registered the device.
                 state.set_registered()?;
                 keep(
@@ -549,9 +578,14 @@ struct Flow {
 impl Flow {
     /// Asks for a code on the server of `connection`, opens its page through a file in `dir` if
     /// `open`, prints one line with its link, then polls in a thread.
-    fn start(connection: &Connection, dir: &Path, open: bool) -> Result<Self, Error> {
+    fn start(
+        connection: &Connection,
+        dir: &Path,
+        open: bool,
+        invite: Option<&InviteLink>,
+    ) -> Result<Self, Error> {
         let mut own = connection.again()?;
-        let (grant, opened) = authorize(&mut own, dir, open)?;
+        let (grant, opened) = authorize(&mut own, dir, open, invite)?;
         let stop = Arc::new(AtomicBool::new(false));
         let (give, taken) = mpsc::channel();
         let stopped = Arc::clone(&stop);
@@ -661,8 +695,12 @@ fn account_id(account: &Account) -> Result<AccountId, Error> {
 /// Asks for a code, opens its verification page in the browser through a file in `dir`, prints
 /// one line with its link and polls until its person approves it; gives the session token. The
 /// file is gone once it returns.
-fn device_flow(connection: &mut Connection, dir: &Path) -> Result<String, Error> {
-    let (grant, _opened) = authorize(connection, dir, true)?;
+fn device_flow(
+    connection: &mut Connection,
+    dir: &Path,
+    invite: Option<&InviteLink>,
+) -> Result<String, Error> {
+    let (grant, _opened) = authorize(connection, dir, true, invite)?;
     poll_for(connection, &grant, &AtomicBool::new(false))?
         .ok_or_else(|| Error::Unexpected("a device flow that stopped".to_owned()))
 }
@@ -673,6 +711,7 @@ fn authorize(
     connection: &mut Connection,
     dir: &Path,
     open: bool,
+    invite: Option<&InviteLink>,
 ) -> Result<(Authorization, Option<page::Opened>), Error> {
     let body = connection.post_form("/auth/device", &[("client_id", CLIENT_ID)])?;
     let grant: Authorization = serde_json::from_slice(&body)
@@ -681,9 +720,44 @@ fn authorize(
         .verification_uri_complete
         .as_deref()
         .unwrap_or(&grant.verification_uri);
+    if let Some(invite) = invite {
+        if origin(link).as_deref() != Some(&invite.web) {
+            return Err(Error::Unexpected(
+                "a verification page on a different server than the invite link".to_owned(),
+            ));
+        }
+        attach_invite(connection, invite, &grant.device_code)?;
+    }
     let opened = open.then(|| page::open_url(dir, link)).flatten();
     println!("{}", fallback(&grant, opened.is_some()));
     Ok((grant, opened))
+}
+
+/// Proves possession of the invite key to the server before the person signs in.
+fn attach_invite(
+    connection: &mut Connection,
+    link: &InviteLink,
+    device_code: &str,
+) -> Result<(), Error> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    #[derive(serde::Serialize)]
+    struct DeviceInviteRequest<'a> {
+        device_code: &'a str,
+        invite: String,
+        proof: String,
+    }
+
+    let proof = sign_invite_sign_up(link.invite, device_code, &link.secret.invite_key());
+    let body = serde_json::to_vec(&DeviceInviteRequest {
+        device_code,
+        invite: link.invite.to_string(),
+        proof: URL_SAFE_NO_PAD.encode(proof),
+    })
+    .expect("a device invite request encodes");
+    connection.put_json("/auth/device/invite", &body)?;
+    Ok(())
 }
 
 /// Polls the token endpoint for `grant` until its person approves it; gives the session token,

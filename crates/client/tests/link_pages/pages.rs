@@ -431,11 +431,21 @@ impl<'b> NewOnPage<'b> {
         host: &'static str,
         settings: &[(&str, &str)],
     ) -> Self {
-        let cloud = &world.cloud;
         let machine = (settings.iter())
             .fold(Machine::new().with_host_name(host), |machine, set| {
                 machine.with_env(set.0, set.1)
             });
+        Self::start_on(world, first, machine, host)
+    }
+
+    /// As [`NewOnPage::start`], on `machine`, whose host name is `host`.
+    pub fn start_on(
+        world: &'b World,
+        first: &Person,
+        machine: Machine,
+        host: &'static str,
+    ) -> Self {
+        let cloud = &world.cloud;
         let opener = Opener::on(&machine);
         let known = ids(&cloud.devices(&first.token));
         let grants = cloud.grants().len();

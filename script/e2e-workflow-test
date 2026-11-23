@@ -3,15 +3,18 @@
 // against the latest Claude Code:
 //   - it runs daily, by hand, and on a PR into dev that changes the adapter (claude_relay.rs,
 //     claude_socket.rs, helper.rs, hook.rs, main.rs, mcp.rs, permission_prompts.rs, recv.rs,
-//     state.rs and wait.rs of the client, and crates/adapters), the Claude Code plugin
-//     (.claude-plugin/ and plugins/claude-code/), its e2e or hook tests, a module the e2e tests take
-//     by #[path] or include!, found by following them from claude_code_e2e/main.rs and
+//     resend.rs, state.rs and wait.rs of the client, its claude-mod, and crates/adapters), the
+//     Claude Code plugin (.claude-plugin/ and plugins/claude-code/), its e2e or hook tests, a
+//     module the e2e tests take by #[path] or include!, found by following them from
+//     claude_code_e2e/main.rs and
 //     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
 //     it;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
 //     npm, then runs the ignored claude_code_e2e tests of the client and claude_code_executor tests
 //     of the adapters with SKALD_E2E_REQUIRED=1, so a skip fails, each in a step without a
 //     condition;
+//   - the Linux host job installs the latest Claude Code and pinned releases of Paseo and Herdr
+//     in a temporary directory. Its host tests fail if an executable is missing.
 //   - it needs no secret: it reads none, its token reads contents at most, a checkout keeps no
 //     credentials, and every action is pinned to a commit.
 import fs from 'node:fs';
@@ -91,8 +94,10 @@ for (const changed of [
   'crates/client/src/mcp.rs',
   'crates/client/src/permission_prompts.rs',
   'crates/client/src/recv.rs',
+  'crates/client/src/resend.rs',
   'crates/client/src/state.rs',
   'crates/client/src/wait.rs',
+  'crates/client/claude-mod/hooks/mod.js',
   'crates/client/tests/claude_code_hooks/hooks.rs',
   'crates/client/tests/claude_code_hooks/inputs/stop.json',
   'crates/adapters/src/lib.rs',
@@ -104,6 +109,7 @@ for (const changed of [
   'plugins/claude-code/skills/skald/SKILL.md',
   ...modules('crates/client/tests/claude_code_e2e/main.rs', 10),
   ...modules('crates/adapters/tests/claude_code_executor/main.rs', 6),
+  'script/lib/postgres.sh',
   file,
 ]) {
   if (!pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} does not start it`);
@@ -112,10 +118,9 @@ for (const changed of ['crates/server/src/main.rs', 'docs/dev/infrastructure.md'
   if (pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} starts it`);
 }
 
-// The job.
-const jobs = Object.entries(workflow.jobs ?? {});
-if (jobs.length !== 1) fail(`it has one job, not ${jobs.length}`);
-const [key, job] = jobs[0] ?? ['', {}];
+const jobs = workflow.jobs ?? {};
+const key = 'claude-code';
+const job = jobs[key] ?? {};
 const oses = [].concat(job.strategy?.matrix?.os ?? job['runs-on'] ?? []).map(String);
 for (const [os, pattern] of [
   ['Linux', /^ubuntu-/],
@@ -125,15 +130,18 @@ for (const [os, pattern] of [
   if (!oses.some((runner) => pattern.test(runner))) fail(`job ${key} does not run on ${os}: ${oses.join(', ')}`);
 }
 if (job.strategy?.['fail-fast'] !== false) fail(`job ${key}: a failure on one OS cancels the others`);
-const steps = job.steps ?? [];
 const run = (step) => String(step.run ?? '');
-const install = steps.findIndex((step) => /\bnpm install --global @anthropic-ai\/claude-code@latest\b/.test(run(step)));
+const claudeInstall = (steps) => steps.findIndex((step) =>
+  /\bnpm install --global @anthropic-ai\/claude-code@latest\b/.test(run(step)));
+const steps = job.steps ?? [];
+const install = claudeInstall(steps);
 if (install < 0) fail(`job ${key} does not install the latest Claude Code with npm`);
 for (const [crate, target] of [
   ['skald-client', 'claude_code_e2e'],
   ['skald-adapters', 'claude_code_executor'],
 ]) {
-  const command = new RegExp(`^cargo test -p ${crate}( --locked)? --test ${target} -- --ignored$`);
+  const filtered = target === 'claude_code_e2e' ? ' --skip hosts::' : '';
+  const command = new RegExp(`^cargo test -p ${crate}( --locked)? --test ${target} -- --ignored${filtered}$`);
   const tests = steps.findIndex((step) => command.test(run(step).trim()));
   if (tests < 0) {
     fail(`job ${key} does not run the ignored ${target} tests alone in a step`);
@@ -145,15 +153,50 @@ for (const [crate, target] of [
   if (step.if !== undefined || step['continue-on-error']) fail(`job ${key}: the ${target} tests may not run or not fail it`);
 }
 
+const hostKey = 'claude-code-hosts';
+const hosts = jobs[hostKey] ?? {};
+if (!/^ubuntu-/.test(hosts['runs-on'] ?? '')) fail(`job ${hostKey} needs a Linux runner`);
+const hostSteps = hosts.steps ?? [];
+const hostInstall = claudeInstall(hostSteps);
+const hostCommand = 'cargo test -p skald-client --locked --test claude_code_e2e -- --ignored hosts::';
+const hostTests = hostSteps.findIndex((step) => run(step).split('\n').includes(hostCommand));
+if (hostInstall < 0 || hostInstall >= hostTests) fail(`job ${hostKey} does not install Claude Code before the tests`);
+if (hostTests < 0) {
+  fail(`job ${hostKey} does not run the ignored host tests`);
+} else {
+  const step = hostSteps[hostTests];
+  if (step.if !== undefined || step['continue-on-error']) fail(`job ${hostKey}: the host tests may not run or not fail it`);
+  for (const name of ['SKALD_E2E_REQUIRED', 'SKALD_E2E_REQUIRED_HOSTS']) {
+    if (String(step.env?.[name]) !== '1') fail(`job ${hostKey}: a skipped test does not fail it (${name})`);
+  }
+  const setup = run(step).split(hostCommand)[0];
+  for (const [pattern, missing] of [
+    [/mktemp -d/, 'temporary installation directory'],
+    [/trap 'rm -rf "\$hosts"' EXIT/, 'installation cleanup'],
+    [/https:\/\/registry\.npmjs\.org\/@getpaseo\/cli\/-\/cli-\d+\.\d+\.\d+\.tgz/, 'pinned Paseo package'],
+    [/https:\/\/github\.com\/herdrdev\/herdr\/releases\/download\/v\d+\.\d+\.\d+\/herdr-linux-x86_64/, 'pinned Herdr binary'],
+    [/sha256sum --check/, 'checksum verification'],
+    [/^[0-9a-f]{64}  paseo\.tgz$/m, 'Paseo checksum'],
+    [/^[0-9a-f]{64}  herdr$/m, 'Herdr checksum'],
+    [/npm install --prefix "\$hosts" .*\.\/paseo\.tgz/, 'Paseo installation'],
+    [/chmod \+x herdr/, 'executable Herdr'],
+    [/export PATH="\$hosts\/node_modules\/\.bin:\$hosts:\$PATH"/, 'installed hosts on PATH'],
+  ]) {
+    if (!pattern.test(setup)) fail(`job ${hostKey}: missing ${missing} before the tests`);
+  }
+}
+
 // No secret.
 if (/\bsecrets\./.test(text)) fail('it reads a secret');
-const own = permissions(workflow, job);
-if (own === null) fail(`job ${key}: its permissions are not set`);
-else if (own.all || writes(own).length > 0) fail(`job ${key}: its token writes`);
-for (const step of steps) {
-  const uses = String(step.uses ?? '');
-  if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`${uses} is not pinned to a commit`);
-  if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false) fail('a checkout keeps its credentials');
+for (const [key, job] of Object.entries(jobs)) {
+  const own = permissions(workflow, job);
+  if (own === null) fail(`job ${key}: its permissions are not set`);
+  else if (own.all || writes(own).length > 0) fail(`job ${key}: its token writes`);
+  for (const step of job.steps ?? []) {
+    const uses = String(step.uses ?? '');
+    if (uses && !uses.startsWith('./') && !/@[0-9a-f]{40}$/.test(uses)) fail(`${uses} is not pinned to a commit`);
+    if (uses.startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false) fail('a checkout keeps its credentials');
+  }
 }
 
 done();

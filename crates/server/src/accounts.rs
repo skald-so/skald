@@ -12,7 +12,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::refusal::{Refusal, account, answer, parse};
 use crate::sign_in::{digest, random_token};
-use crate::{AppState, sessions, user_agent};
+use crate::{AppState, device_flow, sessions, user_agent};
 
 /// The provider of GitHub methods; an OIDC provider is named by its issuer.
 pub(crate) const GITHUB: &str = "github";
@@ -28,15 +28,16 @@ pub(crate) struct Method<'a> {
 }
 
 /// Starts a web session of the account that holds `method`, and gives its token. The method's first
-/// sign-in signs up, if `may_sign_up`: it creates an account with that method, its username made
-/// from `source`, such as a GitHub login or an email's local part; else it creates nothing and gives
-/// `None`. A GitHub method's login is updated. The session records the browser and OS that `agent`,
+/// sign-in creates an account if allowed by policy or if the device authorization of `return_to`
+/// reserves an invite for it. The new username is made from `source`, such as a GitHub login or
+/// an email's local part. A GitHub method's login is updated. The session records the browser and OS that `agent`,
 /// the sign-in's `User-Agent`, names; the account's expired web sessions go.
 pub(crate) async fn sign_in(
     db: &PgPool,
     method: &Method<'_>,
     source: &str,
     may_sign_up: bool,
+    return_to: &str,
     agent: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let mut tx = db.begin().await?;
@@ -55,8 +56,8 @@ pub(crate) async fn sign_in(
     .fetch_one(&mut *tx)
     .await?;
     if created {
-        if !may_sign_up {
-            // Dropped, the transaction rolls the method back.
+        if !may_sign_up && !device_flow::reserve_invite(&mut tx, return_to, &account).await? {
+            // Dropped, the transaction rolls the method and any reservation back.
             return Ok(None);
         }
         sign_up(&mut tx, &account, source).await?;

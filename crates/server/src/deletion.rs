@@ -1,10 +1,11 @@
 //! Account deletion: a session whose sign-in is recent deletes its account, never while the account
 //! is the only admin of a space with other members. A space's other members are the accounts of its
 //! latest revision but the account itself and those already deleted. At once, on every instance,
-//! the account loses its sessions, its service tokens, link runs, approved device codes and sign-in
-//! methods, and its username; each of its devices is served as a revoked one; each space it alone
-//! is in is deleted; each space it shares keeps it in its revisions, and its members' connections
-//! get a `space-notice`. Nothing undoes a deletion.
+//! the account loses its sessions, its service tokens, its and its devices' link runs, approved
+//! device codes and sign-in methods, and its username; each of its devices is served as a revoked
+//! one, as is a device a certificate names on it later; each space it alone is in is deleted; each
+//! space it shares keeps it in its revisions, and its members' connections get a `space-notice`.
+//! Nothing undoes a deletion.
 
 use axum::Json;
 use axum::extract::State;
@@ -18,6 +19,37 @@ use crate::instances::{Event, latest_members};
 use crate::refusal::{Answer, Refusal, SignedIn};
 use crate::sign_in::{bearer, signed_in};
 use crate::{AppState, revocations, sessions};
+
+/// A row lock on an account that a request takes before it acts for the account.
+#[derive(Clone, Copy)]
+pub(crate) enum Lock {
+    Update,
+    KeyShare,
+}
+
+/// Takes `lock` on the row of `account` on `conn`, in its transaction, and gives whether the
+/// account is deleted then. A deletion holds the row's lock until it commits, so a request that
+/// takes it first is one the deletion waits for. An account the server does not hold is no deleted
+/// one.
+pub(crate) async fn deleted(
+    conn: &mut PgConnection,
+    account: &str,
+    lock: Lock,
+) -> Result<bool, sqlx::Error> {
+    let sql = match lock {
+        Lock::Update => {
+            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR UPDATE"
+        }
+        Lock::KeyShare => {
+            "SELECT deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid FOR KEY SHARE"
+        }
+    };
+    let found: Option<(bool,)> = sqlx::query_as(sql)
+        .bind(account)
+        .fetch_optional(conn)
+        .await?;
+    Ok(found.is_some_and(|(deleted,)| deleted))
+}
 
 /// A space a deletion deletes or that blocks it: `DeletionSpace` in the spec.
 #[derive(Serialize)]
@@ -207,10 +239,6 @@ async fn erase(
     .bind(account)
     .execute(&mut *conn)
     .await?;
-    sqlx::query("DELETE FROM link_runs WHERE account_id = $1::uuid")
-        .bind(account)
-        .execute(&mut *conn)
-        .await?;
     sqlx::query("UPDATE accounts SET deleted_at = now(), username = NULL WHERE id = $1::uuid")
         .bind(account)
         .execute(&mut *conn)
@@ -225,6 +253,16 @@ async fn erase(
     .fetch_all(&mut *conn)
     .await?;
     let newly: Vec<String> = newly.into_iter().map(|(device,)| device).collect();
+    // Its runs and those of its devices, after the rows' locks: a run without a session that a
+    // device opened meanwhile is then seen, and its devices, revoked, open none later.
+    sqlx::query(
+        "DELETE FROM link_runs
+         WHERE account_id = $1::uuid
+             OR device_id IN (SELECT id FROM devices WHERE account_id = $1::uuid)",
+    )
+    .bind(account)
+    .execute(&mut *conn)
+    .await?;
     let statuses = revocations::withdraw(conn, state, &newly).await?;
     let deleted: Vec<String> = (spaces.deletes.iter())
         .map(|listed| listed.space.clone())
