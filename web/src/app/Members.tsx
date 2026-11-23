@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { listSpaceMembers } from "../api/skald.ts";
 import type { ListedMember, ListedMemberRole } from "../api/skald.schemas.ts";
 import { Banner } from "../ui/Banner.tsx";
@@ -10,6 +10,8 @@ import { Search } from "../ui/Search.tsx";
 import { sortRows, type Sort } from "../ui/sort.ts";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import { signedIn, versioned } from "./api.ts";
+import { InviteLinks } from "./InviteLinks.tsx";
+import { useInviteLinks, type InviteLinksData } from "./invites.ts";
 import { useLoaded } from "./load.ts";
 import { NoSpace } from "./NoSpace.tsx";
 import { ChosenSpace } from "./space.ts";
@@ -94,6 +96,7 @@ export interface MembersScreenProps {
   space?: string;
   /** The space's members; none while they load. */
   members?: readonly ListedMember[];
+  invites?: InviteLinksData;
   /** The time the dates count from, in milliseconds since the epoch. */
   now: number;
   /** What failed, shown above the table. */
@@ -111,6 +114,7 @@ export interface MembersScreenProps {
 export function MembersScreen({
   space,
   members,
+  invites,
   now,
   failed,
 }: MembersScreenProps) {
@@ -208,6 +212,7 @@ export function MembersScreen({
         }
         minWidth={560}
       />
+      {invites && <InviteLinks {...invites} />}
     </>
   );
 }
@@ -233,11 +238,14 @@ async function fetchMembers(
 export function Members({ onSignedOut }: { onSignedOut: () => void }) {
   const space = useContext(ChosenSpace);
   const listed = useLoaded(space?.space, fetchMembers, onSignedOut);
+  const spaces = useMemo(() => (space ? [space] : []), [space]);
+  const invites = useInviteLinks(spaces, onSignedOut);
   return (
     <MembersScreen
       key={space?.space}
       space={space?.name}
       members={listed?.value?.members}
+      invites={invites}
       now={listed?.value?.at ?? 0}
       failed={listed?.failed && "The members did not load."}
     />

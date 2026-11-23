@@ -70,9 +70,11 @@ use skald_proto::{
 };
 
 use crate::acceptances;
+use crate::admission;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
+use crate::codex;
 use crate::connection::printable;
 use crate::delivery;
 use crate::devices::text;
@@ -95,6 +97,7 @@ use crate::queue_keys;
 use crate::queues;
 use crate::receipts;
 use crate::reply;
+use crate::resend;
 use crate::results;
 use crate::secrets;
 use crate::send::{self, Reported};
@@ -196,7 +199,7 @@ pub fn inbox(
 
 /// A run of `agent`'s hook ([`crate::hook`]) on `event` of `session`, with Claude Code's cap `cap`
 /// of `Stop` continuations in a row: in a folder in no space, nothing; on `Stop`, first what the
-/// session file of a registered session confirms ([`claude_socket::confirm`]); at the cap,
+/// session file confirms ([`claude_socket::confirm`]); at the cap,
 /// nothing, leaving every message waiting; otherwise [`run`] as the agent, which hands over what
 /// [`hook::compose`] gives, in one write, and only if the run did not fail.
 pub fn hook(
@@ -212,8 +215,8 @@ pub fn hook(
         };
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
-        if let (hook::Event::Stop { .. }, Some(session)) = (event, &session.id) {
-            claude_socket::confirm(&state, session).map_err(text)?;
+        if let hook::Event::Stop { .. } = event {
+            claude_socket::confirm(&state, agent, session).map_err(text)?;
         }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
@@ -243,27 +246,36 @@ pub fn hook(
 }
 
 /// A run of the helper for the Claude Code sessions of `agent` it serves
-/// ([`crate::claude_socket`]): [`run`] as the agent, which writes what waits for it into the
-/// socket of its last registered session that still runs, and only if the run did not fail;
-/// leaves what takes in what comes next. Gives whether the run did not fail; [`due`] then gives
-/// when a run next pushes what `batch` holds back.
+/// ([`crate::claude_socket`]): [`run`] as the agent, which gives what waits for it to the next path
+/// of its session ([`resend::hand_over`]), the paths beside the socket the helper holds as `held`
+/// says, each waiting `resend` for its confirmation, and only if the run did not fail; leaves what
+/// takes in what comes next. Gives whether the run did not fail, and what it gives the paths the
+/// helper holds, with when a run next pushes what `batch` holds back.
 pub fn to_sessions(
     dir: &Path,
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-) -> Result<bool, String> {
-    DUE.with(|due| due.set(None));
+    held: (resend::Held, Duration),
+) -> Result<resend::Pushed, String> {
+    let pushed = std::cell::RefCell::new(resend::Pushed::default());
     holding_warnings(dir, true, || {
         received(
             dir,
             storage,
             settings,
             Some(agent),
-            (true, Form::Short, Some(&hand_over_socket)),
+            (
+                true,
+                Form::Short,
+                Some(&|follower, ran_as| {
+                    resend::hand_over(follower, ran_as, held, &mut pushed.borrow_mut())
+                }),
+            ),
             true,
         )
-    })
+    })?;
+    Ok(pushed.into_inner())
 }
 
 /// Shows the message `message` names, by `#<ref>`, `<ref>` or its `msg_id`, whole, in `form`, as
@@ -502,7 +514,9 @@ fn receive(
         .map(|space| space.id)
         .collect();
     while !due.is_empty() {
+        let admitting = due.clone();
         sync_due(follower, scope, &mut due, synced)?;
+        admission::admit(follower, &admitting, synced, |space| scope.excludes(space));
         due.extend(mailbox.waiting_notices(follower, &keys));
         if scope == Scope::All && joined::names_unfollowed(follower, &due) {
             joined::follow(follower);
@@ -927,6 +941,7 @@ fn kept(
         wait: agent_wait(header.ttl),
         hops: message.hops,
         agents,
+        level: message.level,
         held,
         read,
         replied,
@@ -1035,6 +1050,7 @@ pub fn own_message(
             wait: agent_wait(None),
             hops: content.hops,
             agents: Vec::new(),
+            level: TrustLevel::Own,
             held: Vec::new(),
             replied,
             read: None,
@@ -1149,20 +1165,29 @@ pub fn hand_over(
 }
 
 /// As [`hand_over`], gathering the lines and writing them in one write, after which it marks
-/// each status and message handed over; a failed write marks none.
+/// each status and message handed over; a failed write marks none. Where the agent's Codex session
+/// confirms what it gets ([`codex::confirms`]), each message it shows waits for its confirmation
+/// instead, from before the write ([`crate::codex_confirm`]).
 fn hand_over_whole(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
     form: Form,
 ) -> Result<usize, String> {
     let state = &follower.state;
+    let (now, timeout) = codex::clock();
+    (state.end_confirmation_waits(now.saturating_sub(timeout))).map_err(text)?;
+    let confirms = codex::confirms(state, space, agent.as_str())?;
     let mut lines = String::new();
-    let (mut statuses, mut messages) = (Vec::new(), Vec::new());
+    let (mut statuses, mut messages, mut unopened) = (Vec::new(), Vec::new(), Vec::new());
+    // Whether a message's line was put since the last message was marked: one that does not open
+    // has none.
+    let put = std::cell::Cell::new(false);
     let shown = handing_over(
         follower,
         (space, agent),
         form,
-        |_, line| {
+        |what, line| {
+            put.set(what == "a message");
             lines.push_str(&line);
             Ok(())
         },
@@ -1172,20 +1197,35 @@ fn hand_over_whole(
                 Ok(())
             },
             &mut |seq| {
-                messages.push(seq);
+                match put.replace(false) || !confirms {
+                    true => messages.push(seq),
+                    false => unopened.push(seq),
+                }
                 Ok(())
             },
         ),
     )?;
-    if !lines.is_empty() {
-        output::write(Stream::Out, lines.as_bytes())
-            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+    let waits = |waits| state.await_confirmation(&messages, agent.as_str(), (waits, now));
+    if confirms {
+        waits(true).map_err(text)?;
+    }
+    if !lines.is_empty()
+        && let Err(err) = output::write(Stream::Out, lines.as_bytes())
+    {
+        if confirms {
+            waits(false).map_err(text)?;
+        }
+        return Err(format!("cannot write the messages to the output: {err}"));
     }
     for seq in statuses {
         state.status_taken_by_agent(seq).map_err(text)?;
     }
-    for seq in messages {
-        state.handed_over(seq, agent.as_str()).map_err(text)?;
+    let handed = match confirms {
+        true => &unopened,
+        false => &messages,
+    };
+    for seq in handed {
+        state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(shown)
 }
@@ -1262,21 +1302,9 @@ fn hand_over_hook(
     Ok(handed.len())
 }
 
-thread_local! {
-    /// When the first window of `batch` that holds back a message for the last socket run of this
-    /// thread ends, in Unix milliseconds, if one does.
-    static DUE: Cell<Option<u64>> = const { Cell::new(None) };
-}
-
-/// When the first window of `batch` that held back a message for the last run of
-/// [`to_sessions`] on this thread ends, in Unix milliseconds, if one did: a run then pushes it.
-pub fn due() -> Option<u64> {
-    DUE.with(Cell::get)
-}
-
 /// How a kept message goes into a session by a push path.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Goes {
+pub(crate) enum Goes {
     /// As its line, labelled as a request from the person's own agent: `own`.
     Own,
     /// As its line, labelled as data from its sender, after the warning line: `inline`.
@@ -1286,36 +1314,56 @@ enum Goes {
 }
 
 /// A kept message a push path pushes now, opened.
-struct Pushed {
-    seq: u64,
-    opened: zeroize::Zeroizing<Vec<u8>>,
-    channel: Option<String>,
-    msg_id: Option<MessageId>,
-    goes: Goes,
+pub(crate) struct Pushed {
+    pub seq: u64,
+    pub opened: zeroize::Zeroizing<Vec<u8>>,
+    pub channel: Option<String>,
+    pub msg_id: Option<MessageId>,
+    pub goes: Goes,
 }
 
 /// What a push path takes of the kept messages that wait for an agent.
-struct Pushing {
+pub(crate) struct Pushing {
     /// Those it pushes now, by `seq`.
-    messages: Vec<Pushed>,
+    pub messages: Vec<Pushed>,
     /// Those that do not open, by `seq`.
-    unopened: Vec<u64>,
+    pub unopened: Vec<u64>,
     /// When the first window of `batch` that holds one back ends, in Unix milliseconds.
-    due: Option<u64>,
+    pub due: Option<u64>,
 }
 
 /// Of `kept`, kept messages in `space` by `seq` with their sealed lines, those a push path pushes
 /// now, as the person's delivery settings say ([`delivery::Settings::plan`]), each with how it
 /// goes; and those that do not open.
-fn pushed(
+pub(crate) fn pushed(
     follower: &Follower,
     space: SpaceId,
     kept: Vec<(u64, Vec<u8>)>,
 ) -> Result<Pushing, String> {
+    pushing(follower, space, kept, true)
+}
+
+/// Of `kept`, as [`pushed`] gives them, each that opens, whatever the delivery mode: messages a
+/// path already took, which go by the next one.
+pub(crate) fn pushed_again(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+) -> Result<Pushing, String> {
+    pushing(follower, space, kept, false)
+}
+
+/// Of `kept`, as [`pushed`] gives them, those the delivery mode pushes now if `planned`, or each.
+fn pushing(
+    follower: &Follower,
+    space: SpaceId,
+    kept: Vec<(u64, Vec<u8>)>,
+    planned: bool,
+) -> Result<Pushing, String> {
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
-    let came = state.kept_came(space).map_err(text)?;
+    let came = state.kept_waiting(space).map_err(text)?;
     let (mut opened, mut unopened) = (Vec::new(), Vec::new());
     for (seq, sealed) in kept {
         let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
@@ -1329,13 +1377,19 @@ fn pushed(
             seq,
             channel: record.map(|record| record.channel),
             level,
-            came: came.get(&seq).copied().unwrap_or(0),
+            came: came.get(&seq).map_or(0, |kept| kept.came),
         };
         opened.push((waiting, open, msg_id));
     }
     let waiting: Vec<delivery::Waiting> =
         opened.iter().map(|(waiting, ..)| waiting.clone()).collect();
-    let plan = settings.plan(&waiting, state::unix_millis());
+    let plan = match planned {
+        true => settings.plan(&waiting, state::unix_millis()),
+        false => delivery::Plan {
+            goes: waiting.iter().map(|waiting| waiting.seq).collect(),
+            due: None,
+        },
+    };
     let messages = (opened.into_iter())
         .filter(|(waiting, ..)| plan.goes.contains(&waiting.seq))
         .map(|(waiting, opened, msg_id)| {
@@ -1358,92 +1412,6 @@ fn pushed(
         unopened,
         due: plan.due,
     })
-}
-
-/// Writes into the socket of the last registered Claude Code session of `agent` in `space` that
-/// still runs ([`claude_socket::runs`]; a newer one that does not is no longer registered),
-/// with [`claude_socket::write`], each kept message that waits for it that no socket took and a
-/// push path pushes now ([`pushed`]): one at `own`, or under `inline`, as its line, the latter
-/// after the warning line, within the limit ([`hook::fitted`]); the others whose signal did not
-/// go, as one signal ([`hook::SIGNAL`]). Each is recorded as the socket's before the write, and as
-/// before it if the write fails, which ends the registration; a write counts one wake for each
-/// channel whose messages or signal it carries, unless the session says none of its lines reached
-/// the model ([`State::socket_wakes`]). Hands nothing over: the session file confirms what
-/// the socket took ([`claude_socket`]). Gives 0.
-fn hand_over_socket(
-    follower: &Follower,
-    (space, agent): (SpaceId, &Name),
-) -> Result<usize, String> {
-    let state = &follower.state;
-    let sessions = state.claude_sessions().map_err(text)?;
-    let mut theirs = (sessions.iter().rev())
-        .filter(|session| session.space == space && session.agent == agent.as_str());
-    let session = loop {
-        let Some(session) = theirs.next() else {
-            return Ok(0);
-        };
-        if claude_socket::runs(&session.socket) {
-            break session;
-        }
-        state.end_claude(&session.session).map_err(text)?;
-    };
-    let kept = (state.for_agent(space, agent.as_str(), state::unix_now())).map_err(text)?;
-    let written: BTreeSet<u64> = state
-        .written(agent.as_str())
-        .map_err(text)?
-        .into_iter()
-        .collect();
-    let signalled: BTreeSet<u64> = (state.signalled(agent.as_str()).map_err(text)?)
-        .into_iter()
-        .collect();
-    let kept: Vec<_> = (kept.into_iter())
-        .filter(|(seq, _)| !written.contains(seq) && !signalled.contains(seq))
-        .collect();
-    if kept.is_empty() {
-        return Ok(0);
-    }
-    let references = References::new(state.kept_ids().map_err(text)?);
-    // One that does not open waits for the hooks, which warn of it.
-    let pushing = pushed(follower, space, kept)?;
-    DUE.with(|due| due.set(pushing.due));
-    let (mut lines, mut taken, mut below) = (Vec::new(), Vec::new(), Vec::new());
-    let mut channels = BTreeSet::new();
-    for message in pushing.messages {
-        let (line, _) = kept_line(&message.opened, Form::Short, &references);
-        match (message.goes, message.msg_id) {
-            (Goes::Own | Goes::Inline, Some(msg_id)) => {
-                let line = match message.goes {
-                    Goes::Inline => format!("{}\n{line}", forms::DATA_WARNING),
-                    _ => line,
-                };
-                lines.push((
-                    msg_id.to_string(),
-                    hook::fitted(&line, &references.of(msg_id)),
-                ));
-                taken.push(message.seq);
-            }
-            _ => below.push(message.seq),
-        }
-        channels.extend(message.channel);
-    }
-    let signal = MessageId::generate().to_string();
-    if !below.is_empty() {
-        lines.push((signal.clone(), hook::SIGNAL.to_owned()));
-    }
-    if lines.is_empty() {
-        return Ok(0);
-    }
-    let session_agent = (&session.session[..], agent.as_str());
-    (state.socket_takes(session_agent, &taken, (&below, &signal))).map_err(text)?;
-    if claude_socket::write(session, &lines).is_err() {
-        let seqs: Vec<u64> = taken.into_iter().chain(below).collect();
-        state.socket_failed(&seqs, agent.as_str()).map_err(text)?;
-        state.end_claude(&session.session).map_err(text)?;
-        return Ok(0);
-    }
-    let ids: Vec<String> = lines.into_iter().map(|(id, _)| id).collect();
-    (state.socket_wakes(&session.session, &ids, &channels)).map_err(text)?;
-    Ok(0)
 }
 
 /// Puts each kept status of a message `agent` sent in `space`, then each kept message that waits
@@ -1563,7 +1531,11 @@ fn shown_kept(
 
 /// The line of a kept message, `opened` its record, in `form` with `references`, and its sending
 /// device's trust level; one an older client kept is its line as it is, at the level `peer`.
-fn kept_line(opened: &[u8], form: Form, references: &References) -> (String, TrustLevel) {
+pub(crate) fn kept_line(
+    opened: &[u8],
+    form: Form,
+    references: &References,
+) -> (String, TrustLevel) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
@@ -2227,6 +2199,7 @@ mod tests {
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
                 records: Vec::new(),
+                deleted: Default::default(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);

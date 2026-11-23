@@ -35,6 +35,8 @@ fn a_link_request_body_decodes_into_its_spec_fields_and_encodes_back() {
     assert_eq!(request.to_cbor(), encoded, "byte for byte");
 
     let built = LinkRequestBody {
+        ssh: None,
+        github: None,
         kind: DeviceKind::Client,
         signing: public(DESKTOP),
         hpke: [0x3d; 32],

@@ -18,6 +18,7 @@ use crate::sign::{SignatureError, SigningKey, secret_bytes, verify};
 const PATH: &str = "/invite/";
 /// A link's fragment: the secret and a revision's hash, 64 bytes, in base64url without padding.
 const FRAGMENT_LEN: usize = 86;
+const SIGN_UP_LABEL: &str = "skald invite sign-up";
 
 /// An invite's secret: 32 bytes, zeroed on drop and never shown but in its link.
 pub struct InviteSecret(Zeroizing<[u8; 32]>);
@@ -90,6 +91,29 @@ pub fn check_acceptance(acceptance: &Acceptance, key: &[u8; 32]) -> Result<(), S
         ACCEPTANCE_LABEL,
         &[acceptance.body_bytes()],
         acceptance.signature(),
+    )
+}
+
+/// Signs a proof of the invite key for the server-issued code of one device authorization.
+pub fn sign_invite_sign_up(invite: InviteId, device_code: &str, key: &SigningKey) -> [u8; 64] {
+    key.sign(SIGN_UP_LABEL, &[invite.as_bytes(), device_code.as_bytes()])
+}
+
+/// Checks a sign-up proof for this invite and device code with the invite's public key.
+///
+/// # Errors
+/// [`SignatureError`] if the proof does not verify.
+pub fn check_invite_sign_up(
+    invite: InviteId,
+    device_code: &str,
+    key: &[u8; 32],
+    proof: &[u8; 64],
+) -> Result<(), SignatureError> {
+    verify(
+        key,
+        SIGN_UP_LABEL,
+        &[invite.as_bytes(), device_code.as_bytes()],
+        proof,
     )
 }
 

@@ -875,6 +875,12 @@ impl Connection {
         self.http(path, None, Body::Json(Method::Post, json))
     }
 
+    /// `PUT <path>` of the JSON `json` without a session.
+    pub fn put_json(&mut self, path: &str, json: &[u8]) -> Result<(), Error> {
+        self.http(path, None, Body::Json(Method::Put, json))
+            .map(drop)
+    }
+
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
     pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
         self.http(path, None, Body::Form(form))

@@ -10,16 +10,21 @@ const MAX_PATH: usize = 259;
 /// `path` without the verbatim prefix on Windows, where it means the same file without it:
 /// `C:\Users\ada\skald.exe`, `\\server\share\skald.exe`. Any other path stays as it is.
 pub fn plain(path: &Path) -> PathBuf {
-    match path.to_str().and_then(without_verbatim) {
+    plain_with_room_for(path, "")
+}
+
+/// Like [`plain`], keeping the prefix if appending `suffix` would exceed `MAX_PATH`.
+pub fn plain_with_room_for(path: &Path, suffix: &str) -> PathBuf {
+    match path.to_str().and_then(|path| strip_verbatim(path, suffix)) {
         Some(plain) if cfg!(windows) => PathBuf::from(plain),
         _ => path.to_owned(),
     }
 }
 
 /// The Windows path `path` without its verbatim prefix, if it has one and names the same file
-/// without it: a drive's path or a UNC path, no longer than `MAX_PATH`, each of whose names
-/// Windows reads as it is.
-fn without_verbatim(path: &str) -> Option<String> {
+/// without it: a drive's path or a UNC path, with room for `suffix` within `MAX_PATH`, each
+/// of whose names Windows reads as it is.
+fn strip_verbatim(path: &str, suffix: &str) -> Option<String> {
     let (plain, names) = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
         // The server and the share are names too.
         if unc.split('\\').filter(|name| !name.is_empty()).count() < 2 {
@@ -35,7 +40,8 @@ fn without_verbatim(path: &str) -> Option<String> {
         (disk.to_owned(), &disk[3..])
     };
     let read_as_is = names.is_empty() || names.split('\\').all(read_as_is);
-    (read_as_is && plain.encode_utf16().count() <= MAX_PATH).then_some(plain)
+    let length = plain.encode_utf16().chain(suffix.encode_utf16()).count();
+    (read_as_is && length <= MAX_PATH).then_some(plain)
 }
 
 /// Whether Windows reads the file name `name` as it is in a path without the verbatim prefix: it
@@ -61,6 +67,10 @@ fn read_as_is(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn without_verbatim(path: &str) -> Option<String> {
+        strip_verbatim(path, "")
+    }
 
     #[test]
     fn a_drives_path_loses_the_prefix() {
@@ -149,6 +159,22 @@ mod tests {
         // Counted in UTF-16 units, as Windows counts: each of these takes two.
         let wide = format!(r"\\?\C:\{}", "😀".repeat(MAX_PATH / 2));
         assert_eq!(without_verbatim(&wide), None);
+    }
+
+    #[test]
+    fn a_path_without_room_for_its_suffix_keeps_the_prefix() {
+        let suffix = "-journal";
+        let file = r"\state.sqlite3";
+        let room = MAX_PATH - 3 - file.len() - suffix.len();
+        let fits = format!(r"C:\{}{file}", "a".repeat(room));
+        assert_eq!(
+            strip_verbatim(&format!(r"\\?\{fits}"), suffix).as_deref(),
+            Some(fits.as_str())
+        );
+        // The emoji replaces one ASCII character and adds one UTF-16 unit.
+        let too_long = format!(r"\\?\C:\{}😀{file}", "a".repeat(room - 1));
+        assert!(without_verbatim(&too_long).is_some());
+        assert_eq!(strip_verbatim(&too_long, suffix), None);
     }
 
     #[cfg(windows)]

@@ -6,7 +6,7 @@
 //!   accepted, sealed to the recovery HPKE key of the account record it took ([`crate::records`]),
 //!   none for an account without one; and to each `browser` device with a valid certificate of
 //!   those accounts, unless that member's `excluded` there lists it, sealed to the browser's `hpke`
-//!   key. The device signs each wrap.
+//!   key; none to an account the server reports deleted. The device signs each wrap.
 //! - Once its Commit is stored, the device uploads the new epoch's wraps. After its catch-up, it
 //!   uploads the wraps of the current epoch that the server lacks, of the channels whose last
 //!   accepted revision lists its account, so a browser linked later gets them.
@@ -44,8 +44,8 @@ type Held = (u64, WrapRecipient);
 /// The recipients of the wraps of `channel` in `space`, each with its HPKE public key, by the
 /// space's last revision the run accepted: of each account among the channel's members, its
 /// recovery key, by the record the device takes of it, and its browsers with a valid certificate
-/// that its member's `excluded` does not list. None if the run accepted no revision of the space;
-/// warns of a record the state fails to give.
+/// that its member's `excluded` does not list; none to an account the server reports deleted. None
+/// if the run accepted no revision of the space; warns of a record the state fails to give.
 fn recipients(
     follower: &Follower,
     space: SpaceId,
@@ -59,7 +59,10 @@ fn recipients(
     let Some(listed) = body.channels.iter().find(|listed| listed.id == channel) else {
         return recipients;
     };
-    for member in (listed.members.iter()).filter_map(|entry| body.member(entry.account)) {
+    let members = (listed.members.iter())
+        .filter_map(|entry| body.member(entry.account))
+        .filter(|member| !devices.deleted.contains(&member.account));
+    for member in members {
         let account = member.account;
         match records::of(&follower.state, (roster, devices), &follower.own, account) {
             Ok(Some(record)) => {

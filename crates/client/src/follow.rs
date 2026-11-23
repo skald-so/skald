@@ -9,7 +9,9 @@
 //! or new since it last checked it ("Device checks"), and when a member account's record changes
 //! its `recovery` ([`crate::records`]). A revision's signer is checked with the revocations of its
 //! account. The run that accepts a revision changing a member's role tells its user: the member's
-//! handle, its new role and the handle of the signing device's account.
+//! handle, its new role and the handle of the signing device's account. The first run to learn that
+//! the server reports a member deleted tells its user, naming its handle; its devices are then not
+//! admitted ([`crate::send::admitted`]).
 //!
 //! A device follows only the spaces it has an anchor for: revision 1 of a space it created, its
 //! personal space included, which counts as accepted before the server takes it, or the latest
@@ -55,13 +57,15 @@ pub struct Own {
 
 /// The devices of a list, such as of a space's accounts, as the server gives them: their IDs, the
 /// certificates that decode, the revocations that decode with those the device holds, and, for a
-/// space, the account records of its accounts that decode, unchecked.
+/// space, the account records of its accounts that decode, unchecked, and the accounts the server
+/// reports deleted, its word alone.
 #[derive(Clone, Default)]
 pub struct SpaceDevices {
     pub ids: Vec<DeviceId>,
     pub certs: Vec<Cert>,
     pub revocations: Vec<Revocation>,
     pub records: Vec<AccountRecord>,
+    pub deleted: BTreeSet<AccountId>,
 }
 
 /// The master key a device checks the certificates of `account` against in `roster`: the one `own`
@@ -101,14 +105,15 @@ pub struct Start {
 /// Fetches the revisions of `space`, the space the state holds, and the devices of its accounts, as
 /// the session `token`, accepts the new revisions, records them in `state` and prints the warnings,
 /// those of master keys ([`master_warnings`]) of `every_space` the device follows or only of this
-/// one: gives the space's last accepted revision, its devices and the revisions the server gives. A
-/// `service` device accepts those up to its roster's `start` ([`roster_start`]) without the check
-/// that their signer is not revoked.
+/// one. Gives the space's last accepted revision, its devices and the revisions the server gives.
+/// If `hold`, role changes and reported deletions wait for the person's run. A `service` device
+/// accepts revisions up to its roster's `start` ([`roster_start`]) without checking their signer
+/// for revocation.
 pub fn sync(
     connection: &mut Connection,
     (state, token): (&State, &str),
     space: &state::Space,
-    (own, every_space): (&Own, bool),
+    (own, every_space, hold): (&Own, bool, bool),
     start: Option<&Start>,
 ) -> Result<(Roster, SpaceDevices, Vec<Roster>), String> {
     let (id, name) = (space.id, &space.name);
@@ -155,11 +160,50 @@ pub fn sync(
     }
     // A stateless run accepts the same revisions each time.
     if !crate::service::stateless() {
-        for notice in notices {
-            eprintln!("skald: {notice}");
+        let lines: Vec<String> = notices
+            .iter()
+            .chain(&deletion_notices(state, &current, &devices, own)?)
+            .map(|notice| format!("skald: {notice}"))
+            .collect();
+        if hold {
+            if !lines.is_empty() {
+                crate::recv::keep_held(state.keep_warnings(&lines), &lines);
+            }
+        } else {
+            for line in lines {
+                eprintln!("{line}");
+            }
         }
     }
     Ok((current, devices, given))
+}
+
+/// The notice of each member of `roster`, a space's last accepted revision, but `own`'s account,
+/// that `devices` reports deleted and the device has not told its user of since the server last
+/// reported it ([`State::report_deleted`]).
+fn deletion_notices(
+    state: &State,
+    roster: &Roster,
+    devices: &SpaceDevices,
+    own: &Own,
+) -> Result<Vec<String>, String> {
+    let body = roster.body();
+    let reported: BTreeSet<AccountId> = (body.members.iter())
+        .map(|member| member.account)
+        .filter(|account| *account != own.account && devices.deleted.contains(account))
+        .collect();
+    let new = state.report_deleted(body.space, &reported).map_err(text)?;
+    Ok((new.iter())
+        .filter_map(|account| body.member(*account))
+        .map(|member| {
+            format!(
+                "the server reports the member {} of the space {} deleted; its devices leave the \
+                 space's channels",
+                member.handle.as_str(),
+                body.name.as_str()
+            )
+        })
+        .collect())
 }
 
 /// Records in `state` whether each device of a member of `roster`, a space's last accepted
@@ -922,6 +966,7 @@ mod tests {
                 certs,
                 revocations,
                 records: Vec::new(),
+                deleted: Default::default(),
             }
         }
 
@@ -971,6 +1016,30 @@ mod tests {
         fn held(&self) -> state::Accepted {
             self.state.accepted(self.id).unwrap().unwrap()
         }
+    }
+
+    /// The first sync to learn that the server reports a member deleted tells of it once, naming
+    /// its handle; not of the device's own account, nor of a member it does not report.
+    #[test]
+    fn a_member_reported_deleted_is_told_once_but_not_the_devices_own_account() {
+        let acme = Acme::new();
+        let dir = TestDir::new("follow-deletion-notices");
+        let state = State::open(&dir).expect("a state");
+        let devices = SpaceDevices {
+            deleted: BTreeSet::from([acme.ada.account, acme.bob.account]),
+            ..acme.devices()
+        };
+        let own = acme.ada.own();
+
+        let told = deletion_notices(&state, &acme.second, &devices, &own).unwrap();
+
+        assert_eq!(told.len(), 1, "{told:?}");
+        assert!(
+            told[0].contains("the member bob of the space acme deleted"),
+            "{told:?}"
+        );
+        let again = deletion_notices(&state, &acme.second, &devices, &own).unwrap();
+        assert!(again.is_empty(), "{again:?}");
     }
 
     /// What a state holds once it accepted `before`, then `last`.
