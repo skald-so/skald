@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripVTControlCharacters } from 'node:util';
 import { reporter } from './lib/report.mjs';
 import { imageName, localTarget, releaseWorkflow, repository, serve, standInTools } from './lib/release-check-stub.mjs';
 import {
@@ -165,8 +166,11 @@ const run = (file, args, options) => new Promise((resolve, reject) => {
   child.on('close', (status) => resolve({ status, output }));
 });
 const tail = (output) => {
-  const lines = output.trim().split('\n');
-  return (lines.find((line) => /^Error:/.test(line)) ?? lines.slice(-6).join(' | '));
+  const lines = stripVTControlCharacters(output).replace(/[\x00-\x09\x0b-\x1f\x7f]/g, '').trim().split('\n');
+  const error = lines.findIndex((line) => /^Error:/.test(line));
+  // Homebrew prints the child error class and message beneath its Error: header.
+  const excerpt = error === -1 ? lines.slice(-6) : lines.slice(error, error + 20);
+  return excerpt.map((line) => line.slice(0, 400)).join('\n  ');
 };
 
 let server;
