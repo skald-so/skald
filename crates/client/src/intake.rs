@@ -138,13 +138,14 @@ impl Intake {
         Ok(told)
     }
 
-    /// Runs `run`, for agents' sessions if `agents`: such a run holds back its warnings and keeps
-    /// them for the person ([`recv::holding_warnings`]).
+    /// Runs `run`, keeping warnings and follow notices for the person if only agents wait.
     fn holding<R>(&mut self, agents: bool, run: impl FnOnce(&mut Self) -> R) -> R {
         if !agents {
             return run(self);
         }
+        let held_notices = std::mem::replace(&mut self.follower.hold_notices, true);
         let (ran, held) = output::holding_warnings(|| run(self));
+        self.follower.hold_notices = held_notices;
         if !held.is_empty() {
             recv::keep_held(self.follower.state.keep_warnings(&held), &held);
         }
@@ -171,10 +172,7 @@ impl Intake {
                 joined::follow(follower);
             }
             let admitting = due.clone();
-            follower.hold_notices = !person;
-            let synced = recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced);
-            follower.hold_notices = false;
-            synced?;
+            recv::sync_due(follower, Scope::All, &mut due, &mut checks.synced)?;
             admission::admit(follower, &admitting, &mut checks.synced, |_| !person);
             due.extend(mailbox.waiting_notices(follower, &link.keys));
         }
