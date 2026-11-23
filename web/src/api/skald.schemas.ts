@@ -719,6 +719,37 @@ export interface SpaceDevices {
  */
 export type InviteId = string;
 
+export type ListedInviteRole =
+  (typeof ListedInviteRole)[keyof typeof ListedInviteRole];
+
+export const ListedInviteRole = {
+  admin: "admin",
+  member: "member",
+} as const;
+
+/**
+ * An active invite without its key or signed bytes.
+ */
+export interface ListedInvite {
+  invite: InviteId;
+  role: ListedInviteRole;
+  /** The invite's creator, while their account exists. */
+  username?: Username;
+  /** The name of the device that signed the invite, while its account exists. */
+  device_name?: string;
+  /** When the server stored the invite. For invites stored before this date was recorded, when the server issued its ID. */
+  created_at: string;
+  expires_at: string;
+  /** An acceptance waits for an admin device to admit the newcomer. */
+  acceptance_waiting: boolean;
+  /** The newcomer's requested handle, present when an acceptance is waiting. */
+  acceptance_handle?: string;
+}
+
+export interface ListedInvites {
+  invites: ListedInvite[];
+}
+
 export interface NewInvite {
   invite: InviteId;
   /** The server's web URL, which the invite's link starts with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */

@@ -25,6 +25,7 @@ export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
   { screen: "cabinet", widths },
   { screen: "cabinet-menu", widths: [360], window: true },
   { screen: "sign-in", widths },
+  { screen: "invite", widths },
   { screen: "account", widths },
   { screen: "machines", widths },
   { screen: "members", widths },

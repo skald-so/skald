@@ -42,7 +42,7 @@
 - **Frontend** — a single static SPA at `app.skald.so`:
   - its pages' paths start with none of the first segments of the OpenAPI spec's paths, such as `/device`, so one origin serves the SPA and the API;
   - a self-hosted server serves its release's SPA on its own domain: [self-host.md](../self-host.md#the-web-app);
-  - without a web session, every page shows the sign-in page;
+  - the invite link page shows the terminal instructions with or without a web session; other pages show sign-in without a session;
   - gets the non-secret sections from the server API;
   - content sections are decrypted in the browser by a WASM build of the Rust core.
 

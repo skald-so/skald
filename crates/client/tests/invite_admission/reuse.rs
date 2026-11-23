@@ -100,8 +100,8 @@ fn acceptance_of_an_invite_a_removed_member_joined_with_is_not_admitted_again() 
     received(&ada.machine);
     let acceptance = made.acceptance(bob, bob.handle.as_str(), &made.secret.invite_key());
     cloud.execute(&format!(
-        "INSERT INTO invites (id, space_id, invite, expires_at)
-         VALUES ('{}'::uuid, '{}'::uuid, '\\x{}'::bytea, now() + interval '1 day')",
+        "INSERT INTO invites (id, space_id, invite, expires_at, created_at)
+         VALUES ('{}'::uuid, '{}'::uuid, '\\x{}'::bytea, now() + interval '1 day', now())",
         made.id(),
         scene.space.id,
         hex(&made.invite.to_cbor()),

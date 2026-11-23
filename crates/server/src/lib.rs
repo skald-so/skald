@@ -526,11 +526,15 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(
             "/spaces/{space}/invites",
-            post(invites::issue).layer(checked(Statement::Header)),
+            get(invites::list)
+                .post(invites::issue)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/invites/{invite}",
-            put(invites::store).layer(checked(Statement::Header)),
+            delete(invites::revoke)
+                .put(invites::store)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/members",
