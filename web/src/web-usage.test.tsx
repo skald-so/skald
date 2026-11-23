@@ -21,7 +21,7 @@
 import { App } from "./App.tsx";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
 import { getSkaldAPIMock } from "./api/skald.msw.ts";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { http, HttpResponse, type JsonBodyType } from "msw";
 import { setupServer } from "msw/node";
@@ -281,9 +281,10 @@ test("the Free quota is labeled separately from the list of all owned spaces", a
 
   await expect.poll(() => bar(/^free spaces\b/i)).toEqual([1, 2]);
   const owned = screen.getByRole("region", { name: "Spaces you own" });
-  const names = within(owned)
-    .getAllByRole("listitem")
-    .map((item) => item.textContent);
+  const names = Array.from(
+    owned.querySelectorAll("li"),
+    (item) => item.textContent,
+  );
   expect(names).toEqual([own.name, team.name]);
 });
 
