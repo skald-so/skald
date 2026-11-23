@@ -22,7 +22,8 @@ use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use serde_json::{Value, json};
 use skald_proto::QueueId;
-use ureq::tls::{Certificate, RootCerts, TlsConfig};
+use skald_server::a2a::tls_config;
+use ureq::tls::Certificate;
 use ureq::{Agent, Body};
 use url::Url;
 
@@ -67,16 +68,12 @@ impl Lab {
         upstream.forward_to(skald_server.base().trim_start_matches("http://"));
         let root = CertificateDer::from_pem_file(&ca.cert).expect("test CA");
         let roots = vec![Certificate::from_der(root.as_ref()).to_owned()];
-        let tls = TlsConfig::builder()
-            .root_certs(RootCerts::Specific(Arc::new(roots)))
-            .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .build();
         let client = Agent::config_builder()
             .proxy(None)
             .http_status_as_error(false)
             .max_redirects(0)
             .timeout_global(Some(TIMEOUT))
-            .tls_config(tls)
+            .tls_config(tls_config(roots))
             .build()
             .new_agent();
         Self {

@@ -24,17 +24,21 @@ pub(crate) fn gateway_agent(roots: Option<Vec<Certificate<'static>>>) -> Agent {
     with_roots(roots.unwrap_or_else(platform_roots), false)
 }
 
-fn with_roots(roots: Vec<Certificate<'static>>, allow_proxy: bool) -> Agent {
-    let tls = TlsConfig::builder()
+/// TLS with only the given roots and the server's Rustls crypto provider.
+pub fn tls_config(roots: Vec<Certificate<'static>>) -> TlsConfig {
+    TlsConfig::builder()
         .root_certs(RootCerts::Specific(Arc::new(roots)))
         .unversioned_rustls_crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
-        .build();
+        .build()
+}
+
+fn with_roots(roots: Vec<Certificate<'static>>, allow_proxy: bool) -> Agent {
     let mut config = Agent::config_builder()
         .http_status_as_error(false)
         .max_redirects(0)
         .timeout_global(Some(TIMEOUT))
         .user_agent(concat!("skald-server/", env!("CARGO_PKG_VERSION")))
-        .tls_config(tls);
+        .tls_config(tls_config(roots));
     if !allow_proxy {
         config = config.proxy(None);
     }

@@ -21,6 +21,8 @@ use crate::PublicUrl;
 use crate::http_client::gateway_agent;
 use crate::sign_in::{bearer, digest};
 
+#[doc(hidden)]
+pub use crate::http_client::tls_config;
 pub use skald::ServiceSecret;
 
 const CARD_PATH: &str = "/.well-known/agent-card.json";
