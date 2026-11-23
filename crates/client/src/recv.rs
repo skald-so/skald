@@ -100,7 +100,7 @@ use crate::receipts;
 use crate::reply;
 use crate::resend;
 use crate::results;
-use crate::sdk::{MessageError, ReceivedMessage};
+use crate::sdk::{MessageError, ReceivedMessage, check_reported_deletion};
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
@@ -442,6 +442,7 @@ fn receive_with(
     }
     let queued = send::queued(&follower.state, scope)?;
     let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
+    check_reported_deletion(dir)?;
     let reported = match (agent, form) {
         (Some(_), _) | (None, None) => Reported::Quiet,
         (None, Some(Form::Json)) => Reported::Json(None),
@@ -457,6 +458,7 @@ fn receive_with(
     let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
+    check_reported_deletion(dir)?;
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     // Completes and fails that wait, and their results, go out before what the run shows.
     claims::finish_waiting(&mut follower, scope, &synced);
@@ -465,6 +467,7 @@ fn receive_with(
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
         Err(err) => Err(err.clone()),
     };
+    check_reported_deletion(dir)?;
     let handed = match (ran_as, whole, handover) {
         (Some(_), _, _) if !hands => Ok(0),
         // A failed run hands nothing over.

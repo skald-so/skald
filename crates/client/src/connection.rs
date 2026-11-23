@@ -56,16 +56,23 @@ const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
 /// Whether a CLI request got [`NOT_SIGNED_IN`] since [`forget_refused`].
 static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
 
+#[derive(Clone, Copy, Default)]
+struct SdkRefusals {
+    session: bool,
+    account_deleted: bool,
+}
+
 thread_local! {
-    /// Whether a synchronous SDK operation on this thread got [`NOT_SIGNED_IN`].
-    static SCOPED_REFUSED: Cell<Option<bool>> = const { Cell::new(None) };
+    /// Refusals observed on the calling thread during an SDK operation.
+    static SCOPED_REFUSALS: Cell<Option<SdkRefusals>> = const { Cell::new(None) };
 }
 
 /// Whether a request of the current SDK operation or CLI run got a session refusal.
 pub fn session_refused() -> bool {
-    SCOPED_REFUSED
-        .get()
-        .unwrap_or_else(|| SESSION_REFUSED.load(Ordering::SeqCst))
+    SCOPED_REFUSALS.get().map_or_else(
+        || SESSION_REFUSED.load(Ordering::SeqCst),
+        |refusals| refusals.session,
+    )
 }
 
 /// Forgets the CLI's refusals.
@@ -73,23 +80,42 @@ pub fn forget_refused() {
     SESSION_REFUSED.store(false, Ordering::SeqCst);
 }
 
-/// Tracks session refusals separately for a synchronous library operation and its caller.
+/// Tracks HTTP and mailbox refusals separately for an SDK operation and its caller.
 pub fn track_refusals() -> Refusals {
-    Refusals(SCOPED_REFUSED.replace(Some(false)))
+    Refusals(SCOPED_REFUSALS.replace(Some(SdkRefusals::default())))
 }
 
-pub struct Refusals(Option<bool>);
+pub struct Refusals(Option<SdkRefusals>);
 
 impl Drop for Refusals {
     fn drop(&mut self) {
-        SCOPED_REFUSED.set(self.0);
+        SCOPED_REFUSALS.set(self.0);
     }
 }
 
+/// Whether the server closed this SDK operation's mailbox because the account was deleted.
+pub fn sdk_account_deleted() -> bool {
+    SCOPED_REFUSALS
+        .get()
+        .is_some_and(|refusals| refusals.account_deleted)
+}
+
+/// Records a server confirmation of account deletion if an SDK operation is active.
+pub fn note_sdk_account_deleted() -> bool {
+    note_sdk_refusal(|refusals| refusals.account_deleted = true)
+}
+
+fn note_sdk_refusal(note: impl FnOnce(&mut SdkRefusals)) -> bool {
+    let Some(mut refusals) = SCOPED_REFUSALS.get() else {
+        return false;
+    };
+    note(&mut refusals);
+    SCOPED_REFUSALS.set(Some(refusals));
+    true
+}
+
 fn note_refused() {
-    if SCOPED_REFUSED.get().is_some() {
-        SCOPED_REFUSED.set(Some(true));
-    } else {
+    if !note_sdk_refusal(|refusals| refusals.session = true) {
         SESSION_REFUSED.store(true, Ordering::SeqCst);
     }
 }

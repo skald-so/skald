@@ -95,6 +95,7 @@ impl Client {
             || {
                 link_code::finish(&dir, key_storage, speaks, timeout, true);
                 let ran = run(&dir, key_storage, (speaks, timeout));
+                check_reported_deletion(&dir)?;
                 if connection::session_refused()
                     && let Some(reason) = deletion::learned(&dir, (key_storage, speaks, timeout))
                     && !matches!(ran, Err(MessageError::Handover(_)))
@@ -105,6 +106,22 @@ impl Client {
             },
         )
     }
+}
+
+/// Stops an SDK operation once its own mailbox reports account deletion.
+pub(crate) fn check_reported_deletion(dir: &Path) -> Result<(), MessageError> {
+    if !connection::sdk_account_deleted() {
+        return Ok(());
+    }
+    let mut reason = deletion::said(dir);
+    if !deletion::reported(dir)
+        && let Err(err) = deletion::mark(dir)
+    {
+        reason.push_str(&format!(
+            "\nCould not save the account deletion marker: {err}"
+        ));
+    }
+    Err(MessageError::AccountDeleted(reason))
 }
 
 fn deleted(dir: &Path) -> Result<(), MessageError> {

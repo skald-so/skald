@@ -62,7 +62,7 @@ use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
 use crate::queue_keys;
 use crate::recv;
-use crate::sdk::MessageError;
+use crate::sdk::{MessageError, check_reported_deletion};
 use crate::secrets;
 use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
@@ -381,6 +381,7 @@ fn send_with(
             .map_err(Into::into);
     }
     let (roster, devices) = through_mailbox(&mut follower, scope, space.id, (roster, devices))?;
+    check_reported_deletion(dir)?;
     // A service agent's message carries its token's grant; only a member's has copies.
     let (from, grant, readers) = match follower.service {
         Some(_) => {
@@ -419,6 +420,7 @@ fn send_with(
         },
     })?;
     let mut delivered = deliver(&mut follower, &queued, timeout, None);
+    check_reported_deletion(dir)?;
     match Link::new(&follower) {
         Ok(mut link) => {
             link.mailbox = delivered.mailbox.take();
