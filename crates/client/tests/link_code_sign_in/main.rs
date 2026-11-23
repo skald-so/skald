@@ -57,6 +57,7 @@ mod code_first;
 mod interrupted;
 mod on_page;
 mod short_texts;
+mod ssh_signatures;
 
 // The modules the tests of the channel history share (`history_common/mod.rs`), the second
 // machines of the tests of the history on new devices and the helpers of the tests of reading the
@@ -93,6 +94,9 @@ mod reading;
 mod recovering;
 #[path = "../recovery_key/terminal.rs"]
 mod terminal;
+// The GitHub API, machines and SSH keys of the tests of signing a device key with a GitHub SSH key.
+#[path = "../ssh_signing/ssh_kit.rs"]
+mod ssh_kit;
 // The helpers of linking with a link code name the grants so.
 use grants as terminal_grants;
 

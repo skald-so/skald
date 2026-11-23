@@ -74,26 +74,39 @@ pub fn check(state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), S
     if crate::service::stateless() {
         return Ok((Results::new(), Vec::new()));
     }
-    let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
-    let run =
-        run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
-    run.check(state, certs)
+    with_run(|run| run.check(state, certs))
 }
 
-/// What the SSH signature of `body`, a certificate body not issued yet, shows against GitHub's API
-/// as the operation running reaches it ([`set`]), keeping nothing; `None` if it carries none or is
-/// no `client` device's.
-pub fn check_body(body: &CertBody) -> Option<Seen> {
+/// What the SSH signature of `body`, the body of a certificate not issued yet, shows against
+/// GitHub's API as the operation running reaches it ([`set`]); `None` if it carries none or is no
+/// `client` device's. Keeps nothing but a key change, kept in `state` by the API's address
+/// ([`key_changes::keep_from`]).
+pub fn check_new(state: &State, body: &CertBody) -> Result<Option<Seen>, String> {
     let (Some(_), Some(user), DeviceKind::Client) = (&body.ssh, body.github, body.kind) else {
-        return None;
+        return Ok(None);
     };
+    let (api, seen) = with_run(|run| {
+        (
+            run.api.clone(),
+            run.through(|github| seen(github, body, user)),
+        )
+    });
+    if seen == Seen::Failed {
+        let warning = format!(
+            "the SSH signature of the new device {} verifies with no SSH key GitHub lists for the \
+             GitHub user {user} it names: its key may have been swapped; it was not linked",
+            body.device
+        );
+        key_changes::keep_from(state, &key_changes::github(&api), &warning)?;
+    }
+    Ok(Some(seen))
+}
+
+/// `with` on the checks of the operation running ([`set`]): GitHub's own API with the default
+/// timeout until it is set.
+fn with_run<T>(with: impl FnOnce(&mut Run) -> T) -> T {
     let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
-    let run =
-        run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
-    let mut github = Github::new(&run.api, run.timeout, run.unavailable);
-    let seen = seen(&mut github, body, user);
-    run.unavailable = github.gone();
-    Some(seen)
+    with(run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT)))
 }
 
 /// A GitHub user GitHub's API gives by login: its ID, its login as GitHub spells it and its SSH
@@ -118,12 +131,7 @@ pub enum ByLogin {
 /// What GitHub's API, as the operation running reaches it ([`set`]), gives for `login`, a valid
 /// login ([`valid_login`]): `GET /users/{login}`, then its SSH keys as [`check`] takes them.
 pub fn by_login(login: &str) -> ByLogin {
-    let (api, timeout) = {
-        let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
-        let run =
-            run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
-        (run.api.clone(), run.timeout)
-    };
+    let (api, timeout) = with_run(|run| (run.api.clone(), run.timeout));
     match connection::agent_to(&api, timeout) {
         Ok(agent) => user_by_login(&agent, &api, login),
         Err(_) => ByLogin::Unavailable,
@@ -182,10 +190,16 @@ impl Run {
     /// unless `state` holds its result; keeps each result. Gives the results, and the warning of
     /// each key change found now, kept by the API's address ([`key_changes::keep_from`]).
     fn check(&mut self, state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), String> {
+        self.through(|github| checked(state, github, certs))
+    }
+
+    /// `with` through GitHub's API as this run reaches it, which it then reaches no more if
+    /// GitHub gave nothing.
+    fn through<T>(&mut self, with: impl FnOnce(&mut Github) -> T) -> T {
         let mut github = Github::new(&self.api, self.timeout, self.unavailable);
-        let checked = checked(state, &mut github, certs);
+        let done = with(&mut github);
         self.unavailable = github.gone();
-        checked
+        done
     }
 }
 

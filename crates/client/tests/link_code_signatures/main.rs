@@ -28,6 +28,7 @@
 
 mod failing;
 mod granted;
+mod kept;
 #[cfg(unix)]
 mod on_pages;
 mod passing;

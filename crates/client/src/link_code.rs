@@ -1029,7 +1029,8 @@ impl Issuer {
             .request(entry, session, &share)
             .map_err(|ended| self.ended(session, ended))?;
         let device = DeviceId::from_signing_key(&request.signing);
-        let github = ssh_checks::check_body(&self.body(device, &request));
+        let github = ssh_checks::check_new(&self.state, &self.body(device, &request))
+            .map_err(|why| self.ended(session, Ended::Declined(why)))?;
         if github == Some(Seen::Failed) {
             let why = format!(
                 "the new device's SSH signature verifies with no SSH key GitHub lists for the \
