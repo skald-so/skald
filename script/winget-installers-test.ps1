@@ -21,8 +21,10 @@ $targets = @{ X64 = 'x86_64-pc-windows-msvc'; Arm64 = 'aarch64-pc-windows-msvc' 
 if ($Target -ne $targets[$architecture.ToString()] -or [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture -ne $architecture) {
     throw "$Target requires a native Windows runner and PowerShell process."
 }
-$winget = (Get-Command winget.exe -CommandType Application).Source
-$node = (Get-Command node.exe -CommandType Application).Source
+$winget = (Get-Command winget.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (!$winget) { throw 'winget.exe is required on PATH.' }
+$node = (Get-Command node.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1).Source
+if (!$node) { throw 'node.exe is required on PATH.' }
 $shell = [Environment]::ProcessPath
 $version = $Tag.Substring(1)
 $manifest = @(Get-ChildItem -LiteralPath $ManifestDir -Filter '*.installer.yaml' -File)
