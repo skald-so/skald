@@ -993,10 +993,10 @@ mod tests {
         let file = dir.join(crate::state::FILE);
         let later = Instant::now() + Duration::from_secs(60);
         served.wake_retry = Some(later);
-        served.loaded = Some(Instant::now());
         assert_eq!(served.look(&dir, &Came::Nothing), Some(false));
         assert_eq!(served.wake_retry, Some(later));
-        assert!(!file.exists());
+        assert_eq!(served.resend_at, Some(expired));
+        assert_eq!(served.batch, Some(batch));
 
         served.wake_retry = Some(Instant::now());
         assert_eq!(served.look(&dir, &Came::Nothing), Some(false));
