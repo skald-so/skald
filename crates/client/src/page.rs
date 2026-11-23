@@ -114,7 +114,7 @@ impl Opener {
 }
 
 /// The program `named` names: a path to it, or a name to look up on `PATH`.
-fn program(named: &Path) -> Option<PathBuf> {
+pub fn program(named: &Path) -> Option<PathBuf> {
     if named.components().count() > 1 {
         return named.is_file().then(|| named.to_owned());
     }
@@ -198,11 +198,19 @@ struct View {
     ended: bool,
     /// The latest version the browser took.
     taken: u64,
+    /// Each version, as the browser would take it.
+    #[cfg(test)]
+    versions: Vec<serde_json::Value>,
 }
 
 impl View {
     fn changed(&mut self) {
         self.version += 1;
+        #[cfg(test)]
+        {
+            let version = serde_json::from_str(&self.json()).expect("the view's JSON");
+            self.versions.push(version);
+        }
     }
 
     /// The view as the browser takes it.
@@ -385,9 +393,36 @@ impl Page {
         field: Option<&str>,
         once: bool,
     ) -> Result<Receiver<Answer>, String> {
+        self.asking(None, text, buttons, field, once)
+    }
+
+    /// Shows `shown` and asks `text` with `buttons`, each in place of what the page showed and
+    /// asked before, in one change, opening the page; gives its one answer. The browser never
+    /// takes `shown` under the question before.
+    pub fn show_asking(
+        &self,
+        shown: &str,
+        text: &str,
+        buttons: &[&str],
+    ) -> Result<Receiver<Answer>, String> {
+        self.asking(Some(shown), text, buttons, None, true)
+    }
+
+    /// [`Page::ask`], showing `shown`, if any, in the same change.
+    fn asking(
+        &self,
+        shown: Option<&str>,
+        text: &str,
+        buttons: &[&str],
+        field: Option<&str>,
+        once: bool,
+    ) -> Result<Receiver<Answer>, String> {
         self.open()?;
         let (answers, answered) = mpsc::channel();
         let mut view = self.shared.view();
+        if let Some(shown) = shown {
+            view.shown = Some(shown.to_owned());
+        }
         view.asked += 1;
         view.question = Some(Asked {
             id: view.asked,
@@ -431,6 +466,59 @@ impl Page {
         }
         drop(view);
         server.take();
+    }
+}
+
+#[cfg(test)]
+impl Page {
+    /// A page in `dir` that is open already, with nothing listening or run.
+    pub fn open_for_tests(dir: &Path) -> Self {
+        let opener = Opener {
+            program: PathBuf::new(),
+            before: Vec::new(),
+            exits_failing: true,
+        };
+        let page = Page::new(dir, opener);
+        *page.server.lock().unwrap() = Some(Server {
+            stop: Arc::default(),
+            thread: None,
+            file: dir.join("page.html"),
+        });
+        page
+    }
+
+    /// A page in `dir`, open already, as the link code step leaves it: showing a link code under
+    /// its "Fresh code" question, whose presses it gives.
+    pub fn showing_a_link_code_for_tests(dir: &Path) -> (Self, Receiver<Answer>) {
+        let page = Page::open_for_tests(dir);
+        let presses = page.ask("", &["Fresh code"], None, false).unwrap();
+        page.show(Some("  ABCD-EFGH-JKMN")).unwrap();
+        (page, presses)
+    }
+
+    /// Each version of the view so far, as the browser would take it.
+    pub fn versions(&self) -> Vec<serde_json::Value> {
+        self.shared.view().versions.clone()
+    }
+
+    /// The person presses the button `button` of the question the page asks now, if it has one;
+    /// gives whether the question took it.
+    pub fn press(&self, button: &str) -> bool {
+        let pressed = {
+            let view = self.shared.view();
+            let Some(asked) = view.question.as_ref() else {
+                return false;
+            };
+            let Some(at) = asked.buttons.iter().position(|named| named == button) else {
+                return false;
+            };
+            Given {
+                question: asked.id,
+                button: at,
+                text: None,
+            }
+        };
+        take(&self.shared, &pressed)
     }
 }
 
@@ -481,19 +569,18 @@ fn escaped(text: &str) -> String {
     escaped
 }
 
+/// A random name for a file of the command's own: 16 hexadecimal digits.
+pub fn random_name() -> io::Result<String> {
+    let mut name = [0; 8];
+    getrandom::fill(&mut name).map_err(io::Error::other)?;
+    Ok(name.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
 /// Writes the file that takes the browser to `url` into `dir`, readable only by its user; gives
 /// its path.
 fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
     let url = escaped(url);
-    let mut name = [0; 8];
-    getrandom::fill(&mut name).map_err(io::Error::other)?;
-    let name: String = name.iter().map(|byte| format!("{byte:02x}")).collect();
-    let file = std::path::absolute(dir.join(format!("page-{name}.html")))?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut opened = options.open(&file)?;
+    let file = std::path::absolute(dir.join(format!("page-{}.html", random_name()?)))?;
     let html = format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\">\
          <meta name=\"referrer\" content=\"no-referrer\">\
@@ -501,12 +588,7 @@ fn write_file(dir: &Path, url: &str) -> io::Result<PathBuf> {
          <title>skald</title></head>\
          <body><p>Opening the page of skald: <a href=\"{url}\">go there</a>.</p></body></html>\n"
     );
-    let written = opened.write_all(html.as_bytes());
-    if let Err(err) = written {
-        drop(opened);
-        let _ = fs::remove_file(&file);
-        return Err(err);
-    }
+    skald_adapters::file::write_private(&file, html.as_bytes())?;
     Ok(file)
 }
 
@@ -1055,6 +1137,27 @@ mod tests {
         assert!(take(&shared, &given(3, 0, None)));
         assert!(take(&shared, &given(3, 0, None)), "one per press");
         assert_eq!(answered.try_iter().count(), 2);
+    }
+
+    /// What the page shows and its question replace the ones before in one change: no version of
+    /// the view shows the new text under the question before, and the new question takes the
+    /// answer.
+    #[test]
+    fn shown_text_and_its_question_change_in_one_view() {
+        let dir = crate::test_dir::TestDir::new("page-show-asking");
+        let (page, _presses) = Page::showing_a_link_code_for_tests(&dir);
+        let before = page.versions().len();
+
+        let answered = page.show_asking("KEY", "Write it down.", &["Written down"]);
+        let versions = page.versions();
+        assert_eq!(versions.len(), before + 1, "one change: {versions:?}");
+        assert_eq!(versions[before]["shown"], "KEY");
+        assert_eq!(
+            versions[before]["question"]["buttons"],
+            json!(["Written down"])
+        );
+        assert!(page.press("Written down"));
+        assert_eq!(answered.unwrap().try_recv(), Ok(Answer::Button(0)));
     }
 
     /// The view takes the command's output in lines, its last until it ends.

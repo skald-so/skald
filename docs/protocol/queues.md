@@ -139,7 +139,8 @@ queue-key-body = {
 
 - The sender of each Commit uploads the queue key object of the new epoch with its link and wraps; any member device of an epoch uploads it if the server has none. A device uploads none for an epoch it did not judge clean.
 - The server keeps the first per channel and epoch, and takes uploads only from member devices of the epoch, each on its connection, which proves its key, as [Uploads](membership.md#uploads) says of links and wraps: a member `service` device's on a connection of its service token, in the token's channels; a session or a service token alone uploads none.
-- A member device that finds the server's object with a `key` other than the `pk` it derives MUST warn its user.
+- The server gives an epoch's object, as the bytes it got, to devices that may send in the channel ([Send](delivery.md#send)), each proving its key: [api/openapi.json](../../api/openapi.json).
+- A member device that finds the server's object with a `key` other than the `pk` it derives MUST warn its user, once per epoch.
 - A `service` device that is not a member holds no `sk`: it enqueues tasks and reads none.
 
 ## Task states
@@ -197,7 +198,7 @@ claim = {
 - `generation`: one more than the task's previous claim; never reused, restarts included. An agent passes it as a fencing token to systems that take one, so they refuse a write with a lower one. It uses the task ID to make its own side effects idempotent.
 - **Lease:** the claim holds the task for `lease` seconds from the claim or the last extension. The holder counts it on its own clock from when it sent the request; if it passes without an answered extension, the holder SHOULD stop the work, as the server may hand the task to another device.
 - **Heartbeat:** the holder sends `extend` each time a third of the lease has passed, and at once when the progress changes. It sends it only while the task runs, with the progress `started`, or waits for its user's yes, with `awaiting-approval` ([Running a task](#running-a-task)):
-  - with the helper, the helper sends it while the agent session that holds the claim runs, or the task waits;
+  - with the helper, the helper sends it while the agent session that holds the claim runs, or the task waits; a claim's session is any session of its agent on the device;
   - in one-shot mode without the helper, the process running the task sends it;
   - a holder whose process stops sends none, so the lease ends.
 - Extend, complete, fail and release name the task, `claim_id` and `generation`; extend also states the progress, fail whether to retry.
@@ -313,6 +314,8 @@ The task's sending device MUST drop a result unless:
 1. it passes the checks of [Envelope](README.md#envelope), and its sending device is [admitted](membership.md#admitted-devices) to the channel;
 2. `task` is a task this device enqueued in the channel, `to` is that task's `from`, and `from` is that task's `to` if it has one;
 3. for `done`, the server gives the task as `done` with this `claim_id` and `generation`, claimed by the sending device.
+
+A `service` device that keeps no state between runs ([service agents](../service-agents.md#running-without-a-disk)) keeps no tasks, so its check 2 is the server's: the task is in a queue of the channel, `to` is its agent, and the device in the task's `sched`, if any, sent the result.
 
 It takes the first result with `done` that passes as the task's result, unless that result is invalid as above. For an invalid one, the device shows the task as done with an invalid result and triggers the [notification](../dev/architecture.md#notifications) of the enqueuing agent's [person](agents.md#person), giving the server only the event class.
 

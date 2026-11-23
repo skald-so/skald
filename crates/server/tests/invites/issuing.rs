@@ -3,10 +3,12 @@
 //! it, expiring within 30 days, naming channels of the latest revision with the default channel
 //! first; once, also when sent twice.
 
-use skald_proto::{ChannelId, DeviceKind, InviteId, Role};
+use skald_proto::{ChannelId, DeviceKind, InviteId, Role, SpaceId};
 
-use crate::api::{Person, assert_refused};
+use crate::api::{ACME, Person, Session, assert_refused};
+use crate::common::device_flow::{DeviceFlow, json, text};
 use crate::common::devices::assert_taken;
+use crate::common::sign_in::{SignIn, WebAddress};
 use crate::rosters::first;
 use crate::scene::{
     DAY, MALFORMED, Scene, assert_stored, broken, gets_no_invite, made, signed_invite,
@@ -214,4 +216,44 @@ fn malformed_invites_and_other_bytes_under_a_stored_id_are_refused() {
     let response = alice.session.store_invite(scene.space(), invite.id, &other);
     assert_refused(&response, "other bytes under a stored ID");
     scene.gets_invite(&scene.f.eve, &invite);
+}
+
+/// The answers that issue an invite ID, give the session and list the account's devices name the
+/// server's web address, which an invite link starts with: its public address by default, and the
+/// address `--web-url` sets.
+#[test]
+fn the_answers_a_device_gets_name_the_servers_web_address() {
+    let scene = Scene::new(3_817_100_701);
+    let public = &scene.team().flow.stand.public;
+    assert_names_web(&scene.team().alice.session, scene.space(), public);
+
+    let (stand, _) = SignIn::with_web_address(WebAddress::Argument, |port| {
+        (
+            format!("http://api.skald.test:{port}"),
+            format!("http://app.skald.test:{port}"),
+        )
+    });
+    let flow = DeviceFlow::of(stand);
+    let alice = Person::new(&flow, 3_817_100_801, "alice");
+    let space = alice.create_space(ACME);
+    assert_taken(
+        &alice
+            .session
+            .store(space, &alice.sign(&first(space, ACME, &alice))),
+    );
+    assert!(flow.stand.public.contains("app."), "{}", flow.stand.public);
+    assert_names_web(&alice.session, space, &flow.stand.public);
+}
+
+/// Fails unless the answers to `session`'s requests for an invite ID of `space`, for the session
+/// and for the account's devices name `web` as the server's web address.
+#[track_caller]
+fn assert_names_web(session: &Session, space: SpaceId, web: &str) {
+    for response in [
+        session.issue_response(space),
+        session.call("get", "/session", None),
+        session.call("get", "/devices", None),
+    ] {
+        assert_eq!(json(&response)["web"], web, "{}", text(&response));
+    }
 }

@@ -54,7 +54,7 @@ skald remove-service-agent acme ci/deploy-bot
 
 ## Running an agent
 
-With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`, and so do `skald claim`, `skald extend`, `skald complete` and `skald fail` of a member agent; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
+With both variables set, `skald send` and `skald recv` run as the agent, without `--agent`, and so do `skald claim`, `skald extend`, `skald complete` and `skald fail` of a member agent, and `skald enqueue` without `SKALD_STATE_DIR`; other commands are refused. The space is the key secret's, whatever the working directory. Without `SKALD_STATE_DIR`, a run is stateless; with it, the agent is a member: [Running a member agent](#running-a-member-agent).
 
 No person sets the agent's inbound mode, so it takes every message: [Device to agent](protocol/delivery.md#device-to-agent).
 
@@ -68,9 +68,21 @@ skald send --all --channel <channel> "rollout started"
 - A run keeps its state in memory only: nothing goes to the disk, temporary files, the key store or a helper.
 - It is a member of no MLS group. It seals each message under `hpke` to every member device of the channel ([Send](protocol/delivery.md#send)) and fails unless the server stores each copy within the run.
 - `skald recv` shows each message before it acks it. A run that dies in between shows the message again at the next one. Without counters, it does no gap detection.
+- It shows the result of a task the agent enqueued once the server confirms it: [Results](protocol/queues.md#results).
 - Over long-poll, when a proxy blocks WebSocket and streaming, a `skald recv` run takes one long-poll answer: up to the server's limit per answer. Run it again for the rest.
 - `skald recv --wait` needs a state directory and is refused.
 - It starts the space's roster from the latest revision its account's devices accepted ([Anchors](protocol/membership.md#anchors)).
+
+### Enqueueing tasks from CI
+
+```sh
+skald enqueue --channel <channel> "run the smoke tests of the release"
+```
+
+- The token needs `send` and `queues`: `--permission send --permission queues`. The server refuses the tasks of a token without `queues`, and the run enqueues nothing, naming that refusal, `not-a-member`.
+- The task is sealed to the queue key the channel's member devices publish for the current epoch ([Queue key](protocol/queues.md#queue-key)). The run enqueues nothing, and says why, when that key fails its checks or no member device has published it yet.
+- It takes the options of a person's `skald enqueue`, with the same defaults: [README](../README.md).
+- The run fails unless the server stores the task within it: nothing waits for a later run.
 
 ### Running a member agent
 

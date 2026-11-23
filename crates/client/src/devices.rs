@@ -18,6 +18,7 @@ use skald_proto::{AccountRecord, Cbor as _, Cert, DeviceId, DeviceKind, Revocati
 use crate::connection::{self, Connection, printable};
 use crate::follow::{self, Own, SpaceDevices};
 use crate::kept_certs;
+use crate::key_changes;
 use crate::revocations;
 use crate::secrets::{self, Secrets};
 use crate::sign_in;
@@ -35,6 +36,11 @@ struct Devices {
     revocations: Vec<String>,
     #[serde(default)]
     records: Vec<String>,
+    #[serde(default)]
+    deleted: Vec<String>,
+    /// The server's web address, in `Devices` alone.
+    #[serde(default)]
+    web: Option<String>,
 }
 
 /// `Device` in the API spec: anything else the server gives with it, such as a name, is ignored.
@@ -94,7 +100,8 @@ pub fn run(
     } else {
         Vec::new()
     };
-    for warning in (two_bodies_warnings(&checked).chain(shared_name_warnings(&checked.linked)))
+    for warning in (two_bodies_warnings(&state, &checked)?.into_iter())
+        .chain(shared_name_warnings(&checked.linked))
         .chain(key_changes)
         .chain(changed)
         .chain(masters)
@@ -142,31 +149,27 @@ pub fn statuses(
         .collect();
     let changed = state.device_statuses(&seen).map_err(text)?;
     let changed = changed.into_iter().map(|(device, change)| match change {
-        StatusChange::Revoked => format!(
-            "the device {device} of {whose} is revoked: this device no longer sends to it, \
-             accepts content from it or admits it to a channel"
-        ),
-        StatusChange::Valid => format!(
-            "the device {device} of {whose} is valid again: a revocation by its account's \
-             master key voided the revocation of it"
-        ),
-        StatusChange::Added => format!(
-            "the device {device} of {whose} is new: it was linked since this device last \
-             checked"
-        ),
+        StatusChange::Revoked => format!("device {device} of {whose} is revoked"),
+        StatusChange::Valid => format!("device {device} of {whose} is valid again"),
+        StatusChange::Added => format!("device {device} of {whose} is new"),
     });
     Ok(key_changes.into_iter().chain(changed).collect())
 }
 
 /// The warning of each device in `checked` with certificates of two bodies
-/// (`docs/protocol/membership.md`, "Device certificate").
-pub fn two_bodies_warnings<'a>(checked: &'a Checked) -> impl Iterator<Item = String> + 'a {
-    checked.two_bodies.iter().map(|id| {
-        format!(
-            "the key of device {id} signed two different certificates of it, so neither counts; \
-             the device or its key may be compromised"
-        )
-    })
+/// (`docs/protocol/membership.md`, "Device certificate"), each kept in `state` as a key change the
+/// first time.
+pub fn two_bodies_warnings(state: &State, checked: &Checked) -> Result<Vec<String>, String> {
+    (checked.two_bodies.iter())
+        .map(|id| {
+            let warning = format!(
+                "the key of device {id} signed two different certificates of it, so neither \
+                 counts; the device or its key may be compromised"
+            );
+            key_changes::keep_once(state, &warning, &warning)?;
+            Ok(warning)
+        })
+        .collect()
 }
 
 /// The warning of each name that two or more of the `linked` certificates, those of one account,
@@ -187,9 +190,10 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
-/// it gives with those `state` holds; a certificate or revocation that does not decode counts as
-/// none. Prints the warning of each device given with a certificate other than the one `state`
-/// keeps ([`kept_certs`]).
+/// it gives with those `state` holds, and the accounts it reports deleted; a certificate,
+/// revocation or account ID that does not decode counts as none. Prints the warning of each device
+/// given with a certificate other than the one `state` keeps ([`kept_certs`]). Records the server's
+/// web address the list names ([`crate::acceptances::record_web`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
@@ -197,14 +201,36 @@ pub fn fetch(
     state: &State,
 ) -> Result<SpaceDevices, String> {
     let body = connection.get_as(path, token).map_err(text)?;
-    let devices: Devices = serde_json::from_slice(&body)
+    let (given, web) = decoded(&body)?;
+    crate::acceptances::record_web(state, connection.server(), web.as_deref());
+    let (certs, swapped) = kept_certs::settle(state, given.certs)?;
+    for warning in swapped {
+        eprintln!("skald: warning: {warning}");
+    }
+    let revocations = revocations::with_held(state, given.revocations)?;
+    Ok(SpaceDevices {
+        certs,
+        revocations,
+        ..given
+    })
+}
+
+/// The device list `body`, a `Devices` answer or one with its fields, as it gives it: the IDs of
+/// its devices, the certificates, revocations and account records that decode.
+pub fn decode(body: &[u8]) -> Result<SpaceDevices, String> {
+    decoded(body).map(|(devices, _)| devices)
+}
+
+/// As [`decode`], with the server's web address `body` names, if any.
+fn decoded(body: &[u8]) -> Result<(SpaceDevices, Option<String>), String> {
+    let devices: Devices = serde_json::from_slice(body)
         .map_err(|_| "unexpected answer from the server: a device list without its devices")?;
     let ids = devices
         .devices
         .iter()
         .filter_map(|entry| entry.device.parse().ok())
         .collect();
-    let given = devices
+    let certs = devices
         .devices
         .iter()
         .filter_map(|entry| {
@@ -212,27 +238,28 @@ pub fn fetch(
             Cert::from_cbor(&bytes).ok()
         })
         .collect();
-    let (certs, swapped) = kept_certs::settle(state, given)?;
-    for warning in swapped {
-        eprintln!("skald: warning: {warning}");
-    }
-    let given = devices.revocations.iter().filter_map(|text| {
-        let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-        Revocation::from_cbor(&bytes).ok()
-    });
-    let revocations = revocations::with_held(state, given)?;
-    let records = (devices.records.iter())
-        .filter_map(|text| {
-            let bytes = URL_SAFE_NO_PAD.decode(text).ok()?;
-            AccountRecord::from_cbor(&bytes).ok()
-        })
+    let decoded = |list: &[String]| -> Vec<Vec<u8>> {
+        (list.iter())
+            .filter_map(|text| URL_SAFE_NO_PAD.decode(text).ok())
+            .collect()
+    };
+    let revocations = (decoded(&devices.revocations).iter())
+        .filter_map(|bytes| Revocation::from_cbor(bytes).ok())
         .collect();
-    Ok(SpaceDevices {
+    let records = (decoded(&devices.records).iter())
+        .filter_map(|bytes| AccountRecord::from_cbor(bytes).ok())
+        .collect();
+    let deleted = (devices.deleted.iter())
+        .filter_map(|id| id.parse().ok())
+        .collect();
+    let given = SpaceDevices {
         ids,
         certs,
         revocations,
         records,
-    })
+        deleted,
+    };
+    Ok((given, devices.web))
 }
 
 /// The local state of the machine whose state is in `dir`, its secrets in `storage`, with the
@@ -245,20 +272,27 @@ pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String
 pub fn signed_in_with_secrets(
     dir: &Path,
     storage: secrets::Storage,
-) -> Result<(State, String, String, secrets::Map, Secrets), String> {
+) -> Result<SessionSecrets, String> {
+    session_with_secrets(dir, storage)?.ok_or_else(|| NOT_SIGNED_IN.to_owned())
+}
+
+type SessionSecrets = (State, String, String, secrets::Map, Secrets);
+
+/// The stored session with its secrets, if the machine has one.
+pub fn session_with_secrets(
+    dir: &Path,
+    storage: secrets::Storage,
+) -> Result<Option<SessionSecrets>, String> {
     if !dir.is_dir() {
-        return Err(NOT_SIGNED_IN.to_owned());
+        return Ok(None);
     }
     let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
-    let session = state
-        .session()
-        .map_err(text)?
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+    let Some(session) = state.session().map_err(text)? else {
+        return Ok(None);
+    };
     let stored = secrets.load().map_err(text)?;
-    let token = sign_in::token_for(&stored, &session.server)
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
-        .clone();
-    Ok((state, session.server, token, stored, secrets))
+    let token = sign_in::token_for(&stored, &session.server).cloned();
+    Ok(token.map(|token| (state, session.server, token, stored, secrets)))
 }
 
 /// A connection to `server`, the server of the machine's stored session, as [`Connection::new`]
@@ -467,6 +501,7 @@ mod tests {
             certs,
             revocations,
             records: Vec::new(),
+            deleted: Default::default(),
         }
     }
 

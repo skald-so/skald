@@ -20,9 +20,12 @@
 //!   so it does a Codex session while its Codex process runs ([`crate::codex`]).
 //! - It keeps the device's presence ([`crate::uploads`]): it checks it after each command and
 //!   intake, when its sessions change, when a value nears its `expires` and before it exits.
+//! - It extends the claims of its sessions' agents as they are due, on a thread of its own beside
+//!   its commands ([`crate::heartbeat`]). A one-shot session's heartbeat it runs as any command,
+//!   but the sessions take it as no command that ran.
 //! - The helper exits after an idle time with no command, session, registered Claude Code session
-//!   or live Codex session, after sign-out and when a newer command or a sign-in asks it to; a helper that is
-//!   killed leaves its socket, which the next helper replaces.
+//!   or live Codex session, after sign-out and when a newer command or a sign-in asks it to; a
+//!   helper that is killed leaves its socket, which the next helper replaces.
 //! - The socket's directory is its owner's only; on Windows it has the access rights it inherits
 //!   from the state directory.
 
@@ -609,6 +612,7 @@ pub fn serve(dir: &Path, idle: Duration, settings: claude_socket::Settings) -> R
             // None waits, or a failure to accept one, which the next look may not meet.
             Err(_) => {
                 let looked = sessions.look(&dir);
+                sessions.beat(&dir);
                 sessions.keep_presence(&dir, false);
                 match looked {
                     Some(true) => last = Instant::now(),
@@ -646,7 +650,7 @@ enum Served {
     Nothing,
     /// An operation ran.
     Ran,
-    /// A session joined, its first run done.
+    /// A session joined, its first run done, or a mod polled: nothing a session waits for ran.
     Joined,
     /// The helper exits; it says goodbye on the stream, if any, once its socket is closed.
     Exit(Option<UnixStream>),
@@ -691,7 +695,25 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     let mut operation = request.operation;
     operation.state_dir = Some(dir.to_path_buf());
     uploads::remember(uploads::Settings::of(&operation));
-    if operation.command.waits() || wait::holds(&operation) {
+    if wait::polls(&operation) {
+        let cwd = request.cwd;
+        let polled = on_behalf(&stream, dir, &cwd, || {
+            sessions.polled(&operation, &cwd, dir).map(|()| true)
+        });
+        let code = match polled {
+            Some(Outcome::Done(code)) => code,
+            _ => return Served::Nothing,
+        };
+        let mut answer = stream;
+        let _ = send(&mut answer, Kind::Code, &[code]);
+        // A poll keeps the helper running but runs nothing that a session waits for.
+        return if code == PANICKED {
+            Served::Exit(None)
+        } else {
+            Served::Joined
+        };
+    }
+    if operation.command.waits() || wait::holds(&operation) || wait::rewakes(&operation) {
         let session = Session {
             stream,
             cwd: request.cwd,
@@ -704,6 +726,14 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
         };
     }
     let signs_out = matches!(operation.command, Command::SignOut);
+    // A one-shot session's heartbeat runs often and changes nothing the sessions wait for.
+    let beats = matches!(
+        operation.command,
+        Command::Mcp {
+            call: Some(crate::mcp::Call::Beat),
+            ..
+        }
+    );
     let code = match on_behalf(&stream, dir, &request.cwd, || {
         crate::perform(operation).map(|()| true)
     }) {
@@ -715,6 +745,8 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
     let _ = send(&mut answer, Kind::Code, &[code]);
     if signs_out || code == PANICKED {
         Served::Exit(None)
+    } else if beats {
+        Served::Nothing
     } else {
         Served::Ran
     }

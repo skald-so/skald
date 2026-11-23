@@ -13,11 +13,21 @@ dist = true
 name = "skald"
 path = "src/main.rs"
 
-# Its binary also stands in for the `codex` command, whose arguments libtest would refuse, so it
-# runs a harness of its own (tests/codex_wakes/main.rs).
+# Their binaries also stand in for the `codex` command, whose arguments libtest would refuse, so they
+# run a harness of their own (tests/codex_wakes/harness.rs).
 [[test]]
 name = "codex_wakes"
 path = "tests/codex_wakes/main.rs"
+harness = false
+
+[[test]]
+name = "codex_confirmations"
+path = "tests/codex_confirmations/main.rs"
+harness = false
+
+[[test]]
+name = "codex_modes"
+path = "tests/codex_modes/main.rs"
 harness = false
 
 [dependencies]
@@ -38,6 +48,8 @@ semver = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = { version = "0.11", default-features = false }
+# What agents get of text from others, shared with the executors.
+skald-adapters = { path = "../adapters" }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
@@ -96,7 +108,8 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-# setsid, which detaches the helper from the terminal of the command that starts it.
+# setsid, which detaches the helper from the terminal of the command that starts it; poll, with
+# which the thread reading the person's lines reads only input that waits.
 libc = "0.2"
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]

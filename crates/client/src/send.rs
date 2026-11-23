@@ -42,8 +42,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use skald_proto::{
     Address, AddressError, Body, Cbor as _, Cert, ChannelId, Content, DeviceId, DeviceKind, Frame,
-    MessageId, Name, PERSON, Push, RawEnvelope, Roster, Segment, SendKey, ServerName, SpaceId,
-    Unknown, VersionRange,
+    Member, MessageId, Name, PERSON, Push, RawEnvelope, Roster, Segment, SendKey, ServerName,
+    SpaceId, Unknown, VersionRange,
 };
 use tungstenite::Message;
 use tungstenite::protocol::CloseFrame;
@@ -60,6 +60,7 @@ use crate::groups::{self, Link, Rosters};
 use crate::history;
 use crate::key_chain;
 use crate::mailbox::{self, Mailbox, Transport};
+use crate::queue_keys;
 use crate::recv;
 use crate::secrets;
 use crate::service;
@@ -421,9 +422,10 @@ pub fn channel_id(given: &str) -> Result<ChannelId, String> {
 /// Goes through the mailbox as `skald recv` does, within `scope`, showing none of it: sends the
 /// device's Commits and Welcomes that wait, writes each entry after the cursor, goes through the
 /// Welcomes and Commits, brings in line the groups of the channels of each space the run accepted
-/// the revisions of and uploads the links of their key chains and the wraps of their current
-/// epochs the server lacks. Gives the last accepted revision of `space` and its accounts' devices,
-/// `synced` as the run synced them first, as they are then. Warns of what fails.
+/// the revisions of and uploads the links of their key chains, the wraps of their current epochs
+/// and their queue key objects the server lacks. Gives the last accepted revision of `space` and
+/// its accounts' devices, `synced` as the run synced them first, as they are then. Warns of what
+/// fails.
 pub fn through_mailbox(
     follower: &mut Follower,
     scope: Scope,
@@ -446,6 +448,7 @@ pub fn through_mailbox(
     groups::align_with(follower, &mut link);
     key_chain::upload_missing(follower, &mut link, scope);
     wraps::upload_missing(follower, &mut link, scope);
+    queue_keys::upload_missing(follower, &mut link, scope);
     Ok(rosters.remove(&space).expect("the channel's space"))
 }
 
@@ -478,9 +481,9 @@ fn with_waiting(dir: &Path, scope: Scope, err: String) -> String {
 /// The devices admitted to `channel` in `roster`, the space's latest revision, but `this` one,
 /// each with its valid certificate among `devices` ("Admitted devices"): the `client` devices of
 /// the accounts of the channel's members that their member's `excluded` does not list, and the
-/// `service` devices of the channel's `services`, of a member's account. The certificates of
-/// `own`'s account are checked against the master key it pinned, any other's against the
-/// revision's.
+/// `service` devices of the channel's `services`, of a member's account; none of an account
+/// `devices` reports deleted. The certificates of `own`'s account are checked against the master
+/// key it pinned, any other's against the revision's.
 pub fn admitted<'d>(
     own: &Own,
     this: DeviceId,
@@ -493,10 +496,9 @@ pub fn admitted<'d>(
     let Some(channel) = body.channels.iter().find(|it| it.id == channel) else {
         return admitted;
     };
-    for entry in &channel.members {
-        let Some(member) = body.member(entry.account) else {
-            continue;
-        };
+    let live = |member: &&Member| !devices.deleted.contains(&member.account);
+    let in_channel = (channel.members.iter()).filter_map(|entry| body.member(entry.account));
+    for member in in_channel.filter(live) {
         for cert in devices.of(roster, own, member) {
             let body = cert.body();
             if body.kind == DeviceKind::Client && body.device != this {
@@ -504,7 +506,7 @@ pub fn admitted<'d>(
             }
         }
     }
-    for member in body.members.iter() {
+    for member in body.members.iter().filter(live) {
         for cert in devices.of(roster, own, member) {
             let body = cert.body();
             if body.kind == DeviceKind::Service
@@ -1076,6 +1078,7 @@ fn outcome<W: Shown>(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::BTreeSet;
     use std::num::NonZeroU64;
 
     use skald_crypto::{HpkeKey, SigningKey, issue};
@@ -1205,7 +1208,7 @@ pub(crate) mod tests {
     /// and the `service` devices of the channel's `services` with one of a member's account; this
     /// one, a browser, one the member's `excluded` lists, one with a certificate by another key,
     /// one of a member outside the channel, a `service` device the channel does not list and one
-    /// with a forged certificate aside.
+    /// with a forged certificate aside; none of an account the server reports deleted.
     #[test]
     fn admitted_devices_are_the_channels_valid_client_and_service_devices_but_this_one() {
         let (ada, bob, carol) = (Account::new(), Account::new(), Account::new());
@@ -1243,6 +1246,7 @@ pub(crate) mod tests {
             certs: certs.clone(),
             revocations: Vec::new(),
             records: Vec::new(),
+            deleted: Default::default(),
         };
 
         let given: BTreeMap<DeviceId, [u8; 32]> =
@@ -1267,6 +1271,14 @@ pub(crate) mod tests {
             ChannelId::generate(),
         );
         assert!(elsewhere.is_empty(), "{elsewhere:?}");
+        let ada_deleted = SpaceDevices {
+            deleted: BTreeSet::from([ada.id]),
+            ..devices.clone()
+        };
+        let given: Vec<DeviceId> = admitted(&own, id(&certs[0]), &roster, &ada_deleted, channel)
+            .into_keys()
+            .collect();
+        assert_eq!(given, [id(&certs[3])], "Ada reported deleted");
     }
 
     /// A run that sends nothing says how many envelopes of its scope wait in the outbox, if any.

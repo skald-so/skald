@@ -45,10 +45,7 @@ impl Cli {
     pub fn handles(self, event: Event) -> bool {
         match self {
             Cli::Claude => event != Event::UserPromptSubmit,
-            Cli::Codex => !matches!(
-                event,
-                Event::SessionEnd | Event::PermissionRequest | Event::PermissionPrompt
-            ),
+            Cli::Codex => !matches!(event, Event::SessionEnd | Event::PermissionPrompt),
         }
     }
 }
@@ -294,7 +291,30 @@ pub struct Given {
 /// alone does not fit. Its output is one JSON object of at most [`LIMIT`] characters.
 pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
     let budget = LIMIT.saturating_sub(escaped(&output(event, "")).chars().count());
-    let mut context = Context::default();
+    let (lines, mut given) = gathered(waiting, budget, Context::default())?;
+    given.output = output(event, &lines.join("\n"));
+    Some(given)
+}
+
+/// What the `asyncRewake` hook, or a path like it, gives of `waiting`, as [`compose`] gives it, as
+/// plain text of at most [`LIMIT`] characters: the signal first, then the `own` lines; no status.
+pub fn plain(waiting: &[Waiting]) -> Option<Given> {
+    let plain = Context {
+        plain: true,
+        ..Context::default()
+    };
+    let (lines, mut given) = gathered(waiting, LIMIT, plain)?;
+    given.output = lines.join("\n");
+    Some(given)
+}
+
+/// The lines of what a run gives of `waiting` within `budget`, in `context`, and what it gives
+/// but its output.
+fn gathered(
+    waiting: &[Waiting],
+    budget: usize,
+    mut context: Context,
+) -> Option<(Vec<String>, Given)> {
     let signalled: Vec<u64> = (waiting.iter())
         .filter_map(|waiting| match waiting {
             Waiting::Below {
@@ -352,8 +372,9 @@ pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
                         context.push(warning);
                     }
                     let tail = cut_tail(reference);
-                    let room = budget.saturating_sub(context.cost() + 2 + context.cost_of(&tail));
-                    context.push(&cut(line, room));
+                    let end = context.end();
+                    let room = budget.saturating_sub(context.cost() + end + context.cost_of(&tail));
+                    context.push(&cut(line, room, context.plain));
                     context.push(&tail);
                     handed.push(*seq);
                 }
@@ -364,12 +385,13 @@ pub fn compose(event: Event, waiting: &[Waiting]) -> Option<Given> {
     if context.lines.is_empty() {
         return None;
     }
-    Some(Given {
-        output: output(event, &context.lines.join("\n")),
+    let given = Given {
+        output: String::new(),
         statuses,
         handed,
         signalled,
-    })
+    };
+    Some((context.lines, given))
 }
 
 /// The JSON object a run on `event` prints to give `context`.
@@ -394,6 +416,8 @@ fn escaped(text: &str) -> String {
 struct Context {
     lines: Vec<String>,
     taken: usize,
+    /// Whether the output is plain text, not a JSON string.
+    plain: bool,
 }
 
 impl Context {
@@ -404,8 +428,13 @@ impl Context {
 
     /// The characters `line` would add to the output.
     fn cost_of(&self, line: &str) -> usize {
-        let end = if self.lines.is_empty() { 0 } else { 2 };
-        end + escaped(line).chars().count()
+        let end = if self.lines.is_empty() { 0 } else { self.end() };
+        end + taken(line, self.plain)
+    }
+
+    /// The characters a line end takes in the output.
+    fn end(&self) -> usize {
+        taken("\n", self.plain)
     }
 
     /// Whether `line` fits within `budget` after the lines.
@@ -433,13 +462,22 @@ impl Context {
     }
 }
 
-/// The head of `line` that takes at most `room` characters in the output, with its line end.
-fn cut(line: &str, room: usize) -> String {
+/// The characters `text` takes in the output: plain text if `plain`, otherwise a JSON string.
+fn taken(text: &str, plain: bool) -> usize {
+    match plain {
+        true => text.chars().count(),
+        false => escaped(text).chars().count(),
+    }
+}
+
+/// The head of `line` that takes at most `room` characters in the output, plain text if `plain`,
+/// with its line end.
+fn cut(line: &str, room: usize, plain: bool) -> String {
     let mut head = String::new();
-    let mut taken = 2;
+    let mut used = taken("\n", plain);
     for char in line.chars() {
-        taken += escaped(char.encode_utf8(&mut [0; 4])).chars().count();
-        if taken > room {
+        used += taken(char.encode_utf8(&mut [0; 4]), plain);
+        if used > room {
             break;
         }
         head.push(char);

@@ -31,8 +31,13 @@ use crate::world::AGENT;
 /// soon.
 const HELPER_IDLE: &str = "20";
 
-/// What Claude Code's prompt box starts with in a terminal.
+/// What Claude Code's prompt box starts with in a terminal. A dialog before the main screen, such
+/// as the development channels warning, marks its chosen option with it too.
 const PROMPT_BOX: &str = "\u{276f}";
+
+/// What starts the banner of Claude Code's main screen in a terminal, white space aside: its
+/// prompt box follows it, below any notice.
+const BANNER: &str = "ClaudeCodev";
 
 /// How long a turn may take.
 const TURN_LIMIT: Duration = Duration::from_secs(120);
@@ -80,7 +85,35 @@ pub struct Options {
     pub hooks: Option<PathBuf>,
     /// Claude Code settings beside the hooks and permissions, such as `crossSessionInbound`.
     pub settings: serde_json::Map<String, Value>,
+    /// Settings of the session's `skald` runs beside the machine's, such as the resend timeout.
+    pub skald_settings: Vec<(String, String)>,
+    /// Loads the session's `skald mcp` as a development channel,
+    /// `--dangerously-load-development-channels server:skald`; in a terminal the warning is
+    /// answered "I am using this for local development".
+    pub channels: bool,
+    /// Adds the `asyncRewake` hooks on `SessionStart` and `Stop`: `skald hook claude --wait`
+    /// [`REWAKE_WAIT`].
+    pub rewake: bool,
+    /// Plugin directories Claude Code loads, `--plugin-dir`, such as the mod's.
+    pub plugin_dirs: Vec<PathBuf>,
+    /// Neither its `skald mcp` nor its hooks get `--agent`: they act as the default agent of
+    /// Claude Code's client name.
+    pub unnamed: bool,
+    /// The directory of the session's `skald` goes first on the session's `PATH`, for what runs
+    /// `skald` from there, such as the mod.
+    pub skald_on_path: bool,
+    /// The `skald` its `skald mcp` and hooks run, and that [`Options::skald_on_path`] names, if not
+    /// the machine's: a copy whose processes, and so its helper, a test finds.
+    pub skald: Option<PathBuf>,
 }
+
+/// How long the `asyncRewake` hooks wait, in seconds, and the timeout Claude Code gives them.
+pub const REWAKE_WAIT: u64 = 600;
+const REWAKE_TIMEOUT: u64 = REWAKE_WAIT + 60;
+
+/// What the development channel warning shows, white space aside, and the option it is answered
+/// with.
+const CHANNEL_WARNING: &str = "Iamusingthisforlocaldevelopment";
 
 /// A running session; asked to exit, then killed, on drop.
 pub struct Session {
@@ -119,8 +152,10 @@ impl Session {
             (machine.root().join("tmp")).join(format!("socket-{agent}-{surface:?}-{next}"));
         let home = config.join("home");
         fs::create_dir_all(&home).expect("make Claude Code's config home");
+        let unnamed = options.unnamed;
         let named = |args: &[&str]| -> Vec<String> {
-            [AGENT, agent]
+            let agent: &[&str] = if unnamed { &[] } else { &[AGENT, agent] };
+            agent
                 .iter()
                 .chain(args)
                 .map(|arg| (*arg).to_owned())
@@ -130,13 +165,20 @@ impl Session {
             dir,
             &named(&[MCP]).iter().map(String::as_str).collect::<Vec<_>>(),
         );
-        let skald = lossy(mcp.get_program());
-        let helped = SOCKET || options.hooks.is_some();
+        let skald = (options.skald.as_deref())
+            .map_or_else(|| lossy(mcp.get_program()), |path| lossy(path.as_os_str()));
+        // A helper serves the socket and the fallbacks.
+        let helped = SOCKET
+            || options.hooks.is_some()
+            || options.channels
+            || options.rewake
+            || !options.plugin_dirs.is_empty();
         let mut settings: Vec<(String, String)> = (mcp.get_envs())
             .filter(|(name, _)| !helped || *name != OsStr::new(ONE_SHOT))
             .filter_map(|(name, value)| Some((lossy(name), lossy(value?))))
             .collect();
         settings.push(("SKALD_HELPER_IDLE".to_owned(), HELPER_IDLE.to_owned()));
+        settings.extend(options.skald_settings.iter().cloned());
         let hooks_skald = (options.hooks.as_deref())
             .map_or_else(|| skald.clone(), |path| lossy(path.as_os_str()));
 
@@ -156,10 +198,24 @@ impl Session {
             "type": "command", "command": hooks_skald, "args": named(&[HOOK, CLAUDE_CODE]),
         }] }]);
         let events = ["SessionStart", "SessionEnd", "PostToolUse", "Stop"];
-        let hooks: serde_json::Map<String, Value> = events
+        let mut hooks: serde_json::Map<String, Value> = events
             .iter()
             .map(|event| ((*event).to_owned(), hook.clone()))
             .collect();
+        if options.rewake {
+            let wait = REWAKE_WAIT.to_string();
+            let rewake = json!({
+                "type": "command", "command": hooks_skald,
+                "args": named(&[HOOK, CLAUDE_CODE, "--wait", &wait]),
+                "asyncRewake": true, "timeout": REWAKE_TIMEOUT,
+            });
+            for event in ["SessionStart", "Stop"] {
+                hooks[event][0]["hooks"]
+                    .as_array_mut()
+                    .expect("the event's hooks")
+                    .push(rewake.clone());
+            }
+        }
         let allowed = json!([
             "Bash(true)",
             "Bash(sleep:*)",
@@ -192,8 +248,14 @@ impl Session {
                 "projects": trusted,
             }),
         );
+        let mut path = env::var_os("PATH").unwrap_or_default();
+        if options.skald_on_path {
+            let dir = Path::new(&skald).parent().expect("skald's directory");
+            let dirs = std::iter::once(dir.to_path_buf()).chain(env::split_paths(&path));
+            path = env::join_paths(dirs.collect::<Vec<_>>()).expect("a PATH");
+        }
         settings.extend([
-            ("PATH".to_owned(), env::var("PATH").unwrap_or_default()),
+            ("PATH".to_owned(), lossy(&path)),
             ("HOME".to_owned(), lossy(home.as_os_str())),
             ("CLAUDE_CONFIG_DIR".to_owned(), lossy(home.as_os_str())),
             ("ANTHROPIC_BASE_URL".to_owned(), model.url().to_owned()),
@@ -226,6 +288,14 @@ impl Session {
             "--tools".to_owned(),
             "Bash".to_owned(),
         ]);
+        if options.channels {
+            args.extend(
+                ["--dangerously-load-development-channels", "server:skald"].map(str::to_owned),
+            );
+        }
+        for dir in &options.plugin_dirs {
+            args.extend(["--plugin-dir".to_owned(), lossy(dir.as_os_str())]);
+        }
 
         let output = Arc::new(Mutex::new(Vec::new()));
         let running = if surface == Surface::Terminal {
@@ -256,6 +326,9 @@ impl Session {
                 &output,
                 &input,
             );
+            if options.channels {
+                answer_once(&output, &input, CHANNEL_WARNING, b"\r");
+            }
             // The terminal lives as long as its reader and writer.
             std::mem::forget(pair.master);
             Running::Terminal { child, input }
@@ -283,10 +356,10 @@ impl Session {
     pub fn prompt(&mut self, text: &str) {
         match &mut self.running {
             Running::Terminal { .. } => {
-                // Claude Code reads typing once its prompt box shows; Enter that comes with the
-                // text is taken as part of a paste.
+                // Claude Code reads typing once the prompt box of its main screen shows; Enter
+                // that comes with the text is taken as part of a paste.
                 let deadline = Instant::now() + TURN_LIMIT;
-                while !self.output().contains(PROMPT_BOX) {
+                while !self.composer_shown() {
                     assert!(
                         Instant::now() < deadline,
                         "no prompt box: {}",
@@ -385,6 +458,17 @@ impl Session {
             .count()
     }
 
+    /// Whether the terminal shows the prompt box of Claude Code's main screen: after its banner.
+    fn composer_shown(&self) -> bool {
+        let screen = screen_text(
+            &self
+                .output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        );
+        (screen.rfind(BANNER)).is_some_and(|at| screen[at..].contains(PROMPT_BOX))
+    }
+
     /// What the session printed so far.
     pub fn output(&self) -> String {
         String::from_utf8_lossy(
@@ -417,8 +501,8 @@ impl Session {
             .join("\n")
     }
 
-    /// Asks the session to exit, as a person or the apps do, and waits for it; kills it if it does
-    /// not exit in time. Gives whether it exited by itself.
+    /// Asks the session to exit, as a person or the apps do, and waits for it; kills it, with what
+    /// it started, if it does not exit in time. Gives whether it exited by itself.
     pub fn end(&mut self) -> bool {
         match &mut self.running {
             Running::Terminal { input, .. } => {
@@ -442,15 +526,30 @@ impl Session {
         }
         match &mut self.running {
             Running::Terminal { child, .. } => {
+                kill_tree(child.process_id());
                 let _ = child.kill();
                 let _ = child.wait();
             }
             Running::App { child, .. } => {
+                kill_tree(Some(child.id()));
                 let _ = child.kill();
                 let _ = child.wait();
             }
         }
         false
+    }
+}
+
+/// On Windows, ends the process `pid` and every process it started, while it still runs: there,
+/// `claude` is the `claude.cmd` shim that npm installs, and ending its `cmd.exe` alone leaves
+/// Claude Code's `node` running in the test's folder, where it starts more hooks, and so a helper.
+fn kill_tree(pid: Option<u32>) {
+    if let (true, Some(pid)) = (cfg!(windows), pid) {
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 
@@ -498,6 +597,71 @@ fn read_answering(
             seen = output.len();
         }
     });
+}
+
+/// Types `keys` into the terminal once its screen showed `shown`, white space aside, within
+/// [`TURN_LIMIT`]: on a thread of its own.
+fn answer_once(
+    output: &Arc<Mutex<Vec<u8>>>,
+    input: &Typing,
+    shown: &'static str,
+    keys: &'static [u8],
+) {
+    let (output, input) = (Arc::clone(output), Arc::clone(input));
+    thread::spawn(move || {
+        let deadline = Instant::now() + TURN_LIMIT;
+        while Instant::now() < deadline {
+            let screen = {
+                let bytes = output
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                screen_text(&bytes)
+            };
+            if screen.contains(shown) {
+                let _ = typed(&input, keys);
+                return;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    });
+}
+
+/// The text a terminal shows of `bytes`, without escape sequences, white space or control
+/// characters: the terminal UI moves the cursor between words.
+fn screen_text(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut shown = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(char) = chars.next() {
+        if char != '\x1b' {
+            if !char.is_whitespace() && !char.is_control() {
+                shown.push(char);
+            }
+            continue;
+        }
+        match chars.next() {
+            // A control sequence ends at its final character.
+            Some('[') => {
+                for inner in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&inner) {
+                        break;
+                    }
+                }
+            }
+            // A string ends at BEL or at ESC and a backslash.
+            Some(']' | 'P' | '_' | '^' | 'X') => {
+                while let Some(inner) = chars.next() {
+                    if inner == '\x07' || (inner == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            // A character set takes one more character.
+            Some('(' | ')' | '*' | '+' | '#' | '%') => drop(chars.next()),
+            _ => {}
+        }
+    }
+    shown
 }
 
 /// Reads `from` into `into` to its end, on a thread of its own.

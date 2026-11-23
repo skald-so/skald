@@ -69,14 +69,14 @@ fn text_of(value: &OsStr) -> String {
     value.to_string_lossy().into_owned()
 }
 
-fn read_json(path: &Path) -> Value {
+pub(super) fn read_json(path: &Path) -> Value {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
     serde_json::from_str(&text)
         .unwrap_or_else(|error| panic!("{} is not JSON: {error}", path.display()))
 }
 
-fn put_json(path: &Path, value: &Value) {
+pub(super) fn put_json(path: &Path, value: &Value) {
     fs::create_dir_all(path.parent().expect("a file in a directory")).expect("make the directory");
     let text = serde_json::to_string_pretty(value).expect("JSON encodes");
     fs::write(path, text).expect("write a JSON file");
@@ -176,7 +176,7 @@ fn description_of(path: &Path) -> String {
 }
 
 /// A local marketplace of this checkout ([`Catalog`]), its plugin's source a local git repository.
-struct Market {
+pub(super) struct Market {
     /// The marketplace's name.
     name: String,
     /// The marketplace's directory, which `claude plugin marketplace add` takes.
@@ -192,7 +192,7 @@ struct Market {
 
 impl Market {
     /// The marketplace, made under `under`, with the plugin of this checkout on `main`.
-    fn new(under: &Path) -> Self {
+    pub(super) fn new(under: &Path) -> Self {
         let catalog = Catalog::of_checkout();
         let repo = under.join("plugin-repository");
         let plugin = repo.join(&catalog.path);
@@ -279,17 +279,17 @@ impl Market {
 }
 
 /// A temporary config home of Claude Code and the environment its commands and sessions run in.
-struct Home {
+pub(super) struct Home {
     claude: PathBuf,
-    dir: PathBuf,
-    env: Vec<(String, String)>,
+    pub(super) dir: PathBuf,
+    pub(super) env: Vec<(String, String)>,
 }
 
 impl Home {
     /// A config home under `machine`'s root; its runs have `machine`'s settings, as a session's
     /// hooks have them in `socket_claude.rs`, and on `PATH` this build's `skald` if `skald`, else no
     /// `skald` at all.
-    fn new(claude: &Path, machine: &Machine, skald: bool) -> Self {
+    pub(super) fn new(claude: &Path, machine: &Machine, skald: bool) -> Self {
         let dir = machine.root().join("tmp").join("claude-plugin-home");
         put_json(
             &dir.join(".claude.json"),
@@ -355,7 +355,7 @@ impl Home {
 
     /// Adds `market` and installs its plugin, as a person does.
     #[track_caller]
-    fn install(&self, market: &Market) {
+    pub(super) fn install(&self, market: &Market) {
         self.plugin(&["marketplace", "add", &text_of(market.dir.as_os_str())]);
         self.plugin(&["install", &market.plugin_id()]);
     }

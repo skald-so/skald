@@ -589,9 +589,16 @@ async fn finish<P: Provider>(
                 .get(header::USER_AGENT)
                 .and_then(|agent| agent.to_str().ok())
                 .unwrap_or_default();
-            let session = accounts::sign_in(db, &method, &identity.source, may_sign_up, agent)
-                .await
-                .map_err(Failure::Database)?;
+            let session = accounts::sign_in(
+                db,
+                &method,
+                &identity.source,
+                may_sign_up,
+                &return_to,
+                agent,
+            )
+            .await
+            .map_err(Failure::Database)?;
             let Some(session) = session else {
                 device_flow::refuse_sign_up(db, &return_to)
                     .await
@@ -928,9 +935,18 @@ pub(crate) struct Session {
     /// The provider a web session signed in with, `github` or `google`; `None` for a device session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sign_in_method: Option<&'static str>,
+    /// The server's web address ([`web_origin`]); only in the answer to `GET /session`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web: Option<String>,
     /// The SHA-256 of the session's token.
     #[serde(skip)]
     pub token_hash: Vec<u8>,
+}
+
+/// The server's web address, an origin, which invite links start with, if it has sign-in's
+/// `settings`.
+pub(crate) fn web_origin(settings: Option<&SignInSettings>) -> Option<String> {
+    settings.map(|settings| settings.web().origin())
 }
 
 /// The account of the session of `kind`, `web` or `device`, whose token has one of `hashes`, unless
@@ -970,6 +986,7 @@ async fn find(
             username,
             github_login,
             sign_in_method: method.as_deref().map(provider_name),
+            web: None,
             token_hash,
         },
     ))
@@ -1000,7 +1017,11 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Option<Option<&str>> {
 /// `GET /session`: the account of the request's session.
 pub(crate) async fn session(State(state): State<AppState>, headers: HeaderMap) -> Response {
     match signed_in(&state.db, &headers).await {
-        Ok(Some(session)) => axum::Json(session).into_response(),
+        Ok(Some(session)) => axum::Json(Session {
+            web: web_origin(state.sign_in.as_deref()),
+            ..session
+        })
+        .into_response(),
         Ok(None) => not_signed_in(),
         Err(err) => database_failed("read a session", err),
     }

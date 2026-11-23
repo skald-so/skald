@@ -15,8 +15,8 @@
 //!
 //! The interfaces, as these tests use them, each request stating the protocol version, with a
 //! device session's `Authorization: Bearer <token>`:
-//! - `POST /spaces/{space}/invites`, without a body: `201` with `{"invite": <ID>}`, a new invite ID
-//!   for the space.
+//! - `POST /spaces/{space}/invites`, without a body: `201` with `{"invite": <ID>, "web": <URL>}`, a
+//!   new invite ID for the space and the server's web address.
 //! - `PUT /spaces/{space}/invites/{invite}` of `{"invite": <bytes>}`: stores the invite with that
 //!   ID; `201` once stored, `200` for the same bytes again.
 //! - `GET /invites/{invite}`: `200` with `{"invite": <bytes>, "revisions": [<bytes>, ...],
@@ -25,9 +25,10 @@
 //!   `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member.
 //! - `PUT /invites/{invite}/acceptance` of `{"acceptance": <bytes>}`: stores the invite's
 //!   acceptance; `201` once stored, `200` for the same bytes again.
-//! - `GET /spaces/{space}/acceptances`: `200` with `{"acceptances": [{"acceptance": <bytes>,
-//!   "devices": [{"device": <ID>, "cert": <bytes> | null}, ...], "revocations": [<bytes>, ...]},
-//!   ...]}`: the space's waiting acceptances, each with its account's devices and revocations.
+//! - `GET /spaces/{space}/acceptances`: `200` with `{"acceptances": [{"invite": <bytes>,
+//!   "acceptance": <bytes>, "devices": [{"device": <ID>, "cert": <bytes> | null}, ...],
+//!   "revocations": [<bytes>, ...]}, ...]}`: the space's waiting acceptances, each with its invite
+//!   and its account's devices and revocations.
 //!   A session of an account that is no admin of the space gets none: a refusal or an empty list.
 //! - `space-notice = [9, space: id]` ("Frames"), as in the tests of server instances.
 //!
@@ -72,4 +73,5 @@ mod accepting;
 mod ending;
 mod issuing;
 mod reading;
+mod sign_up;
 mod waiting;

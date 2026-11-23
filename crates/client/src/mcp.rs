@@ -23,7 +23,15 @@
 //!   ([`helper::relay`]).
 //! - Out of one-shot mode, once registered, the server holds a session of the helper for its whole
 //!   run, its agent and runtime with it, starting the helper again when it exits ([`hold`]): the
-//!   helper knows the agent runs and does not exit idle under it ([`crate::uploads`]).
+//!   helper knows the agent runs, extends its claims and does not exit idle under it
+//!   ([`crate::uploads`], [`crate::heartbeat`]). In one-shot mode, the server extends its agent's
+//!   claims itself, as an operation each [`heartbeat::TICK`] ([`beat`]).
+//! - It declares Claude Code's channel capability, [`CHANNEL_CAPABILITY`]. For Claude Code, the
+//!   session it holds is a path of resending ([`crate::resend`]): what the helper gives it goes to
+//!   the client as channel events, [`CHANNEL_EVENT`], each with its text as `content`, once the
+//!   client is initialized. Claude Code takes them only where the person started it with the
+//!   development channel flag, and acknowledges none; and only on a session opened with
+//!   `initialize`, so to Claude Code `server/discover` offers only revisions that have it.
 
 use std::collections::HashMap;
 use std::io::{self, Write as _};
@@ -36,11 +44,14 @@ use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, CancelledNotificationParam,
-    ContentBlock, DiscoverResult, Implementation, InitializeRequestParams, InitializeResult,
-    JsonRpcMessage, ListToolsResult, PaginatedRequestParams, RequestId, ServerCapabilities,
-    ServerConfig, Tool,
+    ContentBlock, CustomNotification, DiscoverResult, ExperimentalCapabilities, Implementation,
+    InitializeRequestParams, InitializeResult, JsonObject, JsonRpcMessage, ListToolsResult,
+    PaginatedRequestParams, ProtocolVersion, RequestId, ServerCapabilities, ServerConfig,
+    ServerNotification, Tool,
 };
-use rmcp::service::{NotificationContext, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage};
+use rmcp::service::{
+    NotificationContext, Peer, RequestContext, RxJsonRpcMessage, TxJsonRpcMessage,
+};
 use rmcp::transport::{IntoTransport, Transport};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
 use serde::{Deserialize, Serialize};
@@ -54,8 +65,8 @@ use crate::helper::{self, Route};
 use crate::output::{self, Stream};
 use crate::state::{self, State};
 use crate::{
-    Command, Operation, folders, forms, mailbox, message_status, presence, recovery, recv, reply,
-    secrets, send, uploads,
+    Command, Operation, folders, forms, heartbeat, mailbox, message_status, presence, recovery,
+    recv, reply, secrets, send, uploads,
 };
 
 /// The tool that returns the agent's messages.
@@ -149,6 +160,8 @@ pub enum Call {
     },
     /// The session the server holds of the helper, its agent CLI `runtime` ([`hold`]).
     Hold { runtime: Option<String> },
+    /// A one-shot server's heartbeat of its agent's claims ([`beat`]).
+    Beat,
     /// The `message_status` tool: `skald message-status` of the message `message` names.
     Status { message: String },
     /// The `agents` tool.
@@ -173,7 +186,7 @@ pub fn perform(
         Ok(_) => sends(),
         Err(why) => Err(format!("this agent sees no space: {why}; nothing is sent")),
     };
-    if call != Call::Register {
+    if !matches!(call, Call::Register | Call::Beat) {
         presence::notices(dir, agent);
     }
     match call {
@@ -215,6 +228,7 @@ pub fn perform(
             uploads::set_status(dir, agent, state, note.as_deref())
         }),
         Call::Hold { .. } => Err("skald mcp holds a session only of the helper".to_owned()),
+        Call::Beat => heartbeat::beat_agent(dir, storage, settings, agent),
         Call::Status { message } => message_status::run(dir, storage, &message, Some(agent), false),
     }
 }
@@ -368,6 +382,7 @@ pub fn serve(operation: Operation, one_shot: bool) -> Result<(), String> {
         agent: Mutex::new(agent),
         pending: Arc::clone(&pending),
         holding: AtomicBool::new(false),
+        client: Client::default(),
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -426,6 +441,7 @@ struct Settings {
     state_dir: Option<PathBuf>,
     key_storage: secrets::Storage,
     github_api: String,
+    dns_resolver: String,
     one_shot: bool,
     /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
     installed: Option<PathBuf>,
@@ -442,6 +458,7 @@ impl Settings {
             state_dir: operation.state_dir.clone(),
             key_storage: operation.key_storage,
             github_api: operation.github_api.clone(),
+            dns_resolver: operation.dns_resolver.clone(),
             one_shot,
             installed,
         }
@@ -457,11 +474,13 @@ impl Settings {
             key_storage: self.key_storage,
             agent: Some(agent.to_string()),
             github_api: self.github_api.clone(),
+            dns_resolver: self.dns_resolver.clone(),
             command: Command::Mcp {
                 relayed: false,
                 call: Some(call),
             },
             said: crate::link_prompt::Said::default(),
+            said_key_changes: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -491,6 +510,56 @@ impl Settings {
     }
 }
 
+/// The capability of a channel server, under `experimental`, and the notification of its events.
+pub const CHANNEL_CAPABILITY: &str = "claude/channel";
+pub const CHANNEL_EVENT: &str = "notifications/claude/channel";
+
+/// How long a channel event waits for the client's initialization at most.
+const BEFORE_INITIALIZED: Duration = Duration::from_secs(30);
+
+/// Where the channel events of a session go: its client, once it is initialized, on the server's
+/// runtime.
+#[derive(Clone)]
+struct Channel {
+    client: Client,
+    runtime: tokio::runtime::Handle,
+}
+
+/// The session's client: its peer, once `initialize` gives one that reaches it, and whether it is
+/// initialized. A `discover` request's peer does not reach it.
+#[derive(Clone, Default)]
+struct Client {
+    peer: Arc<Mutex<Option<Peer<RoleServer>>>>,
+    initialized: Arc<AtomicBool>,
+}
+
+impl Channel {
+    /// Sends the client a channel event of each line of `bytes`, a JSON object with its text as
+    /// `content`, once it is initialized.
+    fn give(&self, bytes: &[u8]) -> io::Result<()> {
+        let waiting = std::time::Instant::now();
+        while !self.client.initialized.load(AtomicOrdering::SeqCst)
+            && waiting.elapsed() < BEFORE_INITIALIZED
+        {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let Some(peer) = lock(&self.client.peer).clone() else {
+            return Err(io::Error::other("cannot send a channel event: no client"));
+        };
+        for line in String::from_utf8_lossy(bytes).lines() {
+            let Ok(event) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            let params = json!({ "content": event["content"] });
+            let event = CustomNotification::new(CHANNEL_EVENT, Some(params));
+            let sent = (self.runtime)
+                .block_on(peer.send_notification(ServerNotification::CustomNotification(event)));
+            sent.map_err(|err| io::Error::other(format!("cannot send a channel event: {err}")))?;
+        }
+        Ok(())
+    }
+}
+
 /// How long the session held of the helper waits before it tries again after its helper went
 /// away, and after it found none to hold.
 const HOLD_AGAIN: Duration = Duration::from_secs(1);
@@ -498,14 +567,18 @@ const HOLD_LATER: Duration = Duration::from_secs(10);
 
 /// Holds a session of the helper of `settings`' state for the server's whole run, as `agent`, its
 /// agent CLI `runtime`, starting the helper when none runs; ends once the helper ends the session,
-/// as in a folder in no space. What the helper's run of it says goes to the server's standard
-/// error.
-fn hold(settings: &Settings, agent: &Name, runtime: Option<String>) {
+/// as in a folder in no space. What the helper's run of it gives goes to `channel` as events, if
+/// given; what it says, to the server's standard error.
+fn hold(settings: &Settings, agent: &Name, runtime: Option<String>, channel: Option<Channel>) {
     let Ok(dir) = state::dir(settings.state_dir.clone()) else {
         return;
     };
     let operation = settings.operation(Call::Hold { runtime }, agent);
-    let mut said = |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    let mut said = |stream: Stream, bytes: &[u8]| match (stream, &channel) {
+        (Stream::Out, Some(channel)) => channel.give(bytes),
+        (Stream::Out, None) => Ok(()),
+        (Stream::Err, _) => io::stderr().lock().write_all(bytes),
+    };
     loop {
         match helper::route_into(&dir, &operation, (false, true, true), &mut said) {
             Ok(Route::Helped(_)) => return,
@@ -518,12 +591,30 @@ fn hold(settings: &Settings, agent: &Name, runtime: Option<String>) {
     }
 }
 
+/// A one-shot server's heartbeat for its whole run, as `agent`: each [`heartbeat::TICK`], extends
+/// what is due of the agent's claims, as an operation with `settings`. What its run says goes to
+/// the server's standard error.
+fn beat(settings: &Settings, agent: &Name) {
+    let said = || |_: Stream, bytes: &[u8]| io::stderr().lock().write_all(bytes);
+    loop {
+        thread::sleep(heartbeat::TICK);
+        if let Err(err) = settings.run(Call::Beat, agent, said) {
+            let _ = writeln!(io::stderr().lock(), "skald: {err}");
+        }
+    }
+}
+
 /// The name of the client of the request of `context`: from the request's `_meta`, or from the
 /// session's `initialize`; empty with neither.
 fn client_of(context: &RequestContext<RoleServer>) -> String {
     (context.client_info())
         .map(|info| info.name)
         .unwrap_or_default()
+}
+
+/// Whether the MCP client named `client` is Claude Code.
+fn claude_code(client: &str) -> bool {
+    uploads::runtime(client).as_deref() == Some(crate::hook::CLAUDE_CODE)
 }
 
 /// The answer to each tool call whose result waits to be written: whether it was.
@@ -537,8 +628,10 @@ struct Server {
     /// The session's agent, once named: as `--agent` names it, or by default.
     agent: Mutex<Option<Name>>,
     pending: Pending,
-    /// Whether it holds a session of the helper ([`hold`]).
+    /// Whether it holds a session of the helper ([`hold`]), or, in one-shot mode, beats ([`beat`]).
     holding: AtomicBool,
+    /// The client, for the channel events ([`Channel`]).
+    client: Client,
 }
 
 impl Server {
@@ -568,11 +661,18 @@ impl Server {
         if let Ok((false, why)) = registered {
             let _ = io::stderr().write_all(why.as_bytes());
         }
-        if !self.settings.one_shot && !self.holding.swap(true, AtomicOrdering::SeqCst) {
+        if !self.holding.swap(true, AtomicOrdering::SeqCst) {
             let (settings, runtime) = (self.settings.clone(), uploads::runtime(client));
+            let channel = claude_code(client).then(|| Channel {
+                client: self.client.clone(),
+                runtime: tokio::runtime::Handle::current(),
+            });
             let agent = self.agent(client);
             if let Some(agent) = agent {
-                thread::spawn(move || hold(&settings, &agent, runtime));
+                match settings.one_shot {
+                    true => thread::spawn(move || beat(&settings, &agent)),
+                    false => thread::spawn(move || hold(&settings, &agent, runtime, channel)),
+                };
             }
         }
     }
@@ -625,7 +725,12 @@ impl Server {
 
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
-        let mut info = ServerConfig::new(ServerCapabilities::builder().enable_tools().build());
+        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        capabilities.experimental = Some(ExperimentalCapabilities::from([(
+            CHANNEL_CAPABILITY.to_owned(),
+            JsonObject::new(),
+        )]));
+        let mut info = ServerConfig::new(capabilities);
         info.server_info = Implementation::new("skald", env!("CARGO_PKG_VERSION"));
         info
     }
@@ -636,6 +741,7 @@ impl ServerHandler for Server {
         context: RequestContext<RoleServer>,
     ) -> Result<InitializeResult, ErrorData> {
         context.peer.set_peer_info(request.clone());
+        *lock(&self.client.peer) = Some(context.peer.clone());
         self.register(&request.client_info.name).await;
         self.negotiate_initialize(&request)
     }
@@ -646,9 +752,18 @@ impl ServerHandler for Server {
         &self,
         context: RequestContext<RoleServer>,
     ) -> Result<DiscoverResult, ErrorData> {
-        self.register(&client_of(&context)).await;
-        let versions = self.supported_protocol_versions().into_owned();
+        let client = client_of(&context);
+        self.register(&client).await;
+        let mut versions = self.supported_protocol_versions().into_owned();
+        // Claude Code takes no channel event on a session without `initialize`.
+        if claude_code(&client) {
+            versions.retain(ProtocolVersion::has_initialize);
+        }
         Ok(DiscoverResult::from_server_info(versions, self.get_info()))
+    }
+
+    async fn on_initialized(&self, _context: NotificationContext<RoleServer>) {
+        self.client.initialized.store(true, AtomicOrdering::SeqCst);
     }
 
     async fn list_tools(
@@ -1102,6 +1217,7 @@ mod tests {
                 state_dir: None,
                 key_storage: secrets::Storage::File,
                 github_api: String::new(),
+                dns_resolver: String::new(),
                 one_shot: true,
                 installed: None,
             },
@@ -1109,6 +1225,7 @@ mod tests {
             agent: Mutex::new(None),
             pending: Pending::default(),
             holding: AtomicBool::new(false),
+            client: Client::default(),
         };
 
         let info = server.get_info();

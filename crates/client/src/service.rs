@@ -34,15 +34,30 @@ use crate::device::Keys;
 use crate::devices::text;
 use crate::follow::{Own, SpaceDevices};
 use crate::groups;
+use crate::queues;
 use crate::secrets::{self, Keyring, KeyringError, Secrets};
 pub use crate::service_agents::{KEY_VARIABLE, TOKEN_VARIABLE};
 use crate::spaces::{Follower, now};
+use crate::stateless;
 
 /// The token's own record, `GET`.
 const OWN_RECORD: &str = "/service-token";
 
+/// Whether this process runs as a service agent ([`set_running`]).
+static RUNNING: AtomicBool = AtomicBool::new(false);
+
 /// Whether this process's service agent's run is stateless ([`set_stateless`]).
 static STATELESS: AtomicBool = AtomicBool::new(false);
+
+/// Makes this process run as a service agent.
+pub fn set_running() {
+    RUNNING.store(true, Ordering::Relaxed);
+}
+
+/// Whether this process runs as a service agent.
+pub fn running() -> bool {
+    RUNNING.load(Ordering::Relaxed)
+}
 
 /// Makes this process's service agent's run stateless: it has no state directory.
 pub fn set_stateless() {
@@ -169,17 +184,20 @@ pub fn refuse_without_state(
 #[derive(Deserialize)]
 struct OwnRecord {
     grant: String,
+    #[serde(default)]
+    permissions: Vec<String>,
 }
 
-/// The grant of the token `token`, as its own record gives it.
-fn grant(connection: &mut Connection, token: &str) -> Result<Grant, String> {
+/// The grant of the token `token` and its permissions, as its own record gives them.
+fn own_record(connection: &mut Connection, token: &str) -> Result<(Grant, Vec<String>), String> {
     let body = connection.get_as(OWN_RECORD, token).map_err(text)?;
     let unexpected = || "unexpected answer from the server: a token's record without its grant";
     let record: OwnRecord = serde_json::from_slice(&body).map_err(|_| unexpected())?;
     let bytes = URL_SAFE_NO_PAD
         .decode(&record.grant)
         .map_err(|_| unexpected())?;
-    Grant::from_cbor(&bytes).map_err(|_| unexpected().to_owned())
+    let grant = Grant::from_cbor(&bytes).map_err(|_| unexpected().to_owned())?;
+    Ok((grant, record.permissions))
 }
 
 /// The address of the service agent of `follower`'s device in `roster`, its space's last accepted
@@ -189,10 +207,43 @@ fn grant(connection: &mut Connection, token: &str) -> Result<Grant, String> {
 /// no entry of the device.
 pub fn sender(
     follower: &mut Follower,
+    space: (&Roster, &SpaceDevices),
+    at: (ChannelId, ServerName),
+) -> Result<(Address, Grant), String> {
+    let (grant, _) = own_record(&mut follower.connection, &follower.token)?;
+    entry_sender(follower, space, at, grant, stateless::NOTHING_SENT)
+}
+
+/// As [`sender`], for a task: also fails, naming `not-a-member`, if the token lacks `queues`, as
+/// the server refuses its tasks then.
+pub fn enqueuer(
+    follower: &mut Follower,
+    space: (&Roster, &SpaceDevices),
+    at: (ChannelId, ServerName),
+) -> Result<(Address, Grant), String> {
+    let nothing = queues::NOTHING;
+    let (grant, permissions) = own_record(&mut follower.connection, &follower.token)?;
+    if !permissions.iter().any(|permission| permission == QUEUES) {
+        return Err(format!(
+            "the service token has no queues permission, so the server refuses its tasks: \
+             not-a-member; the agent needs a token with --permission send --permission queues, \
+             from skald create-service-token; {nothing}"
+        ));
+    }
+    entry_sender(follower, space, at, grant, nothing)
+}
+
+/// The token's permission to enqueue and claim tasks.
+const QUEUES: &str = "queues";
+
+/// [`sender`] with the token's `grant`; a refusal ends with `nothing`.
+fn entry_sender(
+    follower: &Follower,
     (roster, devices): (&Roster, &SpaceDevices),
     (channel, server): (ChannelId, ServerName),
+    grant: Grant,
+    nothing: &str,
 ) -> Result<(Address, Grant), String> {
-    let grant = grant(&mut follower.connection, &follower.token)?;
     let (this, own) = (follower.this, &follower.own);
     let body = roster.body();
     let name = body.name.as_str();
@@ -201,7 +252,7 @@ pub fn sender(
         .ok_or_else(|| {
             format!(
                 "the space {name} lists no service agent of this device in its revision {}; \
-                 nothing is sent",
+                 {nothing}",
                 body.revision
             )
         })?;
@@ -217,7 +268,7 @@ pub fn sender(
     .map_err(|err| {
         format!(
             "the grant of the service token fails its checks in the channel {channel}: {}; the \
-             agent needs a new token, from skald create-service-token; nothing is sent",
+             agent needs a new token, from skald create-service-token; {nothing}",
             printable(&err.to_string())
         )
     })?;

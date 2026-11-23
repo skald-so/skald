@@ -1,24 +1,28 @@
 //! Invites and their acceptances (`docs/protocol/membership.md`, "Invite"): the server issues
 //! invite IDs and stores invites for the space's admins, gives an invite by its ID to any session
-//! until it has an acceptance and then to that acceptance's account only, keeps the first
-//! acceptance, and gives the waiting acceptances to the space's admins. An invite ends when it
-//! expires or a stored revision lists a member with it: the server then deletes it with its
-//! acceptance.
+//! until it is used to sign up or has an acceptance, then to that account only. It keeps the
+//! first acceptance and gives waiting acceptances to the space's admins. An invite ends when it
+//! expires, an admin revokes it, or a stored revision admits a member with it. The server then
+//! deletes it with its acceptance.
 
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
-use skald_proto::{Acceptance, Cbor as _, Invite, InviteId, SpaceId};
-use sqlx::{PgConnection, PgPool};
+use skald_proto::{Acceptance, Cbor as _, Invite, InviteId, Role, Roster, SpaceId};
+use sqlx::{PgConnection, PgExecutor, PgPool};
 
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::{self, Event};
 use crate::refusal::{Answer, Refusal, SignedIn, parse};
+use crate::sign_in;
 use crate::spaces::{self, Found};
 use crate::sweeps::{self, PAGE, PAUSE};
-use crate::{AppState, mailboxes, revocations};
+use crate::{AppState, mailboxes, revocations, sessions};
 
 /// The latest `expires` of an invite, after the server stores it, and how long an issued ID waits
 /// for its invite.
@@ -28,6 +32,9 @@ const LONGEST: Duration = Duration::from_secs(30 * 24 * 3_600);
 #[derive(Serialize)]
 struct NewInvite {
     invite: String,
+    /// The server's web address, which the invite's link starts with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web: Option<String>,
 }
 
 /// `InviteRequest` in the spec, and `StoredInvite`.
@@ -56,6 +63,7 @@ struct WithSpace {
 /// `WaitingAcceptance` in the spec.
 #[derive(Serialize)]
 struct Waiting {
+    invite: String,
     acceptance: String,
     #[serde(flatten)]
     devices: Devices,
@@ -67,9 +75,36 @@ struct WaitingAcceptances {
     acceptances: Vec<Waiting>,
 }
 
+/// `ListedInvite` in the spec.
+#[derive(Serialize)]
+struct ListedInvite {
+    invite: String,
+    role: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_name: Option<String>,
+    created_at: String,
+    expires_at: String,
+    acceptance_waiting: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    acceptance_handle: Option<String>,
+}
+
+/// `ListedInvites` in the spec.
+#[derive(Serialize)]
+struct ListedInvites {
+    invites: Vec<ListedInvite>,
+}
+
 /// The space of the request's path, which the session's account gets as an admin in its latest
 /// revision, who `does` what it asks.
-async fn as_admin(db: &PgPool, space: &str, account: &str, does: &str) -> Result<Found, Refusal> {
+async fn as_admin(
+    db: impl PgExecutor<'_>,
+    space: &str,
+    account: &str,
+    does: &str,
+) -> Result<Found, Refusal> {
     let found = spaces::find(db, space, account).await?;
     if !found.gets {
         return Err(Refusal::NoSpace);
@@ -82,7 +117,132 @@ async fn as_admin(db: &PgPool, space: &str, account: &str, does: &str) -> Result
     Ok(found)
 }
 
-/// `POST /spaces/<space>/invites`: a new invite ID for the space, for an admin's session.
+/// The stored invite and acceptance, if any, with the invite's dates formatted for the API.
+type Active = (Vec<u8>, Option<Vec<u8>>, String, String);
+
+/// `GET /spaces/<space>/invites`: metadata of active invites for a web admin.
+pub(crate) async fn list(
+    State(state): State<AppState>,
+    Path(space): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
+    let db = &state.db;
+    let session = sessions::web_session(&state, &headers, "lists invite links").await?;
+    let found = as_admin(db, &space, &session.account, "lists invite links").await?;
+    let failed = |err| Refusal::Database("read invite metadata", err);
+    let active: Vec<Active> = sqlx::query_as(
+        "SELECT i.invite, a.acceptance,
+                to_char(i.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
+                to_char(i.expires_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')
+         FROM invites i JOIN space_access s ON i.space_id = s.space_id
+         LEFT JOIN acceptances a ON a.invite_id = i.id
+         WHERE i.space_id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()
+           AND s.account_id = $2::uuid AND s.admin
+         ORDER BY i.created_at, i.id",
+    )
+    .bind(found.id.to_string())
+    .bind(&session.account)
+    .fetch_all(db)
+    .await
+    .map_err(failed)?;
+    let active: Vec<_> = active
+        .into_iter()
+        .map(|(invite, acceptance, created, expires)| {
+            let invite = Invite::from_cbor(&invite).expect("a stored invite decodes");
+            (invite, acceptance, created, expires)
+        })
+        .collect();
+    let signers: Vec<_> = active
+        .iter()
+        .map(|(invite, ..)| invite.body().signer.to_string())
+        .collect();
+    let creators: HashMap<_, _> = sqlx::query_as::<_, (String, String, Vec<u8>)>(
+        "SELECT d.id::text, a.username, d.name FROM devices d
+         JOIN accounts a ON d.account_id = a.id
+         WHERE d.id = ANY($1::text[]::uuid[]) AND a.username IS NOT NULL",
+    )
+    .bind(signers)
+    .fetch_all(db)
+    .await
+    .map_err(failed)?
+    .into_iter()
+    .map(|(signer, username, device)| {
+        (
+            signer,
+            (username, String::from_utf8_lossy(&device).into_owned()),
+        )
+    })
+    .collect();
+    let invites = active
+        .into_iter()
+        .map(|(invite, acceptance, created_at, expires_at)| {
+            let body = invite.body();
+            let creator = creators.get(&body.signer.to_string());
+            let acceptance_handle = acceptance.map(|bytes| {
+                let acceptance =
+                    Acceptance::from_cbor(&bytes).expect("a stored acceptance decodes");
+                acceptance.body().handle.to_string()
+            });
+            ListedInvite {
+                invite: body.invite.to_string(),
+                role: match body.role {
+                    Role::Admin => "admin",
+                    Role::Member => "member",
+                },
+                username: creator.map(|(username, _)| username.clone()),
+                device_name: creator.map(|(_, device)| device.clone()),
+                created_at,
+                expires_at,
+                acceptance_waiting: acceptance_handle.is_some(),
+                acceptance_handle,
+            }
+        })
+        .collect();
+    taken(false, ListedInvites { invites })
+}
+
+/// `DELETE /spaces/<space>/invites/<invite>`: ends the invite and its acceptance.
+pub(crate) async fn revoke(
+    State(state): State<AppState>,
+    Path((space, invite)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer {
+    let session = sessions::web_session_from_page(&state, &headers, "revokes invite links").await?;
+    let space: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
+    let failed = |err| Refusal::Database("revoke an invite", err);
+    let mut tx = state.db.begin().await.map_err(failed)?;
+    // A revision and a revocation take the space's lock before they change its invites.
+    sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
+        .bind(space.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(failed)?;
+    let found = as_admin(
+        &mut *tx,
+        &space.to_string(),
+        &session.account,
+        "revokes invite links",
+    )
+    .await?;
+    let invite: InviteId = invite.parse().map_err(|_| Refusal::NoInvite)?;
+    let revoked = sqlx::query(
+        "DELETE FROM invites WHERE id = $1::uuid AND space_id = $2::uuid
+         AND invite IS NOT NULL AND expires_at > statement_timestamp()",
+    )
+    .bind(invite.to_string())
+    .bind(found.id.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(failed)?;
+    if revoked.rows_affected() == 0 {
+        return Err(Refusal::NoInvite);
+    }
+    tx.commit().await.map_err(failed)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `POST /spaces/<space>/invites`: a new invite ID for the space, for an admin's session, with the
+/// server's web address.
 pub(crate) async fn issue(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -104,6 +264,7 @@ pub(crate) async fn issue(
         true,
         NewInvite {
             invite: invite.to_string(),
+            web: sign_in::web_origin(state.sign_in.as_deref()),
         },
     )
 }
@@ -169,7 +330,7 @@ pub(crate) async fn store(
     check_invite(db, &found, id, &invite, &account).await?;
     // Of two stores at once, the second waits for the first to commit, and updates nothing.
     let updated = sqlx::query(
-        "UPDATE invites SET invite = $1, expires_at = to_timestamp($2::bigint)
+        "UPDATE invites SET invite = $1, expires_at = to_timestamp($2::bigint), created_at = now()
          WHERE id = $3::uuid AND invite IS NULL AND expires_at > now()",
     )
     .bind(&sent)
@@ -263,29 +424,60 @@ async fn check_invite(
     Ok(())
 }
 
-/// The space and the bytes of the invite `id` that the server holds, and the account of its
-/// acceptance, if it has one; `None` once it has ended.
-async fn held(
-    db: impl sqlx::PgExecutor<'_>,
+/// The key of a stored invite, for checking a sign-up proof against the device code.
+pub(crate) async fn sign_up_key(
+    db: &PgPool,
     id: InviteId,
-) -> Result<Option<(SpaceId, Vec<u8>, Option<String>)>, Refusal> {
-    let found: Option<(String, Vec<u8>, Option<String>)> = sqlx::query_as(
-        "SELECT i.space_id::text, i.invite, a.account_id::text
-         FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
-         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()",
+) -> Result<Option<[u8; 32]>, sqlx::Error> {
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT invite FROM invites WHERE id = $1::uuid AND invite IS NOT NULL")
+            .bind(id.to_string())
+            .fetch_optional(db)
+            .await?;
+    Ok(stored.map(|bytes| invite_key(&bytes)))
+}
+
+/// Reserves a live, unused invite for the new `account`, if its key still matches the proof.
+pub(crate) async fn reserve_sign_up(
+    conn: &mut PgConnection,
+    id: &str,
+    key: &[u8],
+    account: &str,
+) -> Result<bool, sqlx::Error> {
+    // An acceptance, another sign-up or deletion of this invite takes a conflicting lock.
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT invite FROM invites
+         WHERE id = $1::uuid AND invite IS NOT NULL AND sign_up_account_id IS NULL
+           AND expires_at > clock_timestamp()
+         FOR NO KEY UPDATE",
     )
-    .bind(id.to_string())
-    .fetch_optional(db)
-    .await
-    .map_err(|err| Refusal::Database("read an invite", err))?;
-    Ok(found.map(|(space, invite, accepted)| {
-        let space = space.parse().expect("a stored space ID");
-        (space, invite, accepted)
-    }))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if !stored.is_some_and(|bytes| invite_key(&bytes) == key) {
+        return Ok(false);
+    }
+    let reserved = sqlx::query(
+        "UPDATE invites SET sign_up_account_id = $2::uuid
+         WHERE id = $1::uuid AND expires_at > clock_timestamp()
+           AND NOT EXISTS (SELECT 1 FROM acceptances WHERE invite_id = $1::uuid)",
+    )
+    .bind(id)
+    .bind(account)
+    .execute(conn)
+    .await?;
+    Ok(reserved.rows_affected() == 1)
+}
+
+fn invite_key(bytes: &[u8]) -> [u8; 32] {
+    Invite::from_cbor(bytes)
+        .expect("a stored invite decodes")
+        .body()
+        .key
 }
 
 /// `GET /invites/<invite>`: the invite as the server got it, with its space's revisions and devices
-/// as a member gets them; once it has an acceptance, only to that acceptance's account.
+/// as a member gets them; once used for sign-up or acceptance, only to that account.
 pub(crate) async fn given(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -293,10 +485,19 @@ pub(crate) async fn given(
 ) -> Answer {
     let db = &state.db;
     let id: InviteId = invite.parse().map_err(|_| Refusal::NoInvite)?;
-    let (space, invite, accepted) = held(db, id).await?.ok_or(Refusal::NoInvite)?;
-    if accepted.is_some_and(|accepted| accepted != account) {
-        return Err(Refusal::NoInvite);
-    }
+    let (space, invite): (String, Vec<u8>) = sqlx::query_as(
+        "SELECT i.space_id::text, i.invite
+         FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
+         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()
+           AND coalesce(i.sign_up_account_id, a.account_id, $2::uuid) = $2::uuid",
+    )
+    .bind(id.to_string())
+    .bind(&account)
+    .fetch_optional(db)
+    .await
+    .map_err(|err| Refusal::Database("read an invite", err))?
+    .ok_or(Refusal::NoInvite)?;
+    let space = space.parse().expect("a stored space ID");
     taken(
         false,
         WithSpace {
@@ -349,14 +550,26 @@ pub(crate) async fn accept(
     }
     let failed = |err| Refusal::Database("store an acceptance", err);
     let mut tx = db.begin().await.map_err(failed)?;
-    // The lock makes the invite's deletion wait for the acceptance, or the acceptance for it.
+    // A revision or revocation locks the space before deleting an invite. Lock it in the same
+    // order, since a new acceptance updates the space's count.
+    sqlx::query(
+        "SELECT 1 FROM spaces s JOIN invites i ON i.space_id = s.id
+         WHERE i.id = $1::uuid FOR NO KEY UPDATE OF s",
+    )
+    .bind(id.to_string())
+    .execute(&mut *tx)
+    .await
+    .map_err(failed)?;
+    // The invite's lock serializes acceptance with deletion and sign-up.
     let found: Option<(String, Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT i.space_id::text, i.invite, a.acceptance
          FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
-         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()
-         FOR KEY SHARE OF i",
+         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > statement_timestamp()
+           AND (i.sign_up_account_id IS NULL OR i.sign_up_account_id = $2::uuid)
+         FOR NO KEY UPDATE OF i",
     )
     .bind(id.to_string())
+    .bind(&account)
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
@@ -364,7 +577,6 @@ pub(crate) async fn accept(
     if let Some(stored) = stored {
         return acceptance_again(&sent, &stored);
     }
-    let invite = Invite::from_cbor(&invite).expect("a stored invite decodes");
     let master: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
             .bind(&account)
@@ -376,7 +588,7 @@ pub(crate) async fn accept(
             "the master key is not the one the server holds for the account",
         ));
     }
-    skald_crypto::check_acceptance(&acceptance, &invite.body().key)
+    skald_crypto::check_acceptance(&acceptance, &invite_key(&invite))
         .map_err(|_| refused("the signature does not verify with the invite's key"))?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let inserted = sqlx::query(
@@ -431,7 +643,7 @@ pub(crate) async fn accept(
 }
 
 /// `GET /spaces/<space>/acceptances`: the space's waiting acceptances, oldest first, each with its
-/// account's devices and revocations, for an admin's session.
+/// invite and its account's devices and revocations, for an admin's session.
 pub(crate) async fn waiting(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -439,8 +651,8 @@ pub(crate) async fn waiting(
 ) -> Answer {
     let db = &state.db;
     let found = as_admin(db, &space, &account, "gets the waiting acceptances").await?;
-    let stored: Vec<(Vec<u8>, String)> = sqlx::query_as(
-        "SELECT a.acceptance, a.account_id::text
+    let stored: Vec<(Vec<u8>, Vec<u8>, String)> = sqlx::query_as(
+        "SELECT i.invite, a.acceptance, a.account_id::text
          FROM acceptances a JOIN invites i ON i.id = a.invite_id
          WHERE i.space_id = $1::uuid AND i.expires_at > now()
          ORDER BY a.stored_at, a.invite_id",
@@ -450,7 +662,7 @@ pub(crate) async fn waiting(
     .await
     .map_err(|err| Refusal::Database("read the waiting acceptances", err))?;
     let mut acceptances = Vec::with_capacity(stored.len());
-    for (acceptance, account) in stored {
+    for (invite, acceptance, account) in stored {
         let devices = sqlx::query_as(
             "SELECT id::text, cert FROM devices WHERE account_id = $1::uuid
              ORDER BY registered_at, id",
@@ -461,6 +673,7 @@ pub(crate) async fn waiting(
         .map_err(|err| Refusal::Database("read the devices", err))?;
         let revocations = revocations::of_account(db, &account).await?;
         acceptances.push(Waiting {
+            invite: base64(&invite),
             acceptance: base64(&acceptance),
             devices: Devices::of(devices, &revocations),
         });
@@ -491,21 +704,47 @@ pub(crate) async fn accepted(
     Ok(found.then_some(space))
 }
 
-/// Deletes the invites of `space` that `invites`, the invites a stored revision lists its members
-/// with, name, with their acceptances, on `conn`.
+/// Ends the active invites of members that `roster` newly lists with an invite. Refuses the
+/// revision if any such invite has ended or does not have the member's acceptance.
 pub(crate) async fn admitted(
     conn: &mut PgConnection,
     space: SpaceId,
-    invites: &[String],
-) -> Result<(), sqlx::Error> {
+    roster: &Roster,
+    previous: Option<&Roster>,
+) -> Result<(), Refusal> {
+    let already: HashSet<_> = previous
+        .into_iter()
+        .flat_map(|roster| roster.body().members.iter())
+        .filter_map(|member| Some((member.account, member.invite?)))
+        .collect();
+    let (accounts, invites): (Vec<_>, Vec<_>) = roster
+        .body()
+        .members
+        .iter()
+        .filter_map(|member| Some((member.account, member.invite?)))
+        .filter(|pair| !already.contains(pair))
+        .map(|(account, invite)| (account.to_string(), invite.to_string()))
+        .unzip();
     if invites.is_empty() {
         return Ok(());
     }
-    sqlx::query("DELETE FROM invites WHERE space_id = $1::uuid AND id = ANY($2::text[]::uuid[])")
-        .bind(space.to_string())
-        .bind(invites)
-        .execute(conn)
-        .await?;
+    let ended = sqlx::query(
+        "DELETE FROM invites i USING acceptances a,
+             unnest($2::text[]::uuid[], $3::text[]::uuid[]) AS admitted (account_id, invite_id)
+         WHERE i.space_id = $1::uuid AND i.expires_at > statement_timestamp()
+           AND i.id = admitted.invite_id AND a.invite_id = i.id AND a.account_id = admitted.account_id",
+    )
+    .bind(space.to_string())
+    .bind(&accounts)
+    .bind(&invites)
+    .execute(conn)
+    .await
+    .map_err(|err| Refusal::Database("end invites of admitted members", err))?;
+    if ended.rows_affected() != invites.len() as u64 {
+        return Err(Refusal::Roster(
+            "a member's invite has ended or has no acceptance from that account".to_owned(),
+        ));
+    }
     Ok(())
 }
 

@@ -53,7 +53,8 @@ link-notice = [14]
 
 history-item = [1, link: bstr .cbor history-link] /
                [2, wrap: bstr .cbor history-wrap] /
-               [3, msg_id: id, entry: bstr .cbor history-entry]
+               [3, msg_id: id, entry: bstr .cbor history-entry] /
+               [4, queue-key: bstr .cbor queue-key]
 
 send-key = [
   msg_id: id,
@@ -74,7 +75,7 @@ timestamp = uint       ; seconds since the Unix epoch
 ```
 
 - `report`: whether the server issues `delivered` and `expired` for the envelope ([Receipts](#receipts)).
-- `history`: an item of the channel's history to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
+- `history`: an item of the channel's history, or its [queue key object](queues.md#queue-key-object), to keep, on a WebSocket only; `upload` is the client's number for it, which the answer names ([Uploads](membership.md#uploads)). An item whose bytes do not decode as its kind gets `history-refused`; the connection stays open.
 - `space-notice`: the space has a new roster revision or invite acceptance ([membership.md](membership.md#roster)), or a member's account was deleted (`deleteAccount` in the OpenAPI spec); the client fetches it over HTTPS, and for a space it does not follow, the anchors objects ([membership.md](membership.md#anchors)). It is not a mailbox entry: on connecting, the client fetches what it missed.
 - `link-notice`: a device of the account has opened a run to be linked ([membership.md](membership.md#link-code)); the client fetches the account's waiting devices over HTTPS (`getWaitingDevices` in the OpenAPI spec). Like `space-notice`, it is not a mailbox entry. Only connections of device sessions get it.
 - The client and the server each ignore a frame of a type they do not know.
@@ -215,6 +216,7 @@ A recipient device drops, without a receipt:
 - `inbox` is also the fallback, the way for agents that nothing pushes to, and for messages sent again.
 - The device marks a message handed over after the handover. A crash in between repeats the handover on restart; it never loses it.
   - A handover into a running session counts only once the session confirms that the model got the message, or the way of handing over confirms it by construction. Until then the device hands the message over no other way; if the session reports that it did not take it, the message waits for another handover.
+  - A device MAY try ways in turn: a message the session does not confirm within a timeout goes by the next way, and after the last waits for `inbox`. One confirmation ends the turns.
 - The device keeps a message for an agent until it hands it over, or until the envelope's `ttl` ends, counted from when the device wrote the entry, at most the cloud's mailbox retention ([architecture.md, "Cloud limits"](../dev/architecture.md#cloud-limits)); then it drops the message for that agent.
 - Each handover carries the `msg_id` or its reference. An agent or adapter that keeps earlier ones drops a repeat by its `msg_id`: a later message can get an earlier one's reference. The reference is the leading characters of the base32 ([RFC 4648](https://www.rfc-editor.org/rfc/rfc4648#section-6), lowercase, without padding) of SHA-256 of the `msg_id`'s 16 bytes: at least 4, more only where two messages the device keeps would share them. Any device computes it from the `msg_id`.
 - After marking a message with `to` handed over, the device issues `read`, once.

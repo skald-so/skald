@@ -27,6 +27,28 @@ use crate::talk::{ADA_HOST, BOB_HOST};
 /// The prompt that opens each session; then it is idle.
 pub const START: &str = "e2e socket test: wait for messages";
 
+/// Fails unless a turn that the signal of `msg_id`, review's message `text`, started holds the
+/// signal alone, and a later request holds `text`, as `inbox` gives it, as review's line at `peer`
+/// after a warning line that names data. Gives the turn the signal started.
+#[track_caller]
+pub fn assert_signal_then_inbox(model: &Model, bob: &Bob, msg_id: MessageId, text: &str) -> Value {
+    let after_inbox = model.wait_turn_holding(text, "review's message after inbox");
+    let signalled = (model.turns().into_iter())
+        .find(|body| !after_a_tool(body) && last_user_text(body).contains(INBOX_WORD))
+        .expect("a turn the signal started");
+    assert_signal(&last_user_text(&signalled), msg_id, text, bob);
+    let shown = last_user_text(&after_inbox);
+    let line = agent_line_of(&shown, text);
+    let expected = [bob.review(), BOB_HOST.to_owned(), PEER.to_owned()];
+    assert_eq!([line.from, line.device, line.level], expected, "{shown}");
+    let before = &shown[..shown.find(text).unwrap_or_default()];
+    assert!(
+        before.lines().any(|said| holds_word(said, DATA)),
+        "no warning line before review's: {shown}"
+    );
+    signalled
+}
+
 /// The prompt that the person gives an idle session where the client writes into no socket.
 const NUDGE: &str = "e2e socket test: anything new?";
 
@@ -171,20 +193,7 @@ fn idle_terminal_session_gets_own_text_and_a_peer_s_signal_without_a_prompt() {
         session.wait_turn_end(&model, OWN_SAYS, 2);
     }
     nudged_unless_socket(&mut session);
-    let after_inbox = model.wait_turn_holding(PEER_SAYS, "review's message after inbox");
-    let signalled = (model.turns().into_iter())
-        .find(|body| !after_a_tool(body) && last_user_text(body).contains(INBOX_WORD))
-        .expect("a turn the signal started");
-    assert_signal(&last_user_text(&signalled), peer, PEER_SAYS, &bob);
-    let shown = last_user_text(&after_inbox);
-    let line = agent_line_of(&shown, PEER_SAYS);
-    let expected = [bob.review(), BOB_HOST.to_owned(), PEER.to_owned()];
-    assert_eq!([line.from, line.device, line.level], expected, "{shown}");
-    let before = &shown[..shown.find(PEER_SAYS).unwrap_or_default()];
-    assert!(
-        before.lines().any(|said| holds_word(said, DATA)),
-        "no warning line before review's: {shown}"
-    );
+    assert_signal_then_inbox(&model, &bob, peer, PEER_SAYS);
     shows_read_once(&bob.person.machine, peer);
     session.end();
     model.assert_no_foreign_credential();

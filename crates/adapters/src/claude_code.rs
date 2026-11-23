@@ -1,16 +1,12 @@
 //! Claude Code's executor sessions (`docs/protocol/queues.md`, "Running a task"), by the flags the
 //! live checks confirmed (`docs/dev/agent-delivery.md`, "Checks before implementation").
 
-use std::env;
-use std::ffi::{OsStr, OsString};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::thread;
 
 use serde_json::Value;
 
-use crate::executor::{Mode, Outcome, Refused};
+use crate::executor::{self, Device, Mode, Outcome, Refused, Request, Run};
 
 /// The Claude Code version the live checks of `read-only` ran on: an older one gets no `read-only`.
 pub const CHECKED: [u64; 3] = [2, 1, 328];
@@ -29,40 +25,12 @@ const CLEAN: [&str; 6] = [
 /// The variable that keeps the project's memory out.
 const NO_AUTO_MEMORY: (&str, &str) = ("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1");
 
-/// The variables of the device's environment a session keeps to run, on Unix and on Windows, to
-/// reach the model through a proxy, and to sign in on Vertex AI; [`signs_in`] adds the other ones
-/// it signs in with. Names on Windows match in any case.
-const KEPT: [&str; 34] = [
-    "PATH",
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TMPDIR",
-    "LANG",
-    "LC_ALL",
-    "LC_CTYPE",
-    "TERM",
+/// The variables of the device's environment a session keeps besides those every agent does: to
+/// run, to reach the model through a proxy, and to sign in on Vertex AI; [`signs_in`] adds the
+/// other ones it signs in with.
+const KEPT: [&str; 6] = [
     "CLAUDE_CONFIG_DIR",
-    "PATHEXT",
-    "SYSTEMROOT",
-    "SYSTEMDRIVE",
-    "WINDIR",
-    "COMSPEC",
-    "TEMP",
-    "TMP",
-    "USERPROFILE",
-    "USERNAME",
-    "HOMEDRIVE",
-    "HOMEPATH",
-    "APPDATA",
-    "LOCALAPPDATA",
-    "PROGRAMDATA",
-    "PROGRAMFILES",
     "CLAUDE_CODE_GIT_BASH_PATH",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "NO_PROXY",
     "NODE_EXTRA_CA_CERTS",
     "CLOUD_ML_REGION",
     "GOOGLE_APPLICATION_CREDENTIALS",
@@ -81,72 +49,44 @@ fn signs_in(name: &str) -> bool {
 /// Runs prompts in new Claude Code sessions with no person.
 #[derive(Debug, Clone)]
 pub struct Executor {
-    claude: PathBuf,
-    environment: Option<Vec<(OsString, OsString)>>,
+    program: PathBuf,
+    device: Device,
 }
 
 impl Executor {
-    /// An executor of the Claude Code binary at `claude`, on this process's environment.
-    pub fn new(claude: impl Into<PathBuf>) -> Self {
-        Executor {
-            claude: claude.into(),
-            environment: None,
-        }
-    }
-
-    /// Starts sessions from `vars`, the device's environment, in place of this process's.
-    pub fn environment<K, V>(mut self, vars: impl IntoIterator<Item = (K, V)>) -> Self
-    where
-        K: Into<OsString>,
-        V: Into<OsString>,
-    {
-        let vars = vars
-            .into_iter()
-            .map(|(name, value)| (name.into(), value.into()));
-        self.environment = Some(vars.collect());
-        self
-    }
+    executor::builders!("Claude Code");
 
     /// Runs `prompt` in a new session in `folder` at `mode` and waits for it to end. Refuses
     /// `read-only` on a Claude Code older than [`CHECKED`] or of unknown version.
     pub fn run(&self, folder: &Path, mode: Mode, prompt: &str) -> Result<Outcome, Refused> {
+        Ok(self.started(folder, mode, prompt.to_owned())?.wait())
+    }
+
+    /// Starts `request` in a new session in `folder` at `mode`, refusing `read-only` as
+    /// [`Executor::run`] does.
+    pub fn start(&self, folder: &Path, mode: Mode, request: &Request) -> Result<Run, Refused> {
+        self.started(folder, mode, request.labelled())
+    }
+
+    fn started(&self, folder: &Path, mode: Mode, prompt: String) -> Result<Run, Refused> {
         if mode == Mode::ReadOnly {
             let output = self.command(folder).arg("--version").output();
             let output = output.map_err(|error| self.not_run(error))?;
             read_only_runs_on(&output)?;
         }
-        let mut child = (self.command(folder).args(arguments(mode)))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| self.not_run(error))?;
-        // The prompt goes in on stdin, which then closes: no person answers the session.
-        let stdin = child.stdin.take();
-        let prompt = prompt.to_owned();
-        let writer = thread::spawn(move || {
-            if let Some(mut stdin) = stdin {
-                // A session that ends without reading it closes the pipe.
-                let _ = stdin.write_all(prompt.as_bytes());
-            }
-        });
-        let output = child.wait_with_output();
-        let _ = writer.join();
-        Ok(outcome(&output.map_err(|error| self.not_run(error))?))
+        let mut command = self.command(folder);
+        command.args(arguments(mode));
+        Run::start(command, prompt, outcome, None).map_err(|error| self.not_run(error))
     }
 
-    /// Claude Code in `folder` with only the [`KEPT`] variables of the device's environment and
+    /// Claude Code in `folder` with only the variables of the device's environment it keeps and
     /// auto-memory off.
     fn command(&self, folder: &Path) -> Command {
-        let device = match &self.environment {
-            Some(vars) => vars.clone(),
-            None => env::vars_os().collect(),
-        };
-        let mut command = Command::new(&self.claude);
+        let mut command = Command::new(&self.program);
         command
             .current_dir(folder)
             .env_clear()
-            .envs(device.into_iter().filter(|(name, _)| kept(name)))
+            .envs(self.device.kept(takes))
             .env(NO_AUTO_MEMORY.0, NO_AUTO_MEMORY.1)
             .stdin(Stdio::null());
         command
@@ -155,23 +95,22 @@ impl Executor {
     fn not_run(&self, error: std::io::Error) -> Refused {
         Refused(format!(
             "cannot run Claude Code at {}: {error}",
-            self.claude.display()
+            self.program.display()
         ))
     }
 }
 
-/// Whether a session keeps the variable `name`: one of [`KEPT`], also in lower case for the proxy's,
-/// or one [`signs_in`] takes.
-fn kept(name: &OsStr) -> bool {
-    let Some(name) = name.to_str() else {
-        return false;
-    };
-    let lower = ["https_proxy", "http_proxy", "no_proxy"];
-    let name = match cfg!(windows) || lower.contains(&name) {
-        true => name.to_ascii_uppercase(),
-        false => name.to_owned(),
-    };
-    KEPT.contains(&name.as_str()) || signs_in(&name)
+/// Whether a session keeps the variable `name`, as executors name it, besides those every agent
+/// does: one of [`KEPT`] or one [`signs_in`] takes.
+fn takes(name: &str) -> bool {
+    KEPT.contains(&name) || signs_in(name)
+}
+
+/// Whether a session keeps the variable `name`.
+#[cfg(test)]
+fn kept(name: &std::ffi::OsStr) -> bool {
+    use crate::executor::{keeps, name as named};
+    named(name).is_some_and(|name| keeps(&name, takes))
 }
 
 /// The arguments of a session at `mode`, its prompt on stdin: no person, its result as JSON, clean,
@@ -250,6 +189,8 @@ fn outcome(output: &Output) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
+
     use super::*;
 
     #[cfg(unix)]
@@ -434,5 +375,57 @@ mod tests {
         assert_eq!(ended(0, failed), badly("No."));
         assert_eq!(ended(0, capped), badly(""));
         assert_eq!(ended(1, "not JSON"), badly("it broke"));
+    }
+
+    /// A started session gets the request labelled, and stops when told.
+    #[cfg(unix)]
+    #[test]
+    fn a_started_session_gets_the_labelled_request_and_stops() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::executor::Scratch;
+        use crate::label::DATA_WARNING;
+
+        let scratch = Scratch::new("skald-claude-test").unwrap();
+        let prompt = scratch.path().join("prompt");
+        let claude = scratch.path().join("claude");
+        let script = format!(
+            "#!/bin/sh\ncat > '{}'\nprintf '%s\\n' '{{\"type\":\"result\",\"subtype\":\"success\",\
+             \"is_error\":false,\"result\":\"Done.\"}}'\n[ \"$CLAUDE_CODE_USE_LINGER\" ] && sleep 60\nexit 0\n",
+            prompt.display()
+        );
+        fs::write(&claude, script).unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        let request = Request {
+            from: "acme/bob/ci@skald.example".parse().unwrap(),
+            level: skald_proto::TrustLevel::Peer,
+            text: "Review it.".to_owned(),
+        };
+        let executor = Executor::new(&claude).environment([("PATH", "/usr/bin:/bin")]);
+
+        let run = executor
+            .start(scratch.path(), Mode::Full, &request)
+            .unwrap();
+        assert_eq!(
+            run.wait(),
+            Outcome {
+                answer: "Done.".to_owned(),
+                finished: true
+            }
+        );
+        let given = fs::read_to_string(&prompt).unwrap();
+        assert_eq!(
+            given,
+            format!("{DATA_WARNING}\n[bob/ci · peer]: Review it.")
+        );
+
+        let lingering = Executor::new(&claude)
+            .environment([("PATH", "/usr/bin:/bin"), ("CLAUDE_CODE_USE_LINGER", "1")]);
+        let run = lingering
+            .start(scratch.path(), Mode::Full, &request)
+            .unwrap();
+        run.stop();
+        assert!(!run.wait().finished);
     }
 }

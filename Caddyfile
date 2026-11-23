@@ -10,15 +10,17 @@
 		path /account/personal-space /account/revocations
 		path /account/sessions /account/sessions/end-others /account/sessions/*
 		path /account/sign-in-methods /account/sign-in-methods/* /account/usage /account/username
-		path /auth/device /auth/github /auth/github/callback /auth/github/link /auth/google
-		path /auth/google/callback /auth/google/link /auth/providers /auth/token /device /devices
-		path /devices/*/cert /devices/*/challenge /devices/*/key-packages /devices/*/session /health
+		path /auth/device /auth/device/invite /auth/github /auth/github/callback /auth/github/link
+		path /auth/google /auth/google/callback /auth/google/link /auth/providers /auth/token
+		path /device /devices /devices/*/cert /devices/*/challenge /devices/*/key-packages
+		path /devices/*/session /health
 		path /invites/* /invites/*/acceptance /key-packages /links /links/messages /mailbox/ack
 		path /mailbox/events /mailbox/poll /mailbox/send /openapi.json /protocol /server
 		path /service-token /session /session/challenge
 		path /sign-in-methods /spaces /spaces/*/channels /spaces/*/channels/*/group-info
 		path /spaces/*/channels/*/history/entries /spaces/*/channels/*/history/links
 		path /spaces/*/channels/*/history/wraps /spaces/*/channels/*/presence /spaces/*/devices
+		path /spaces/*/channels/*/queue-keys/*
 		path /spaces/*/channels/*/queues /spaces/*/channels/*/queues/*
 		path /spaces/*/channels/*/queues/*/claims /spaces/*/channels/*/queues/*/tasks
 		path /spaces/*/channels/*/queues/*/tasks/* /spaces/*/channels/*/queues/*/tasks/*/*

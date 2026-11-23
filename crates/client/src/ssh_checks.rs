@@ -15,10 +15,11 @@ use std::time::Duration;
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 use skald_crypto::{SshCheck, check_ssh_signature};
-use skald_proto::{Cert, DeviceId, DeviceKind};
+use skald_proto::{Cert, CertBody, DeviceId, DeviceKind};
 
 use crate::connection;
 use crate::devices::text;
+use crate::key_changes;
 use crate::state::State;
 
 /// The largest answer of GitHub's API the client reads.
@@ -73,10 +74,99 @@ pub fn check(state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), S
     if crate::service::stateless() {
         return Ok((Results::new(), Vec::new()));
     }
+    with_run(|run| run.check(state, certs))
+}
+
+/// What the SSH signature of `body`, the body of a certificate not issued yet, shows against
+/// GitHub's API as the operation running reaches it ([`set`]); `None` if it carries none or is no
+/// `client` device's. Keeps nothing but a key change, kept in `state` by the API's address
+/// ([`key_changes::keep_from`]).
+pub fn check_new(state: &State, body: &CertBody) -> Result<Option<Seen>, String> {
+    let (Some(_), Some(user), DeviceKind::Client) = (&body.ssh, body.github, body.kind) else {
+        return Ok(None);
+    };
+    let (api, seen) = with_run(|run| {
+        (
+            run.api.clone(),
+            run.through(|github| seen(github, body, user)),
+        )
+    });
+    if seen == Seen::Failed {
+        let warning = format!(
+            "the SSH signature of the new device {} verifies with no SSH key GitHub lists for the \
+             GitHub user {user} it names: its key may have been swapped; it was not linked",
+            body.device
+        );
+        key_changes::keep_from(state, &key_changes::github(&api), &warning)?;
+    }
+    Ok(Some(seen))
+}
+
+/// `with` on the checks of the operation running ([`set`]): GitHub's own API with the default
+/// timeout until it is set.
+fn with_run<T>(with: impl FnOnce(&mut Run) -> T) -> T {
     let mut run = RUN.lock().unwrap_or_else(PoisonError::into_inner);
-    let run =
-        run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT));
-    run.check(state, certs)
+    with(run.get_or_insert_with(|| Run::new(crate::update::GITHUB_API_URL, connection::TIMEOUT)))
+}
+
+/// A GitHub user GitHub's API gives by login: its ID, its login as GitHub spells it and its SSH
+/// keys, as OpenSSH public key lines.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Found {
+    pub id: u64,
+    pub login: String,
+    pub keys: Vec<String>,
+}
+
+/// What GitHub's API gives for a login.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ByLogin {
+    Found(Found),
+    /// No such user.
+    NoUser,
+    /// Nothing: GitHub cannot be reached or gives anything else, its rate limit included.
+    Unavailable,
+}
+
+/// What GitHub's API, as the operation running reaches it ([`set`]), gives for `login`, a valid
+/// login ([`valid_login`]): `GET /users/{login}`, then its SSH keys as [`check`] takes them.
+pub fn by_login(login: &str) -> ByLogin {
+    let (api, timeout) = with_run(|run| (run.api.clone(), run.timeout));
+    match connection::agent_to(&api, timeout) {
+        Ok(agent) => user_by_login(&agent, &api, login),
+        Err(_) => ByLogin::Unavailable,
+    }
+}
+
+/// [`by_login`] through `agent`, to GitHub's API at `api`.
+fn user_by_login(agent: &ureq::Agent, api: &str, login: &str) -> ByLogin {
+    let user: User = match get(agent, &format!("{api}/users/{login}")) {
+        Some(Answer::Found(body)) => match serde_json::from_slice(&body) {
+            Ok(user) => user,
+            Err(_) => return ByLogin::Unavailable,
+        },
+        Some(Answer::NotFound) => return ByLogin::NoUser,
+        None => return ByLogin::Unavailable,
+    };
+    let (Some(id), true) = (user.id, valid_login(&user.login)) else {
+        return ByLogin::Unavailable;
+    };
+    match ssh_keys(agent, api, &user.login) {
+        Some(keys) => ByLogin::Found(Found {
+            id,
+            login: user.login,
+            keys,
+        }),
+        None => ByLogin::Unavailable,
+    }
+}
+
+/// Whether `login` is of a GitHub login's form: 1 to 39 ASCII letters, digits and `-`.
+pub fn valid_login(login: &str) -> bool {
+    (1..=LOGIN_MAX).contains(&login.len())
+        && login
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
 }
 
 /// The checks of one operation: against GitHub's API at `api`, each request failing after
@@ -98,12 +188,18 @@ impl Run {
 
     /// Checks the SSH signature of each of `certs`, those of `client` devices that carry one,
     /// unless `state` holds its result; keeps each result. Gives the results, and the warning of
-    /// each key change found now.
+    /// each key change found now, kept by the API's address ([`key_changes::keep_from`]).
     fn check(&mut self, state: &State, certs: &[&Cert]) -> Result<(Results, Vec<String>), String> {
+        self.through(|github| checked(state, github, certs))
+    }
+
+    /// `with` through GitHub's API as this run reaches it, which it then reaches no more if
+    /// GitHub gave nothing.
+    fn through<T>(&mut self, with: impl FnOnce(&mut Github) -> T) -> T {
         let mut github = Github::new(&self.api, self.timeout, self.unavailable);
-        let checked = checked(state, &mut github, certs);
+        let done = with(&mut github);
         self.unavailable = github.gone();
-        checked
+        done
     }
 }
 
@@ -126,18 +222,7 @@ fn checked(
             results.insert(body.device, kept.map_or(Seen::Failed, Seen::Passed));
             continue;
         }
-        let seen = match github.keys(user) {
-            Some(Listed::User { login, keys }) => {
-                let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
-                match check_ssh_signature(body, &keys) {
-                    SshCheck::Passed { .. } => Seen::Passed(login.clone()),
-                    SshCheck::Failed => Seen::Failed,
-                    _ => Seen::NotChecked,
-                }
-            }
-            Some(Listed::NoUser) => Seen::Failed,
-            None => Seen::NotChecked,
-        };
+        let seen = seen(github, body, user);
         let login = match &seen {
             Seen::Passed(login) => Some(login.as_str()),
             Seen::Failed => None,
@@ -148,15 +233,34 @@ fn checked(
         };
         state.keep_ssh_check(api, &hash, login).map_err(text)?;
         if seen == Seen::Failed {
-            warnings.push(format!(
+            let warning = format!(
                 "the SSH signature of device {} verifies with no SSH key GitHub lists for the \
                  GitHub user {user} its certificate names: its key may have been swapped",
                 body.device
-            ));
+            );
+            key_changes::keep_from(state, &key_changes::github(api), &warning)?;
+            warnings.push(warning);
         }
         results.insert(body.device, seen);
     }
     Ok((results, warnings))
+}
+
+/// What the SSH signature of `body`, by a key of the GitHub user `user`, shows against what
+/// `github` lists for that user.
+fn seen(github: &mut Github, body: &CertBody, user: u64) -> Seen {
+    match github.keys(user) {
+        Some(Listed::User { login, keys }) => {
+            let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+            match check_ssh_signature(body, &keys) {
+                SshCheck::Passed { .. } => Seen::Passed(login.clone()),
+                SshCheck::Failed => Seen::Failed,
+                _ => Seen::NotChecked,
+            }
+        }
+        Some(Listed::NoUser) => Seen::Failed,
+        None => Seen::NotChecked,
+    }
 }
 
 /// What GitHub's API lists for a user ID.
@@ -231,6 +335,8 @@ impl<'a> Github<'a> {
 #[derive(Deserialize)]
 struct User {
     login: String,
+    #[serde(default)]
+    id: Option<u64>,
 }
 
 /// An SSH key as GitHub's API lists it.
@@ -240,22 +346,25 @@ struct Key {
 }
 
 /// What GitHub's API at `api` lists for the user `user`: its login, from `GET /user/{id}`, and its
-/// SSH keys, every page of `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys`.
-/// `None` when it cannot be reached or gives anything else, its rate limit, a malformed login or
-/// lists of more than [`PAGES`] pages included.
+/// SSH keys ([`ssh_keys`]). `None` when it cannot be reached or gives anything else, its rate
+/// limit, a malformed login or lists of more than [`PAGES`] pages included.
 fn list(agent: &ureq::Agent, api: &str, user: u64) -> Option<Listed> {
     let found: User = match get(agent, &format!("{api}/user/{user}"))? {
         Answer::Found(body) => serde_json::from_slice(&body).ok()?,
         Answer::NotFound => return Some(Listed::NoUser),
     };
     let login = found.login;
-    let valid = (1..=LOGIN_MAX).contains(&login.len())
-        && login
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
-    if !valid {
+    if !valid_login(&login) {
         return None;
     }
+    let keys = ssh_keys(agent, api, &login)?;
+    Some(Listed::User { login, keys })
+}
+
+/// The SSH keys GitHub's API at `api` lists for the user `login`: every page of
+/// `GET /users/{login}/keys` and `GET /users/{login}/ssh_signing_keys`. `None` when it cannot be
+/// reached or gives anything else, lists of more than [`PAGES`] pages included.
+fn ssh_keys(agent: &ureq::Agent, api: &str, login: &str) -> Option<Vec<String>> {
     let mut keys = Vec::new();
     'lists: for list in ["keys", "ssh_signing_keys"] {
         for page in 1..=PAGES {
@@ -272,7 +381,7 @@ fn list(agent: &ureq::Agent, api: &str, user: u64) -> Option<Listed> {
         }
         return None;
     }
-    Some(Listed::User { login, keys })
+    Some(keys)
 }
 
 /// An answer of GitHub's API that gives something.
@@ -433,6 +542,38 @@ mod tests {
             state.ssh_check(github.url(), &hash(&malformed)).unwrap(),
             None
         );
+    }
+
+    /// A user by login gives its ID, its login as GitHub spells it and the keys of both its lists;
+    /// a login GitHub does not have, no user; GitHub's errors, nothing.
+    #[test]
+    fn a_user_by_login_gives_its_id_login_and_keys() {
+        let github = github();
+        github.put_user(skald_github_stand_in::User::new(9, "Ada-Keys"));
+        github.put_ssh_keys(skald_github_stand_in::SshKeys {
+            user: 9,
+            authentication: vec!["ssh-ed25519 AAAA1".to_owned()],
+            signing: vec!["ssh-ed25519 AAAA2".to_owned()],
+        });
+        let agent = connection::agent_to(github.url(), TIMEOUT).unwrap();
+        let by = |login| user_by_login(&agent, github.url(), login);
+
+        assert_eq!(
+            by("ada-keys"),
+            ByLogin::Found(Found {
+                id: 9,
+                login: "Ada-Keys".to_owned(),
+                keys: vec![
+                    "ssh-ed25519 AAAA1".to_owned(),
+                    "ssh-ed25519 AAAA2".to_owned()
+                ],
+            })
+        );
+        assert_eq!(by("bob"), ByLogin::NoUser);
+        for fault in [Fault::RateLimited, Fault::ApiStatus { status: 500 }] {
+            github.set_faults(&[fault]);
+            assert_eq!(by("ada-keys"), ByLogin::Unavailable, "{fault:?}");
+        }
     }
 
     /// Once GitHub answers with an error, the operation asks it nothing more, in that check or a

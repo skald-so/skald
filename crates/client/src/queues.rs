@@ -14,6 +14,7 @@
 //!   `--deadline`, the device sets one 7 days after enqueue if a device of another account may
 //!   claim the task. Nothing is enqueued, saying why, under an unclean epoch, over the limit on
 //!   `hops`, for a queue the channel lacks, or an addressee no device or several list.
+//! - A stateless service agent's run enqueues as [`crate::stateless`] says.
 //! - The task waits in the local state before its upload; every upload carries its same bytes.
 //!   Each `skald enqueue` and `skald recv` uploads the tasks that wait first, in order, until the
 //!   server answers each: stored, or refused, which is final.
@@ -25,8 +26,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use skald_crypto::{seal_task, sign_task};
 use skald_proto::{
-    AccountId, Address, Cbor as _, ChannelId, DeviceId, IDEMPOTENCY_KEY_MAX, MessageId, Name,
-    QueueId, QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown, VersionRange,
+    AccountId, Address, Cbor as _, ChannelId, Content, DeviceId, IDEMPOTENCY_KEY_MAX, MessageId,
+    Name, QueueId, QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown,
+    VersionRange,
 };
 
 use crate::connection::{self, Method, printable};
@@ -38,8 +40,10 @@ use crate::presence;
 use crate::recv;
 use crate::secrets;
 use crate::send::{self, MOST_HOPS};
+use crate::service;
 use crate::spaces::{self, Follower, Scope, Synced};
 use crate::state::{self, State, TaskOutgoing};
+use crate::stateless;
 
 /// The queue every channel has.
 pub const DEFAULT: &str = "default";
@@ -277,9 +281,15 @@ pub fn listed(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<Q
     let answer = (follower.connection)
         .get_proved(&queues_path(at), (&follower.token, &proof))
         .map_err(|err| refused("the channel's queues are not listed", err))?;
-    let Queues { mut queues } = serde_json::from_slice(&answer)
-        .map_err(|_| "unexpected answer from the server: a channel's queues".to_owned())?;
+    let mut queues = queues_of(&answer)?;
     queues.sort_by(|one, other| one.name.cmp(&other.name));
+    Ok(queues)
+}
+
+/// The queues `answer`, the server's answer to a listing of a channel's queues, gives.
+pub fn queues_of(answer: &[u8]) -> Result<Vec<Queue>, String> {
+    let Queues { queues } = serde_json::from_slice(answer)
+        .map_err(|_| "unexpected answer from the server: a channel's queues".to_owned())?;
     Ok(queues)
 }
 
@@ -376,8 +386,13 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
             "enqueued",
         ));
     }
-    let (roster, devices) =
-        through_mailbox_as(&mut follower, (scope, space.id), agent, (roster, devices))?;
+    // A stateless run goes through no mailbox: what it would write there, it would ack unshown.
+    let stateless = follower.stateless();
+    let (roster, devices) = if stateless {
+        (roster, devices)
+    } else {
+        through_mailbox_as(&mut follower, (scope, space.id), agent, (roster, devices))?
+    };
     let at = (space.id, channel);
     let queue = named(&mut follower, at, &name).map_err(|err| format!("{err}; {NOTHING}"))?;
     let addressee = match &to {
@@ -389,12 +404,22 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         )?),
         None => None,
     };
-    let (epoch, pk) = clean_epoch(&follower, channel)?;
+    // A stateless service agent's task is from its entry, with its token's grant, sealed to the
+    // queue key object of the channel's latest GroupInfo.
+    let (from, grant, (epoch, pk)) = if stateless {
+        let (from, grant) =
+            service::enqueuer(&mut follower, (&roster, &devices), (channel, server))?;
+        let key = stateless::queue_key(&mut follower, (&roster, &devices), channel)?;
+        (from, Some(grant), key)
+    } else {
+        let key = clean_epoch(&follower, channel)?;
+        (send::sender(&follower, &roster, server, agent)?, None, key)
+    };
     let deadline = set.or_else(|| {
         let claimers = Claimers::of((&roster, &devices), channel, addressee);
         claimers.others(follower.own.account).then_some(now + WEEK)
     });
-    let from = send::sender(&follower, &roster, server, agent)?;
+    let whose = (from.to_string(), to.as_ref().map(ToString::to_string));
     let task = TaskId::generate();
     let request = json!({
         "messageId": task.to_string(),
@@ -420,11 +445,14 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
             Mode::AtMostOnce => QueueMode::AtMostOnce,
         },
         enqueued: now,
-        content: Task {
-            request,
-            unknown: Unknown::default(),
-        }
-        .content(from, to, hops),
+        content: Content {
+            grant,
+            ..Task {
+                request,
+                unknown: Unknown::default(),
+            }
+            .content(from, to, hops)
+        },
         unknown: Unknown::default(),
     };
     let keys = follower.keys()?;
@@ -438,7 +466,11 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
         record: record.to_cbor(),
     };
     (follower.state)
-        .keep_task(&outgoing, agent.map(Name::as_str))
+        .keep_task(
+            &outgoing,
+            agent.map(Name::as_str),
+            (&whose.0, whose.1.as_deref()),
+        )
         .map_err(text)?;
     let answered = upload_waiting(&mut follower, scope);
     let reference = reference(&follower.state, task);
@@ -470,7 +502,8 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
             refusal.why(&follower.state)
         )),
         Some((_, Answer::Waiting(why))) => Err(format!(
-            "the server has not answered the task #{reference} ({why}); {KEPT}"
+            "the server has not answered the task #{reference} ({why}); {}",
+            if stateless { NOT_KEPT } else { KEPT }
         )),
         None => Err(format!(
             "an earlier task waits for the server, so the task #{reference} is not uploaded yet; \
@@ -480,11 +513,14 @@ fn enqueued(run: &Run, given: &Enqueue, agent: Option<&Name>) -> Result<(), Stri
 }
 
 /// What a refused enqueue says of the task.
-const NOTHING: &str = "nothing is enqueued";
+pub const NOTHING: &str = "nothing is enqueued";
 
 /// What a run says of a task the server has not answered.
 const KEPT: &str =
     "the local state keeps it, and the next skald enqueue or skald recv uploads it first";
+
+/// What a stateless run says of a task the server has not answered.
+const NOT_KEPT: &str = "a stateless run keeps nothing, so no later run uploads it";
 
 /// `given` as an `idempotency_key`: its UTF-8 bytes, 1 to [`IDEMPOTENCY_KEY_MAX`] of them.
 fn idempotency_key(given: &str) -> Result<Vec<u8>, String> {
