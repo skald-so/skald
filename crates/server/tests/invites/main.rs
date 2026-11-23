@@ -73,4 +73,5 @@ mod accepting;
 mod ending;
 mod issuing;
 mod reading;
+mod sign_up;
 mod waiting;

@@ -2680,6 +2680,7 @@ export const getGetServerResponseMock = (
     ),
     null,
   ]),
+  public: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 
@@ -2692,6 +2693,7 @@ export const getGetServerResponseMock200 = (
     ),
     null,
   ]),
+  public: faker.helpers.arrayElement([faker.internet.url(), undefined]),
   ...overrideResponse,
 });
 

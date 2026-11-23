@@ -1,7 +1,7 @@
 //! Invites and their acceptances (`docs/protocol/membership.md`, "Invite"): the server issues
 //! invite IDs and stores invites for the space's admins, gives an invite by its ID to any session
-//! until it has an acceptance and then to that acceptance's account only, keeps the first
-//! acceptance, and gives the waiting acceptances to the space's admins. An invite ends when it
+//! until it is used to sign up or has an acceptance, then to that account only. It keeps the
+//! first acceptance and gives waiting acceptances to the space's admins. An invite ends when it
 //! expires or a stored revision lists a member with it: the server then deletes it with its
 //! acceptance.
 
@@ -270,29 +270,60 @@ async fn check_invite(
     Ok(())
 }
 
-/// The space and the bytes of the invite `id` that the server holds, and the account of its
-/// acceptance, if it has one; `None` once it has ended.
-async fn held(
-    db: impl sqlx::PgExecutor<'_>,
+/// The key of a stored invite, for checking a sign-up proof against the device code.
+pub(crate) async fn sign_up_key(
+    db: &PgPool,
     id: InviteId,
-) -> Result<Option<(SpaceId, Vec<u8>, Option<String>)>, Refusal> {
-    let found: Option<(String, Vec<u8>, Option<String>)> = sqlx::query_as(
-        "SELECT i.space_id::text, i.invite, a.account_id::text
-         FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
-         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()",
+) -> Result<Option<[u8; 32]>, sqlx::Error> {
+    let stored: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT invite FROM invites WHERE id = $1::uuid AND invite IS NOT NULL")
+            .bind(id.to_string())
+            .fetch_optional(db)
+            .await?;
+    Ok(stored.map(|bytes| invite_key(&bytes)))
+}
+
+/// Reserves a live, unused invite for the new `account`, if its key still matches the proof.
+pub(crate) async fn reserve_sign_up(
+    conn: &mut PgConnection,
+    id: &str,
+    key: &[u8],
+    account: &str,
+) -> Result<bool, sqlx::Error> {
+    // An acceptance, another sign-up or deletion of this invite takes a conflicting lock.
+    let stored: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT invite FROM invites
+         WHERE id = $1::uuid AND invite IS NOT NULL AND sign_up_account_id IS NULL
+           AND expires_at > clock_timestamp()
+         FOR NO KEY UPDATE",
     )
-    .bind(id.to_string())
-    .fetch_optional(db)
-    .await
-    .map_err(|err| Refusal::Database("read an invite", err))?;
-    Ok(found.map(|(space, invite, accepted)| {
-        let space = space.parse().expect("a stored space ID");
-        (space, invite, accepted)
-    }))
+    .bind(id)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if !stored.is_some_and(|bytes| invite_key(&bytes) == key) {
+        return Ok(false);
+    }
+    let reserved = sqlx::query(
+        "UPDATE invites SET sign_up_account_id = $2::uuid
+         WHERE id = $1::uuid AND expires_at > clock_timestamp()
+           AND NOT EXISTS (SELECT 1 FROM acceptances WHERE invite_id = $1::uuid)",
+    )
+    .bind(id)
+    .bind(account)
+    .execute(conn)
+    .await?;
+    Ok(reserved.rows_affected() == 1)
+}
+
+fn invite_key(bytes: &[u8]) -> [u8; 32] {
+    Invite::from_cbor(bytes)
+        .expect("a stored invite decodes")
+        .body()
+        .key
 }
 
 /// `GET /invites/<invite>`: the invite as the server got it, with its space's revisions and devices
-/// as a member gets them; once it has an acceptance, only to that acceptance's account.
+/// as a member gets them; once used for sign-up or acceptance, only to that account.
 pub(crate) async fn given(
     State(state): State<AppState>,
     SignedIn(account): SignedIn,
@@ -300,10 +331,19 @@ pub(crate) async fn given(
 ) -> Answer {
     let db = &state.db;
     let id: InviteId = invite.parse().map_err(|_| Refusal::NoInvite)?;
-    let (space, invite, accepted) = held(db, id).await?.ok_or(Refusal::NoInvite)?;
-    if accepted.is_some_and(|accepted| accepted != account) {
-        return Err(Refusal::NoInvite);
-    }
+    let (space, invite): (String, Vec<u8>) = sqlx::query_as(
+        "SELECT i.space_id::text, i.invite
+         FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
+         WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()
+           AND coalesce(i.sign_up_account_id, a.account_id, $2::uuid) = $2::uuid",
+    )
+    .bind(id.to_string())
+    .bind(&account)
+    .fetch_optional(db)
+    .await
+    .map_err(|err| Refusal::Database("read an invite", err))?
+    .ok_or(Refusal::NoInvite)?;
+    let space = space.parse().expect("a stored space ID");
     taken(
         false,
         WithSpace {
@@ -356,14 +396,16 @@ pub(crate) async fn accept(
     }
     let failed = |err| Refusal::Database("store an acceptance", err);
     let mut tx = db.begin().await.map_err(failed)?;
-    // The lock makes the invite's deletion wait for the acceptance, or the acceptance for it.
+    // The lock serializes acceptance with deletion and sign-up using this invite.
     let found: Option<(String, Vec<u8>, Option<Vec<u8>>)> = sqlx::query_as(
         "SELECT i.space_id::text, i.invite, a.acceptance
          FROM invites i LEFT JOIN acceptances a ON a.invite_id = i.id
          WHERE i.id = $1::uuid AND i.invite IS NOT NULL AND i.expires_at > now()
-         FOR KEY SHARE OF i",
+           AND (i.sign_up_account_id IS NULL OR i.sign_up_account_id = $2::uuid)
+         FOR NO KEY UPDATE OF i",
     )
     .bind(id.to_string())
+    .bind(&account)
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
@@ -371,7 +413,6 @@ pub(crate) async fn accept(
     if let Some(stored) = stored {
         return acceptance_again(&sent, &stored);
     }
-    let invite = Invite::from_cbor(&invite).expect("a stored invite decodes");
     let master: Option<(Option<Vec<u8>>,)> =
         sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid")
             .bind(&account)
@@ -383,7 +424,7 @@ pub(crate) async fn accept(
             "the master key is not the one the server holds for the account",
         ));
     }
-    skald_crypto::check_acceptance(&acceptance, &invite.body().key)
+    skald_crypto::check_acceptance(&acceptance, &invite_key(&invite))
         .map_err(|_| refused("the signature does not verify with the invite's key"))?;
     // Of two inserts at once, the second waits for the first to commit, and inserts nothing.
     let inserted = sqlx::query(

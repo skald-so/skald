@@ -33,8 +33,8 @@ pub use grant::{GrantError, check_grant};
 pub use history::{HistoryError, HistoryKey, HistoryMessage, follow_links};
 pub use hpke::{HpkeError, HpkeKey, HpkeMessage, open_message, seal_message};
 pub use invite::{
-    InviteLink, InviteLinkError, InviteSecret, check_acceptance, check_invite, sign_acceptance,
-    sign_invite,
+    InviteLink, InviteLinkError, InviteSecret, check_acceptance, check_invite,
+    check_invite_sign_up, sign_acceptance, sign_invite, sign_invite_sign_up,
 };
 pub use link::{
     LinkCode, LinkCodeError, LinkEntry, LinkEntryError, LinkKey, LinkOpenError, LinkPairing,

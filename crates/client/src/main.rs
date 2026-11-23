@@ -483,8 +483,9 @@ enum Command {
         days: u64,
     },
     /// Accepts an invite link to a space of another account, as its person at a terminal: asks for
-    /// the link, checks the invite against the roster revision the link names, shows it and asks
-    /// to confirm, then stores the acceptance with the account's username or another handle. The
+    /// the link and signs in if needed. It checks the invite against the roster revision the link
+    /// names, shows it and asks to confirm, then stores the acceptance with the account's username
+    /// or another handle. An unlisted person can sign up with the invite on a closed server. The
     /// device then follows the space, and skald recv joins its channels once an admin's device
     /// admits the account.
     AcceptInvite {
@@ -1576,9 +1577,6 @@ fn invite_days(given: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("give whole days from 1 to {}", invites::MOST_DAYS))
 }
 
-/// The setting of the host name the client reads, for tests; empty, the host name is empty.
-const HOST_NAME: &str = "SKALD_HOST_NAME";
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let one_shot = cli.one_shot;
@@ -2315,10 +2313,6 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                     )
                 })
                 .transpose()?;
-            let host_name = std::env::var_os(HOST_NAME)
-                .unwrap_or_else(gethostname::gethostname)
-                .to_string_lossy()
-                .into_owned();
             state::dir(state_dir).and_then(|dir| {
                 let page = opener.map(|opener| page::Page::new(&dir, opener));
                 // A recovery key or a link code is shown only to the person: at a terminal, or on
@@ -2331,9 +2325,10 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 let options = sign_in::Options {
                     storage: key_storage,
                     name,
-                    host_name,
+                    host_name: sign_in::host_name(),
                     person,
                     recovery,
+                    invite: None,
                     ssh: ssh_signing::Options {
                         key: ssh_key,
                         off: no_ssh,
