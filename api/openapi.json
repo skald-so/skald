@@ -10797,8 +10797,8 @@
     "/spaces/{space}/usage": {
       "get": {
         "operationId": "getSpaceUsage",
-        "summary": "The space's usage and effective limits",
-        "description": "Shows the space's messages this calendar month in UTC, service agents and effective limits. With space plans enabled, the response gives the space's plan and its limits. Otherwise it gives the limits from the server settings.",
+        "summary": "The space's usage and limits",
+        "description": "Shows the space's messages this calendar month in UTC and service agents. With space plans enabled, the response gives the space's plan and its allowances. With plans off, it gives the limits from the server settings.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -13160,7 +13160,7 @@
         "additionalProperties": false
       },
       "SpaceUsage": {
-        "description": "A space's messages this month and service agents, and its effective limits. The plan and its member, device and attachment limits appear when space plans are enabled.",
+        "description": "A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.",
         "type": "object",
         "required": [
           "monthly_messages",
@@ -13174,11 +13174,11 @@
             "$ref": "#/components/schemas/SpacePlan"
           },
           "members": {
-            "description": "Members per space. Team has no member limit.",
+            "description": "The plan allowance for space members. Team has no member limit.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "devices_per_member": {
-            "description": "Devices per member of the space.",
+            "description": "The plan allowance for devices per space member.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "monthly_messages": {
@@ -13186,15 +13186,15 @@
             "$ref": "#/components/schemas/UsageCount"
           },
           "message_size": {
-            "description": "The message text limit in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`.",
+            "description": "The message text size allowance in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "attachment_size": {
-            "description": "The attachment size limit in bytes.",
+            "description": "The plan allowance for attachment size in bytes.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "mailbox_retention": {
-            "description": "How long an undelivered message waits at most, in seconds. With plans off, the limit comes from `--mailbox-retention`.",
+            "description": "Undelivered message retention in seconds. With plans off, the limit comes from `--mailbox-retention`.",
             "$ref": "#/components/schemas/UsageLimit"
           },
           "history_retention": {

@@ -4290,8 +4290,8 @@ export const getGetSpaceUsageUrl = (space: string) => {
 };
 
 /**
- * Shows the space's messages this calendar month in UTC, service agents and effective limits. With space plans enabled, the response gives the space's plan and its limits. Otherwise it gives the limits from the server settings.
- * @summary The space's usage and effective limits
+ * Shows the space's messages this calendar month in UTC and service agents. With space plans enabled, the response gives the space's plan and its allowances. With plans off, it gives the limits from the server settings.
+ * @summary The space's usage and limits
  */
 export const getSpaceUsage = async (
   space: string,

@@ -894,21 +894,21 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, and its effective limits. The plan and its member, device and attachment limits appear when space plans are enabled.
+ * A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.
  */
 export interface SpaceUsage {
   plan?: SpacePlan;
-  /** Members per space. Team has no member limit. */
+  /** The plan allowance for space members. Team has no member limit. */
   members?: UsageLimit;
-  /** Devices per member of the space. */
+  /** The plan allowance for devices per space member. */
   devices_per_member?: UsageLimit;
   /** The space's messages this calendar month in UTC. Each message counts once regardless of its envelopes. Handshake messages are excluded. With plans off, the limit comes from `--monthly-messages-limit`. */
   monthly_messages: UsageCount;
-  /** The message text limit in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`. */
+  /** The message text size allowance in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`. */
   message_size: UsageLimit;
-  /** The attachment size limit in bytes. */
+  /** The plan allowance for attachment size in bytes. */
   attachment_size?: UsageLimit;
-  /** How long an undelivered message waits at most, in seconds. With plans off, the limit comes from `--mailbox-retention`. */
+  /** Undelivered message retention in seconds. With plans off, the limit comes from `--mailbox-retention`. */
   mailbox_retention: UsageLimit;
   /** Channel history retention in seconds. With plans off, the limit comes from `--history-retention`. */
   history_retention: UsageLimit;

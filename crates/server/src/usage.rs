@@ -1,6 +1,6 @@
 //! What the web app's Usage section shows (`docs/dev/architecture.md`, "Cloud limits"): an
 //! account's owned spaces and devices, and a space's messages this month and service agents, each
-//! counted as its limit counts it, with the effective limits.
+//! counted as its limit counts it, with server limits or plan allowances.
 
 use axum::Json;
 use axum::extract::State;

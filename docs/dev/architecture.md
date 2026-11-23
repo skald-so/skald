@@ -238,4 +238,4 @@ The public cloud applies these limits; a self-hosted server does not.
 
 The web app's Usage section shows the owned spaces, devices, monthly messages and service agents with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.
 
-`--space-plans` (`SKALD_SPACE_PLANS=true`) opts in to showing a space's plan and limits in `getSpaceUsage`. Spaces without an entitlement default to Free. The server continues to enforce the settings above.
+`--space-plans` (`SKALD_SPACE_PLANS=true`) opts in to showing a space's plan and allowances in `getSpaceUsage`. Spaces without an entitlement default to Free. The server continues to enforce the settings above.
