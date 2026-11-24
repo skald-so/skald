@@ -137,6 +137,14 @@ if checks edits; then
     exit 1
   fi
 fi
+if checks tooling && ! command -v cargo-binstall >/dev/null; then
+  echo "script/test: cargo-binstall is missing; install it: cargo install cargo-binstall --locked" >&2
+  exit 1
+fi
+if checks tooling && ! command -v zip >/dev/null; then
+  echo "script/test: zip is missing; the cargo-binstall test packs Windows release fixtures with it" >&2
+  exit 1
+fi
 if checks tooling; then
   for tool in ssh ssh-add ssh-agent ssh-keygen sshd; do
     if ! command -v "$tool" >/dev/null && [[ ! -x /usr/sbin/$tool ]]; then
@@ -344,6 +352,7 @@ if checks tooling; then
   script/installers-test
   script/npm-package-test
   script/release-cargo-test
+  script/release-binstall-package-test
   script/release-npm-workflow-test
   script/move-main-workflow-test
   script/release-web-workflow-test

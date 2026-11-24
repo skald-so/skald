@@ -5,9 +5,9 @@ name: Release
 # with its installer from the release's files, then one job attests every file of the release and
 # creates the release with all of them, the web app's archive that a job builds at the tag's commit
 # included, with the bundle of its attestation as a file of its own. Each runner also runs skald
-# from those files through the npm package skald-so, which a job then publishes to npm. Another job
-# builds the skald-server image at the tag's commit, pushes it to GHCR under its version, signs its
-# digest with cosign and attests it.
+# from those files through cargo-binstall and the npm package skald-so, which a job then publishes
+# to npm. Another job builds the skald-server image at the tag's commit, pushes it to GHCR under its
+# version, signs its digest with cosign and attests it.
 # Once all three are published, the release check runs on every OS and architecture
 # (release-check.yml); once it passes, a stable release, vX.Y.Z, moves main to the tag with the
 # deploy key and, once the owner approves it, is deployed to production.
@@ -43,6 +43,8 @@ on:
       - script/lib/start-server.sh
       - script/move-main
       - script/npm-package-test
+      - script/release-binstall-test
+      - script/release-cargo
       - script/release-installers
       - script/release-notes
       - script/release-npm
@@ -132,9 +134,31 @@ jobs:
           path: target/distrib/skald-client-${{ matrix.target }}.*
           if-no-files-found: error
 
+  cargo:
+    name: Package Cargo sources
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Package the CLI
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: script/release-cargo "$TAG" cargo-release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: cargo-cli
+          path: cargo-release/skald-so-*.crate
+          if-no-files-found: error
+
   check:
     name: Check ${{ matrix.target }}
-    needs: [plan, build]
+    needs: [plan, build, cargo]
     strategy:
       fail-fast: false
       matrix:
@@ -172,6 +196,18 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
           TARGET: ${{ matrix.target }}
         run: script/npm-package-test release "$TAG" "$TARGET"
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-binstall@1.26.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: cargo-cli
+          path: cargo-release
+      - name: Run skald through cargo-binstall
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: script/release-binstall-test "cargo-release/skald-so-${TAG#v}.crate" "$TAG" release "$TARGET"
 
   # The web app's archive and its checksum, built from web/'s lockfile with no cache.
   web:
