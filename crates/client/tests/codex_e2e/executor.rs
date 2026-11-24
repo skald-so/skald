@@ -51,7 +51,7 @@ fn plant(scratch: &Path, home: &Path, folder: &Path, url: &str) {
     let hook = |name| {
         let executable = actor.to_string_lossy();
         let command = if cfg!(windows) {
-            format!(r#""{executable}" mark {name}"#)
+            format!("& '{}' mark {name}", executable.replace('\'', "''"))
         } else {
             format!("'{}' mark {name}", executable.replace('\'', "'\\''"))
         };
