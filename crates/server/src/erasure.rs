@@ -108,6 +108,7 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
         "DELETE FROM sends
          WHERE sender_id = ANY($2::text[]::uuid[]) OR recipient_id = ANY($2::text[]::uuid[])",
         "DELETE FROM counted_messages WHERE sender_id = ANY($2::text[]::uuid[])",
+        "DELETE FROM abuse_findings WHERE account_id = $1::uuid",
         // Its deletion deletes these too, but not every row: a long poll's of a space whose
         // latest revision no longer lists the account, a key session of a device certified after.
         "DELETE FROM key_packages WHERE device_id = ANY($2::text[]::uuid[])",
