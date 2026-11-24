@@ -62,6 +62,14 @@ pub fn member_revision(team: &Team, server: &Server) -> String {
         .to_owned()
 }
 
+/// The API and its public member-list snapshot on the same instance.
+pub fn selected<'a>(team: &'a Team, server: &'a Server) -> (Api<'a>, String) {
+    (
+        Api::of(&team.flow).on(server),
+        member_revision(team, server),
+    )
+}
+
 pub fn submission(target: &Person, reason: &str, revision: &str) -> Value {
     json!({
         "target": target.handle.as_str(),

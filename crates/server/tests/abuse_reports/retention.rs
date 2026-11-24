@@ -5,10 +5,9 @@ use serde_json::Value;
 
 use crate::fixture::Fixture;
 use crate::reporting::{
-    LONG_RETENTION, OTHER_REASON, REASON, age_report, member_revision, receipt, refused,
-    report_rows, settings, sign_in, submission, submit,
+    LONG_RETENTION, OTHER_REASON, REASON, age_report, receipt, refused, report_rows, selected,
+    settings, sign_in, submission, submit,
 };
-use crate::sessions::Api;
 
 #[test]
 fn retries_survive_the_configured_submission_limit_and_total_storage_stays_bounded() {
@@ -22,8 +21,7 @@ fn retries_survive_the_configured_submission_limit_and_total_storage_stays_bound
         .stand
         .restart(&[], &settings("2", "3", LONG_RETENTION));
     let team = &fixture.team;
-    let api = Api::of(&team.flow).on(&server);
-    let revision = member_revision(team, &server);
+    let (api, revision) = selected(team, &server);
     let submit_as = |cookie: &str, request: &Value| submit(&api, team.space, cookie, request);
     let for_bob = submission(&team.bob, REASON, &revision);
     let first = receipt(&submit_as(&dave, &for_bob), &[201]);
@@ -71,8 +69,7 @@ fn configured_retention_frees_capacity_and_keeps_newer_reports() {
         .stand
         .restart(&[], &settings("5", "2", "86400"));
     let team = &fixture.team;
-    let api = Api::of(&team.flow).on(&server);
-    let revision = member_revision(team, &server);
+    let (api, revision) = selected(team, &server);
     let submit_as_dave = |request: &Value| submit(&api, team.space, &dave, request);
     let old = receipt(
         &submit_as_dave(&submission(&team.bob, REASON, &revision)),

@@ -2,10 +2,9 @@ use crate::deletion::deletes;
 use crate::erasure::{ERASED_AFTER, Kept, Traces, erased_within, leftovers, move_deletion_back};
 use crate::fixture::Fixture;
 use crate::reporting::{
-    OTHER_REASON, REASON, age_report, member_revision, receipt, report_rows, sign_in, start,
-    submission, submit,
+    OTHER_REASON, REASON, age_report, receipt, report_rows, selected, sign_in, start, submission,
+    submit,
 };
-use crate::sessions::Api;
 
 #[test]
 fn a_report_loses_its_reporters_account_data_after_thirty_days() {
@@ -33,8 +32,7 @@ fn erases_report_account(github: u64, alice_reported: bool) {
 
     let server = start(&mut fixture);
     let team = &fixture.team;
-    let api = Api::of(&team.flow).on(&server);
-    let revision = member_revision(team, &server);
+    let (api, revision) = selected(team, &server);
     let target = if alice_reported {
         &team.dave
     } else {

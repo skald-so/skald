@@ -19,7 +19,7 @@ use crate::common::{Response, TestDb};
 use crate::fixture::Fixture;
 use crate::reporting::{
     CAPABILITY, LONG_RETENTION, OTHER_REASON, REASON, age_report, documented, get, member_revision,
-    post, receipt, refused, report_rows, settings, sign_in, submission, submit,
+    post, receipt, refused, report_rows, selected, settings, sign_in, submission, submit,
 };
 use crate::rosters::member;
 use crate::sessions::Api;
@@ -178,16 +178,11 @@ fn a_stale_member_selection_cannot_report_the_new_holder_of_a_handle() {
 #[test]
 fn an_expired_report_still_counts_until_the_submission_window_passes() {
     let github = 3_305_040_031;
-    let mut fixture = Fixture::new(github);
-    let dave = sign_in(&fixture, &fixture.team.dave, github + 3);
-    let server = fixture
-        .team
-        .flow
-        .stand
-        .restart(&[], &settings("1", "1", "600"));
+    let fixture = Fixture::new(github);
     let team = &fixture.team;
-    let revision = member_revision(team, &server);
-    let api = Api::of(&team.flow).on(&server);
+    let dave = sign_in(&fixture, &team.dave, github + 3);
+    let server = team.flow.stand.instance(&[], &settings("1", "1", "600"));
+    let (api, revision) = selected(team, &server);
     let submit_as_dave = |body| submit(&api, team.space, &dave, body);
     let first = submission(&team.bob, REASON, &revision);
     let id = receipt(&submit_as_dave(&first), &[201]);
