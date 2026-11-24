@@ -3,6 +3,7 @@
 
 use std::thread;
 
+use crate::hooks::api_sends_web;
 use crate::kit::received;
 use crate::receipts::{READ, read_lines, shows_read};
 use crate::socket_claude::Surface;
@@ -45,7 +46,7 @@ fn each_message_reaches_one_session_of_its_own_agent() {
         return;
     };
 
-    let to_web = solo.api_sends_web(TO_WEB);
+    let to_web = api_sends_web(&solo, TO_WEB);
     let to_api = solo.sends(&mut solo.session(WEB), &solo.short(API), TO_API);
     nudged_unless_socket(&mut newer);
     nudged_unless_socket(&mut api);
