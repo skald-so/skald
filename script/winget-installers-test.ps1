@@ -80,21 +80,28 @@ if ($LASTEXITCODE -ne 0) { throw 'skald --version failed.' }
 
     $nativeZip = Join-Path $ReleaseDir $archive
     $servedArchive = Join-Path $mirror.FullName $archive
+    $logDir = Join-Path $env:LOCALAPPDATA 'Packages/Microsoft.DesktopAppInstaller_8wekyb3d8bbwe/LocalState/DiagOutputDir'
     foreach ($scenario in @('missing', 'mismatched', 'valid')) {
         switch ($scenario) {
             'mismatched' { Copy-Item -LiteralPath (Join-Path $ReleaseDir $otherArchive) -Destination $servedArchive }
             'valid' { Copy-Item -LiteralPath $nativeZip -Destination $servedArchive -Force }
         }
         $before = @(Get-Content -LiteralPath $requests).Count
+        $previousLogs = @(Get-ChildItem -LiteralPath $logDir -Filter 'WinGet-*.log' -File -Name -ErrorAction SilentlyContinue)
         # Both entries are present, and WinGet selects the native one without an architecture flag.
-        & $winget install --manifest $ManifestDir --scope user --skip-dependencies --disable-interactivity --accept-package-agreements
+        & $winget install --manifest $ManifestDir --scope user --skip-dependencies --disable-interactivity --accept-package-agreements --verbose-logs
         $code = $LASTEXITCODE
         $downloads = @(Get-Content -LiteralPath $requests | Select-Object -Skip $before)
         if ($downloads -cnotcontains "/$archive" -or $downloads -ccontains "/$otherArchive") {
             throw "WinGet did not select the native archive for $scenario. Requests were $downloads."
         }
         if ($scenario -eq 'valid') {
-            if ($code -ne 0) { throw "WinGet install failed with $code." }
+            if ($code -ne 0) {
+                Get-ChildItem -LiteralPath $logDir -Filter 'WinGet-*.log' -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -notin $previousLogs } |
+                    ForEach-Object { Get-Content -LiteralPath $_.FullName -Tail 80 -ErrorAction Continue }
+                throw ('WinGet install failed with 0x{0:X8}.' -f $code)
+            }
         } else {
             if ($code -eq 0) { throw "WinGet installed with a $scenario archive." }
             # APPINSTALLER_CLI_ERROR_INSTALLER_HASH_MISMATCH.
