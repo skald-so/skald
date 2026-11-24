@@ -9,6 +9,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+use skald_proto::MessageId;
+
+use crate::client::Session;
 
 use crate::cloud::WAIT;
 use crate::fallbacks::{
@@ -66,6 +69,14 @@ fn skald_mcp_offers_claude_code_only_revisions_with_initialize() {
 /// What api says to web; it is nowhere else.
 const OWN_SAYS: &str = "channel test: api asks web to tag the release";
 
+/// Sends the message from api and checks its first channel event.
+fn own_event(ada: &Bare, session: &mut Session) -> (MessageId, String) {
+    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
+    let first = wait_events(session, 1, WAIT).remove(0);
+    assert_own_line(&first, OWN_SAYS, msg_id, &ada.solo.short(API));
+    (msg_id, first)
+}
+
 /// web's `skald mcp` runs, no other path of web's: over [`QUIET`] it sends no channel event. api
 /// sends web a message: one channel event follows, its text the message's line from api at `own`;
 /// over [`QUIET`] more, no other event.
@@ -76,10 +87,7 @@ fn an_own_message_goes_as_one_channel_event_and_none_while_nothing_waits() {
 
     let idle = events(&mut session, 1, QUIET);
     assert!(idle.is_empty(), "events with nothing waiting: {idle:#?}");
-    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
-
-    let sent = wait_events(&mut session, 1, WAIT);
-    assert_own_line(&sent[0], OWN_SAYS, msg_id, &ada.solo.short(API));
+    own_event(&ada, &mut session);
     let later = events(&mut session, 2, QUIET);
     assert_eq!(later.len(), 1, "more than one event: {later:#?}");
 }
@@ -88,9 +96,7 @@ fn an_own_message_goes_as_one_channel_event_and_none_while_nothing_waits() {
 fn one_stop_confirms_an_own_channel_message_after_the_assistant_entry_is_written() {
     let ada = Bare::new(4_919_505_001, "ada-channel-late-assistant");
     let mut session = ada.channel(WEB, &[(RESEND_SETTING, LONG)]);
-    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
-    let sent = wait_events(&mut session, 1, WAIT);
-    assert_own_line(&sent[0], OWN_SAYS, msg_id, &ada.solo.short(API));
+    let (msg_id, event) = own_event(&ada, &mut session);
 
     let dir = ada.solo.dir(WEB);
     let input = Event::Stop.input(&dir);
@@ -105,7 +111,7 @@ fn one_stop_confirms_an_own_channel_message_after_the_assistant_entry_is_written
         "type": "user",
         "sessionId": session_id,
         "timestamp": jiff::Timestamp::now().to_string(),
-        "message": { "role": "user", "content": format!("<channel source=\"skald\">\n{}\n</channel>", sent[0]) },
+        "message": { "role": "user", "content": format!("<channel source=\"skald\">\n{event}\n</channel>") },
     });
     let reply = json!({
         "type": "assistant",

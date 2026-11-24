@@ -1237,11 +1237,17 @@ pub fn run_as(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_deferred_stop_only_accepts_its_adjacent_assistant_entry() {
+    fn write_delivery_entry(dir: &Path) -> PathBuf {
+        let file = dir.join("session.jsonl");
         let delivery = json!({
             "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn",
         });
+        fs::write(&file, format!("{delivery}\n")).unwrap();
+        file
+    }
+
+    #[test]
+    fn a_deferred_stop_only_accepts_its_adjacent_assistant_entry() {
         let reply = json!({
             "type": "assistant", "sessionId": "session", "parentUuid": "delivery",
             "promptId": "turn", "message": { "role": "assistant" },
@@ -1258,8 +1264,7 @@ mod tests {
         ];
         for (index, (fields, expected)) in appends.into_iter().enumerate() {
             let dir = crate::test_dir::TestDir::new(&format!("deferred-claude-stop-{index}"));
-            let file = dir.join("session.jsonl");
-            fs::write(&file, format!("{delivery}\n")).unwrap();
+            let file = write_delivery_entry(&dir);
             let (watch, _) = StopFile::at_tail(&file).unwrap();
             assert_eq!(watch.assistant("session"), Some(false));
             let mut appended = reply.clone();
@@ -1276,12 +1281,7 @@ mod tests {
     #[test]
     fn deferred_stop_binds_only_to_one_emitted_identity_and_keeps_its_first_deadline() {
         let dir = crate::test_dir::TestDir::new("claude-stop-emissions");
-        let file = dir.join("session.jsonl");
-        writeln!(
-            fs::File::create(&file).unwrap(),
-            "{}",
-            json!({ "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn" }),
-        ).unwrap();
+        let file = write_delivery_entry(&dir);
         let now = Instant::now();
         let space = SpaceId::generate();
         let stop = |started| DeferredStop {
@@ -1352,12 +1352,7 @@ mod tests {
         assert!(stop_reference(&event(&content(prefix))).is_none());
 
         let dir = crate::test_dir::TestDir::new("claude-stop-reference-prefix");
-        let file = dir.join("session.jsonl");
-        writeln!(
-            fs::File::create(&file).unwrap(),
-            "{}",
-            json!({ "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn" }),
-        ).unwrap();
+        let file = write_delivery_entry(&dir);
         let now = Instant::now();
         let later = now + STOP_GRACE;
         let space = SpaceId::generate();
