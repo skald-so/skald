@@ -12,12 +12,14 @@ use skald_proto::{ChannelId, MessageId};
 
 use crate::capture::Capture;
 use crate::fixtures::{CHANNEL, SEND, TO};
+use crate::front::Sent;
 use crate::hooks::{Bob, REVIEW};
 use crate::host::{Live, WAIT};
+use crate::lines::assert_says_sent;
 use crate::machine::Machine;
 use crate::solo::API;
 use crate::stub::{ResponsesReply, Step, Stub};
-use crate::talk::one_message_sent;
+use crate::talk::messages_sent;
 use crate::terminal::Terminal;
 use crate::world::AGENT;
 
@@ -280,6 +282,7 @@ impl Session {
         crate::hooks::api_sends(&self.live.codex.web.solo, &self.live.agent(), text)
     }
 
+    #[track_caller]
     pub fn send_in(&self, channel: ChannelId, peer: Option<&Bob>, text: &str) -> MessageId {
         let solo = &self.live.codex.web.solo;
         let sender_dir = solo.dir(API);
@@ -306,7 +309,12 @@ impl Session {
             )
             .finish();
         assert!(sent.success, "{sent:?}");
-        one_message_sent(&solo.talk.front, channel, mark)
+        let sends = messages_sent(&solo.talk.front, channel, mark);
+        let msg_id = reported_message(&sends).unwrap_or_else(|ids| {
+            panic!("not one reported message in {channel} for {text:?}: {ids:?}")
+        });
+        assert_says_sent(&sent.stdout, msg_id);
+        msg_id
     }
 
     fn recent_terminal_output(&self) -> String {
@@ -318,6 +326,39 @@ impl Session {
     pub fn sender(&self) -> &Machine {
         self.live.codex.machine()
     }
+}
+
+// A receipt for an earlier message can go out while this send runs.
+fn reported_message(sends: &[Sent]) -> Result<MessageId, Vec<MessageId>> {
+    let ids: Vec<_> = sends
+        .iter()
+        .filter(|sent| sent.report)
+        .map(|sent| sent.envelope.envelope().header.msg_id)
+        .collect();
+    match ids.as_slice() {
+        [id] => Ok(*id),
+        _ => Err(ids),
+    }
+}
+
+#[test]
+fn a_concurrent_receipt_does_not_count_as_a_send() {
+    let at = (skald_proto::SpaceId::generate(), ChannelId::generate());
+    let observed = |report| Sent {
+        envelope: crate::played::mls_envelope(at, &[], &[]),
+        report,
+    };
+    let (receipt, message, duplicate) = (observed(false), observed(true), observed(true));
+    let msg_id = message.envelope.envelope().header.msg_id;
+    let duplicate_id = duplicate.envelope.envelope().header.msg_id;
+    assert_eq!(
+        reported_message(&[receipt.clone(), message.clone()]),
+        Ok(msg_id)
+    );
+    assert_eq!(
+        reported_message(&[receipt, message, duplicate]),
+        Err(vec![msg_id, duplicate_id])
+    );
 }
 
 #[test]
