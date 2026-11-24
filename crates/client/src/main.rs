@@ -60,6 +60,7 @@ mod heartbeat;
 mod held;
 mod helper;
 mod history;
+mod history_export;
 mod history_reading;
 mod hook;
 mod inbound;
@@ -101,6 +102,7 @@ mod service;
 mod service_agents;
 mod session_file;
 mod set_username;
+mod setup;
 mod sign_in;
 mod sign_out;
 mod spaces;
@@ -119,6 +121,7 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::ffi::OsString;
 use std::io::IsTerminal as _;
 use std::io::Write as _;
 use std::num::NonZeroU64;
@@ -1047,6 +1050,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Saves verified history this device can read to a local file, oldest first. As an agent,
+    /// exports only from the space of the agent's folder.
+    /// Reports entries it could not read or verify.
+    #[command(group(clap::ArgGroup::new("export_scope").args(["space", "channel"]).required(true)))]
+    Export {
+        /// The name of the space to export.
+        #[arg(long, value_name = "SPACE")]
+        space: Option<String>,
+        /// The ID of a single channel to export, as skald channels shows it.
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The file format.
+        #[arg(long)]
+        format: history_export::Format,
+        /// The local file to save. Replaces an existing file after the export is complete.
+        #[arg(long, value_name = "FILE")]
+        output: OsString,
+    },
     /// Lists the agents of the working directory's space, or of the space named, from the presence
     /// values its devices keep in its channels: each agent once per device, with its state, since
     /// when, runtime and note, and its device's name and trust level; one that two devices of an
@@ -1200,6 +1221,23 @@ enum Command {
     /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
     /// rate limit.
     Update,
+    /// Sets Skald up in an agent CLI's config. For Codex, in the config home it uses, CODEX_HOME
+    /// or ~/.codex, in config.toml: this skald as the MCP server skald, run as skald mcp, whose
+    /// tools Codex calls without asking and which gets Skald's settings, such as SKALD_STATE_DIR
+    /// and SKALD_KEY_STORAGE; and skald hook codex as its SessionStart, PostToolUse,
+    /// UserPromptSubmit, Stop and PermissionRequest hooks, after the other hooks of each. Every
+    /// other entry and comment
+    /// stays; run again, it changes nothing; it replaces Skald's entries that differ, as an older
+    /// skald wrote them. Codex then asks to trust the new hooks: /hooks in the terminal, Review
+    /// hooks in the app and VS Code. A config it cannot read stays as it is, and the run says why.
+    Setup {
+        /// The agent CLI.
+        #[arg(value_name = "CLI")]
+        cli: setup::Cli,
+        /// Removes Skald's entries, and only them.
+        #[arg(long)]
+        remove: bool,
+    },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
     /// its config; the session's folder is the working directory. Once the client initializes or
     /// discovers the server, the session registers as its agent in the folder's space: the messages
@@ -1330,6 +1368,7 @@ impl Command {
             Command::FingerprintStep { .. } => Some("fingerprint"),
             Command::KeyChanges | Command::KeyChangesStep { .. } => Some("key-changes"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
+            Command::Setup { .. } => Some("setup"),
             _ => None,
         }
     }
@@ -1386,6 +1425,7 @@ impl Command {
                     | Command::RevokeDevice { .. }
                     | Command::SetUsername { .. }
                     | Command::History { .. }
+                    | Command::Export { .. }
                     | Command::FingerprintStep {
                         step: fingerprints::Step::Sync { .. }
                     }
@@ -1498,6 +1538,7 @@ impl Command {
             | Command::DeliveryModes { .. }
             | Command::Folder { .. }
             | Command::Update
+            | Command::Setup { .. }
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
@@ -2845,6 +2886,21 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 agent.is_some(),
             )
         }),
+        Command::Export {
+            space,
+            channel,
+            format,
+            output,
+        } => state::dir(state_dir).and_then(|dir| {
+            history_export::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                (space.as_deref(), channel.as_deref()),
+                (format, Path::new(&output)),
+                agent.is_some(),
+            )
+        }),
         Command::Agents { space, json } => state::dir(state_dir).and_then(|dir| {
             presence::run(
                 &dir,
@@ -2905,6 +2961,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 })
             }),
         Command::Update => update::run(&github_api, timeout),
+        Command::Setup { cli, remove } => setup::run(cli, remove),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),
@@ -3080,6 +3137,21 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `skald setup` changes the person's agent CLI config, so an agent cannot run it, and it needs
+    /// no state: it takes no lock and starts no helper.
+    #[test]
+    fn setup_is_the_persons_and_needs_no_state() {
+        for remove in [false, true] {
+            let command = Command::Setup {
+                cli: setup::Cli::Codex,
+                remove,
+            };
+            assert_eq!(command.person_only(), Some("setup"));
+            assert_eq!(command.locks(), None);
+            assert!(!command.starts_helper() && !command.connects());
+        }
+    }
 
     /// An invite expires in whole days from 1 to 30; anything else is refused.
     #[test]
