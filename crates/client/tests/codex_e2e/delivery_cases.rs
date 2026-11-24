@@ -14,8 +14,8 @@ use crate::host::woken;
 use crate::receipts::{shows_no_read, shows_read_once};
 use crate::senders::{OWN, PEER};
 use crate::session::{
-    QUIET, READY, SIGNAL, Session, after_prompt, called_after, codex_path, command, inbox,
-    input_items, user_text,
+    QUIET, READY, SIGNAL, Session, SessionOptions, after_prompt, called_after, codex_path, command,
+    inbox, input_items, user_text,
 };
 use crate::stub::{ResponsesReply, Stub, output_of, played};
 use crate::talk::{delivered, received_until};
@@ -90,8 +90,7 @@ fn an_idle_codex_gets_only_a_queue_signal_even_under_inline() {
         "ada-nightly-codex-idle",
         codex,
         Stub::start_responses(message_script),
-        None,
-        None,
+        SessionOptions::default(),
     );
     session.wait_idle(0);
     let solo = &session.live.codex.web.solo;
@@ -153,7 +152,7 @@ fn busy_hook(id: u64, login: &str, token: &str, after_tool: bool) {
             ResponsesReply::Done
         }
     });
-    let session = Session::capturing(id, login, codex, stub, None, None);
+    let session = Session::start(id, login, codex, stub, SessionOptions::CAPTURE);
     session.wait_request(0, |body| user_text(body).contains(READY));
     let solo = &session.live.codex.web.solo;
     let bob = Bob::join(solo, id + 1, &format!("{login}-peer"));
@@ -257,13 +256,12 @@ fn with_no_message_codex_hooks_supply_no_context_and_do_not_continue_the_turn() 
             ResponsesReply::Done
         }
     });
-    let session = Session::capturing(
+    let session = Session::start(
         5_340_103_001,
         "ada-nightly-codex-quiet",
         codex,
         stub,
-        None,
-        None,
+        SessionOptions::CAPTURE,
     );
     session.wait_idle(0);
     let before = session.model().requests().len();
@@ -330,13 +328,15 @@ fn a_failed_signal_turn_retries_by_the_next_prompt_and_read_waits_for_confirmati
         model_gate.await_release();
         ResponsesReply::Done
     });
-    let session = Session::capturing(
+    let session = Session::start(
         5_340_104_001,
         "ada-nightly-codex-retry",
         codex,
         stub,
-        None,
-        Some(10),
+        SessionOptions {
+            resend: Some(10),
+            ..SessionOptions::CAPTURE
+        },
     );
     session.wait_idle(0);
     let token = "fixture-retry-4078";
@@ -381,8 +381,7 @@ fn codex_applies_batch_and_pull_per_channel_and_trust_level() {
         "ada-nightly-codex-modes",
         codex,
         Stub::start_responses(message_script),
-        None,
-        None,
+        SessionOptions::default(),
     );
     session.wait_idle(0);
     let solo = &session.live.codex.web.solo;

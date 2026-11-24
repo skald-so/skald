@@ -74,6 +74,21 @@ pub enum PermissionPath {
     Daemon,
 }
 
+#[derive(Default)]
+pub struct SessionOptions {
+    pub permission: Option<PermissionPath>,
+    pub resend: Option<u64>,
+    pub capture: bool,
+}
+
+impl SessionOptions {
+    pub const CAPTURE: Self = Self {
+        permission: None,
+        resend: None,
+        capture: true,
+    };
+}
+
 pub struct Session {
     // Drop the terminal before the app-server and the temporary homes.
     pub terminal: Terminal,
@@ -89,31 +104,11 @@ impl Session {
         login: &str,
         program: PathBuf,
         stub: Stub,
-        permission: Option<PermissionPath>,
-        resend: Option<u64>,
-    ) -> Self {
-        Self::launch(id, login, program, stub, permission, resend, false)
-    }
-
-    pub fn capturing(
-        id: u64,
-        login: &str,
-        program: PathBuf,
-        stub: Stub,
-        permission: Option<PermissionPath>,
-        resend: Option<u64>,
-    ) -> Self {
-        Self::launch(id, login, program, stub, permission, resend, true)
-    }
-
-    fn launch(
-        id: u64,
-        login: &str,
-        program: PathBuf,
-        stub: Stub,
-        permission: Option<PermissionPath>,
-        resend: Option<u64>,
-        capture: bool,
+        SessionOptions {
+            permission,
+            resend,
+            capture,
+        }: SessionOptions,
     ) -> Self {
         let mut live = Live::new(id, login, program);
         live.stub = stub;

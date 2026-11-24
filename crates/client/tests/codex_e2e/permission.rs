@@ -3,7 +3,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::session::{PermissionPath, Session, called_after, codex_path, command, user_text};
+use crate::session::{
+    PermissionPath, Session, SessionOptions, called_after, codex_path, command, user_text,
+};
 use crate::stub::{ResponsesReply, Stub};
 
 const CHECK: &str = "Show the fixture approval dialog.";
@@ -35,7 +37,16 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
         }
     });
     let hook = matches!(path, PermissionPath::Hook);
-    let mut session = Session::capturing(id, login, codex, model, Some(path), None);
+    let mut session = Session::start(
+        id,
+        login,
+        codex,
+        model,
+        SessionOptions {
+            permission: Some(path),
+            ..SessionOptions::CAPTURE
+        },
+    );
     session.wait_idle(0);
     // The initial turn gives the helper a registered thread before any approval is requested.
     thread::sleep(Duration::from_secs(1));
