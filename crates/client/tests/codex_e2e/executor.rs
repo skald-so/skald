@@ -51,7 +51,10 @@ fn plant(scratch: &Path, home: &Path, folder: &Path, url: &str) {
     let hook = |name| {
         let executable = actor.to_string_lossy();
         let command = if cfg!(windows) {
-            format!("& '{}' mark {name}", executable.replace('\'', "''"))
+            format!(
+                "& {} mark {name}",
+                crate::powershell::single_quoted(&executable)
+            )
         } else {
             format!("'{}' mark {name}", executable.replace('\'', "'\\''"))
         };

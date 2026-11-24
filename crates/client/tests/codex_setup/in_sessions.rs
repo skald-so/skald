@@ -16,7 +16,7 @@ use crate::hooks::{Hooked, api_sends, run_hook};
 use crate::kit::RECV;
 use crate::lines::JSON_FLAG;
 use crate::lines::reference;
-use crate::talk::ADA_HOST;
+use crate::talk::{ADA_HOST, delivered, received_until};
 use crate::world::run;
 
 /// The length of a device's reference in a default agent name.
@@ -145,7 +145,7 @@ fn the_windows_hook_runs_from_a_path_with_spaces_and_an_apostrophe() {
     use crate::machine::{TestDir, bare_skald};
 
     let scratch = TestDir::new("codex-setup-powershell");
-    let bin = scratch.join("Skald's tools");
+    let bin = scratch.join("Skald's O’Brien tools");
     fs::create_dir(&bin).expect("local installation directory");
     let exe = bin.join("skald.exe");
     fs::copy(CLIENT, &exe).expect("local Skald executable");
@@ -230,6 +230,10 @@ fn the_server_and_hooks_it_writes_run_skald_in_a_codex_session() {
         (BY_PROMPT, Event::UserPromptSubmit),
     ] {
         let msg_id = api_sends(solo, &agent, text);
+        // These hooks replay recorded input. Intake the envelope before testing its signal.
+        received_until(codex.machine(), |shown| {
+            delivered(shown, msg_id, solo.talk.ada.device) > 0
+        });
         let signal = gives_by(event, || hook(event));
         assert_bare(&signal, &[text], &[msg_id], &[]);
     }

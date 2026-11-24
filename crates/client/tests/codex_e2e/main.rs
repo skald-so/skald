@@ -22,6 +22,8 @@ mod helped;
 mod hooks;
 #[path = "../codex_hosts/host.rs"]
 mod host;
+#[path = "../../src/powershell.rs"]
+mod powershell;
 #[path = "../claude_code_e2e/stub.rs"]
 mod stub;
 #[path = "../recovery_key/terminal.rs"]

@@ -24,6 +24,7 @@ on:
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
       - crates/client/src/permission_prompts.rs
+      - crates/client/src/powershell.rs
       - crates/client/src/recv.rs
       - crates/client/src/resend.rs
       - crates/client/src/setup.rs

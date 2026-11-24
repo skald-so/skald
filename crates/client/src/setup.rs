@@ -221,7 +221,7 @@ impl Entries {
 fn shell_program(path: &str, windows: bool) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c);
     if windows {
-        format!("& '{}'", path.replace('\'', "''"))
+        format!("& {}", crate::powershell::single_quoted(path))
     } else if !path.is_empty() && path.chars().all(plain) {
         path.to_owned()
     } else {
@@ -680,10 +680,13 @@ mod tests {
         );
         assert_eq!(shell_program("/it's/skald", false), r"'/it'\''s/skald'");
         assert_eq!(shell_program("", false), "''");
-        assert_eq!(
-            shell_program(r"C:\Ada's tools\skald.exe", true),
-            r"& 'C:\Ada''s tools\skald.exe'"
-        );
+        for apostrophe in ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+            let path = format!(r"C:\Ada{apostrophe}s tools\skald.exe");
+            assert_eq!(
+                shell_program(&path, true),
+                format!(r"& 'C:\Ada{apostrophe}{apostrophe}s tools\skald.exe'")
+            );
+        }
     }
 
     #[test]
