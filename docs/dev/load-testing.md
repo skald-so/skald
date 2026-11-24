@@ -64,3 +64,52 @@ Increase the load step by step. The last passing step sets the scenario maximum.
 | p99 Commit submission to last recipient | 10 seconds |
 
 A step fails on any HTTP 5xx, refusal, container kill, or lost or duplicated message, mailbox entry, presence value or task.
+
+## Local delivery run
+
+`skald-load-delivery` runs short checks with an owned loopback server, a disposable PostgreSQL database and a GitHub stand-in. Use 2–6 devices, up to three increasing steps of 1–6 messages per second, 1–5 seconds per step, and up to 256 bytes of text per message.
+
+```bash
+cargo build --locked -p skald-server -p skald-load-delivery
+(
+  set -e
+  source script/lib/postgres.sh
+  trap postgres_stop EXIT
+  postgres_start
+  postgres_wait
+  docker exec "$postgres" createdb --username postgres skald_load_delivery
+  SKALD_LOAD_DATABASE_URL="$SKALD_TEST_DATABASE_URL/skald_load_delivery" \
+    target/debug/skald-load-delivery --server-binary target/debug/skald-server \
+    --devices 4 --rates 1,2 --seconds 1 --max-p99-push-ms 2000
+)
+```
+
+The tool sets up accounts, certificates, a signed roster and an MLS group before measuring. It sends at each offered rate and checks the recipients' order, exact delivery and history readback. Incomplete steps have up to four seconds after offering ends for pending `Stored` frames, pushes and ACK confirmations.
+
+Push latency is the elapsed time on the client clock between observing `Stored` and observing a recipient push. A push seen earlier contributes zero. The report counts those samples separately. `delivered` counts messages observed by their recipients. `acknowledged` counts the matching `Delivered` statuses observed by their senders.
+
+Example report excerpt for a passing step:
+
+```json
+{
+  "maximum_passed_rate": 2,
+  "first_failed_check": null,
+  "steps": [
+    {
+      "offered_messages_per_second": 2,
+      "offered_seconds": 1,
+      "stored_messages_per_second": 2.0,
+      "history_entries_per_second": 2.0,
+      "push_latency_ms": { "p50": 0.7, "p95": 1.6, "p99": 1.6 },
+      "stored": 2,
+      "expected_pushes": 6,
+      "delivered": 6,
+      "acknowledged": 6,
+      "history_stored": 2,
+      "errors": []
+    }
+  ]
+}
+```
+
+The tool prints the report even when a step fails. `first_failed_check` names the failure, and the tool exits nonzero. A missing push or ACK confirmation names the message and recipient in that step's errors.
