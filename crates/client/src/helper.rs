@@ -740,15 +740,27 @@ fn run(stream: UnixStream, dir: &Path, request: &[u8], sessions: &mut Sessions) 
             ..
         }
     );
+    let claude_session = match &operation.command {
+        Command::Hook {
+            cli: crate::hook::Cli::Claude,
+            input: Some(input),
+            ..
+        } => input.session.id.clone(),
+        _ => None,
+    };
+    let mut deferred = None;
     let code = match on_behalf(&stream, dir, &request.cwd, || {
-        crate::perform(operation).map(|()| true)
+        crate::perform_with_stop(operation, Some(&mut deferred)).map(|()| true)
     }) {
         Some(Outcome::Done(code)) => code,
         Some(Outcome::Waits) => unreachable!("only a session waits"),
         None => return Served::Nothing,
     };
     let mut answer = stream;
-    let _ = send(&mut answer, Kind::Code, &[code]);
+    let answered = send(&mut answer, Kind::Code, &[code]).is_ok();
+    if let Some(id) = claude_session {
+        sessions.claude_stopped(id, deferred.filter(|_| answered && code == 0));
+    }
     if signs_out || code == PANICKED {
         Served::Exit(None)
     } else if beats {
