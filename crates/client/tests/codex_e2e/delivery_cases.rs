@@ -18,6 +18,7 @@ use crate::session::{
     input_items, user_text,
 };
 use crate::stub::{ResponsesReply, Stub, output_of, played};
+use crate::talk::{delivered, received_until};
 
 fn tool_result(body: &Value, text: &str) -> bool {
     (0..played(body)).any(|step| output_of(body, step).is_some_and(|output| output.contains(text)))
@@ -152,7 +153,7 @@ fn busy_hook(id: u64, login: &str, token: &str, after_tool: bool) {
             ResponsesReply::Done
         }
     });
-    let session = Session::capturing(id, login, codex, stub);
+    let session = Session::capturing(id, login, codex, stub, None, None);
     session.wait_request(0, |body| user_text(body).contains(READY));
     let solo = &session.live.codex.web.solo;
     let bob = Bob::join(solo, id + 1, &format!("{login}-peer"));
@@ -164,6 +165,10 @@ fn busy_hook(id: u64, login: &str, token: &str, after_tool: bool) {
         token.to_owned()
     };
     let msg = session.send_in(channel, Some(&bob), &text);
+    // Keep the turn busy until the receiving device has recorded the message.
+    received_until(&bob.person.machine, |shown| {
+        delivered(shown, msg, solo.talk.ada.device) > 0
+    });
     gate.release();
 
     let expected_event = if after_tool { "PostToolUse" } else { "Stop" };
@@ -252,7 +257,14 @@ fn with_no_message_codex_hooks_supply_no_context_and_do_not_continue_the_turn() 
             ResponsesReply::Done
         }
     });
-    let session = Session::capturing(5_340_103_001, "ada-nightly-codex-quiet", codex, stub);
+    let session = Session::capturing(
+        5_340_103_001,
+        "ada-nightly-codex-quiet",
+        codex,
+        stub,
+        None,
+        None,
+    );
     session.wait_idle(0);
     let before = session.model().requests().len();
     thread::sleep(QUIET);
@@ -318,7 +330,7 @@ fn a_failed_signal_turn_retries_by_the_next_prompt_and_read_waits_for_confirmati
         model_gate.await_release();
         ResponsesReply::Done
     });
-    let session = Session::start(
+    let session = Session::capturing(
         5_340_104_001,
         "ada-nightly-codex-retry",
         codex,
@@ -345,6 +357,9 @@ fn a_failed_signal_turn_retries_by_the_next_prompt_and_read_waits_for_confirmati
     thread::sleep(Duration::from_secs(10).saturating_sub(first_signal.elapsed()));
     let retry = session.model().requests().len();
     session.prompt("Retry the fixture.");
+    let bytes = session.wait_hook_stdout("UserPromptSubmit");
+    assert_hook_output("UserPromptSubmit", &bytes, token);
+    assert!(String::from_utf8_lossy(&bytes).contains(SIGNAL));
     let signal = session.wait_request(retry, retry_has_signal);
     assert!(!signal.to_string().contains(token) || tool_result(&signal, token));
     session.wait_request(retry, |body| tool_result(body, token));

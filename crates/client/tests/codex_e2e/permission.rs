@@ -34,7 +34,8 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
             ResponsesReply::Done
         }
     });
-    let mut session = Session::start(id, login, codex, model, Some(path), None);
+    let hook = matches!(path, PermissionPath::Hook);
+    let mut session = Session::capturing(id, login, codex, model, Some(path), None);
     session.wait_idle(0);
     // The initial turn gives the helper a registered thread before any approval is requested.
     thread::sleep(Duration::from_secs(1));
@@ -93,6 +94,16 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
     assert!(
         records(&session).is_empty(),
         "the approval was reported twice"
+    );
+    let observed: Vec<_> = session
+        .hook_stdout()
+        .into_iter()
+        .filter(|(event, _)| event == "PermissionRequest")
+        .collect();
+    assert_eq!(observed.len(), usize::from(hook), "permission hook calls");
+    assert!(
+        observed.iter().all(|(_, bytes)| bytes.is_empty()),
+        "permission hook printed output"
     );
     session.model().assert_no_foreign_credential();
 }

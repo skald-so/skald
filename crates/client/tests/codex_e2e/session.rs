@@ -95,8 +95,15 @@ impl Session {
         Self::launch(id, login, program, stub, permission, resend, false)
     }
 
-    pub fn capturing(id: u64, login: &str, program: PathBuf, stub: Stub) -> Self {
-        Self::launch(id, login, program, stub, None, None, true)
+    pub fn capturing(
+        id: u64,
+        login: &str,
+        program: PathBuf,
+        stub: Stub,
+        permission: Option<PermissionPath>,
+        resend: Option<u64>,
+    ) -> Self {
+        Self::launch(id, login, program, stub, permission, resend, true)
     }
 
     fn launch(

@@ -46,7 +46,14 @@ impl Capture {
             .parse()
             .expect("fixture TOML");
         let exec = if cfg!(windows) { "" } else { "exec " };
-        for event in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
+        let events = [
+            "SessionStart",
+            "UserPromptSubmit",
+            "PostToolUse",
+            "Stop",
+            "PermissionRequest",
+        ];
+        for event in events {
             let command = &mut doc["hooks"][event][0]["hooks"][0]["command"];
             assert!(
                 command
@@ -59,7 +66,7 @@ impl Capture {
         fs::write(config, doc.to_string()).expect("configure hook stdout capture");
         let mut app_server = AppServer::start(live.command(&live.program, settings));
         let (_, trusted) = app_server.trust_hooks(live.dir());
-        assert_eq!(trusted.len(), 4, "wrapped hooks: {trusted:?}");
+        assert_eq!(trusted.len(), events.len(), "wrapped hooks: {trusted:?}");
         Self(records)
     }
 
