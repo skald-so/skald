@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Packages the CLI and its libraries from the release checkout.
+# Usage: script/release-cargo <tag> <dir>
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+source "$root/script/lib/release-tag-args.sh"
+check_release_tag_args "$@"
+version=$("$root/script/release-version" "$1")
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+cp "$root/Cargo.toml" "$root/Cargo.lock" "$tmp/"
+names=()
+packages=()
+for crate in proto adapters crypto client; do
+  src="crates/$crate"
+  name="skald-$crate"
+  [[ $crate != client ]] || name=skald-so
+  names+=("$name")
+  packages+=(-p "$name")
+
+  mkdir -p "$tmp/$src"
+  cp "$root/LICENSE-MIT" "$root/LICENSE-APACHE" "$tmp/$src/"
+  # Stage tracked runtime files only. The client build script embeds its SQL migrations.
+  git -C "$root" ls-files -z -- ":(glob)$src/src/**/*.rs" "$src/build.rs" ":(glob)$src/migrations/*.sql" >"$tmp/files"
+  while IFS= read -r -d '' file; do
+    if [[ ! -f $root/$file || -L $root/$file ]]; then
+      echo "release-cargo: expected a regular source file at $file" >&2
+      exit 1
+    fi
+    mkdir -p "$tmp/${file%/*}"
+    cp "$root/$file" "$tmp/$file"
+  done <"$tmp/files"
+
+  # Keep the runtime manifests and make the local dependencies registry-resolvable.
+  awk -v name="$name" -v version="$version" '
+    /^\[/ {
+      section = $0
+      omit = /^\[\[test\]\]$/ || /^\[(.*\.)?dev-dependencies\]$/ || /^\[package\.metadata\.dist\]$/
+    }
+    omit { next }
+    section == "[package]" && /^name *=/ {
+      print "name = \"" name "\""
+      print "repository = \"https://github.com/skald-so/skald\""
+      next
+    }
+    / = \{ path = "\.\.\/(proto|adapters|crypto)"[ ,}]/ {
+      sub(/\{ path = /, "{ version = \"=" version "\", path = ")
+    }
+    { print }
+  ' "$root/$src/Cargo.toml" >"$tmp/$src/Cargo.toml"
+done
+
+# Cargo stages the selected packages together and writes a registry lockfile for each.
+(cd "$tmp" && cargo package --target-dir "$tmp/target" "${packages[@]}")
+mkdir -p "$2"
+for name in "${names[@]}"; do
+  mv "$tmp/target/package/$name-$version.crate" "$2/"
+done

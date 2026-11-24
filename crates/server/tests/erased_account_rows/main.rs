@@ -28,6 +28,7 @@ mod https;
 #[path = "../account_deletion/held.rs"]
 mod held;
 
+mod findings;
 mod removed;
 mod roster;
 mod rows;

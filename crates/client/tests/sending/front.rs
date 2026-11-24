@@ -17,6 +17,7 @@
 //! `history-stored` answers or turn them into `history-refused`. It can lose only the `stored`
 //! answers to `mls` envelopes of a channel from an MLS epoch on.
 
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::num::NonZeroU64;
@@ -120,6 +121,8 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
+    /// Devices whose WebSocket `ack` frames it swallowed.
+    swallowed_acks: BTreeSet<DeviceId>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
     hold_messages: bool,
     /// How many `message` pushes it held back.
@@ -258,6 +261,7 @@ impl Front {
                 refused: 0,
                 acks: Acks::Forward,
                 acked: 0,
+                swallowed_acks: BTreeSet::new(),
                 hold_messages: false,
                 held_messages: 0,
                 hold_end: false,
@@ -385,6 +389,11 @@ impl Front {
     /// How many acks the machines sent so far, forwarded or not.
     pub fn acked(&self) -> usize {
         self.shared.state().acked
+    }
+
+    /// Whether it swallowed a WebSocket `ack` frame from `device`.
+    pub fn swallowed_ack_from(&self, device: DeviceId) -> bool {
+        self.shared.state().swallowed_acks.contains(&device)
     }
 
     /// From now on, holds back the server's `message` pushes and the `batch` that ends catch-up if
@@ -558,6 +567,10 @@ fn to_server(
                 }
                 continue;
             }
+            let ack_device = match &decoded {
+                Some(Frame::Ack { .. }) => link.device(),
+                _ => None,
+            };
             let ack = match decoded {
                 Some(Frame::Send { envelope, report }) => {
                     let mut state = shared.state();
@@ -632,6 +645,9 @@ fn to_server(
                 let acks = {
                     let mut state = shared.state();
                     state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, ack_device) {
+                        state.swallowed_acks.insert(device);
+                    }
                     state.acks
                 };
                 match acks {
