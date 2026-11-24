@@ -108,6 +108,9 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
   - Before the GitHub Release is published, each build runner runs `skald` from the release's files through the packed package (`script/npm-package-test`).
   - It publishes with provenance; npm accepts the job's OIDC token only from the package's trusted publisher, `skald-so/skald`, `release.yml` and the environment `npm`. The package's publishing access requires 2FA and disallows tokens.
   - The job's token writes nothing but `id-token`.
+- **Cargo source packages:** Run `script/release-cargo <tag> <dir>` from the release checkout to package the `skald` CLI as `skald-so` with its libraries at the workspace version.
+  - Publish `skald-proto` first, then `skald-adapters` and `skald-crypto`, then `skald-so`. Each dependency version must be visible in the registry before publishing its dependents.
+  - `script/release-cargo-test` checks the source and licenses, builds the extracted CLI with its lockfile against a local registry, and checks the error when a library is missing.
 - **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
   - Each runner installs the release with `install.sh`, or `install.ps1` on Windows, and with `npx skald-so`, and each `skald` prints the release's version. For a stable release with an earlier one, the release published before it, a beta included, that release's `skald` updates itself with `skald update` and then prints the release's version.
   - `skald update` asks GitHub's API without a token, so a runner's shared address can use up its rate limit. The check then waits for the limit's reset, at most 20 minutes, and runs it again; a later reset fails the step, naming the rate limit.
@@ -192,6 +195,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 
 ## Cloud
 - **The same image that is published for self-hosting.**
+- [Load testing](load-testing.md) covers the runner profile, targets and bounds.
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
   - Its GitHub sign-in uses an OAuth App of its own under `skald-so`; `script/check-github-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Its Google sign-in uses an OAuth client of its own; `script/check-google-sign-in https://dev.skald.so <client ID>` checks it without a person.

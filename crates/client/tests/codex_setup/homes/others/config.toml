@@ -1,0 +1,31 @@
+# Codex config of a person who runs other tools beside Codex.
+model = "gpt-5.5"
+model_reasoning_effort = "high" # picked in the VS Code extension
+
+[features]
+plugins = true
+
+# The docs server, started in every session.
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "@example/docs-mcp"]
+env = { DOCS_TOKEN_FILE = "/home/ada/.docs-token" }
+
+[mcp_servers.tracker]
+url = "https://tracker.example.com/mcp"
+enabled = false
+
+[projects."/home/ada/work/site"]
+trust_level = "trusted"
+
+# Saved by Codex when the person trusted the hook below.
+[hooks.state."/home/ada/.codex/config.toml:pre_tool_use:0:0"]
+trusted_hash = "sha256:6c3f2a9e0b7d41c58e2f9a1d3b4c5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f"
+
+[[hooks.PreToolUse]]
+matcher = "Bash"
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "/home/ada/bin/guard-bash"
+timeout = 5

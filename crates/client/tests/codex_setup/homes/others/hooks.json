@@ -1,0 +1,16 @@
+{
+    "hooks": {
+        "Stop": [
+            {
+                "matcher": "",
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "say codex done",
+                        "timeout": 5
+                    }
+                ]
+            }
+        ]
+    }
+}
