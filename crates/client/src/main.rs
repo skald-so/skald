@@ -2309,6 +2309,14 @@ impl Operation {
 /// helper does. Out of the helper, a run as an agent then checks the device's presence
 /// ([`uploads::keep`]), but an MCP server's own and its heartbeat: the helper keeps its session's.
 fn perform(operation: Operation) -> Result<(), String> {
+    perform_with_stop(operation, None)
+}
+
+/// As `perform`, handing an ordinary Claude Stop's deferred check to its helper.
+fn perform_with_stop(
+    operation: Operation,
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
+) -> Result<(), String> {
     // A Codex hook never waits on the network.
     let checks = !uploads::in_helper()
         && operation.agent.is_some()
@@ -2324,7 +2332,7 @@ fn perform(operation: Operation) -> Result<(), String> {
         );
     let settings = uploads::Settings::of(&operation);
     let state_dir = operation.state_dir.clone();
-    let ran = performed(operation);
+    let ran = performed(operation, deferred);
     if checks && let Ok(dir) = state::dir(state_dir) {
         uploads::keep(&dir, settings, &uploads::Live::default());
     }
@@ -2334,7 +2342,10 @@ fn perform(operation: Operation) -> Result<(), String> {
 /// [`perform`] without its check of the presence. A run that says how many key changes wait
 /// ([`Command::says_key_changes`]) says it after its command, a tool call before it, as its result
 /// is its first output.
-fn performed(operation: Operation) -> Result<(), String> {
+fn performed(
+    operation: Operation,
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
+) -> Result<(), String> {
     let agent = operation.agent()?;
     clock::set_offset(operation.clock_offset);
     ssh_checks::set(&operation.github_api, operation.timeout);
@@ -2350,7 +2361,7 @@ fn performed(operation: Operation) -> Result<(), String> {
     }
     let asks = Asks::of(&operation);
     connection::forget_refused();
-    let ran = command_performed(operation, agent).map_err(|err| asks.told(err));
+    let ran = command_performed(operation, agent, deferred).map_err(|err| asks.told(err));
     if !tool_call && let Some(says) = &says {
         say(says);
     }
@@ -2358,7 +2369,11 @@ fn performed(operation: Operation) -> Result<(), String> {
 }
 
 /// [`performed`] without what it says of the key changes, as `agent` if given.
-fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), String> {
+fn command_performed(
+    operation: Operation,
+    agent: Option<Name>,
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
+) -> Result<(), String> {
     let Operation {
         speaks,
         timeout,
@@ -2863,7 +2878,8 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                     key_storage,
                     (speaks, timeout),
                     &agent,
-                    (event, input.cap, &input.session),
+                    (&input, event),
+                    deferred,
                 ),
             }
         }

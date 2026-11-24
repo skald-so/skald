@@ -207,7 +207,8 @@ pub fn hook(
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-    (event, cap, session): (hook::Event, u64, &hook::Session),
+    (input, event): (&hook::Input, hook::Event),
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
 ) -> Result<(), String> {
     holding_warnings(dir, true, || {
         let Ok(space) = crate::folders::working_space(dir) else {
@@ -216,7 +217,15 @@ pub fn hook(
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
         if let hook::Event::Stop { .. } = event {
-            claude_socket::confirm(&state, agent, session).map_err(text)?;
+            if let Some(deferred) = deferred {
+                *deferred = claude_socket::defer_stop(
+                    &state,
+                    (space.id, agent),
+                    &input.session,
+                    input.turn.as_deref(),
+                );
+            }
+            claude_socket::confirm(&state, agent, &input.session).map_err(text)?;
         }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
@@ -225,7 +234,7 @@ pub fn hook(
             _ => state.count_stops(space.id, agent.as_str(), Some(0)),
         }
         .map_err(text)?;
-        if matches!(event, hook::Event::Stop { .. }) && stops >= cap {
+        if matches!(event, hook::Event::Stop { .. }) && stops >= input.cap {
             return Ok(());
         }
         drop(state);
@@ -1536,6 +1545,18 @@ pub(crate) fn kept_line(
     form: Form,
     references: &References,
 ) -> (String, TrustLevel) {
+    let (line, level, _) = kept_line_with_whole(opened, form, references, None);
+    (line, level)
+}
+
+/// As `kept_line`, with the whole primary reference of an ordinary message when its ID is
+/// `whole`. The third result names the whole reference if it was shown.
+pub(crate) fn kept_line_with_whole(
+    opened: &[u8],
+    form: Form,
+    references: &References,
+    whole: Option<MessageId>,
+) -> (String, TrustLevel, Option<String>) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
@@ -1547,12 +1568,16 @@ pub(crate) fn kept_line(
                 Some(result) => (result.task.parse::<TaskId>()).map_or(msg_id, forms::as_message),
                 None => msg_id,
             };
-            let line = record.shown(form, &references.of(shown_id), answered.as_deref());
-            (line, record.level)
+            let whole = (Some(msg_id) == whole && record.result.is_none())
+                .then(|| forms::whole_reference(msg_id));
+            let reference = whole.clone().unwrap_or_else(|| references.of(shown_id));
+            let line = record.shown(form, &reference, answered.as_deref());
+            (line, record.level, whole)
         }
         _ => (
             String::from_utf8_lossy(opened).into_owned(),
             TrustLevel::Peer,
+            None,
         ),
     }
 }
@@ -2695,6 +2720,55 @@ mod tests {
              01a1dcab-ee8a-7872-9adc-6efd0851e3ee are missing: the server refused, expired or \
              dropped them"
         );
+    }
+
+    #[test]
+    fn a_whole_primary_reference_preserves_short_reply_and_task_references() {
+        let msg_id = MessageId::from_bytes([1; 16]);
+        let reply_to = MessageId::from_bytes([2; 16]);
+        let task = TaskId::generate();
+        let references = References::new([msg_id, reply_to, forms::as_message(task)]);
+        let mut message = forms::Message {
+            msg_id: msg_id.to_string(),
+            space: "test".to_owned(),
+            channel: "general".to_owned(),
+            from: "space/person/agent@skald.test".to_owned(),
+            device: "device".to_owned(),
+            device_name: "laptop".to_owned(),
+            level: TrustLevel::Own,
+            text: "payload".to_owned(),
+            after_missing: false,
+            reply_to: Some(reply_to.to_string()),
+            refused: Vec::new(),
+            result: None,
+        };
+
+        let record = serde_json::to_vec(&message).unwrap();
+        let (short, _) = kept_line(&record, Form::Short, &references);
+        assert!(short.contains(&format!("] #{} ", references.of(msg_id))));
+        assert!(short.contains(&format!("(reply to #{})", references.of(reply_to))));
+        let (exact, _, whole) =
+            kept_line_with_whole(&record, Form::Short, &references, Some(msg_id));
+        let expected = forms::whole_reference(msg_id);
+        assert_eq!(whole.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            exact,
+            short.replacen(
+                &format!("] #{} ", references.of(msg_id)),
+                &format!("] #{expected} "),
+                1
+            )
+        );
+
+        message.result = Some(forms::ResultOf {
+            task: task.to_string(),
+            outcome: "done".to_owned(),
+        });
+        let record = serde_json::to_vec(&message).unwrap();
+        let (exact, _, whole) =
+            kept_line_with_whole(&record, Form::Short, &references, Some(msg_id));
+        assert_eq!(whole, None);
+        assert!(exact.contains(&format!("] #{} ", references.of(forms::as_message(task)))));
     }
 
     /// An agent's warnings name a message by its reference and a device by its name, escaped,

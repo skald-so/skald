@@ -363,6 +363,13 @@ pub enum Ran {
 }
 
 impl Sessions {
+    /// Keeps a successful Stop's exact deferred confirmation, or drops that session's old one.
+    pub fn claude_stopped(&mut self, id: String, deferred: Option<claude_socket::DeferredStop>) {
+        if let Some(claude) = &mut self.claude {
+            claude.stopped(id, deferred);
+        }
+    }
+
     /// Serves the registered Claude Code and Codex sessions too, its runs with `settings`.
     pub fn serve_agents(&mut self, settings: claude_socket::Settings) {
         self.claude = Some(claude_socket::Served::new(settings));
@@ -489,9 +496,17 @@ impl Sessions {
                 let held = self.waiting.remove(at);
                 let ran = helper::run_for(held.session, dir, |_| {
                     for event in &pushed.channel {
-                        let line = format!("{}\n", serde_json::json!({ "content": event }));
+                        let line = format!("{}\n", serde_json::json!({ "content": event.content }));
+                        let started = crate::state::unix_ms();
                         output::write(output::Stream::Out, line.as_bytes())
                             .map_err(|err| format!("cannot give a channel event: {err}"))?;
+                        if let Some(claude) = &mut self.claude {
+                            claude.emitted(
+                                (space, &agent),
+                                (resend::Way::Channel, None, started),
+                                event,
+                            );
+                        }
                     }
                     Ok(false)
                 });
@@ -501,9 +516,22 @@ impl Sessions {
                 && let Some(at) = (self.waiting.iter()).position(|waiting| theirs(waiting, rewakes))
             {
                 let rewake = self.waiting.remove(at);
-                let ran = helper::run_for(rewake.session, dir, |_| {
-                    output::write(output::Stream::Err, given.as_bytes())
+                let ran = helper::run_for(rewake.session, dir, |operation| {
+                    let started = crate::state::unix_ms();
+                    output::write(output::Stream::Err, given.content.as_bytes())
                         .map_err(|err| format!("cannot give the messages: {err}"))?;
+                    if let Some(claude) = &mut self.claude
+                        && let Command::Hook {
+                            input: Some(input), ..
+                        } = &operation.command
+                        && let Some(id) = input.session.id.as_deref()
+                    {
+                        claude.emitted(
+                            (space, &agent),
+                            (resend::Way::Rewake, Some(id), started),
+                            given,
+                        );
+                    }
                     Ok(true)
                 });
                 self.again(ran, Some(space))?;
