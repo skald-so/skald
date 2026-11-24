@@ -101,6 +101,7 @@ mod service;
 mod service_agents;
 mod session_file;
 mod set_username;
+mod setup;
 mod sign_in;
 mod sign_out;
 mod spaces;
@@ -1200,6 +1201,23 @@ enum Command {
     /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
     /// rate limit.
     Update,
+    /// Sets Skald up in an agent CLI's config. For Codex, in the config home it uses, CODEX_HOME
+    /// or ~/.codex, in config.toml: this skald as the MCP server skald, run as skald mcp, whose
+    /// tools Codex calls without asking and which gets Skald's settings, such as SKALD_STATE_DIR
+    /// and SKALD_KEY_STORAGE; and skald hook codex as its SessionStart, PostToolUse,
+    /// UserPromptSubmit, Stop and PermissionRequest hooks, after the other hooks of each. Every
+    /// other entry and comment
+    /// stays; run again, it changes nothing; it replaces Skald's entries that differ, as an older
+    /// skald wrote them. Codex then asks to trust the new hooks: /hooks in the terminal, Review
+    /// hooks in the app and VS Code. A config it cannot read stays as it is, and the run says why.
+    Setup {
+        /// The agent CLI.
+        #[arg(value_name = "CLI")]
+        cli: setup::Cli,
+        /// Removes Skald's entries, and only them.
+        #[arg(long)]
+        remove: bool,
+    },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
     /// its config; the session's folder is the working directory. Once the client initializes or
     /// discovers the server, the session registers as its agent in the folder's space: the messages
@@ -1330,6 +1348,7 @@ impl Command {
             Command::FingerprintStep { .. } => Some("fingerprint"),
             Command::KeyChanges | Command::KeyChangesStep { .. } => Some("key-changes"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
+            Command::Setup { .. } => Some("setup"),
             _ => None,
         }
     }
@@ -1498,6 +1517,7 @@ impl Command {
             | Command::DeliveryModes { .. }
             | Command::Folder { .. }
             | Command::Update
+            | Command::Setup { .. }
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
@@ -2905,6 +2925,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 })
             }),
         Command::Update => update::run(&github_api, timeout),
+        Command::Setup { cli, remove } => setup::run(cli, remove),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),
@@ -3080,6 +3101,21 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `skald setup` changes the person's agent CLI config, so an agent cannot run it, and it needs
+    /// no state: it takes no lock and starts no helper.
+    #[test]
+    fn setup_is_the_persons_and_needs_no_state() {
+        for remove in [false, true] {
+            let command = Command::Setup {
+                cli: setup::Cli::Codex,
+                remove,
+            };
+            assert_eq!(command.person_only(), Some("setup"));
+            assert_eq!(command.locks(), None);
+            assert!(!command.starts_helper() && !command.connects());
+        }
+    }
 
     /// An invite expires in whole days from 1 to 30; anything else is refused.
     #[test]
