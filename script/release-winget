@@ -1,0 +1,64 @@
+#!/usr/bin/env node
+// Usage: script/release-winget <tag> <release dir> <package identifier> <manifest dir>
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { archiveName, checkPackage, manifests, releaseUrl, windowsTargets } from './lib/winget.mjs';
+
+async function verifyArchive(dir, target) {
+  const name = archiveName(target);
+  const archive = path.resolve(dir, name);
+  const checksum = fs.readFileSync(`${archive}.sha256`, 'utf8').trimEnd();
+  const [expected, listed] = checksum.split(' *');
+  if (!/^[0-9a-f]{64}$/i.test(expected) || listed !== name) throw new Error(`Invalid checksum for ${name}.`);
+
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(archive)) hash.update(chunk);
+  const actual = hash.digest('hex');
+  if (actual !== expected.toLowerCase()) throw new Error(`Checksum mismatch for ${name}.`);
+
+  const files = execFileSync('unzip', ['-Z1', archive], { encoding: 'utf8' }).split(/\r?\n/);
+  if (files.filter((file) => file.toLowerCase() === 'skald.exe').join('\n') !== 'skald.exe') {
+    throw new Error(`${name} must contain one skald.exe at the archive root.`);
+  }
+  return actual.toUpperCase();
+}
+
+async function main() {
+  const [tag, releaseDir, id, manifestDir] = process.argv.slice(2);
+  if (process.argv.length !== 6 || !tag?.startsWith('v')) {
+    throw new Error('Usage: script/release-winget <tag> <release dir> <package identifier> <manifest dir>');
+  }
+  const version = tag.slice(1);
+  checkPackage(id, version);
+  const fixtureUrl = process.env.SKALD_DOWNLOAD_URL;
+  if (fixtureUrl && !/^http:\/\/127\.0\.0\.1:[0-9]+$/.test(fixtureUrl)) {
+    throw new Error('SKALD_DOWNLOAD_URL must point to a loopback fixture.');
+  }
+  const base = fixtureUrl || releaseUrl(version);
+  const entries = await Promise.all(Object.entries(windowsTargets).map(async ([architecture, target]) => ({
+    architecture,
+    url: `${base}/${archiveName(target)}`,
+    sha256: await verifyArchive(releaseDir, target),
+  })));
+
+  const output = path.resolve(manifestDir);
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  const staging = fs.mkdtempSync(path.join(path.dirname(output), '.winget-'));
+  try {
+    for (const [name, content] of Object.entries(manifests(id, version, entries))) {
+      fs.writeFileSync(path.join(staging, name), content);
+    }
+    fs.renameSync(staging, output);
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+try {
+  await main();
+} catch (error) {
+  console.error(`release-winget: ${error.message}`);
+  process.exitCode = 1;
+}

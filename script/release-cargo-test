@@ -1,0 +1,213 @@
+#!/usr/bin/env node
+// Tests the release's Cargo artifacts with an extracted crate and a local sparse registry.
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { reporter } from './lib/report.mjs';
+
+const root = fileURLToPath(new URL('..', import.meta.url));
+const tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-cargo-test-')));
+const exec = promisify(execFile);
+const { fail, done } = reporter('release-cargo-test');
+const release = path.join(root, 'script/release-cargo');
+const executable = process.platform === 'win32' ? 'skald.exe' : 'skald';
+
+function cargoEnv(name) {
+  const home = path.join(tmp, name);
+  fs.mkdirSync(home);
+  const inherited = Object.entries(process.env).filter(([key]) =>
+    /^(path|systemroot|tmpdir|temp|tmp|cargo_build_jobs|https?_proxy|ssl_cert_file)$/i.test(key));
+  const noProxy = [process.env.no_proxy ?? process.env.NO_PROXY, '127.0.0.1'].filter(Boolean).join(',');
+  return {
+    ...Object.fromEntries(inherited),
+    HOME: home,
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    CARGO_HOME: home,
+    CARGO_TARGET_DIR: path.join(home, 'target'),
+    CARGO_TERM_COLOR: 'never',
+    RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(os.homedir(), '.rustup'),
+  };
+}
+
+async function metadata(cwd, env) {
+  const { stdout } = await exec('cargo', ['metadata', '--format-version', '1', '--no-deps', '--offline'], { cwd, env });
+  return JSON.parse(stdout).packages;
+}
+
+// This fixture indexes the actual release artifacts. Registry dependencies from third parties
+// still use crates.io's read-only index and downloads.
+function registryEntry(pkg, bytes) {
+  return {
+    name: pkg.name,
+    vers: pkg.version,
+    deps: pkg.dependencies.map((dep) => ({
+      name: dep.rename ?? dep.name,
+      package: dep.rename ? dep.name : null,
+      req: dep.req,
+      features: dep.features,
+      default_features: dep.uses_default_features,
+      optional: dep.optional,
+      target: dep.target,
+      kind: dep.kind ?? 'normal',
+    })),
+    cksum: createHash('sha256').update(bytes).digest('hex'),
+    features: {},
+    features2: pkg.features,
+    yanked: false,
+    links: pkg.links,
+    rust_version: pkg.rust_version,
+    v: 2,
+  };
+}
+
+function serve(packages, localNames, missing) {
+  const downloaded = new Set();
+  const server = http.createServer((req, res) => {
+    const [, fixture, ...parts] = req.url.split('/');
+    const name = parts.at(-1);
+    const pkg = packages.get(name);
+    const absent = fixture === 'incomplete' && name === missing;
+    if (req.method !== 'GET') {
+      res.writeHead(405).end();
+    } else if (name === 'config.json') {
+      const dl = `http://127.0.0.1:${server.address().port}/${fixture}/crate/{version}/{crate}`;
+      res.end(JSON.stringify({ dl }));
+    } else if (localNames.has(name)) {
+      if (!pkg || absent) return res.writeHead(404).end();
+      if (parts[0] === 'crate') {
+        if (parts[1] !== pkg.index.vers) return res.writeHead(404).end();
+        downloaded.add(name);
+        res.end(pkg.bytes);
+      } else {
+        res.end(`${JSON.stringify(pkg.index)}\n`);
+      }
+    } else {
+      const location = parts[0] === 'crate'
+        ? `https://static.crates.io/crates/${name}/${name}-${parts[1]}.crate`
+        : `https://index.crates.io/${parts.join('/')}`;
+      res.writeHead(302, { location }).end();
+    }
+  });
+  return { server, downloaded };
+}
+
+function publicFile(file) {
+  return /^(?:Cargo\.(?:toml(?:\.orig)?|lock)|\.cargo_vcs_info\.json|README(?:\.md)?|LICENSE(?:-[\w-]+)?(?:\.md)?|build\.rs)$/.test(file)
+    || /^(?:src\/.+\.rs|migrations\/[^/]+\.sql)$/.test(file);
+}
+
+async function unpack(artifact, out, env) {
+  const archive = path.join(out, artifact);
+  const prefix = artifact.slice(0, -'.crate'.length);
+  const dir = path.join(tmp, prefix);
+  const { stdout } = await exec('tar', ['-tzf', archive]);
+  const files = stdout.trim().split(/\r?\n/).filter((entry) => !entry.endsWith('/'));
+  for (const entry of files) {
+    assert(entry.startsWith(`${prefix}/`) && !entry.split('/').includes('..'), `${artifact} contains invalid path ${entry}`);
+    assert(publicFile(entry.slice(prefix.length + 1)), `${artifact} contains non-release file ${entry}`);
+  }
+  await exec('tar', ['-xzf', archive, '-C', tmp]);
+  for (const entry of files) {
+    assert(fs.lstatSync(path.join(tmp, entry)).isFile(), `${artifact} contains a non-regular file ${entry}`);
+  }
+  for (const license of ['LICENSE-MIT', 'LICENSE-APACHE']) {
+    assert(fs.readFileSync(path.join(dir, license)).equals(fs.readFileSync(path.join(root, license))),
+      `${artifact} does not contain the release's ${license}`);
+  }
+  const [pkg] = await metadata(dir, env);
+  assert.equal(artifact, `${pkg.name}-${pkg.version}.crate`);
+  assert.equal(pkg.license, 'MIT OR Apache-2.0', `${artifact} must declare the release license`);
+  assert(pkg.dependencies.every((dep) => !dep.path), `${artifact} has a workspace path dependency`);
+  const bytes = fs.readFileSync(archive);
+  return { pkg, dir, bytes, index: registryEntry(pkg, bytes) };
+}
+
+function fixtureEnv(server, fixture) {
+  const env = cargoEnv(fixture);
+  const index = `sparse+http://127.0.0.1:${server.address().port}/${fixture}/`;
+  fs.writeFileSync(path.join(env.CARGO_HOME, 'config.toml'), `[source.crates-io]
+replace-with = "fixture"
+[source.fixture]
+registry = "${index}"
+`);
+  return env;
+}
+
+let server;
+try {
+  assert(fs.existsSync(release), 'script/release-cargo is missing');
+  const version = (await exec(path.join(root, 'script/release-version'))).stdout.trim();
+  const env = cargoEnv('package');
+  const workspace = await metadata(root, env);
+  const dist = workspace.find((pkg) => pkg.name === 'skald-client' && pkg.metadata.dist?.dist);
+  assert(dist?.targets.some((target) => target.kind.includes('bin') && target.name === 'skald'),
+    'the release archive package skald-client must still build the skald binary');
+
+  const out = path.join(tmp, 'out');
+  fs.mkdirSync(out);
+  await exec(release, [`v${version}`, out], { cwd: root, env });
+  const artifacts = fs.readdirSync(out).filter((file) => file.endsWith('.crate'));
+  assert(artifacts.includes(`skald-so-${version}.crate`), `release emits skald-so-${version}.crate`);
+  const packages = new Map();
+  for (const artifact of artifacts) {
+    const unpacked = await unpack(artifact, out, env);
+    assert.equal(unpacked.pkg.version, version, `${artifact} uses the workspace release version`);
+    packages.set(unpacked.pkg.name, unpacked);
+  }
+
+  const cli = packages.get('skald-so');
+  const sourceMigrations = path.join(root, 'crates/client/migrations');
+  const packedMigrations = path.join(cli.dir, 'migrations');
+  const migrations = fs.readdirSync(sourceMigrations).filter((file) => file.endsWith('.sql')).sort();
+  assert.deepEqual(fs.readdirSync(packedMigrations).sort(), migrations,
+    'skald-so must contain every release migration');
+  for (const file of migrations) {
+    assert(fs.readFileSync(path.join(packedMigrations, file)).equals(fs.readFileSync(path.join(sourceMigrations, file))),
+      `skald-so migration ${file} differs from the release source`);
+  }
+
+  const localNames = new Set([...workspace.map((pkg) => pkg.name), ...packages.keys()]);
+  const runtimeDeps = (pkg) => pkg.dependencies.filter((dep) => dep.kind !== 'dev' && localNames.has(dep.name));
+  const needed = new Set(['skald-so']);
+  for (const name of needed) {
+    assert(packages.has(name), `no release artifact for dependency ${name}`);
+    for (const dep of runtimeDeps(packages.get(name).pkg)) {
+      assert.notEqual(dep.req, '*', `${name} must specify a version of ${dep.name}`);
+      needed.add(dep.name);
+    }
+  }
+  assert.deepEqual(new Set(packages.keys()), needed, 'release artifacts contain only CLI packages');
+  const missing = runtimeDeps(cli.pkg).find((dep) => !dep.optional && !dep.target)?.name;
+  assert(missing, 'the CLI has a required packaged dependency to withhold');
+
+  const fixture = serve(packages, localNames, missing);
+  server = fixture.server;
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const build = (env) => exec('cargo', ['build', '--locked', '--bin', 'skald'], { cwd: cli.dir, env });
+  await assert.rejects(build(fixtureEnv(server, 'incomplete')), (error) => {
+    assert.match(error.stderr, new RegExp(`no matching package named \`${missing}\` found`));
+    return true;
+  }, `prepublication build fails with ${missing} absent from the registry`);
+
+  const clean = fixtureEnv(server, 'complete');
+  await build(clean);
+  assert(fixture.downloaded.has(missing), `the build downloads ${missing} from the fixture registry`);
+  const { stdout } = await exec(path.join(clean.CARGO_TARGET_DIR, 'debug', executable), ['--version'], {
+    cwd: cli.dir, env: clean,
+  });
+  assert.equal(stdout.trim(), `skald ${version}`);
+} catch (error) {
+  fail(error.stderr?.trim() || error.message);
+} finally {
+  server?.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+done();

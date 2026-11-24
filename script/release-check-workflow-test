@@ -40,6 +40,7 @@ import {
   triggers,
   truth,
   unknown,
+  usesStatus,
   words,
   writes,
 } from './lib/workflows.mjs';
@@ -272,6 +273,49 @@ if (mover) {
   const ev = event('push', 'refs/tags/v1.2.3');
   for (const gate of gates) {
     if (!failedThen(ev, gate, mover)) fail(`main moves only after the release check passes, but job ${mover} may run when job ${gate} fails`);
+  }
+}
+
+// An optional publisher's skipped status can reach every descendant. Evaluate the explicit
+// conditions with a false implicit success status, even when the direct prerequisites passed.
+const stableRef = 'refs/tags/v1.2.3';
+const betaRef = stableRef + '-beta.1';
+const allows = (key, ev, opts = {}) => {
+  const job = release.jobs[key];
+  const needs = Object.fromEntries(needsOf(job).map((name) => [
+    name, { result: opts.results?.[name] ?? 'success', outputs: { 'set-up': 'true', tag: ev.refName } },
+  ]));
+  const scope = {
+    contexts: { github: ev.github, needs, vars: { WINGET_SUBMIT_LIVE: opts.enabled ? '1' : '' } },
+    status: { always: true, success: false, cancelled: opts.cancelled ?? false },
+  };
+  return usesStatus(job.if) && truth(condition(job.if, scope)) === true;
+};
+for (const [ref, enabled, native, submit, allowed] of [
+  [stableRef, false, 'success', 'skipped', true],
+  [stableRef, true, 'success', 'success', true],
+  [stableRef, true, 'success', 'skipped', false],
+  [stableRef, true, 'success', 'failure', false],
+  [stableRef, false, 'failure', 'skipped', false],
+  [betaRef, true, 'skipped', 'skipped', true],
+]) {
+  for (const gate of gates) {
+    const opts = { enabled, results: { 'winget-install': native, 'submit-winget': submit } };
+    if (allows(gate, event('push', ref), opts) !== allowed) {
+      fail(`job ${gate} mishandles ${ref} with WinGet ${enabled ? 'enabled' : 'disabled'}, native ${native} and submission ${submit}`);
+    }
+  }
+}
+for (const key of [mover, 'production-set-up', 'deploy-production'].filter(Boolean)) {
+  const stable = event('push', stableRef);
+  for (const [ev, opts, allowed] of [
+    [stable, {}, true],
+    [stable, { results: { [gates[0]]: 'failure' } }, false],
+    [stable, { cancelled: true }, false],
+    [event('push', betaRef), {}, false],
+    [event('pull_request', 'refs/pull/7/merge'), {}, false],
+  ]) {
+    if (allows(key, ev, opts) !== allowed) fail(`job ${key} mishandles prerequisites for ${ev.name} on ${ev.ref}`);
   }
 }
 

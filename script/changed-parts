@@ -4,6 +4,7 @@
 # those of the working tree; script/test alone checks all of them. The paths and their parts:
 #   crates/ (with the skald-server image definition), Cargo.toml, Cargo.lock: workspace, wasm,
 #     image, self-host, repository
+#   crates/client/Cargo.toml also marks tooling for Cargo packaging
 #   deny.toml: repository
 #   prototypes/mls/, prototypes/agents/, prototypes/edits/: mls, agents and edits, each with
 #     repository; prototypes/mls/Cargo.lock also wasm: the crates' WASM tests take its wasm-bindgen
@@ -101,6 +102,7 @@ while IFS= read -r path; do
     mark web
   elif [[ $path == crates/* || $path == Cargo.toml || $path == Cargo.lock ]]; then
     mark workspace wasm image self-host repository
+    if [[ $path == crates/client/Cargo.toml ]]; then mark tooling; fi
   elif [[ $path == deny.toml ]]; then
     mark repository
   elif [[ $path == prototypes/mls/Cargo.lock ]]; then
