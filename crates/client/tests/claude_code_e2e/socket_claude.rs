@@ -70,11 +70,20 @@ enum Running {
     Terminal {
         child: Box<dyn portable_pty::Child + Send + Sync>,
         input: Typing,
+        #[cfg(windows)]
+        console: Option<Console>,
     },
     App {
         child: Child,
         input: Option<ChildStdin>,
     },
+}
+
+/// The fixture-owned Windows pseudoconsole and the reader that drains its output.
+#[cfg(windows)]
+struct Console {
+    master: Box<dyn portable_pty::MasterPty + Send>,
+    reader: thread::JoinHandle<()>,
 }
 
 /// How a test's session differs from what [`Session::start`] runs.
@@ -319,7 +328,7 @@ impl Session {
             let input: Typing = Arc::new(Mutex::new(
                 pair.master.take_writer().expect("the terminal's input"),
             ));
-            read_answering(
+            let reader = read_answering(
                 pair.master
                     .try_clone_reader()
                     .expect("the terminal's output"),
@@ -329,9 +338,21 @@ impl Session {
             if options.channels {
                 answer_once(&output, &input, CHANNEL_WARNING, b"\r");
             }
-            // The terminal lives as long as its reader and writer.
-            std::mem::forget(pair.master);
-            Running::Terminal { child, input }
+            #[cfg(not(windows))]
+            {
+                // The terminal lives as long as its reader and writer.
+                drop(reader);
+                std::mem::forget(pair.master);
+            }
+            Running::Terminal {
+                child,
+                input,
+                #[cfg(windows)]
+                console: Some(Console {
+                    master: pair.master,
+                    reader,
+                }),
+            }
         } else {
             let mut child = Command::new(claude)
                 .current_dir(dir)
@@ -504,6 +525,10 @@ impl Session {
     /// Asks the session to exit, as a person or the apps do, and waits for it; kills it, with what
     /// it started, if it does not exit in time. Gives whether it exited by itself.
     pub fn end(&mut self) -> bool {
+        #[cfg(windows)]
+        if matches!(&self.running, Running::Terminal { console: None, .. }) {
+            return true;
+        }
         match &mut self.running {
             Running::Terminal { input, .. } => {
                 for _ in 0..2 {
@@ -520,6 +545,8 @@ impl Session {
                 Running::App { child, .. } => child.try_wait().ok().flatten().is_some(),
             };
             if exited {
+                #[cfg(windows)]
+                self.close_console();
                 return true;
             }
             thread::sleep(Duration::from_millis(100));
@@ -536,7 +563,37 @@ impl Session {
                 let _ = child.wait();
             }
         }
+        #[cfg(windows)]
+        self.close_console();
         false
+    }
+
+    #[cfg(windows)]
+    fn close_console(&mut self) {
+        let Running::Terminal { console, .. } = &mut self.running else {
+            return;
+        };
+        let Some(Console { master, reader }) = console.take() else {
+            return;
+        };
+        // Closing the pseudoconsole can wait for its output to drain on older Windows.
+        // Newer Windows returns before all attached clients exit. Keep reading through EOF.
+        let closing = thread::spawn(move || {
+            drop(master);
+            reader.join()
+        });
+        let deadline = Instant::now() + EXIT_LIMIT;
+        while !closing.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+        }
+        if !closing.is_finished() || !closing.join().is_ok_and(|reader| reader.is_ok()) {
+            let failed = "Claude Code's Windows pseudoconsole did not close and drain its output";
+            if thread::panicking() {
+                eprintln!("{failed}");
+            } else {
+                panic!("{failed}");
+            }
+        }
     }
 }
 
@@ -574,7 +631,7 @@ fn read_answering(
     mut from: impl Read + Send + 'static,
     into: &Arc<Mutex<Vec<u8>>>,
     input: &Typing,
-) {
+) -> thread::JoinHandle<()> {
     const QUERY: &[u8] = b"\x1b[6n";
     let (into, input) = (Arc::clone(into), Arc::clone(input));
     thread::spawn(move || {
@@ -596,7 +653,7 @@ fn read_answering(
             }
             seen = output.len();
         }
-    });
+    })
 }
 
 /// Types `keys` into the terminal once its screen showed `shown`, white space aside, within
