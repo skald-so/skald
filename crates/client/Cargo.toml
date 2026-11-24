@@ -53,6 +53,7 @@ skald-adapters = { path = "../adapters" }
 skald-crypto = { path = "../crypto" }
 skald-proto = { path = "../proto" }
 tar = { version = "0.4", default-features = false }
+tempfile = "3.27"
 # The MCP server's runtime, which rmcp needs.
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "sync"] }
 toml = { version = "1.2", default-features = false, features = ["parse", "serde", "std"] }
@@ -103,9 +104,11 @@ windows-native-keyring-store = "1"
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_Console",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }
 

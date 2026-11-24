@@ -225,7 +225,7 @@ pub fn links(
 /// The kinds of history items the server lists, as their paths and lists name them.
 pub const LINKS: &str = "links";
 pub const WRAPS: &str = "wraps";
-pub const ENTRIES: &str = "entries";
+const ENTRIES: &str = "entries";
 
 /// `HistoryLinks`, `HistoryWraps` and `HistoryEntries` in the API spec: the list named by its kind.
 #[derive(Deserialize)]
@@ -245,17 +245,31 @@ pub fn listed(
 pub fn listed_to(
     connection: &mut Connection,
     token: &str,
-    (space, channel): (SpaceId, ChannelId),
+    at: (SpaceId, ChannelId),
     kind: &str,
 ) -> Result<Vec<Vec<u8>>, String> {
+    Ok(encoded(connection, token, at, kind)?
+        .iter()
+        .filter_map(|item| URL_SAFE_NO_PAD.decode(item).ok())
+        .collect())
+}
+
+/// The entries as the server lists them, so the reader can warn of invalid encodings.
+pub fn entries(follower: &mut Follower, at: (SpaceId, ChannelId)) -> Result<Vec<String>, String> {
+    encoded(&mut follower.connection, &follower.token, at, ENTRIES)
+}
+
+fn encoded(
+    connection: &mut Connection,
+    token: &str,
+    (space, channel): (SpaceId, ChannelId),
+    kind: &str,
+) -> Result<Vec<String>, String> {
     let path = format!("/spaces/{space}/channels/{channel}/history/{kind}");
     let body = connection.get_as(&path, token).map_err(text)?;
     let unexpected = || format!("unexpected answer from the server: a channel's history {kind}");
     let Listed(mut given) = serde_json::from_slice(&body).map_err(|_| unexpected())?;
-    let items = given.remove(kind).ok_or_else(unexpected)?;
-    Ok((items.iter())
-        .filter_map(|item| URL_SAFE_NO_PAD.decode(item).ok())
-        .collect())
+    given.remove(kind).ok_or_else(unexpected)
 }
 
 /// Uploads `links`, each of its space, in `history` frames on the device's connection, and settles
