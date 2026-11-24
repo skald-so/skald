@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{Value, json};
@@ -36,6 +36,7 @@ process.exitCode = status ?? 1;
 pub enum TraceMode {
     Stop,
     Transcript,
+    Debug,
 }
 
 impl TraceMode {
@@ -46,6 +47,7 @@ impl TraceMode {
         match std::env::var("SKALD_E2E_TRACE_READ").as_deref() {
             Ok("1") => Some(Self::Stop),
             Ok("transcript") => Some(Self::Transcript),
+            Ok("debug") => Some(Self::Debug),
             _ => None,
         }
     }
@@ -85,17 +87,40 @@ impl Trace {
         Some(json!({ "type": "command", "command": node, "args": command }))
     }
 
+    pub fn debug_args(&self) -> Option<[String; 2]> {
+        if !matches!(self.mode, TraceMode::Debug) {
+            return None;
+        }
+        let file = self.config.join("receipt-claude-debug.log");
+        Some(["--debug-file".to_owned(), file.to_str()?.to_owned()])
+    }
+
     pub fn failed(&self, solo: &Solo, helped: &Helped, id: MessageId, says: &str, resend: &str) {
         eprintln!("receipt trace: before retry");
         self.status(solo, id);
-        self.stops();
+        let debug = matches!(self.mode, TraceMode::Debug);
+        if debug {
+            debug_stops(&self.config.join("receipt-claude-debug.log"));
+        } else {
+            self.stops();
+        }
         let Some((file, content)) = transcript(&self.config.join("home/projects"), says) else {
             eprintln!("receipt trace: transcript unavailable or ambiguous");
             return;
         };
         let given = first_offer(solo, id);
         eprintln!("receipt trace: first_offer_ms={given:?}");
-        entries(&content, id, says, given);
+        if debug {
+            let modified = fs::metadata(&file)
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(unix_millis);
+            let observed = unix_millis(SystemTime::now());
+            eprintln!(
+                "receipt trace: transcript snapshot_ms={observed:?} modified_ms={modified:?}"
+            );
+        }
+        entries(&content, id, says, given, debug);
 
         let outcome = self.retry_stop(helped, &file, resend);
         eprintln!("receipt trace: retry stop={outcome:?}");
@@ -197,7 +222,102 @@ fn first_offer(solo: &Solo, id: MessageId) -> Option<i64> {
     .ok()
 }
 
-fn entries(content: &str, id: MessageId, says: &str, given: Option<i64>) {
+fn unix_millis(time: SystemTime) -> Option<u128> {
+    Some(time.duration_since(UNIX_EPOCH).ok()?.as_millis())
+}
+
+fn timestamp(value: Option<&str>) -> Option<i64> {
+    value?
+        .parse::<jiff::Timestamp>()
+        .ok()
+        .map(|time| time.as_millisecond())
+}
+
+fn debug_stops(file: &Path) {
+    let mut any = false;
+    if let Ok(log) = fs::read_to_string(file) {
+        for line in log.lines() {
+            let Some((at, message)) = line.split_once(' ') else {
+                continue;
+            };
+            let Some((level, event)) = message.split_once(' ') else {
+                continue;
+            };
+            if !matches!(level, "[DEBUG]" | "[INFO]" | "[WARN]" | "[ERROR]") {
+                continue;
+            }
+            let class = if event.starts_with("Getting matching hook commands for Stop with query:")
+            {
+                "matching"
+            } else if event.starts_with("Skipping Stop hook ") {
+                "skipped"
+            } else if event.starts_with("Stop hook cancelled") {
+                "cancelled"
+            } else if event.starts_with("Stop hook failed:") {
+                "failed"
+            } else {
+                continue;
+            };
+            if let Some(at) = timestamp(Some(at)) {
+                any = true;
+                eprintln!("receipt trace: vendor Stop event={class} at_ms={at}");
+            }
+        }
+    }
+    if !any {
+        eprintln!("receipt trace: vendor Stop event=unknown");
+    }
+}
+
+fn stop_outcome(entry: &Value, at: Option<i64>) -> bool {
+    let attachment = &entry["attachment"];
+    if entry["type"] == "attachment" && attachment["hookEvent"] == "Stop" {
+        let outcome = match attachment["type"].as_str() {
+            Some("hook_success") => "success",
+            Some("hook_blocking_error") => "blocked",
+            Some("hook_non_blocking_error") => "failed",
+            Some("hook_cancelled") => "cancelled",
+            _ => "unknown",
+        };
+        let exit = match attachment["exitCode"].as_i64() {
+            Some(0) => "success",
+            Some(2) => "blocked",
+            Some(_) => "other",
+            None => "unknown",
+        };
+        let command = match attachment["command"].as_str() {
+            Some(command) if command.contains("--wait") => "rewake",
+            Some(command)
+                if command.contains("--agent")
+                    && command.contains("hook")
+                    && command.contains("claude") =>
+            {
+                "sync"
+            }
+            _ => "unknown",
+        };
+        eprintln!(
+            "receipt trace: vendor Stop outcome={outcome} exit={exit} command={command} at_ms={at:?}"
+        );
+        return true;
+    }
+    if entry["type"] == "system"
+        && entry["subtype"] == "stop_hook_summary"
+        && entry["hookLabel"] == "Stop"
+    {
+        let count = entry["hookCount"].as_u64();
+        let errors = entry["hookErrors"].as_array().map(Vec::len);
+        let duration = entry["totalDurationMs"].as_u64();
+        eprintln!(
+            "receipt trace: vendor Stop summary at_ms={at:?} count={count:?} errors={errors:?} duration_ms={duration:?}"
+        );
+        return true;
+    }
+    false
+}
+
+fn entries(content: &str, id: MessageId, says: &str, given: Option<i64>, debug: bool) {
+    let mut saw_stop = false;
     for (index, line) in content.split_inclusive('\n').enumerate() {
         let Ok(entry) = serde_json::from_str::<Value>(line) else {
             eprintln!(
@@ -242,10 +362,10 @@ fn entries(content: &str, id: MessageId, says: &str, given: Option<i64>) {
                 .next()
                 .is_some_and(|reference| refers_to(reference, id))
         });
-        let at = entry["timestamp"]
-            .as_str()
-            .and_then(|value| value.parse::<jiff::Timestamp>().ok())
-            .map(|time| time.as_millisecond());
+        let at = timestamp(entry["timestamp"].as_str());
+        if debug && line.ends_with('\n') {
+            saw_stop |= stop_outcome(&entry, at);
+        }
         let after_offer = at.zip(given).map(|(at, given)| at >= given);
         eprintln!(
             "receipt trace: entry {index} type={kind} attachment={attachment} operation={operation} shape={shape} fixture_text={} reference={has_reference} channel={} rewake={} at_ms={at:?} at_or_after_offer={after_offer:?} sidechain={:?} api_error={:?} complete={}",
@@ -256,6 +376,9 @@ fn entries(content: &str, id: MessageId, says: &str, given: Option<i64>) {
             entry["isApiErrorMessage"].as_bool(),
             line.ends_with('\n')
         );
+    }
+    if debug && !saw_stop {
+        eprintln!("receipt trace: vendor Stop outcome=unknown");
     }
 }
 

@@ -301,6 +301,9 @@ impl Session {
             "--tools".to_owned(),
             "Bash".to_owned(),
         ]);
+        if let Some(debug) = receipt_trace.as_ref().and_then(Trace::debug_args) {
+            args.extend(debug);
+        }
         if options.channels {
             args.extend(
                 ["--dangerously-load-development-channels", "server:skald"].map(str::to_owned),
