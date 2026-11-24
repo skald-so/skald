@@ -334,11 +334,9 @@ fn stop_reference(text: &str) -> Option<(resend::Way, String, [u8; 32])> {
     if !header.ends_with(" · own") {
         return None;
     }
-    Some((
-        path,
-        own_reference(line)?,
-        Sha256::digest(body.as_bytes()).into(),
-    ))
+    let reference = own_reference(line)?;
+    (reference.len() == crate::forms::WHOLE_REFERENCE_LEN)
+        .then(|| (path, reference, Sha256::digest(body.as_bytes()).into()))
 }
 
 /// Without an exact partial line, both entries have to name the same turn explicitly.
@@ -1005,7 +1003,7 @@ impl Served {
     ) {
         let Some(own) = &push.own else { return };
         let now = Instant::now();
-        let remaining = own.delivery.due.saturating_sub(crate::state::unix_ms());
+        let remaining = own.due.saturating_sub(crate::state::unix_ms());
         let Some(until) = u64::try_from(remaining)
             .ok()
             .and_then(|ms| now.checked_add(Duration::from_millis(ms)))
@@ -1019,8 +1017,8 @@ impl Served {
                 agent: agent.to_owned(),
                 path,
                 session: session.map(str::to_owned),
-                delivery: own.delivery.clone(),
-                reference: own.reference.clone(),
+                delivery: own.clone(),
+                reference: crate::forms::whole_reference(own.msg_id),
                 digest: Sha256::digest(push.content.trim().as_bytes()).into(),
                 sent: started,
                 until,
@@ -1336,6 +1334,81 @@ mod tests {
 
         emitted.record(again, record(2));
         assert!(emitted.bind("session", stop(again), again).is_none());
+    }
+
+    #[test]
+    fn a_short_reference_does_not_bind_a_later_delivery_with_the_same_prefix() {
+        use crate::forms::{SHORTEST, whole_reference};
+        use skald_proto::MessageId;
+
+        let older = MessageId::from_bytes(973_u128.to_be_bytes());
+        let newer = MessageId::from_bytes(1416_u128.to_be_bytes());
+        let older_ref = whole_reference(older);
+        let newer_ref = whole_reference(newer);
+        let prefix = &older_ref[..SHORTEST];
+        assert_eq!(prefix, &newer_ref[..SHORTEST]);
+        let content = |reference: &str| format!("[api · device · own] #{reference}: same body");
+        let event = |line: &str| format!("<channel source=\"skald\">\n{line}\n</channel>");
+        assert!(stop_reference(&event(&content(prefix))).is_none());
+
+        let dir = crate::test_dir::TestDir::new("claude-stop-reference-prefix");
+        let file = dir.join("session.jsonl");
+        writeln!(
+            fs::File::create(&file).unwrap(),
+            "{}",
+            json!({ "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn" }),
+        ).unwrap();
+        let now = Instant::now();
+        let later = now + STOP_GRACE;
+        let space = SpaceId::generate();
+        let mut emissions = Emissions::default();
+        for (seq, msg_id, reference, at) in [
+            (1, older, older_ref.as_str(), now),
+            (2, newer, newer_ref.as_str(), later),
+        ] {
+            emissions.record(
+                at,
+                Emission {
+                    space,
+                    agent: "claude".to_owned(),
+                    path: resend::Way::Channel,
+                    session: None,
+                    delivery: ClaudeStopDelivery {
+                        seq,
+                        msg_id,
+                        due: 100,
+                    },
+                    reference: reference.to_owned(),
+                    digest: Sha256::digest(content(reference)).into(),
+                    sent: 2,
+                    until: at + STOP_GRACE,
+                    first_stop: None,
+                },
+            );
+        }
+        let stopped = |reference: &str| {
+            let (path, reference, digest) = stop_reference(&event(&content(reference))).unwrap();
+            DeferredStop {
+                space,
+                agent: "claude".to_owned(),
+                folder: dir.to_path_buf(),
+                path,
+                reference,
+                digest,
+                transcript: StopFile::at_tail(&file).unwrap().0,
+                shown: 3,
+                started: later,
+            }
+        };
+        assert!(
+            emissions
+                .bind("session", stopped(&older_ref), later)
+                .is_none()
+        );
+        let got = emissions
+            .bind("session", stopped(&newer_ref), later)
+            .unwrap();
+        assert_eq!(got.delivery.msg_id, newer);
     }
 
     /// Entries recorded from Claude Code 2.1.329 (`tests/claude_code_socket/recorded/`).

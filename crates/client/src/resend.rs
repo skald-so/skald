@@ -133,13 +133,7 @@ pub struct Pushed {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Push {
     pub content: String,
-    pub own: Option<OwnPush>,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct OwnPush {
-    pub delivery: state::ClaudeStopDelivery,
-    pub reference: String,
+    pub own: Option<state::ClaudeStopDelivery>,
 }
 
 /// What resending does with a waiting message now.
@@ -199,6 +193,7 @@ struct Text {
     line: String,
     msg_id: MessageId,
     inline: bool,
+    whole: Option<String>,
 }
 
 impl Text {
@@ -208,7 +203,13 @@ impl Text {
             true => format!("{}\n{}", forms::DATA_WARNING, self.line),
             false => self.line.clone(),
         };
-        hook::fitted(&line, &references.of(self.msg_id))
+        hook::fitted(&line, &self.reference(references))
+    }
+
+    fn reference(&self, references: &References) -> String {
+        self.whole
+            .clone()
+            .unwrap_or_else(|| references.of(self.msg_id))
     }
 }
 
@@ -330,14 +331,27 @@ fn opened(
     };
     let fresh = recv::pushed(follower, space, sealed(fresh))?;
     let again = recv::pushed_again(follower, space, sealed(again))?;
+    let deferred: BTreeSet<_> = [Way::Channel, Way::Rewake]
+        .iter()
+        .filter_map(|way| ways.get(way))
+        .flatten()
+        .map(|pending| pending.seq)
+        .collect();
     let opened = (fresh.messages.into_iter().chain(again.messages))
         .map(|message| {
-            let (line, _) = recv::kept_line(&message.opened, Form::Short, references);
+            let whole = if message.goes == Goes::Own && deferred.contains(&message.seq) {
+                message.msg_id
+            } else {
+                None
+            };
+            let (line, _, whole) =
+                recv::kept_line_with_whole(&message.opened, Form::Short, references, whole);
             let own = match (message.goes, message.msg_id) {
                 (Goes::Own | Goes::Inline, Some(msg_id)) => Some(Text {
                     line,
                     msg_id,
                     inline: message.goes == Goes::Inline,
+                    whole,
                 }),
                 _ => None,
             };
@@ -378,16 +392,14 @@ struct To<'a> {
     due: i64,
 }
 
-/// The identity and displayed reference of an own line, as the path writes them.
-fn own_push(to: &To, opened: &Opened) -> Option<OwnPush> {
-    let own = opened.own.as_ref().filter(|own| !own.inline)?;
-    Some(OwnPush {
-        delivery: state::ClaudeStopDelivery {
-            seq: opened.seq,
-            msg_id: own.msg_id,
-            due: to.due,
-        },
-        reference: to.references.of(own.msg_id),
+/// The delivery identity of an own line this path writes with its whole reference.
+fn own_push(to: &To, opened: &Opened) -> Option<state::ClaudeStopDelivery> {
+    let own = opened.own.as_ref()?;
+    own.whole.as_ref()?;
+    Some(state::ClaudeStopDelivery {
+        seq: opened.seq,
+        msg_id: own.msg_id,
+        due: to.due,
     })
 }
 
@@ -464,12 +476,12 @@ fn to_rewake(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, S
             Some(own) if own.inline => hook::Waiting::Inline {
                 seq: each.seq,
                 line: own.line.clone(),
-                reference: to.references.of(own.msg_id),
+                reference: own.reference(to.references),
             },
             Some(own) => hook::Waiting::Own {
                 seq: each.seq,
                 line: own.line.clone(),
-                reference: to.references.of(own.msg_id),
+                reference: own.reference(to.references),
             },
             None => hook::Waiting::Below {
                 seq: each.seq,
