@@ -363,6 +363,13 @@ pub enum Ran {
 }
 
 impl Sessions {
+    /// Keeps a successful Stop's exact deferred confirmation, or drops that session's old one.
+    pub fn claude_stopped(&mut self, id: String, deferred: Option<claude_socket::DeferredStop>) {
+        if let Some(claude) = &mut self.claude {
+            claude.stopped(id, deferred);
+        }
+    }
+
     /// Serves the registered Claude Code and Codex sessions too, its runs with `settings`.
     pub fn serve_agents(&mut self, settings: claude_socket::Settings) {
         self.claude = Some(claude_socket::Served::new(settings));

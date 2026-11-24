@@ -207,7 +207,8 @@ pub fn hook(
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-    (event, cap, session): (hook::Event, u64, &hook::Session),
+    (input, event): (&hook::Input, hook::Event),
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
 ) -> Result<(), String> {
     holding_warnings(dir, true, || {
         let Ok(space) = crate::folders::working_space(dir) else {
@@ -216,7 +217,15 @@ pub fn hook(
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
         if let hook::Event::Stop { .. } = event {
-            claude_socket::confirm(&state, agent, session).map_err(text)?;
+            if let Some(deferred) = deferred {
+                *deferred = claude_socket::defer_stop(
+                    &state,
+                    (space.id, agent),
+                    &input.session,
+                    input.turn.as_deref(),
+                );
+            }
+            claude_socket::confirm(&state, agent, &input.session).map_err(text)?;
         }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
@@ -225,7 +234,7 @@ pub fn hook(
             _ => state.count_stops(space.id, agent.as_str(), Some(0)),
         }
         .map_err(text)?;
-        if matches!(event, hook::Event::Stop { .. }) && stops >= cap {
+        if matches!(event, hook::Event::Stop { .. }) && stops >= input.cap {
             return Ok(());
         }
         drop(state);

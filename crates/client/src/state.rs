@@ -378,6 +378,16 @@ pub struct Pending {
     pub signalled: bool,
 }
 
+/// The exact pending handover a Claude Code Stop may confirm after the hook returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeStopDelivery {
+    seq: i64,
+    pub msg_id: String,
+    pub given: i64,
+    pub due: i64,
+    written: Option<String>,
+}
+
 /// A Claude Code session a `SessionStart` hook registered ([`crate::claude_socket`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeSession {
@@ -3167,6 +3177,44 @@ impl State {
             .collect())
     }
 
+    /// Pending own messages that can still be confirmed from a Claude push path.
+    pub fn claude_stop_deliveries(
+        &self,
+        scope: (SpaceId, &str, &str),
+        path: &str,
+    ) -> Result<Vec<ClaudeStopDelivery>, Error> {
+        claude_stop_deliveries(&self.db, scope, path, None)
+    }
+
+    /// Whether the pending row still describes this delivery.
+    pub fn awaits_claude_stop(
+        &self,
+        scope: (SpaceId, &str, &str),
+        path: &str,
+        delivery: &ClaudeStopDelivery,
+    ) -> Result<bool, Error> {
+        Ok(
+            claude_stop_deliveries(&self.db, scope, path, Some(delivery.seq))?.first()
+                == Some(delivery),
+        )
+    }
+
+    /// Hands only this delivery over, if its pending row has not changed.
+    pub fn confirmed_claude_stop(
+        &self,
+        scope: (SpaceId, &str, &str),
+        path: &str,
+        delivery: &ClaudeStopDelivery,
+    ) -> Result<bool, Error> {
+        let tx = self.write()?;
+        if claude_stop_deliveries(&tx, scope, path, Some(delivery.seq))?.first() != Some(delivery) {
+            return Ok(false);
+        }
+        handed_over(&tx, delivery.seq, scope.1)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Whether a path took a kept message that waits for the agent `agent`.
     pub fn taken_by_paths(&self, agent: &str) -> Result<bool, Error> {
         Ok(self.db.query_row(
@@ -3237,23 +3285,7 @@ impl State {
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.write()?;
-        if add_target(&tx, seq)? {
-            tx.execute(
-                "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
-                params![seq, agent],
-            )?;
-        }
-        tx.execute(
-            "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
-            params![seq, agent],
-        )?;
-        count_hops(&tx, seq, agent)?;
-        tx.execute(
-            "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
-            params![seq, agent],
-        )?;
-        read_own(&tx, seq, agent, None)?;
-        drop_done(&tx)?;
+        handed_over(&tx, seq, agent)?;
         tx.commit()?;
         Ok(())
     }
@@ -4851,6 +4883,74 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             ],
         )?;
     }
+    Ok(())
+}
+
+/// The still-eligible deliveries, scoped to the Stop's space, agent, session and path.
+fn claude_stop_deliveries(
+    db: &Connection,
+    (space, agent, session): (SpaceId, &str, &str),
+    path: &str,
+    seq: Option<i64>,
+) -> Result<Vec<ClaudeStopDelivery>, Error> {
+    let mut query = db.prepare(
+        "SELECT kept.seq, kept.msg_id, handover.given, handover.due, handover.written
+         FROM kept JOIN handover ON kept.seq = handover.seq
+         WHERE kept.space = ?1 AND handover.agent = ?2 AND handover.path = ?3
+           AND kept.level = 'own' AND handover.signalled = 0 AND handover.failed = 0
+           AND handover.confirming = 0 AND kept.msg_id IS NOT NULL AND handover.given IS NOT NULL
+           AND handover.due > ?4 AND kept.expires > ?5 AND (?6 IS NULL OR kept.seq = ?6)
+           AND (handover.written IS NULL OR handover.written = ?7)
+           AND NOT EXISTS (SELECT 1 FROM held_message WHERE seq = kept.seq AND agent = ?2)
+           AND NOT EXISTS (
+               SELECT 1 FROM read_receipt AS receipt
+               LEFT JOIN device_status AS sender ON sender.device = receipt.sender
+               WHERE receipt.seq = kept.seq AND receipt.agent = ?2
+                 AND (receipt.refused = 1 OR sender.revoked = 1)
+           )",
+    )?;
+    let rows = query.query_map(
+        params![
+            space.to_string(),
+            agent,
+            path,
+            unix_ms(),
+            sql_u64(unix_now())?,
+            seq,
+            session
+        ],
+        |row| {
+            Ok(ClaudeStopDelivery {
+                seq: row.get(0)?,
+                msg_id: row.get(1)?,
+                given: row.get(2)?,
+                due: row.get(3)?,
+                written: row.get(4)?,
+            })
+        },
+    )?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Records that the kept message was handed over inside an existing write transaction.
+fn handed_over(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
+    if add_target(tx, seq)? {
+        tx.execute(
+            "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            params![seq, agent],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
+        params![seq, agent],
+    )?;
+    count_hops(tx, seq, agent)?;
+    tx.execute(
+        "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
+        params![seq, agent],
+    )?;
+    read_own(tx, seq, agent, None)?;
+    drop_done(tx)?;
     Ok(())
 }
 

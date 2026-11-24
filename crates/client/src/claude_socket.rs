@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::Shutdown;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use skald_proto::{Name, SpaceId, VersionRange};
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
@@ -46,7 +47,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::session_file::{Reader, opened};
-use crate::state::{ClaudeSession, State};
+use crate::state::{ClaudeSession, ClaudeStopDelivery, State};
 use crate::{hook, output, recv, resend, secrets};
 
 /// The statuses of the receipts that say a line did not reach the model.
@@ -60,6 +61,13 @@ const AFTER_FAILURE: Duration = Duration::from_secs(5);
 
 /// How often the helper checks that a registered session's socket takes a connection.
 const ALIVE_EVERY: Duration = Duration::from_secs(2);
+
+/// How long after Stop the helper looks for the assistant entry the hook missed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+/// The most transcript bytes a deferred confirmation reads at a time.
+const STOP_TAIL: u64 = 64 << 10;
+/// How many Stops the helper can wait for together.
+const STOP_WATCHES: usize = 16;
 
 /// Registers the session of `agent` that `session` names, its folder the working directory, if
 /// the folder is in a space and Claude Code gave the session's ID, file and socket.
@@ -121,6 +129,239 @@ pub fn confirm(
         confirmed_references(state, agent.as_str(), &scan.references())?;
     }
     Ok(())
+}
+
+/// The single delivery whose final assistant entry may finish writing after Stop returns.
+pub struct DeferredStop {
+    space: SpaceId,
+    agent: String,
+    folder: PathBuf,
+    path: &'static str,
+    delivery: ClaudeStopDelivery,
+    transcript: StopFile,
+    until: Instant,
+}
+
+/// A delivery line and the exact place its next entry starts in this file.
+#[derive(PartialEq, Eq)]
+struct StopFile {
+    file: PathBuf,
+    identity: (u64, u64),
+    anchor: u64,
+    next: u64,
+    anchor_hash: [u8; 32],
+    parent: Option<String>,
+    turn: Option<String>,
+    prefix: Option<(usize, [u8; 32])>,
+}
+
+/// Watches only a complete delivery at the transcript tail and an identifiable continuation.
+pub fn defer_stop(
+    state: &State,
+    (space, agent): (SpaceId, &Name),
+    session: &hook::Session,
+    turn: Option<&str>,
+) -> Option<DeferredStop> {
+    let id = session.id.as_deref()?;
+    let registered = state.claude_sessions().ok()?;
+    let file = if let Some(registered) = registered.iter().find(|each| each.session == id) {
+        if registered.space != space || registered.agent != agent.as_str() {
+            return None;
+        }
+        &registered.file
+    } else {
+        session.file.as_ref()?
+    };
+    let started = Instant::now();
+    let file = std::path::absolute(file).ok()?;
+    let (transcript, entry) = StopFile::at_tail(&file)?;
+    if entry.kind != "user"
+        || !entry.in_session(id)
+        || turn.is_some_and(|id| entry.turn.as_deref() != Some(id))
+    {
+        return None;
+    }
+    let said = entry.message.filter(|said| said.role == "user")?;
+    let at = entry
+        .timestamp?
+        .parse::<jiff::Timestamp>()
+        .ok()?
+        .as_millisecond();
+    let (path, reference) = stop_reference(&text_of(&said.content))?;
+    let now = crate::state::unix_ms();
+    let mut deliveries = state
+        .claude_stop_deliveries((space, agent.as_str(), id), path)
+        .ok()?
+        .into_iter()
+        .filter(|delivery| {
+            delivery.given <= at
+                && at <= now
+                && delivery
+                    .msg_id
+                    .parse()
+                    .is_ok_and(|id| crate::forms::whole_reference(id).starts_with(&reference))
+        });
+    let delivery = deliveries.next()?;
+    if deliveries.next().is_some() {
+        return None;
+    }
+    let remaining = u64::try_from(delivery.due.checked_sub(now)?).ok()?;
+    Some(DeferredStop {
+        space,
+        agent: agent.as_str().to_owned(),
+        folder: std::env::current_dir().ok()?,
+        path,
+        delivery,
+        transcript,
+        until: started + STOP_GRACE.min(Duration::from_millis(remaining)),
+    })
+}
+
+/// A single reference in the delivery itself, with the path that gave the line.
+fn stop_reference(text: &str) -> Option<(&'static str, String)> {
+    let text = text.trim();
+    let (path, body) = if let Some(event) = text.strip_prefix(CHANNEL_TAG) {
+        let (source, rest) = event.split_once('"')?;
+        if source != "skald" && !source.ends_with(":skald") {
+            return None;
+        }
+        let (_, body) = rest.split_once('>')?;
+        let body = body.strip_suffix(CHANNEL_END)?;
+        if body.contains(CHANNEL_TAG) || body.contains(CHANNEL_END) {
+            return None;
+        }
+        (resend::Way::Channel.name(), body)
+    } else {
+        let text = text
+            .strip_prefix("<system-reminder>")
+            .and_then(|body| body.strip_suffix("</system-reminder>"))
+            .unwrap_or(text);
+        let body = text.trim_start().strip_prefix(REWAKE_OUTPUT)?;
+        (resend::Way::Rewake.name(), body)
+    };
+    let mut references = body.lines().filter_map(own_reference);
+    let reference = references.next()?;
+    references.next().is_none().then_some((path, reference))
+}
+
+impl StopFile {
+    /// The delivery must be the last complete line when Stop reads this file.
+    fn at_tail(file: &Path) -> Option<(StopFile, StopEntry)> {
+        let mut opened = open_transcript(file)?;
+        let identity = file_identity(&opened).ok()?;
+        let length = opened.metadata().ok()?.len();
+        let first = length.saturating_sub(STOP_TAIL);
+        opened.seek(SeekFrom::Start(first)).ok()?;
+        let mut bytes = vec![0; usize::try_from(length - first).ok()?];
+        opened.read_exact(&mut bytes).ok()?;
+        let next = bytes.iter().rposition(|&byte| byte == b'\n')? + 1;
+        let anchor = match bytes[..next - 1].iter().rposition(|&byte| byte == b'\n') {
+            Some(at) => at + 1,
+            None if first == 0 => 0,
+            None => return None,
+        };
+        let entry: StopEntry = serde_json::from_slice(&bytes[anchor..next]).ok()?;
+        let parent = entry.uuid.clone();
+        let incomplete = &bytes[next..];
+        let prefix =
+            (!incomplete.is_empty()).then(|| (incomplete.len(), Sha256::digest(incomplete).into()));
+        if parent.is_none() && prefix.is_none() {
+            return None;
+        }
+        let found = StopFile {
+            file: file.to_path_buf(),
+            identity,
+            anchor: first + anchor as u64,
+            next: first + next as u64,
+            anchor_hash: Sha256::digest(&bytes[anchor..next]).into(),
+            parent,
+            turn: entry.turn.clone(),
+            prefix,
+        };
+        Some((found, entry))
+    }
+
+    /// None means the file or its next entry no longer matches, false means it is still incomplete.
+    fn assistant(&self, session: &str) -> Option<bool> {
+        let mut opened = open_transcript(&self.file)?;
+        if file_identity(&opened).ok()? != self.identity {
+            return None;
+        }
+        let length = opened.metadata().ok()?.len();
+        let observed = self.next + self.prefix.map_or(0, |(len, _)| len as u64);
+        if length < observed {
+            return None;
+        }
+        if length == observed {
+            return Some(false);
+        }
+        opened.seek(SeekFrom::Start(self.anchor)).ok()?;
+        let mut anchor = vec![0; usize::try_from(self.next - self.anchor).ok()?];
+        opened.read_exact(&mut anchor).ok()?;
+        if <[u8; 32]>::from(Sha256::digest(&anchor)) != self.anchor_hash {
+            return None;
+        }
+        let mut line = Vec::new();
+        BufReader::new(opened)
+            .take(STOP_TAIL + 1)
+            .read_until(b'\n', &mut line)
+            .ok()?;
+        if line.len() as u64 > STOP_TAIL
+            || self.prefix.is_some_and(|(len, hash)| {
+                line.get(..len)
+                    .is_none_or(|prefix| <[u8; 32]>::from(Sha256::digest(prefix)) != hash)
+            })
+        {
+            return None;
+        }
+        if !line.ends_with(b"\n") {
+            return Some(false);
+        }
+        let entry: StopEntry = serde_json::from_slice(&line).ok()?;
+        (entry.in_session(session)
+            && entry.kind == "assistant"
+            && !entry.api_error
+            && entry.message.is_some_and(|said| said.role == "assistant")
+            && self
+                .turn
+                .as_ref()
+                .zip(entry.turn.as_ref())
+                .is_none_or(|(prior, next)| prior == next)
+            && self
+                .parent
+                .as_ref()
+                .is_none_or(|parent| entry.parent.as_ref() == Some(parent)))
+        .then_some(true)
+    }
+}
+
+fn open_transcript(file: &Path) -> Option<fs::File> {
+    if !fs::metadata(file).ok()?.is_file() {
+        return None;
+    }
+    fs::File::open(file).ok()
+}
+
+#[cfg(unix)]
+fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    // The open file keeps this handle valid, and the call fills the information structure.
+    let mut found: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut found) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(found.nFileIndexHigh) << 32) | u64::from(found.nFileIndexLow);
+    Ok((u64::from(found.dwVolumeSerialNumber), index))
 }
 
 /// Writes `lines`, each a line's `msg_id` and its text, into the socket of `session`, after an
@@ -249,6 +490,42 @@ struct Entry {
     content: Option<serde_json::Value>,
     #[serde(default)]
     timestamp: Option<String>,
+}
+
+/// The entries next to Stop, including the session and parent information for a deferred check.
+#[derive(Deserialize)]
+struct StopEntry {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "isSidechain", default)]
+    sidechain: bool,
+    #[serde(rename = "isApiErrorMessage", default)]
+    api_error: bool,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    message: Option<StopMessage>,
+    #[serde(rename = "sessionId", default)]
+    session: Option<String>,
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid", default)]
+    parent: Option<String>,
+    #[serde(rename = "promptId", default)]
+    turn: Option<String>,
+}
+
+impl StopEntry {
+    fn in_session(&self, session: &str) -> bool {
+        !self.sidechain && self.session.as_deref() == Some(session)
+    }
+}
+
+#[derive(Deserialize)]
+struct StopMessage {
+    role: String,
+    #[serde(default)]
+    content: serde_json::Value,
 }
 
 /// A queued line that went to the model during a turn, as the turn's attachment.
@@ -441,6 +718,7 @@ pub struct Served {
     /// Whether the registrations may have changed.
     reload: bool,
     live: BTreeMap<String, Live>,
+    deferred: BTreeMap<String, DeferredStop>,
     /// When the last run failed, if it did.
     failed: Option<Instant>,
     /// The paths the helper held at the last look.
@@ -566,6 +844,7 @@ impl Served {
             due: true,
             reload: true,
             live: BTreeMap::new(),
+            deferred: BTreeMap::new(),
             failed: None,
             held: Holders::new(),
             next: None,
@@ -578,9 +857,27 @@ impl Served {
         self.due = true;
     }
 
+    /// A hook ends any previous watch of its session, or replaces it after Stop.
+    pub fn stopped(&mut self, id: String, deferred: Option<DeferredStop>) {
+        let previous = self.deferred.remove(&id);
+        let Some(mut deferred) = deferred else { return };
+        if let Some(previous) = previous
+            && previous.space == deferred.space
+            && previous.agent == deferred.agent
+            && previous.path == deferred.path
+            && previous.delivery == deferred.delivery
+            && previous.transcript == deferred.transcript
+        {
+            deferred.until = deferred.until.min(previous.until);
+        }
+        if self.deferred.len() < STOP_WATCHES {
+            self.deferred.insert(id, deferred);
+        }
+    }
+
     /// Whether a session is registered, or the helper holds a path, as of the last look.
     pub fn serving(&self) -> bool {
-        !self.live.is_empty() || !self.held.is_empty()
+        !self.live.is_empty() || !self.held.is_empty() || !self.deferred.is_empty()
     }
 
     /// Whether the next look has anything to do: a session is registered, or may be, or a message
@@ -618,6 +915,37 @@ impl Served {
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut gone = Vec::new();
         let mut state = None;
+        self.deferred.retain(|id, deferred| {
+            if now >= deferred.until {
+                return false;
+            }
+            let Some(state) = opened(&mut state, dir) else {
+                return false;
+            };
+            let scope = (deferred.space, deferred.agent.as_str(), id.as_str());
+            if !state
+                .awaits_claude_stop(scope, deferred.path, &deferred.delivery)
+                .unwrap_or(false)
+            {
+                return false;
+            }
+            match deferred.transcript.assistant(id) {
+                Some(false) => return true,
+                Some(true) => {
+                    if state
+                        .confirmed_claude_stop(scope, deferred.path, &deferred.delivery)
+                        .unwrap_or(false)
+                    {
+                        runs.insert(
+                            (deferred.agent.clone(), deferred.space),
+                            deferred.folder.clone(),
+                        );
+                    }
+                }
+                None => {}
+            }
+            false
+        });
         for (id, live) in &mut self.live {
             let key = (live.session.agent.clone(), live.session.space);
             if !live.runs() {
@@ -754,6 +1082,41 @@ pub fn run_as(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deferred_stop_only_accepts_its_adjacent_assistant_entry() {
+        let delivery = json!({
+            "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn",
+        });
+        let reply = json!({
+            "type": "assistant", "sessionId": "session", "parentUuid": "delivery",
+            "promptId": "turn", "message": { "role": "assistant" },
+        });
+        let appends = [
+            (reply.clone(), Some(true)),
+            (json!({ "isApiErrorMessage": true }), None),
+            (json!({ "isSidechain": true }), None),
+            (json!({ "sessionId": "another" }), None),
+            (json!({ "parentUuid": "another" }), None),
+            (json!({ "promptId": "another" }), None),
+            (json!({ "type": "user" }), None),
+        ];
+        for (index, (fields, expected)) in appends.into_iter().enumerate() {
+            let dir = crate::test_dir::TestDir::new(&format!("deferred-claude-stop-{index}"));
+            let file = dir.join("session.jsonl");
+            fs::write(&file, format!("{delivery}\n")).unwrap();
+            let (watch, _) = StopFile::at_tail(&file).unwrap();
+            assert_eq!(watch.assistant("session"), Some(false));
+            let mut appended = reply.clone();
+            appended
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            writeln!(output, "{appended}\n{reply}").unwrap();
+            assert_eq!(watch.assistant("session"), expected, "{appended}");
+        }
+    }
 
     /// Entries recorded from Claude Code 2.1.329 (`tests/claude_code_socket/recorded/`).
     const PEER_MESSAGE: &str =
