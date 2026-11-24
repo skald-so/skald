@@ -68,6 +68,8 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 const STOP_TAIL: u64 = 64 << 10;
 /// How many Stops the helper can wait for together.
 const STOP_WATCHES: usize = 16;
+/// How many emitted own lines the helper can remember without retaining their text.
+const STOP_EMISSIONS: usize = 256;
 
 /// Registers the session of `agent` that `session` names, its folder the working directory, if
 /// the folder is in a space and Claude Code gave the session's ID, file and socket.
@@ -136,14 +138,104 @@ pub struct DeferredStop {
     space: SpaceId,
     agent: String,
     folder: PathBuf,
-    path: &'static str,
-    delivery: ClaudeStopDelivery,
+    path: resend::Way,
+    reference: String,
+    digest: [u8; 32],
     transcript: StopFile,
+    shown: i64,
+    started: Instant,
+}
+
+struct ConfirmingStop {
+    stop: DeferredStop,
+    delivery: ClaudeStopDelivery,
     until: Instant,
 }
 
+struct Emission {
+    space: SpaceId,
+    agent: String,
+    path: resend::Way,
+    /// A rewake hook knows its session ID. A Channels holder identifies the agent and space.
+    session: Option<String>,
+    delivery: ClaudeStopDelivery,
+    reference: String,
+    digest: [u8; 32],
+    sent: i64,
+    until: Instant,
+    first_stop: Option<Instant>,
+}
+
+#[derive(Default)]
+struct Emissions {
+    records: Vec<Emission>,
+    /// When saturated, none of the attempts we could not keep may be selected.
+    unavailable_until: Option<Instant>,
+}
+
+impl Emissions {
+    fn record(&mut self, now: Instant, emission: Emission) {
+        self.records.retain(|record| record.until > now);
+        let unavailable = self.unavailable_until.filter(|until| *until > now);
+        if unavailable.is_some() || self.records.len() == STOP_EMISSIONS {
+            self.unavailable_until = self
+                .records
+                .drain(..)
+                .map(|record| record.until)
+                .chain(unavailable)
+                .chain([emission.until])
+                .max();
+            return;
+        }
+        self.records.push(emission);
+    }
+
+    fn bind(&mut self, session: &str, stop: DeferredStop, now: Instant) -> Option<ConfirmingStop> {
+        if self.unavailable_until.is_some_and(|until| until > now) {
+            return None;
+        }
+        self.records.retain(|record| record.until > now);
+        let mut emitted = self.records.iter_mut().filter(|record| {
+            record.space == stop.space
+                && record.agent == stop.agent
+                && record.path == stop.path
+                && record.reference == stop.reference
+                && record.sent <= stop.shown
+                && record.session.as_deref().is_none_or(|id| id == session)
+        });
+        let record = emitted.next()?;
+        if emitted.next().is_some() || record.digest != stop.digest {
+            return None;
+        }
+        let first_stop = *record.first_stop.get_or_insert(stop.started);
+        let until = record.until.min(first_stop + STOP_GRACE);
+        (now < until).then(|| ConfirmingStop {
+            stop,
+            delivery: record.delivery.clone(),
+            until,
+        })
+    }
+}
+
+impl ConfirmingStop {
+    /// None discards a watch, false means it still waits, and true confirms the exact handover.
+    fn poll(&self, state: &State, id: &str) -> Result<Option<bool>, crate::state::Error> {
+        let stop = &self.stop;
+        let scope = (stop.space, stop.agent.as_str(), id);
+        let path = stop.path.name();
+        if !state.awaits_claude_stop(scope, path, &self.delivery, stop.shown)? {
+            return Ok(None);
+        }
+        match stop.transcript.assistant(id) {
+            Some(true) => Ok(state
+                .confirmed_claude_stop(scope, path, &self.delivery, stop.shown, self.until)?
+                .then_some(true)),
+            waiting => Ok(waiting),
+        }
+    }
+}
+
 /// A delivery line and the exact place its next entry starts in this file.
-#[derive(PartialEq, Eq)]
 struct StopFile {
     file: PathBuf,
     identity: (u64, u64),
@@ -194,38 +286,25 @@ pub fn defer_stop(
         .parse::<jiff::Timestamp>()
         .ok()?
         .as_millisecond();
-    let (path, reference) = stop_reference(&text_of(&said.content))?;
-    let now = crate::state::unix_ms();
-    let mut deliveries = state
-        .claude_stop_deliveries((space, agent.as_str(), id), path)
-        .ok()?
-        .into_iter()
-        .filter(|delivery| {
-            delivery.given <= at
-                && at <= now
-                && delivery
-                    .msg_id
-                    .parse()
-                    .is_ok_and(|id| crate::forms::whole_reference(id).starts_with(&reference))
-        });
-    let delivery = deliveries.next()?;
-    if deliveries.next().is_some() {
+    let (path, reference, digest) = stop_reference(&text_of(&said.content))?;
+    if at > crate::state::unix_ms() {
         return None;
     }
-    let remaining = u64::try_from(delivery.due.checked_sub(now)?).ok()?;
     Some(DeferredStop {
         space,
         agent: agent.as_str().to_owned(),
         folder: std::env::current_dir().ok()?,
         path,
-        delivery,
+        reference,
+        digest,
         transcript,
-        until: started + STOP_GRACE.min(Duration::from_millis(remaining)),
+        shown: at,
+        started,
     })
 }
 
 /// A single reference in the delivery itself, with the path that gave the line.
-fn stop_reference(text: &str) -> Option<(&'static str, String)> {
+fn stop_reference(text: &str) -> Option<(resend::Way, String, [u8; 32])> {
     let text = text.trim();
     let (path, body) = if let Some(event) = text.strip_prefix(CHANNEL_TAG) {
         let (source, rest) = event.split_once('"')?;
@@ -237,23 +316,29 @@ fn stop_reference(text: &str) -> Option<(&'static str, String)> {
         if body.contains(CHANNEL_TAG) || body.contains(CHANNEL_END) {
             return None;
         }
-        (resend::Way::Channel.name(), body)
+        (resend::Way::Channel, body.trim())
     } else {
         let text = text
             .strip_prefix("<system-reminder>")
             .and_then(|body| body.strip_suffix("</system-reminder>"))
             .unwrap_or(text);
         let body = text.trim_start().strip_prefix(REWAKE_OUTPUT)?;
-        (resend::Way::Rewake.name(), body)
+        (
+            resend::Way::Rewake,
+            body.trim_start_matches([':', ' ', '\r', '\n', '\t'])
+                .trim_end(),
+        )
     };
-    let line = body
-        .trim_start_matches([':', ' ', '\r', '\n', '\t'])
-        .lines()
-        .next()?;
+    let line = body.lines().next()?;
     let (header, _) = line.strip_prefix('[')?.split_once("] #")?;
-    header
-        .ends_with(" · own")
-        .then(|| own_reference(line).map(|reference| (path, reference)))?
+    if !header.ends_with(" · own") {
+        return None;
+    }
+    Some((
+        path,
+        own_reference(line)?,
+        Sha256::digest(body.as_bytes()).into(),
+    ))
 }
 
 /// Without an exact partial line, both entries have to name the same turn explicitly.
@@ -770,7 +855,8 @@ pub struct Served {
     /// Whether the registrations may have changed.
     reload: bool,
     live: BTreeMap<String, Live>,
-    deferred: BTreeMap<String, DeferredStop>,
+    deferred: BTreeMap<String, ConfirmingStop>,
+    emitted: Emissions,
     /// When the last run failed, if it did.
     failed: Option<Instant>,
     /// The paths the helper held at the last look.
@@ -897,6 +983,7 @@ impl Served {
             reload: true,
             live: BTreeMap::new(),
             deferred: BTreeMap::new(),
+            emitted: Emissions::default(),
             failed: None,
             held: Holders::new(),
             next: None,
@@ -909,21 +996,47 @@ impl Served {
         self.due = true;
     }
 
+    /// Remembers the identity of a single own message the selected path just wrote.
+    pub fn emitted(
+        &mut self,
+        (space, agent): (SpaceId, &str),
+        (path, session, started): (resend::Way, Option<&str>, i64),
+        push: &resend::Push,
+    ) {
+        let Some(own) = &push.own else { return };
+        let now = Instant::now();
+        let remaining = own.delivery.due.saturating_sub(crate::state::unix_ms());
+        let Some(until) = u64::try_from(remaining)
+            .ok()
+            .and_then(|ms| now.checked_add(Duration::from_millis(ms)))
+        else {
+            return;
+        };
+        self.emitted.record(
+            now,
+            Emission {
+                space,
+                agent: agent.to_owned(),
+                path,
+                session: session.map(str::to_owned),
+                delivery: own.delivery.clone(),
+                reference: own.reference.clone(),
+                digest: Sha256::digest(push.content.trim().as_bytes()).into(),
+                sent: started,
+                until,
+                first_stop: None,
+            },
+        );
+    }
+
     /// A hook ends any previous watch of its session, or replaces it after Stop.
     pub fn stopped(&mut self, id: String, deferred: Option<DeferredStop>) {
-        let previous = self.deferred.remove(&id);
-        let Some(mut deferred) = deferred else { return };
-        if let Some(previous) = previous
-            && previous.space == deferred.space
-            && previous.agent == deferred.agent
-            && previous.path == deferred.path
-            && previous.delivery == deferred.delivery
-            && previous.transcript == deferred.transcript
+        self.deferred.remove(&id);
+        if self.deferred.len() < STOP_WATCHES
+            && let Some(watch) =
+                deferred.and_then(|stop| self.emitted.bind(&id, stop, Instant::now()))
         {
-            deferred.until = deferred.until.min(previous.until);
-        }
-        if self.deferred.len() < STOP_WATCHES {
-            self.deferred.insert(id, deferred);
+            self.deferred.insert(id, watch);
         }
     }
 
@@ -967,36 +1080,28 @@ impl Served {
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut gone = Vec::new();
         let mut state = None;
-        self.deferred.retain(|id, deferred| {
-            if now >= deferred.until {
-                return false;
-            }
-            let Some(state) = opened(&mut state, dir) else {
-                return false;
-            };
-            let scope = (deferred.space, deferred.agent.as_str(), id.as_str());
-            if !state
-                .awaits_claude_stop(scope, deferred.path, &deferred.delivery)
-                .unwrap_or(false)
-            {
-                return false;
-            }
-            match deferred.transcript.assistant(id) {
-                Some(false) => return true,
-                Some(true)
-                    if state
-                        .confirmed_claude_stop(scope, deferred.path, &deferred.delivery)
-                        .unwrap_or(false) =>
-                {
-                    runs.insert(
-                        (deferred.agent.clone(), deferred.space),
-                        deferred.folder.clone(),
-                    );
+        if !self.deferred.is_empty() {
+            let stopped = State::open_deferred_stop(dir);
+            self.deferred.retain(|id, deferred| {
+                if Instant::now() >= deferred.until {
+                    return false;
                 }
-                _ => {}
-            }
-            false
-        });
+                let polled = match &stopped {
+                    Ok(state) => deferred.poll(state, id),
+                    Err(err) => return err.busy(),
+                };
+                match polled {
+                    Ok(Some(true)) => {
+                        let stop = &deferred.stop;
+                        runs.insert((stop.agent.clone(), stop.space), stop.folder.clone());
+                        false
+                    }
+                    Ok(Some(false)) => true,
+                    Err(err) => err.busy() && Instant::now() < deferred.until,
+                    Ok(None) => false,
+                }
+            });
+        }
         for (id, live) in &mut self.live {
             let key = (live.session.agent.clone(), live.session.space);
             if !live.runs() {
@@ -1168,6 +1273,69 @@ mod tests {
             writeln!(output, "{appended}\n{reply}").unwrap();
             assert_eq!(watch.assistant("session"), expected, "{appended}");
         }
+    }
+
+    #[test]
+    fn deferred_stop_binds_only_to_one_emitted_identity_and_keeps_its_first_deadline() {
+        let dir = crate::test_dir::TestDir::new("claude-stop-emissions");
+        let file = dir.join("session.jsonl");
+        writeln!(
+            fs::File::create(&file).unwrap(),
+            "{}",
+            json!({ "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn" }),
+        ).unwrap();
+        let now = Instant::now();
+        let space = SpaceId::generate();
+        let stop = |started| DeferredStop {
+            space,
+            agent: "claude".to_owned(),
+            folder: dir.to_path_buf(),
+            path: resend::Way::Channel,
+            reference: "abcd".to_owned(),
+            digest: [1; 32],
+            transcript: StopFile::at_tail(&file).unwrap().0,
+            shown: 3,
+            started,
+        };
+        let record = |seq| Emission {
+            space,
+            agent: "claude".to_owned(),
+            path: resend::Way::Channel,
+            session: None,
+            delivery: ClaudeStopDelivery {
+                seq,
+                msg_id: skald_proto::MessageId::generate(),
+                due: 100,
+            },
+            reference: "abcd".to_owned(),
+            digest: [1; 32],
+            sent: 2,
+            until: now + 2 * STOP_GRACE,
+            first_stop: None,
+        };
+        let mut emitted = Emissions::default();
+        assert!(emitted.bind("session", stop(now), now).is_none());
+
+        let one = record(1);
+        let delivery = one.delivery.clone();
+        emitted.record(now, one);
+        let mut different = stop(now);
+        different.digest = [2; 32];
+        assert!(emitted.bind("session", different, now).is_none());
+        let first = emitted.bind("session", stop(now), now).unwrap();
+        assert_eq!(first.delivery, delivery);
+
+        let again = now + Duration::from_millis(100);
+        let second = emitted.bind("session", stop(again), again).unwrap();
+        assert_eq!(second.until, first.until);
+        assert!(
+            emitted
+                .bind("session", stop(first.until), first.until)
+                .is_none()
+        );
+
+        emitted.record(again, record(2));
+        assert!(emitted.bind("session", stop(again), again).is_none());
     }
 
     /// Entries recorded from Claude Code 2.1.329 (`tests/claude_code_socket/recorded/`).

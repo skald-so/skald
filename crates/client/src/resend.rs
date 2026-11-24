@@ -117,9 +117,9 @@ pub struct Pushed {
     /// The space of the run's agent.
     pub space: Option<SpaceId>,
     /// The channel events, each one's text.
-    pub channel: Vec<String>,
+    pub channel: Vec<Push>,
     /// What the `asyncRewake` hook gives, if anything.
-    pub rewake: Option<String>,
+    pub rewake: Option<Push>,
     /// Whether the mod submits its prompt.
     pub prompt: bool,
     /// When, in Unix milliseconds, the next message a path took times out, if any does.
@@ -127,6 +127,19 @@ pub struct Pushed {
     /// When, in Unix milliseconds, the first window of `batch` that holds back a message no path
     /// took ends, if one does: a run then pushes it.
     pub batch: Option<u64>,
+}
+
+/// The output for one path, with the identity of a single own message if it carries one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Push {
+    pub content: String,
+    pub own: Option<OwnPush>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct OwnPush {
+    pub delivery: state::ClaudeStopDelivery,
+    pub reference: String,
 }
 
 /// What resending does with a waiting message now.
@@ -365,6 +378,19 @@ struct To<'a> {
     due: i64,
 }
 
+/// The identity and displayed reference of an own line, as the path writes them.
+fn own_push(to: &To, opened: &Opened) -> Option<OwnPush> {
+    let own = opened.own.as_ref().filter(|own| !own.inline)?;
+    Some(OwnPush {
+        delivery: state::ClaudeStopDelivery {
+            seq: opened.seq,
+            msg_id: own.msg_id,
+            due: to.due,
+        },
+        reference: to.references.of(own.msg_id),
+    })
+}
+
 /// Writes `opened` into the socket of `session`, the agent's, with [`claude_socket::write`]: each
 /// message that goes in as its text as its line, the others as one signal. Each is recorded as the
 /// socket's before the write, and as before it if the write fails, which ends the registration; a
@@ -406,12 +432,19 @@ fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[&Opened]) -> Res
 /// text as its line, the others as one signal. Gives whether it gave any.
 fn to_channel(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let (own, below) = split(opened);
-    let mut events: Vec<String> = (opened.iter())
-        .filter_map(|each| each.own.as_ref())
-        .map(|own| own.fitted(to.references))
+    let mut events: Vec<Push> = (opened.iter())
+        .filter_map(|each| {
+            Some(Push {
+                content: each.own.as_ref()?.fitted(to.references),
+                own: own_push(to, each),
+            })
+        })
         .collect();
     if !below.is_empty() {
-        events.push(hook::SIGNAL.to_owned());
+        events.push(Push {
+            content: hook::SIGNAL.to_owned(),
+            own: None,
+        });
     }
     if events.is_empty() {
         return Ok(false);
@@ -455,7 +488,17 @@ fn to_rewake(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, S
         .filter(|each| given.handed.contains(&each.seq) || given.signalled.contains(&each.seq))
         .collect();
     (to.state.count_wakes(&channels(&woken))).map_err(text)?;
-    pushed.rewake = Some(given.output);
+    let own = match given.handed.as_slice() {
+        [seq] => woken
+            .iter()
+            .find(|each| each.seq == *seq)
+            .and_then(|each| own_push(to, each)),
+        _ => None,
+    };
+    pushed.rewake = Some(Push {
+        content: given.output,
+        own,
+    });
     Ok(true)
 }
 
