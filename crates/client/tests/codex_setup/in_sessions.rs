@@ -177,6 +177,10 @@ fn the_windows_hook_runs_from_a_path_with_spaces_and_an_apostrophe() {
         Some(1),
         "Skald did not reject malformed hook input: {malformed:?}"
     );
+    assert!(
+        malformed.stdout.is_empty() && malformed.stderr.is_empty(),
+        "Skald printed output for malformed hook input: {malformed:?}"
+    );
 }
 
 /// Ada's machine in `clienta`, as the tests of Codex's hooks have it. A Codex session in
