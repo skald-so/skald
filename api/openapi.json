@@ -6380,7 +6380,7 @@
       "post": {
         "operationId": "submitAbuseReport",
         "summary": "Report a space member",
-        "description": "The session's account reports another active account in the space's latest roster. Web requests must come from the server's web origin. A valid retry for the same target account and reason with the same key returns the receipt while the report is kept. The server counts retained reports in the past 24 hours toward the reporter's submission limit and bounds total storage.",
+        "description": "The session's account reports another active account selected from the member list for the current roster revision. Web requests must come from the server's web origin. A current member can retry the exact submission and receive the same receipt while the report is kept, even after the roster changes. The server limits each account's new submissions over 24 hours and also limits total stored reports.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -6524,7 +6524,7 @@
             }
           },
           "409": {
-            "description": "The session's account already used this key in this space for a different report.",
+            "description": "The member list changed since the selection, or the account already used this key in the space for a different submission.",
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
@@ -10517,7 +10517,7 @@
       "get": {
         "operationId": "listSpaceMembers",
         "summary": "The space's members as the web app shows them",
-        "description": "The members of the space's latest stored revision (docs/protocol/membership.md, \"Roster\"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.",
+        "description": "The members of the space's latest stored revision (docs/protocol/membership.md, \"Roster\"), in its order, each with its role. The response header identifies that member list's revision. It is the server's word: `skald` checks the space's revisions itself.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -10540,6 +10540,12 @@
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Skald-Roster-Revision": {
+                "description": "The revision number of this member list. Absent before revision 1.",
+                "schema": {
+                  "$ref": "#/components/schemas/RosterRevisionNumber"
+                }
               }
             },
             "content": {
@@ -11616,70 +11622,75 @@
       }
     },
     "schemas": {
-    "AbuseReportReceipt": {
-      "type": "object",
-      "required": [
-        "receipt"
-      ],
-      "properties": {
-        "receipt": {
-          "description": "An opaque acknowledgment of submission.",
-          "type": "string",
-          "pattern": "^[A-Za-z0-9_-]{43}$"
-        }
-      },
-      "additionalProperties": false
-    },
-    "AbuseReportReason": {
-      "description": "A reason category configured by the server.",
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 63,
-      "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
-    },
-    "AbuseReportRequest": {
-      "type": "object",
-      "required": [
-        "target",
-        "reason",
-        "idempotency_key"
-      ],
-      "properties": {
-        "target": {
-          "description": "The member's handle in the latest roster.",
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 63,
-          "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
-        },
-        "reason": {
-          "$ref": "#/components/schemas/AbuseReportReason"
-        },
-        "idempotency_key": {
-          "description": "A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.",
-          "type": "string",
-          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        }
-      },
-      "additionalProperties": false
-    },
-    "AbuseReporting": {
-      "type": "object",
-      "required": [
-        "reasons"
-      ],
-      "properties": {
-        "reasons": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/components/schemas/AbuseReportReason"
+      "AbuseReportReceipt": {
+        "type": "object",
+        "required": [
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "description": "An opaque acknowledgment of submission.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
           }
-        }
+        },
+        "additionalProperties": false
       },
-      "additionalProperties": false
-    },
+      "AbuseReportReason": {
+        "description": "A reason category configured by the server.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+      },
+      "AbuseReportRequest": {
+        "type": "object",
+        "required": [
+          "target",
+          "roster_revision",
+          "reason",
+          "idempotency_key"
+        ],
+        "properties": {
+          "target": {
+            "description": "The selected member's handle in the listed roster.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          },
+          "roster_revision": {
+            "description": "The Skald-Roster-Revision header of the member list used for this selection.",
+            "$ref": "#/components/schemas/RosterRevisionNumber"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/AbuseReportReason"
+          },
+          "idempotency_key": {
+            "description": "A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbuseReporting": {
+        "type": "object",
+        "required": [
+          "reasons"
+        ],
+        "properties": {
+          "reasons": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/AbuseReportReason"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Acceptance": {
         "description": "An acceptance's CBOR bytes (docs/protocol/membership.md, \"Invite\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -13366,6 +13377,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "RosterRevisionNumber": {
+        "type": "string",
+        "pattern": "^[1-9][0-9]{0,18}$"
       },
       "RosterRevisions": {
         "type": "object",

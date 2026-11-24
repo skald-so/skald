@@ -1,6 +1,7 @@
 //! A current member can submit a structured report about another member of the same space.
 
 use std::num::NonZeroU32;
+use std::time::Duration;
 
 use axum::Json;
 use axum::body::{Body, to_bytes};
@@ -17,8 +18,10 @@ use crate::sign_in::{digest, random_token};
 use crate::sweeps::{self, PAGE, PAUSE};
 use crate::{AppState, mailboxes, sessions};
 
-/// A report contains only a handle, a reason and an idempotency key.
+/// A report contains a roster revision, handle, reason and idempotency key.
 const BODY_LIMIT: usize = 1024;
+/// The rolling window for a reporter's submission limit.
+const SUBMISSION_WINDOW: Duration = Duration::from_secs(24 * 3600);
 
 /// The server's opt-in settings for member reports.
 #[derive(Debug, Clone)]
@@ -63,6 +66,7 @@ struct Capability<'a> {
 #[serde(deny_unknown_fields)]
 struct Submission {
     target: String,
+    roster_revision: String,
     reason: String,
     idempotency_key: String,
 }
@@ -142,19 +146,27 @@ pub(crate) async fn submit(
         .map_err(|_| Refusal::AbuseReportTooLarge)?;
     let Submission {
         target,
+        roster_revision,
         reason,
         idempotency_key,
     } = parse(&body).map_err(|_| invalid())?;
     let target: Name = target.parse().map_err(|_| invalid())?;
+    let revision = roster_revision
+        .parse::<i64>()
+        .ok()
+        .filter(|revision| *revision > 0 && revision.to_string() == roster_revision)
+        .ok_or_else(invalid)? as u64;
     let _: MessageId = idempotency_key.parse().map_err(|_| invalid())?;
-    let hash = digest(&idempotency_key);
+    let key_hash = digest(&idempotency_key);
+    let submission_hash = digest(&format!("{revision}:{target}:{reason}"));
 
     let mut tx = state.db.begin().await.map_err(failed)?;
-    let target = report_target(&mut tx, space, &reporter, &target).await?;
-    if !settings.reasons.contains(&reason) {
-        return Err(invalid());
+    let space_text = space.to_string();
+    lock_space(&mut tx, &space_text).await?;
+    let latest = roster(&mut *tx, space, &reporter).await?;
+    if !active(&mut tx, &reporter).await? {
+        return Err(Refusal::NotSignedIn);
     }
-    let space = space.to_string();
 
     // All submitters serialize the retry and limit checks with the insert, including across
     // spaces and serving instances. Sweeps can only reduce the count.
@@ -162,38 +174,64 @@ pub(crate) async fn submit(
         .execute(&mut *tx)
         .await
         .map_err(failed)?;
-    let previous: Option<(String, String, String)> = sqlx::query_as(
-        "SELECT receipt, target_id::text, reason FROM abuse_reports
-         WHERE space_id = $1::uuid AND reporter_id = $2::uuid AND idempotency_hash = $3
-         FOR KEY SHARE",
+    // Read the retained receipt without a row lock. Erasure can delete a target's report and
+    // then need the space's lock to remove the creator link.
+    let previous: Option<(String, Vec<u8>)> = sqlx::query_as(
+        "SELECT receipt, submission_hash FROM abuse_reports
+         WHERE space_id = $1::uuid AND reporter_id = $2::uuid AND idempotency_hash = $3",
     )
-    .bind(&space)
+    .bind(&space_text)
     .bind(&reporter)
-    .bind(&hash)
+    .bind(&key_hash)
     .fetch_optional(&mut *tx)
     .await
     .map_err(failed)?;
-    if let Some((receipt, previous_target, previous_reason)) = previous {
-        if previous_target != target || previous_reason != reason {
+    if let Some((receipt, previous_hash)) = previous {
+        if previous_hash != submission_hash {
             return Err(Refusal::AbuseReportConflict);
         }
         tx.commit().await.map_err(failed)?;
         return Ok(Json(Receipt { receipt }).into_response());
     }
+
+    if latest.body().revision != revision {
+        return Err(Refusal::AbuseReportStaleSelection);
+    }
+    let target = latest
+        .body()
+        .members
+        .iter()
+        .find(|member| member.handle == target)
+        .map(|member| member.account.to_string())
+        .filter(|target| target != &reporter)
+        .ok_or(Refusal::NoAbuseReportTarget)?;
+    if !active(&mut tx, &target).await? {
+        return Err(Refusal::NoAbuseReportTarget);
+    }
+    if !settings.reasons.contains(&reason) {
+        return Err(invalid());
+    }
     check_limits(&mut tx, &reporter, settings).await?;
 
     let receipt = random_token();
     sqlx::query(
-        "INSERT INTO abuse_reports
-             (receipt, space_id, reporter_id, target_id, reason, idempotency_hash, retention_seconds)
-         VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7)",
+        "WITH accepted AS (
+             INSERT INTO abuse_reports
+                 (receipt, space_id, reporter_id, target_id, reason,
+                  idempotency_hash, submission_hash, retention_seconds)
+             VALUES ($1, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8)
+             RETURNING reporter_id, submitted_at
+         )
+         INSERT INTO abuse_report_submissions (reporter_id, submitted_at)
+         SELECT reporter_id, submitted_at FROM accepted",
     )
     .bind(&receipt)
-    .bind(&space)
+    .bind(&space_text)
     .bind(&reporter)
     .bind(target)
     .bind(reason)
-    .bind(hash)
+    .bind(key_hash)
+    .bind(submission_hash)
     .bind(i64::from(settings.retention_seconds.get()))
     .execute(&mut *tx)
     .await
@@ -203,48 +241,33 @@ pub(crate) async fn submit(
 }
 
 fn invalid() -> Refusal {
-    Refusal::Invalid("Give a member handle, an available reason and an idempotency key.".to_owned())
+    Refusal::Invalid(
+        "Give a member selection, an available reason and an idempotency key.".to_owned(),
+    )
 }
 
-/// Resolves the handle in the locked space's latest roster. Account locks keep both active until
-/// the transaction ends, in the same order as roster revisions and account deletion.
-async fn report_target(
-    tx: &mut PgConnection,
-    space: SpaceId,
-    reporter: &str,
-    target: &Name,
-) -> Result<String, Refusal> {
-    sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR SHARE")
-        .bind(space.to_string())
-        .execute(&mut *tx)
+/// Takes the space lock before reading the roster or locking accounts, as roster changes and
+/// account deletion do.
+async fn lock_space(tx: &mut PgConnection, space: &str) -> Result<(), Refusal> {
+    sqlx::query_scalar::<_, i32>("SELECT 1 FROM spaces WHERE id = $1::uuid FOR SHARE")
+        .bind(space)
+        .fetch_optional(tx)
         .await
-        .map_err(failed)?;
-    let roster = roster(&mut *tx, space, reporter).await?;
-    let target = roster
-        .body()
-        .members
-        .iter()
-        .find(|member| &member.handle == target)
-        .map(|member| member.account.to_string())
-        .filter(|target| target != reporter)
-        .ok_or(Refusal::NoAbuseReportTarget)?;
-    let active: Vec<String> = sqlx::query_scalar(
-        "SELECT id::text FROM accounts
-         WHERE id IN ($1::uuid, $2::uuid) AND deleted_at IS NULL
-         ORDER BY id FOR KEY SHARE",
+        .map_err(failed)?
+        .ok_or(Refusal::NoSpace)?;
+    Ok(())
+}
+
+/// Checks that the account exists and remains active until the transaction ends.
+async fn active(tx: &mut PgConnection, account: &str) -> Result<bool, Refusal> {
+    let found = sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM accounts WHERE id = $1::uuid AND deleted_at IS NULL FOR KEY SHARE",
     )
-    .bind(reporter)
-    .bind(&target)
-    .fetch_all(&mut *tx)
+    .bind(account)
+    .fetch_optional(tx)
     .await
     .map_err(failed)?;
-    if !active.iter().any(|id| id == reporter) {
-        return Err(Refusal::NotSignedIn);
-    }
-    if active.len() != 2 {
-        return Err(Refusal::NoAbuseReportTarget);
-    }
-    Ok(target)
+    Ok(found.is_some())
 }
 
 async fn check_limits(
@@ -253,12 +276,13 @@ async fn check_limits(
     settings: &AbuseReportingSettings,
 ) -> Result<(), Refusal> {
     let full: bool = sqlx::query_scalar(
-        "SELECT (SELECT count(*) FROM abuse_reports
+        "SELECT (SELECT count(*) FROM abuse_report_submissions
                  WHERE reporter_id = $1::uuid
-                   AND submitted_at > statement_timestamp() - interval '24 hours') >= $2
-             OR (SELECT count(*) FROM abuse_reports) >= $3",
+                   AND submitted_at > statement_timestamp() - make_interval(secs => $2)) >= $3
+             OR (SELECT count(*) FROM abuse_reports) >= $4",
     )
     .bind(reporter)
+    .bind(SUBMISSION_WINDOW.as_secs_f64())
     .bind(i64::from(settings.limit.get()))
     .bind(i64::from(settings.capacity.get()))
     .fetch_one(tx)
@@ -270,25 +294,41 @@ async fn check_limits(
     Ok(())
 }
 
-/// Deletes expired reports even if intake has since been turned off.
+/// Deletes expired reports and submissions outside the rate window, even with intake off.
 pub(crate) async fn run(db: PgPool) {
-    sweeps::every("delete expired abuse reports", || async {
-        loop {
-            let deleted = sqlx::query(
-                "DELETE FROM abuse_reports WHERE receipt IN (
-                     SELECT receipt FROM abuse_reports
-                     WHERE expires_at <= (now() AT TIME ZONE 'UTC')
-                     ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED
-                 )",
-            )
-            .bind(PAGE)
-            .execute(&db)
-            .await?;
-            if deleted.rows_affected() < PAGE as u64 {
-                return Ok(());
-            }
-            tokio::time::sleep(PAUSE).await;
-        }
-    })
+    sweeps::every(
+        "delete expired abuse reports and submission counts",
+        || async { sweep(&db).await },
+    )
     .await;
+}
+
+async fn sweep(db: &PgPool) -> Result<(), sqlx::Error> {
+    loop {
+        let reports = sqlx::query(
+            "DELETE FROM abuse_reports WHERE receipt IN (
+                 SELECT receipt FROM abuse_reports
+                 WHERE expires_at <= (now() AT TIME ZONE 'UTC')
+                 ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED
+             )",
+        )
+        .bind(PAGE)
+        .execute(db)
+        .await?;
+        let submissions = sqlx::query(
+            "DELETE FROM abuse_report_submissions WHERE id IN (
+                 SELECT id FROM abuse_report_submissions
+                 WHERE submitted_at <= now() - make_interval(secs => $2)
+                 ORDER BY submitted_at LIMIT $1 FOR UPDATE SKIP LOCKED
+             )",
+        )
+        .bind(PAGE)
+        .bind(SUBMISSION_WINDOW.as_secs_f64())
+        .execute(db)
+        .await?;
+        if reports.rows_affected().max(submissions.rows_affected()) < PAGE as u64 {
+            return Ok(());
+        }
+        tokio::time::sleep(PAUSE).await;
+    }
 }

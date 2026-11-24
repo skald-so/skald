@@ -32,6 +32,7 @@ pub(crate) enum Refusal {
     AbuseReportingOff,
     NoAbuseReportTarget,
     AbuseReportConflict,
+    AbuseReportStaleSelection,
     AbuseReportTooLarge,
     AbuseReportLimit,
     /// No such device of the session's account.
@@ -175,6 +176,12 @@ impl IntoResponse for Refusal {
                 "report-key-taken",
                 "Report key already used",
                 "Use a new idempotency key for a different report.",
+            ),
+            Refusal::AbuseReportStaleSelection => problem(
+                conflict,
+                "report-selection-stale",
+                "Member list changed",
+                "Refresh the member list and choose again.",
             ),
             Refusal::AbuseReportTooLarge => problem(
                 StatusCode::PAYLOAD_TOO_LARGE,

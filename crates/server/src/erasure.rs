@@ -125,6 +125,7 @@ async fn erase(conn: &mut PgConnection, account: &str) -> Result<(), sqlx::Error
         "DELETE FROM wrong_user_codes WHERE account_id = $1::uuid",
         "DELETE FROM wrong_pairings WHERE account_id = $1::uuid",
         "DELETE FROM abuse_reports WHERE reporter_id = $1::uuid OR target_id = $1::uuid",
+        "DELETE FROM abuse_report_submissions WHERE reporter_id = $1::uuid",
         // End a sign-up invite with the account. Its acceptance goes with it, in the same lock
         // order as invite expiry. Then clear the account's acceptances of other invites.
         "DELETE FROM invites WHERE sign_up_account_id = $1::uuid",

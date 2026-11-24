@@ -2966,7 +2966,7 @@ export const getSubmitAbuseReportUrl = (space: string) => {
 };
 
 /**
- * The session's account reports another active account in the space's latest roster. Web requests must come from the server's web origin. A valid retry for the same target account and reason with the same key returns the receipt while the report is kept. The server counts retained reports in the past 24 hours toward the reporter's submission limit and bounds total storage.
+ * The session's account reports another active account selected from the member list for the current roster revision. Web requests must come from the server's web origin. A current member can retry the exact submission and receive the same receipt while the report is kept, even after the roster changes. The server limits each account's new submissions over 24 hours and also limits total stored reports.
  * @summary Report a space member
  */
 export const submitAbuseReport = async (
@@ -4016,7 +4016,7 @@ export const getListSpaceMembersUrl = (space: string) => {
 };
 
 /**
- * The members of the space's latest stored revision (docs/protocol/membership.md, "Roster"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.
+ * The members of the space's latest stored revision (docs/protocol/membership.md, "Roster"), in its order, each with its role. The response header identifies that member list's revision. It is the server's word: `skald` checks the space's revisions itself.
  * @summary The space's members as the web app shows them
  */
 export const listSpaceMembers = async (

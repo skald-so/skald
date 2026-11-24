@@ -7,8 +7,8 @@ use crate::common::{assert_holds_none, stored_forms};
 use crate::fixture::Fixture;
 use crate::https::{Https, PROOF};
 use crate::reporting::{
-    CAPABILITY, LONG_RETENTION, OTHER_REASON, REASON, documented, get, post, receipt, refused,
-    report_path, report_rows, settings, sign_in, start, submission, submit,
+    CAPABILITY, LONG_RETENTION, OTHER_REASON, REASON, documented, get, member_revision, post,
+    receipt, refused, report_path, report_rows, settings, sign_in, start, submission, submit,
 };
 use crate::rosters::{first, member, next};
 use crate::sessions::Api;
@@ -57,7 +57,8 @@ fn a_members_report_returns_only_a_durable_receipt_and_retry_keeps_one_record() 
     let config = settings("5", "10", LONG_RETENTION);
     let mut server = fixture.team.flow.stand.restart(&[], &config);
     let team = &fixture.team;
-    let body = submission(&team.bob, REASON);
+    let revision = member_revision(team, &server);
+    let body = submission(&team.bob, REASON, &revision);
     let first = receipt(
         &submit(&Api::of(&team.flow).on(&server), team.space, &dave, &body),
         &[201],
@@ -151,8 +152,9 @@ fn both_accounts_must_belong_to_the_selected_space_without_revealing_other_accou
     let server = start(&mut fixture);
     let team = &fixture.team;
     let api = Api::of(&team.flow).on(&server);
+    let revision = member_revision(team, &server);
 
-    let mut missing = submission(&fixture.eve, REASON);
+    let mut missing = submission(&fixture.eve, REASON, &revision);
     missing["target"] = json!("no-such-fixture-account");
     let unknown = submit(&api, team.space, &carol, &missing);
     refused(&unknown, "unknown target", &["no-such-fixture-account"]);
@@ -160,7 +162,12 @@ fn both_accounts_must_belong_to_the_selected_space_without_revealing_other_accou
         (&fixture.eve, "target outside the space"),
         (&team.dave, "removed target"),
     ] {
-        let response = submit(&api, team.space, &carol, &submission(target, REASON));
+        let response = submit(
+            &api,
+            team.space,
+            &carol,
+            &submission(target, REASON, &revision),
+        );
         refused(
             &response,
             what,
@@ -173,14 +180,24 @@ fn both_accounts_must_belong_to_the_selected_space_without_revealing_other_accou
         (&eve, "reporter outside the space"),
         (&dave, "removed reporter"),
     ] {
-        let response = submit(&api, team.space, cookie, &submission(&team.bob, REASON));
+        let response = submit(
+            &api,
+            team.space,
+            cookie,
+            &submission(&team.bob, REASON, &revision),
+        );
         refused(
             &response,
             what,
             &[team.bob.handle.as_str(), &team.bob.account.to_string()],
         );
     }
-    let own = submit(&api, team.space, &carol, &submission(&team.carol, REASON));
+    let own = submit(
+        &api,
+        team.space,
+        &carol,
+        &submission(&team.carol, REASON, &revision),
+    );
     refused(&own, "a report about the reporter's own account", &[]);
     assert!(report_rows(fixture.db()).is_empty());
 }
@@ -191,7 +208,8 @@ fn a_request_without_a_session_submits_nothing() {
     let server = start(&mut fixture);
     let team = &fixture.team;
     let api = Api::of(&team.flow).on(&server);
-    let request = submission(&team.bob, REASON);
+    let revision = member_revision(team, &server);
+    let request = submission(&team.bob, REASON, &revision);
     let no_session = post(&api, team.space, &[("origin", api.public)], &request);
     assert_eq!(
         no_session.status,
@@ -215,7 +233,8 @@ fn a_live_service_token_cannot_submit_a_report() {
     let server = start(&mut stage.f);
     let team = &stage.f.team;
     let api = Api::of(&team.flow).on(&server);
-    let request = submission(&team.bob, REASON);
+    let revision = member_revision(team, &server);
+    let request = submission(&team.bob, REASON, &revision);
     let hidden = [team.bob.handle.as_str(), &team.bob.account.to_string()];
 
     let proof = Https::on_session(&server, &team.flow, &created.token, &stage.bot).proof();
@@ -237,11 +256,12 @@ fn a_report_accepts_only_configured_reasons_and_does_not_carry_content() {
     let server = start(&mut fixture);
     let team = &fixture.team;
     let api = Api::of(&team.flow).on(&server);
+    let revision = member_revision(team, &server);
     let unknown = submit(
         &api,
         team.space,
         &dave,
-        &submission(&team.bob, "fixture-unconfigured-reason"),
+        &submission(&team.bob, "fixture-unconfigured-reason", &revision),
     );
     refused(&unknown, "an unconfigured reason", &[]);
     assert!(report_rows(fixture.db()).is_empty());
@@ -252,7 +272,7 @@ fn a_report_accepts_only_configured_reasons_and_does_not_carry_content() {
         "marker-for-fixture-token",
         "marker-for-fixture-key",
     ];
-    let mut request = submission(&team.bob, REASON);
+    let mut request = submission(&team.bob, REASON, &revision);
     request["reporter"] = json!(team.carol.account.to_string());
     for (field, marker) in ["text", "attachment", "token", "key"]
         .into_iter()

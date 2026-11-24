@@ -5,8 +5,8 @@ use serde_json::Value;
 
 use crate::fixture::Fixture;
 use crate::reporting::{
-    LONG_RETENTION, OTHER_REASON, REASON, age_report, receipt, refused, report_rows, settings,
-    sign_in, submission, submit,
+    LONG_RETENTION, OTHER_REASON, REASON, age_report, member_revision, receipt, refused,
+    report_rows, settings, sign_in, submission, submit,
 };
 use crate::sessions::Api;
 
@@ -23,16 +23,17 @@ fn retries_survive_the_configured_submission_limit_and_total_storage_stays_bound
         .restart(&[], &settings("2", "3", LONG_RETENTION));
     let team = &fixture.team;
     let api = Api::of(&team.flow).on(&server);
+    let revision = member_revision(team, &server);
     let submit_as = |cookie: &str, request: &Value| submit(&api, team.space, cookie, request);
-    let for_bob = submission(&team.bob, REASON);
+    let for_bob = submission(&team.bob, REASON, &revision);
     let first = receipt(&submit_as(&dave, &for_bob), &[201]);
     receipt(
-        &submit_as(&dave, &submission(&team.alice, OTHER_REASON)),
+        &submit_as(&dave, &submission(&team.alice, OTHER_REASON, &revision)),
         &[201],
     );
 
     let hidden = [team.bob.handle.as_str(), &team.bob.account.to_string()];
-    let rejected = submit_as(&dave, &submission(&team.bob, OTHER_REASON));
+    let rejected = submit_as(&dave, &submission(&team.bob, OTHER_REASON, &revision));
     refused(
         &rejected,
         "the reporting account's submission limit",
@@ -45,11 +46,11 @@ fn retries_survive_the_configured_submission_limit_and_total_storage_stays_bound
         "only two reports were stored"
     );
 
-    let for_alice = submission(&team.alice, REASON);
+    let for_alice = submission(&team.alice, REASON, &revision);
     let third = receipt(&submit_as(&carol, &for_alice), &[201]);
     let full = report_rows(fixture.db());
     assert_eq!(full.len(), 3);
-    let overflow = submit_as(&carol, &submission(&team.bob, OTHER_REASON));
+    let overflow = submit_as(&carol, &submission(&team.bob, OTHER_REASON, &revision));
     refused(&overflow, "the server's report capacity", &hidden);
     assert_eq!(receipt(&submit_as(&carol, &for_alice), &[200, 201]), third);
     assert_eq!(
@@ -71,10 +72,14 @@ fn configured_retention_frees_capacity_and_keeps_newer_reports() {
         .restart(&[], &settings("5", "2", "86400"));
     let team = &fixture.team;
     let api = Api::of(&team.flow).on(&server);
+    let revision = member_revision(team, &server);
     let submit_as_dave = |request: &Value| submit(&api, team.space, &dave, request);
-    let old = receipt(&submit_as_dave(&submission(&team.bob, REASON)), &[201]);
+    let old = receipt(
+        &submit_as_dave(&submission(&team.bob, REASON, &revision)),
+        &[201],
+    );
     let fresh = receipt(
-        &submit_as_dave(&submission(&team.alice, OTHER_REASON)),
+        &submit_as_dave(&submission(&team.alice, OTHER_REASON, &revision)),
         &[201],
     );
     assert_ne!(old, fresh, "each submission gets its own receipt");
@@ -101,7 +106,10 @@ fn configured_retention_frees_capacity_and_keeps_newer_reports() {
         thread::sleep(Duration::from_millis(250));
     }
 
-    receipt(&submit_as_dave(&submission(&team.carol, REASON)), &[201]);
+    receipt(
+        &submit_as_dave(&submission(&team.carol, REASON, &revision)),
+        &[201],
+    );
     assert_eq!(
         report_rows(fixture.db()).len(),
         2,

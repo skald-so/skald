@@ -650,14 +650,21 @@ export interface AbuseReporting {
   reasons: AbuseReportReason[];
 }
 
+/**
+ * @pattern ^[1-9][0-9]{0,18}$
+ */
+export type RosterRevisionNumber = string;
+
 export interface AbuseReportRequest {
   /**
-   * The member's handle in the latest roster.
+   * The selected member's handle in the listed roster.
    * @minLength 1
    * @maxLength 63
    * @pattern ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$
    */
   target: string;
+  /** The Skald-Roster-Revision header of the member list used for this selection. */
+  roster_revision: RosterRevisionNumber;
   reason: AbuseReportReason;
   /**
    * A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.

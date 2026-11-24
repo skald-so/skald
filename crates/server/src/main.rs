@@ -217,7 +217,7 @@ struct Cli {
     #[arg(long, env = "SKALD_ABUSE_REPORT_REASONS", hide_env_values = true)]
     abuse_report_reasons: Option<String>,
 
-    /// New reports per account that may be held from the past 24 hours.
+    /// New reports an account may submit in 24 hours.
     #[arg(long, env = "SKALD_ABUSE_REPORT_LIMIT", value_name = "N")]
     abuse_report_limit: Option<NonZeroU32>,
 

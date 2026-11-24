@@ -1,7 +1,7 @@
 use serde_json::{Value, json};
 use skald_proto::{MessageId, PROTOCOL_VERSION, SpaceId, VERSION_HEADER};
 
-use crate::api::{Person, the_spec};
+use crate::api::{Person, Team, the_spec};
 use crate::common::device_flow::{json, text};
 use crate::common::spec::operation_violations;
 use crate::common::{Response, Server, TestDb, get_url, send};
@@ -48,9 +48,24 @@ pub fn report_path(space: SpaceId) -> String {
     format!("/spaces/{space}/abuse-reports")
 }
 
-pub fn submission(target: &Person, reason: &str) -> Value {
+/// The member-list snapshot supplies the report selector, even for a refused submission.
+pub fn member_revision(team: &Team, server: &Server) -> String {
+    let response =
+        team.alice
+            .session
+            .on(server)
+            .call("get", &format!("/spaces/{}/members", team.space), None);
+    assert_eq!(response.status, 200, "the member list: {}", text(&response));
+    response
+        .header("skald-roster-revision")
+        .expect("the member list's revision")
+        .to_owned()
+}
+
+pub fn submission(target: &Person, reason: &str, revision: &str) -> Value {
     json!({
         "target": target.handle.as_str(),
+        "roster_revision": revision,
         "reason": reason,
         "idempotency_key": MessageId::generate().to_string()
     })
