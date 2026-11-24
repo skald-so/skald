@@ -35,12 +35,14 @@ on:
       - npm/**
       - script/deploy-production
       - script/installers-test
+      - script/install-winget-fixture.ps1
       - script/lib/release-files.sh
       - script/lib/release-tag-args.sh
       - script/lib/proxy.mjs
       - script/lib/serve.mjs
       - script/lib/ssh-deploy.sh
       - script/lib/start-server.sh
+      - script/lib/winget.mjs
       - script/move-main
       - script/npm-package-test
       - script/release-installers
@@ -48,6 +50,10 @@ on:
       - script/release-npm
       - script/release-version
       - script/release-web
+      - script/release-winget
+      - script/release-winget-test
+      - script/submit-winget
+      - script/winget-installers-test.ps1
   workflow_dispatch:
 
 permissions:
@@ -173,6 +179,76 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: script/npm-package-test release "$TAG" "$TARGET"
 
+  # Both native Windows runners install from this one manifest set and the same release archives.
+  winget-fixture:
+    name: WinGet fixture manifests
+    needs: [plan, build]
+    if: "!contains(needs.plan.outputs.tag, '-')"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*-pc-windows-msvc
+          merge-multiple: true
+          path: release
+      - name: Generate the shared WinGet fixture
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          SKALD_DOWNLOAD_URL: http://127.0.0.1:18763
+        run: script/release-winget "$TAG" release Fixture.Skald winget
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: winget-fixture-manifests
+          path: winget
+          if-no-files-found: error
+
+  winget-install:
+    name: WinGet install ${{ matrix.target }}
+    needs: [plan, winget-fixture]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-pc-windows-msvc, runner: windows-2025, architecture: x64 }
+          - { target: aarch64-pc-windows-msvc, runner: windows-11-arm, architecture: arm64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      SKALD_WINGET_TEST_DISPOSABLE: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          architecture: ${{ matrix.architecture }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*-pc-windows-msvc
+          merge-multiple: true
+          path: release
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: winget-fixture-manifests
+          path: winget
+      - name: Install pinned WinGet
+        shell: pwsh
+        run: ./script/install-winget-fixture.ps1
+      - name: Validate and install the WinGet manifest
+        shell: pwsh
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          TARGET: ${{ matrix.target }}
+        run: ./script/winget-installers-test.ps1 -ManifestDir winget -ReleaseDir release -Tag $env:TAG -Target $env:TARGET -Port 18763
+
   # The web app's archive and its checksum, built from web/'s lockfile with no cache.
   web:
     name: Web app
@@ -250,6 +326,51 @@ jobs:
           prerelease=()
           [[ $TAG != *-* ]] || prerelease=(--prerelease)
           gh release create "$TAG" --verify-tag --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md" "${prerelease[@]}" release/*
+
+  # Only the owner-approved package and submission fork can use the WinGet environment.
+  submit-winget:
+    name: Submit to WinGet
+    needs: [plan, release, winget-install]
+    if: >-
+      github.repository == 'skald-so/skald' && github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      vars.WINGET_SUBMIT_LIVE == '1'
+    runs-on: ubuntu-latest
+    environment: winget
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26.13.0'
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: build-*-pc-windows-msvc
+          merge-multiple: true
+          path: tested-release
+      - name: Generate manifests from the published Windows assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          WINGET_PACKAGE_ID: ${{ vars.WINGET_PACKAGE_ID }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" | jq -e '.immutable and (.draft or .prerelease | not)' >/dev/null
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir release --pattern 'skald-client-*-pc-windows-msvc.zip*'
+          for asset in tested-release/*.zip tested-release/*.zip.sha256; do
+            cmp "$asset" "release/${asset##*/}"
+          done
+          script/release-winget "$TAG" release "$WINGET_PACKAGE_ID" winget
+      - name: Submit or check the catalog PR
+        env:
+          WINGET_SUBMIT_LIVE: '1'
+          WINGET_PACKAGE_ID: ${{ vars.WINGET_PACKAGE_ID }}
+          WINGET_SUBMISSION_REPO: ${{ vars.WINGET_SUBMISSION_REPO }}
+          WINGET_SUBMISSION_TOKEN: ${{ secrets.WINGET_SUBMISSION_TOKEN }}
+        run: script/submit-winget winget | tee -a "$GITHUB_STEP_SUMMARY"
 
   # The npm package skald-so of the release, which runs skald from the GitHub Release's files: a
   # stable release under the dist-tag latest, a beta under next. Trusted publishing: npm accepts the
@@ -388,11 +509,19 @@ jobs:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}
 
-  # The release check, once every channel is published: .github/workflows/release-check.yml.
+  # The published channels are ready and any enabled catalog submission has a status.
   check-release:
     name: Check the release
-    needs: [plan, release, publish-npm, publish-image]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [plan, release, publish-npm, publish-image, winget-install, submit-winget]
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+      needs.plan.result == 'success' && needs.release.result == 'success' &&
+      needs.publish-npm.result == 'success' && needs.publish-image.result == 'success' &&
+      (needs.winget-install.result == 'success' ||
+      (needs.winget-install.result == 'skipped' && contains(github.ref, '-'))) &&
+      (needs.submit-winget.result == 'success' ||
+      (needs.submit-winget.result == 'skipped' &&
+      (contains(github.ref, '-') || github.repository != 'skald-so/skald' || vars.WINGET_SUBMIT_LIVE != '1')))
     permissions:
       attestations: read
       contents: read
@@ -405,7 +534,11 @@ jobs:
   move-main:
     name: Move main
     needs: [plan, release, publish-npm, publish-image, check-release]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.plan.result == 'success' && needs.release.result == 'success' &&
+      needs.publish-npm.result == 'success' && needs.publish-image.result == 'success' &&
+      needs.check-release.result == 'success'
     runs-on: ubuntu-latest
     # The deploy key, its only secret; only this job uses the environment, and only v* tags may.
     environment: move-main
@@ -439,7 +572,9 @@ jobs:
   production-set-up:
     name: Check that production is set up
     needs: check-release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-')
+    if: >-
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.check-release.result == 'success'
     runs-on: ubuntu-latest
     # Reads the repository's environments.
     permissions:
@@ -468,8 +603,9 @@ jobs:
     name: Deploy to production
     needs: [plan, check-release, production-set-up]
     if: >-
-      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
-      needs.production-set-up.outputs.set-up == 'true'
+      !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      needs.plan.result == 'success' && needs.check-release.result == 'success' &&
+      needs.production-set-up.result == 'success' && needs.production-set-up.outputs.set-up == 'true'
     runs-on: ubuntu-latest
     # The environment with the connection's secrets: the header of script/deploy-production. Its
     # rules: docs/dev/infrastructure.md, "Cloud".

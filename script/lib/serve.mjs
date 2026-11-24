@@ -4,6 +4,7 @@
 // and runs until killed. For the tests of the installers and the npm package:
 // script/installers-test, script/npm-package-test.
 // Usage: node script/lib/serve.mjs <dir> [<cert> <key>]
+// SKALD_TEST_RELEASE_PORT keeps the URL of a shared manifest fixture stable between runners.
 import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
@@ -14,12 +15,14 @@ const handle = (request, response) => {
   console.log(request.url);
   const name = decodeURIComponent(new URL(request.url, 'http://127.0.0.1').pathname.slice(1));
   const file = path.join(dir, name);
-  if (request.method !== 'GET' || name.includes('/') || name.includes('\\') || !fs.statSync(file, { throwIfNoEntry: false })?.isFile()) {
+  const info = !name.includes('/') && !name.includes('\\') && fs.statSync(file, { throwIfNoEntry: false });
+  if (!['GET', 'HEAD'].includes(request.method) || !info || !info.isFile()) {
     response.writeHead(404).end();
     return;
   }
-  response.writeHead(200, { 'content-type': 'application/octet-stream' });
-  fs.createReadStream(file).pipe(response);
+  response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': info.size, 'cache-control': 'no-store' });
+  if (request.method === 'HEAD') response.end();
+  else fs.createReadStream(file).pipe(response);
 };
 const server = cert ? https.createServer({ cert: fs.readFileSync(cert), key: fs.readFileSync(key) }, handle) : http.createServer(handle);
-server.listen(0, '127.0.0.1', () => console.log(server.address().port));
+server.listen(Number(process.env.SKALD_TEST_RELEASE_PORT ?? 0), '127.0.0.1', () => console.log(server.address().port));
