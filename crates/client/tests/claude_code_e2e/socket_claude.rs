@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use crate::client::MCP;
 use crate::hooks::{CLAUDE_CODE, HOOK};
 use crate::machine::{Machine, ONE_SHOT};
+use crate::receipt_trace::{Trace, TraceMode};
 use crate::socket_model::{Model, conversation};
 use crate::stub::{PLACEHOLDER, skald_tool};
 use crate::world::AGENT;
@@ -94,6 +95,8 @@ pub struct Options {
     /// Adds the `asyncRewake` hooks on `SessionStart` and `Stop`: `skald hook claude --wait`
     /// [`REWAKE_WAIT`].
     pub rewake: bool,
+    /// Captures the Windows own-text test's receipt diagnostics after its assertion fails.
+    pub receipt_trace: Option<TraceMode>,
     /// Plugin directories Claude Code loads, `--plugin-dir`, such as the mod's.
     pub plugin_dirs: Vec<PathBuf>,
     /// Neither its `skald mcp` nor its hooks get `--agent`: they act as the default agent of
@@ -119,6 +122,7 @@ const CHANNEL_WARNING: &str = "Iamusingthisforlocaldevelopment";
 pub struct Session {
     running: Running,
     output: Arc<Mutex<Vec<u8>>>,
+    pub receipt_trace: Option<Trace>,
 }
 
 impl Session {
@@ -151,6 +155,9 @@ impl Session {
         let config =
             (machine.root().join("tmp")).join(format!("socket-{agent}-{surface:?}-{next}"));
         let home = config.join("home");
+        let mut receipt_trace = options
+            .receipt_trace
+            .map(|mode| Trace::new(mode, &config, dir));
         fs::create_dir_all(&home).expect("make Claude Code's config home");
         let unnamed = options.unnamed;
         let named = |args: &[&str]| -> Vec<String> {
@@ -202,6 +209,12 @@ impl Session {
             .iter()
             .map(|event| ((*event).to_owned(), hook.clone()))
             .collect();
+        if let Some(stop) = receipt_trace
+            .as_mut()
+            .and_then(|trace| trace.wrap_stop(&hooks_skald, named(&[HOOK, CLAUDE_CODE])))
+        {
+            hooks["Stop"][0]["hooks"][0] = stop;
+        }
         if options.rewake {
             let wait = REWAKE_WAIT.to_string();
             let rewake = json!({
@@ -348,7 +361,11 @@ impl Session {
             let input = child.stdin.take();
             Running::App { child, input }
         };
-        Session { running, output }
+        Session {
+            running,
+            output,
+            receipt_trace,
+        }
     }
 
     /// The person gives the session a prompt: types it and Enter in the terminal, or sends it as

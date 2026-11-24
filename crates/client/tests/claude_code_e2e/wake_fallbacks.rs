@@ -20,6 +20,7 @@ use crate::client::CLIENT;
 use crate::helped::Helped;
 use crate::hooks::{Bob, INBOX_WORD, api_sends};
 use crate::lines::{agent_line_of, agent_lines, reference};
+use crate::receipt_trace::TraceMode;
 use crate::receipts::shows_read_once;
 use crate::senders::OWN;
 use crate::socket_claude::{Options, Session, Surface};
@@ -78,8 +79,11 @@ fn own_wakes(id: u64, login: &str, fallback: Fallback, says: &str) {
     let solo = Solo::new(id, login);
     let helped = Helped::new(solo.machine());
     let model = Model::start(|_| Reply::Done);
-    let Some(mut session) = idle_in_terminal((&solo, &helped), WEB, &model, fallback.options())
-    else {
+    let options = Options {
+        receipt_trace: TraceMode::from_env(),
+        ..fallback.options()
+    };
+    let Some(mut session) = idle_in_terminal((&solo, &helped), WEB, &model, options) else {
         return;
     };
 
@@ -88,7 +92,17 @@ fn own_wakes(id: u64, login: &str, fallback: Fallback, says: &str) {
     let turn = model.wait_turn_holding(says, "api's message");
     fallback.assert_came_by(&turn);
     assert_own_by_hook(&turn, says, own, &solo.short(API));
-    shows_read_once(solo.machine(), own);
+    if let Some(trace) = &session.receipt_trace {
+        let original = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            shows_read_once(solo.machine(), own);
+        }));
+        if let Err(original) = original {
+            trace.failed(&solo, &helped, own, says, RESEND);
+            std::panic::resume_unwind(original);
+        }
+    } else {
+        shows_read_once(solo.machine(), own);
+    }
     held_once_after_a_while(&model, says);
     session.end();
     model.assert_no_foreign_credential();

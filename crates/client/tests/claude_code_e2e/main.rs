@@ -47,6 +47,7 @@ mod inline;
 mod modes;
 mod permission_prompts;
 mod plugin;
+mod receipt_trace;
 mod sessions;
 mod socket_claude;
 mod socket_fallbacks;
