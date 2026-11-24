@@ -78,9 +78,9 @@ fn disabling_intake_keeps_the_expiry_sweep_and_web_submissions_require_the_serve
 fn two_instances_share_receipts_and_the_last_storage_slot() {
     let github = 3_305_040_011;
     let fixture = Fixture::new(github);
-    let dave = sign_in(&fixture, &fixture.team.dave, github + 3);
-    let carol = sign_in(&fixture, &fixture.team.carol, github + 2);
     let team = &fixture.team;
+    let dave = sign_in(&fixture, &team.dave, github + 3);
+    let carol = sign_in(&fixture, &team.carol, github + 2);
     let config = settings("5", "2", LONG_RETENTION);
     let one = team.flow.stand.instance(&[], &config);
     let two = team.flow.stand.instance(&[], &config);
