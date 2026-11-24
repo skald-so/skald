@@ -23,6 +23,36 @@ const FROM_API: &str = "codex signal test: api asks web to tag the release";
 const FIRST_OF_TWO: &str = "codex signal test: api asks web for the first of two notes";
 const SECOND_OF_TWO: &str = "codex signal test: api asks web for the second of two notes";
 
+const BARE_SIGNAL: &str =
+    "skald: messages wait for you: call the inbox tool, or skald recv, to read them";
+const RECV_REFERENCE_ID: &str = "01a20aae-c14f-7a7a-8de6-e0d841a9bec7";
+
+#[test]
+fn a_bare_signal_can_contain_a_command_word_that_matches_a_reference() {
+    let msg_id = RECV_REFERENCE_ID.parse().expect("a message ID");
+    assert!(refers_to("recv", msg_id));
+    assert_bare(BARE_SIGNAL, &[], &[msg_id], &[]);
+}
+
+#[test]
+#[should_panic(expected = "the reference of")]
+fn a_bare_signal_cannot_contain_a_formatted_reference() {
+    let msg_id = RECV_REFERENCE_ID.parse().expect("a message ID");
+    assert_bare(&format!("{BARE_SIGNAL} (#recv)"), &[], &[msg_id], &[]);
+}
+
+#[test]
+#[should_panic(expected = "IDs")]
+fn a_bare_signal_cannot_contain_a_raw_message_id() {
+    let msg_id = RECV_REFERENCE_ID.parse().expect("a message ID");
+    assert_bare(
+        &format!("{BARE_SIGNAL} ({RECV_REFERENCE_ID})"),
+        &[],
+        &[msg_id],
+        &[],
+    );
+}
+
 /// The text of a message of 15,000 characters that api sends web.
 fn long_text() -> String {
     let head = "codex signal test: api sends web a long spec. ";
