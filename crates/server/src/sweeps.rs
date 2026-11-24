@@ -9,7 +9,7 @@ use tokio::time::MissedTickBehavior;
 use crate::error_reports;
 
 /// How often a sweep looks.
-const SWEEP: Duration = Duration::from_secs(5);
+pub(crate) const SWEEP: Duration = Duration::from_secs(5);
 /// How many rows a sweep deletes at a time.
 pub(crate) const PAGE: i64 = 100;
 /// How long a sweep waits between two pages.

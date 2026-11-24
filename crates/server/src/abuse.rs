@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use sqlx::PgPool;
+use tokio::sync::OnceCell;
 
 use crate::sweeps::{self, PAGE, PAUSE};
 
@@ -14,6 +15,8 @@ const FILE_LIMIT: u64 = 32 * 1024;
 const RULE_LIMIT: usize = 16;
 const DAY: u32 = 86_400;
 const RETENTION_LIMIT: u32 = 90 * DAY;
+/// Overlap two sweeps so a qualifying window that ends between sweeps is still seen.
+const LOOKBACK: Duration = sweeps::SWEEP.saturating_mul(2);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,8 +70,9 @@ impl Rules {
             && self.rules.iter().enumerate().all(|(index, rule)| {
                 let window = Duration::from_secs(rule.window_seconds.into());
                 (1..=DAY.min(self.retention_seconds)).contains(&rule.window_seconds)
+                    && u64::from(self.retention_seconds) >= LOOKBACK.as_secs()
                     && rule.minimum_count > 0
-                    && counter_retention.is_none_or(|retention| window <= retention)
+                    && counter_retention.is_none_or(|retention| window + LOOKBACK <= retention)
                     && !self.rules[..index].contains(rule)
             })
     }
@@ -83,13 +87,22 @@ pub(crate) async fn run(db: PgPool, path: PathBuf, counter_retention: Option<Dur
     if rules.rules.is_empty() {
         return;
     }
-    sweeps::every("evaluate abuse rules", || evaluate(&db, &rules)).await;
+    let started = OnceCell::new();
+    sweeps::every("evaluate abuse rules", || async {
+        let started = started
+            .get_or_try_init(|| {
+                sqlx::query_scalar::<_, String>("SELECT now()::text").fetch_one(&db)
+            })
+            .await?;
+        evaluate(&db, &rules, started).await
+    })
+    .await;
 }
 
-async fn evaluate(db: &PgPool, rules: &Rules) -> Result<(), sqlx::Error> {
+async fn evaluate(db: &PgPool, rules: &Rules, started: &str) -> Result<(), sqlx::Error> {
     for rule in &rules.rules {
         match rule.signal {
-            Signal::CountedMessages => counted_messages(db, rules, rule).await?,
+            Signal::CountedMessages => counted_messages(db, rules, rule, started).await?,
         }
     }
     Ok(())
@@ -97,17 +110,42 @@ async fn evaluate(db: &PgPool, rules: &Rules) -> Result<(), sqlx::Error> {
 
 /// Keeps one open finding per account and versioned rule while it is retained. Its snapshot is
 /// the first qualifying window observed. Every sample consists only of counts and times.
-async fn counted_messages(db: &PgPool, rules: &Rules, rule: &Rule) -> Result<(), sqlx::Error> {
+async fn counted_messages(
+    db: &PgPool,
+    rules: &Rules,
+    rule: &Rule,
+    started: &str,
+) -> Result<(), sqlx::Error> {
+    // Consider the current window and each interval ending at a recorded message since the
+    // later of startup and the lookback. PostgreSQL timestamps have microsecond resolution.
     // Lock each still-active account so an account deletion either waits for this insert or the
     // insert sees the deletion. Use the same order on all evaluating instances.
     sqlx::query(
-        "WITH summary AS (
-             SELECT d.account_id, count(*) AS count,
-                 min(m.counted_at) AS first_at, max(m.counted_at) AS last_at
+        "WITH bounds AS (
+             SELECT make_interval(secs => $2::integer) AS span,
+                 greatest($5::timestamptz, now() - make_interval(secs => $6)) AS since
+         ), recent AS (
+             SELECT d.account_id, m.counted_at
              FROM counted_messages m JOIN devices d ON d.id = m.sender_id
-             WHERE m.counted_at > now() - make_interval(secs => $2::integer)
-                 AND m.counted_at <= now()
-             GROUP BY d.account_id HAVING count(*) >= $3
+             CROSS JOIN bounds b
+             WHERE m.counted_at > b.since - b.span AND m.counted_at <= now()
+         ), windows AS (
+             SELECT r.account_id, count(*) AS count,
+                 min(r.counted_at) AS first_at, max(r.counted_at) AS last_at, now() AS ends_at
+             FROM recent r CROSS JOIN bounds b WHERE r.counted_at > now() - b.span
+             GROUP BY r.account_id
+             UNION ALL
+             SELECT account_id, count(*) OVER observed, first_value(counted_at) OVER observed,
+                 counted_at, counted_at
+             FROM recent
+             WINDOW observed AS (PARTITION BY account_id ORDER BY counted_at RANGE BETWEEN
+                 (make_interval(secs => $2::integer) - interval '1 microsecond') PRECEDING
+                 AND CURRENT ROW)
+         ), summary AS (
+             SELECT DISTINCT ON (account_id) account_id, count, first_at, last_at
+             FROM windows w CROSS JOIN bounds b
+             WHERE w.count >= $3 AND w.ends_at >= b.since
+             ORDER BY account_id, ends_at DESC
          )
          INSERT INTO abuse_findings (account_id, rule_version, signal, window_seconds,
              minimum_count, retention_seconds, evidence)
@@ -126,6 +164,8 @@ async fn counted_messages(db: &PgPool, rules: &Rules, rule: &Rule) -> Result<(),
     .bind(i32::try_from(rule.window_seconds).expect("a validated window"))
     .bind(rule.minimum_count)
     .bind(i32::try_from(rules.retention_seconds).expect("a validated retention"))
+    .bind(started)
+    .bind(LOOKBACK.as_secs_f64())
     .execute(db)
     .await?;
     Ok(())

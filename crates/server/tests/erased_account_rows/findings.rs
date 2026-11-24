@@ -341,3 +341,38 @@ pub fn assert_finding_erased(fixture: &Fixture) {
     }
     assert!(kept_bob, "the other account's finding should remain");
 }
+
+#[test]
+fn finds_a_qualifying_one_second_window_between_sweeps() {
+    let fixture = Fixture::with(3_618_400_031, COUNTING);
+    let t = &fixture.team;
+    for age in [10, 20, 30] {
+        seed(&fixture, t.bob.laptop.id, 1, age);
+    }
+    let file = rules(RETENTION, &[rule(WINDOW, 3), rule(1, 2)]);
+    let _instance = file.start(&fixture);
+    await_findings(fixture.db(), vec![Finding::of(&t.bob, 3)]);
+
+    // Insert both pairs after their one-second windows already ended. The witness finding gives
+    // the database time of a completed evaluation, before either of the synthetic pairs starts.
+    fixture.db().execute(&format!(
+        "WITH elapsed AS MATERIALIZED (
+             SELECT created_at, pg_sleep_until(created_at + interval '3 seconds')
+             FROM abuse_findings WHERE account_id = '{bob}'::uuid
+         )
+         INSERT INTO counted_messages (sender_id, space_id, msg_id, counted_at)
+         SELECT device_id, '{space}'::uuid, gen_random_uuid(), created_at + shift
+         FROM elapsed CROSS JOIN (VALUES
+             ('{alice}'::uuid, interval '0.1 seconds'), ('{alice}'::uuid, interval '0.9 seconds'),
+             ('{carol}'::uuid, interval '0.1 seconds'), ('{carol}'::uuid, interval '1.1 seconds')
+         ) AS samples(device_id, shift)",
+        space = t.space,
+        bob = t.bob.account,
+        alice = t.alice.laptop.id,
+        carol = t.carol.laptop.id,
+    ));
+    await_findings(
+        fixture.db(),
+        vec![Finding::of(&t.alice, 2), Finding::of(&t.bob, 3)],
+    );
+}
