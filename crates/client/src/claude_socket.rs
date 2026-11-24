@@ -153,6 +153,7 @@ struct StopFile {
     parent: Option<String>,
     turn: Option<String>,
     prefix: Option<(usize, [u8; 32])>,
+    identified_reply: bool,
 }
 
 /// Watches only a complete delivery at the transcript tail and an identifiable continuation.
@@ -181,7 +182,7 @@ pub fn defer_stop(
         || !same_stop_turn(
             expected_turn,
             entry.turn.as_deref(),
-            transcript.prefix.is_some(),
+            transcript.identified_reply,
         )
     {
         return None;
@@ -284,7 +285,8 @@ impl StopFile {
         let incomplete = &bytes[next..];
         let prefix =
             (!incomplete.is_empty()).then(|| (incomplete.len(), Sha256::digest(incomplete).into()));
-        if parent.is_none() && prefix.is_none() {
+        let identified_reply = partial_assistant(incomplete, &entry);
+        if parent.is_none() && !identified_reply {
             return None;
         }
         let found = StopFile {
@@ -296,6 +298,7 @@ impl StopFile {
             parent,
             turn: entry.turn.clone(),
             prefix,
+            identified_reply,
         };
         Some((found, entry))
     }
@@ -337,14 +340,11 @@ impl StopFile {
             return Some(false);
         }
         let entry: StopEntry = serde_json::from_slice(&line).ok()?;
-        (entry.in_session(session)
-            && entry.kind == "assistant"
-            && !entry.api_error
-            && entry.message.is_some_and(|said| said.role == "assistant")
+        (entry.assistant_in(session)
             && same_stop_turn(
                 self.turn.as_deref(),
                 entry.turn.as_deref(),
-                self.prefix.is_some(),
+                self.identified_reply,
             )
             && self
                 .parent
@@ -352,6 +352,29 @@ impl StopFile {
                 .is_none_or(|parent| entry.parent.as_ref() == Some(parent)))
         .then_some(true)
     }
+}
+
+/// An already identifiable reply can still lack the final object brace or newline.
+fn partial_assistant(prefix: &[u8], delivery: &StopEntry) -> bool {
+    let Some(session) = delivery.session.as_deref() else {
+        return false;
+    };
+    if prefix.is_empty() {
+        return false;
+    }
+    let entry = serde_json::from_slice::<StopEntry>(prefix).or_else(|_| {
+        let mut object = prefix.to_vec();
+        object.push(b'}');
+        serde_json::from_slice::<StopEntry>(&object)
+    });
+    entry.is_ok_and(|entry| {
+        entry.assistant_in(session)
+            && delivery
+                .uuid
+                .as_ref()
+                .is_none_or(|id| entry.parent.as_ref() == Some(id))
+            && same_stop_turn(delivery.turn.as_deref(), entry.turn.as_deref(), true)
+    })
 }
 
 fn open_transcript(file: &Path) -> Option<fs::File> {
@@ -537,6 +560,16 @@ struct StopEntry {
 impl StopEntry {
     fn in_session(&self, session: &str) -> bool {
         !self.sidechain && self.session.as_deref() == Some(session)
+    }
+
+    fn assistant_in(&self, session: &str) -> bool {
+        self.in_session(session)
+            && self.kind == "assistant"
+            && !self.api_error
+            && self
+                .message
+                .as_ref()
+                .is_some_and(|said| said.role == "assistant")
     }
 }
 
