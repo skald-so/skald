@@ -2,8 +2,8 @@
 // answers these tests name for the sign-in providers, the session and the spaces.
 //
 // The API, as these tests use it, beside the spec:
-// - `GET /auth/providers`: `{"providers": ["github" | "google", ...], "sign_up": "open" | "closed"}`;
-// - `GET /session` of a web session names its method: `"sign_in_method": "github" | "google"`;
+// - `GET /auth/providers` lists the enabled providers and whether sign-up is open.
+// - `GET /session` of a web session names its `sign_in_method`.
 // - `GET /spaces` marks the account's personal space with `"personal": true`.
 //
 // The web app, as these tests use it: without a session, the sign-in page, a link or button for each
@@ -38,7 +38,7 @@ import {
 /** The sign-in providers the server has settings for and whether its sign-up is open: `GET`. */
 const providersUrl = "/auth/providers";
 
-type Provider = "github" | "google";
+type Provider = "github" | "google" | "corporate";
 
 const server = setupServer(...getSkaldAPIMock());
 /** Each request the web app sent, as `GET /session`. */
@@ -166,17 +166,20 @@ async function opened(user: UserEvent, element: HTMLElement) {
 }
 
 test.each([
-  [["github", "google"] as Provider[], 1, 1],
-  [["github"] as Provider[], 1, 0],
-  [["google"] as Provider[], 0, 1],
+  [["github", "google"] as Provider[], 1, 1, 0],
+  [["github"] as Provider[], 1, 0, 0],
+  [["google"] as Provider[], 0, 1, 0],
+  [["corporate"] as Provider[], 0, 0, 1],
+  [["github", "google", "corporate"] as Provider[], 1, 1, 1],
 ])(
   "without a session, the sign-in page offers the providers %j only",
-  async (names, github, google) => {
+  async (names, github, google, corporate) => {
     signedOut(names);
     render(<App />);
     await signInPage();
     expect(signInButtons(/github/i)).toHaveLength(github);
     expect(signInButtons(/google/i)).toHaveLength(google);
+    expect(signInButtons(/corporate/i)).toHaveLength(corporate);
   },
 );
 
@@ -194,12 +197,12 @@ test("with sign-up closed, the note says that it creates one only for the people
   expect(note.textContent).toMatch(/\bonly\b/i);
 });
 
-test.each(["github", "google"] as Provider[])(
+test.each(["github", "google", "corporate"] as Provider[])(
   "the %s button starts its sign-in, returning to the page",
   async (provider) => {
     const user = userEvent.setup();
     window.history.replaceState(null, "", "/?from=a-link");
-    signedOut();
+    signedOut([provider]);
     render(<App />);
     await signInPage();
     const [button] = signInButtons(new RegExp(provider, "i"));
@@ -281,6 +284,12 @@ test.each([
     ["bo", "Google"],
     ["GitHub"],
   ],
+  [
+    "a corporate session: the username and its sign-in method",
+    { username: "dee", sign_in_method: "corporate" },
+    ["dee"],
+    ["GitHub", "Google"],
+  ],
 ] as [string, SessionAnswer, string[], string[]][])(
   "the account footer of %s; the page area names the account",
   async (_, session, shown, hidden) => {
@@ -290,6 +299,8 @@ test.each([
     const text = document.body.textContent ?? "";
     for (const part of shown) expect(text).toContain(part);
     for (const part of hidden) expect(text).not.toContain(part);
+    if (session.sign_in_method === "corporate")
+      expect(text).toMatch(/corporate/i);
     expect(screen.getByRole("main").textContent).toContain(session.username);
   },
 );

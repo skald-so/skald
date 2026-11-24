@@ -48,16 +48,10 @@ mod sessions;
 mod statuses;
 mod unheld;
 
-// The modules the tests of the channel history share (`history_common/mod.rs`), the second
-// machines of the tests of the history on new devices and the helpers of the tests of reading the
-// history they need.
+// The modules the tests of the channel history share (`history_common/mod.rs`).
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
-#[path = "../history_devices/devices.rs"]
-mod devices;
-#[path = "../history_reading/reading.rs"]
-mod reading;
 
 // The history entries of the tests of history entries; the browsers of the tests of history wraps.
 #[path = "../history_entries/entries.rs"]
@@ -66,7 +60,8 @@ mod entries;
 mod wraps;
 
 // The modules the tests of tasks after their claim share (`task_common/mod.rs`): Ada's agents,
-// what an agent reads, the senders, the queue commands, the task states and the claims.
+// what an agent reads, the senders, the queue commands, the task states, the claims, Ada's second
+// machine and the helpers of reading the history.
 #[path = "../task_common/mod.rs"]
 mod task_common;
 use task_common::*;

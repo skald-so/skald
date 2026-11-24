@@ -6,8 +6,11 @@
 filter = 'kind(lib) | kind(bin)'
 priority = 100
 
-# A test that times the client runs alone, as its alone() keeps it under cargo test: under nextest
-# each test is a process of its own, whose clouds alone() cannot hold back.
+# Tests that time the client run alone, as under cargo test. Nextest runs each in its own process.
 [[profile.default.overrides]]
 filter = 'package(skald-client) & binary(recv_wait) & test(=sessions::sessions_in_two_folders_wait_through_one_helper_and_each_gets_only_its_own_messages)'
+threads-required = 'num-test-threads'
+
+[[profile.default.overrides]]
+filter = 'package(skald-client) & binary(transport_fallback) & test(=send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll)'
 threads-required = 'num-test-threads'

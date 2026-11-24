@@ -154,6 +154,10 @@ impl Keyring for Held {
         *held = Zeroizing::new(value.to_owned());
         Ok(())
     }
+
+    fn delete(&self) -> Result<(), KeyringError> {
+        self.set("{}")
+    }
 }
 
 /// Fails, sending nothing, if the device `this` has been in the group of a channel of `latest`,

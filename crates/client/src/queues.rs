@@ -26,15 +26,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use skald_crypto::{seal_task, sign_task};
 use skald_proto::{
-    AccountId, Address, Cbor as _, ChannelId, Content, DeviceId, IDEMPOTENCY_KEY_MAX, MessageId,
-    Name, QueueId, QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown,
-    VersionRange,
+    AccountId, Address, Cbor as _, ChannelId, Content, DeviceId, IDEMPOTENCY_KEY_MAX, Name,
+    QueueId, QueueMode, Roster, Sched, SpaceId, Task, TaskBody, TaskId, Unknown, VersionRange,
 };
 
 use crate::connection::{self, Method, printable};
 use crate::devices::text;
 use crate::follow::SpaceDevices;
-use crate::forms::References;
+use crate::forms::{References, as_message};
 use crate::groups;
 use crate::presence;
 use crate::recv;
@@ -663,9 +662,9 @@ impl Claimers {
 /// The reference, `#<ref>` without its `#`, of the task `task` among the messages the device of
 /// `state` keeps.
 fn reference(state: &State, task: TaskId) -> String {
-    let as_message = MessageId::from_bytes(*task.as_bytes());
+    let task = as_message(task);
     let kept = state.kept_ids().unwrap_or_default();
-    References::new(kept.into_iter().chain([as_message])).of(as_message)
+    References::new(kept.into_iter().chain([task])).of(task)
 }
 
 /// The server's answer to an upload of a task.

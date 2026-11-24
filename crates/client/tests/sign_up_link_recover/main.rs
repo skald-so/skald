@@ -6,13 +6,8 @@
 //! line, with O for each 0 and I for each 1, and shows the channel's history. No output asks whether
 //! a device is the account's first, and each text of these flows is one short line.
 //!
-//! Against a `skald-server` with GitHub sign-in through the stand-in, behind the recording relay of
-//! the sign-in tests, whose public address is that of the front of the tests of sending. Each machine runs `skald` at a terminal, a pseudo-terminal or a pseudo-console
-//! on Windows; a test plays the person on the verification page in headless Chrome, and `BROWSER`
-//! names the stand-in opener of the tests of linking on a local page, so no test opens a real
-//! browser. The CLI as the tests of signing in by a link code or the browser
-//! (`link_code_sign_in/main.rs`), of the recovery key (`recovery_key_entry/main.rs`) and of
-//! handing messages to agents use it.
+//! Runs the CLI in a Unix pseudo-terminal or Windows ConPTY. Headless Chrome follows the file
+//! passed to the stand-in browser opener and signs in through the local GitHub stand-in.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
@@ -49,20 +44,22 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use skald_github_stand_in::User;
 use skald_proto::{ChannelId, DeviceId};
 
 use agents::{CLAUDE, CODEX, run_as_in};
-use at_terminal::{approve, keys_in, shown_key, sign_in};
+use at_terminal::{keys_in, sign_in};
+use browser::{APPROVE, Browser, CODE_FIELD, SIGN_IN_GITHUB};
 use cloud::{Cloud, WAIT};
 use fixtures::fronted;
-use kit::{assert_members, create_space, group, received};
-use linking::{YES, codes_in, link_with, until};
+use kit::{assert_members, group, latest, received};
+use linking::{LINK, OWN_DEVICE, YES, codes_in, until};
 use machine::{DEVICES, Machine, NOT_LINKED};
-use pages::{BROWSER, Opener};
+use pages::{BROWSER, Opener, file_url, named_file};
 use reading::history;
-use recovering::{KEEP, LOST, play, start_recovery};
+use recovering::{KEEP, LOST, recovery_args};
 use terminal::Terminal;
-use world::{ACME, ADD_RULE, AGENT, Person, World, dir_of, path, run};
+use world::{ACME, ADD_RULE, AGENT, CREATE_SPACE, World, dir_of, handle_of, path, run, space_id};
 
 /// The host names of Ada's three machines.
 const WORKSTATION: &str = "ada-workstation";
@@ -84,14 +81,10 @@ const SHORT: usize = 100;
 const PASTE_START: &str = "\x1b[200~";
 const PASTE_END: &str = "\x1b[201~";
 
-/// New accounts tried at most until one's recovery key holds a 0 or a 1: a key holds neither with
-/// a chance of (30/32)^12, about 0.46, so all of them miss about 4 times in a million.
-const ACCOUNTS: u8 = 16;
-
-/// The GitHub logins of Ada's accounts start so; with a letter for each account tried after a `-`,
-/// each is 39 characters, the longest GitHub allows, so a text that names it is short for every
-/// account.
-const LOGIN: &str = "ada-signs-up-links-by-code-recovers-a";
+/// About 9.5% of generated keys contain both digits. The retry limit keeps the chance of missing
+/// both below one in a million.
+const ACCOUNTS: u64 = 160;
+const LOGIN: &str = "ada-signs-up-links-by-code-recovers";
 
 /// A new machine with the host name `host`, its `BROWSER` naming a stand-in opener of its own;
 /// gives both.
@@ -143,20 +136,24 @@ fn ids_in(word: &str) -> usize {
     found
 }
 
-/// Fails unless each line of `text`, what `what` printed, is one short line, at most [`SHORT`]
-/// characters as [`length`] counts them, and none asks whether the device is the account's first:
-/// no line both names `first` and asks, and none names `--first-device`.
+/// Checks the length of each line and detects the old first-device question and option.
 #[track_caller]
 fn assert_short_and_unasked(what: &str, text: &str) {
-    for line in text.lines().map(str::trim) {
+    let words: Vec<_> = text.split_whitespace().collect();
+    assert!(
+        !words.join(" ").to_lowercase().contains("first device?"),
+        "{what}: asks whether the device is the first"
+    );
+    for (index, line) in text.lines().map(str::trim).enumerate() {
         assert!(
             length(line) <= SHORT,
-            "{what}: a line longer than {SHORT} characters: {line:?}\nin: {text}"
+            "{what}: line {} is longer than {SHORT} characters",
+            index + 1
         );
         let lower = line.to_lowercase();
         assert!(
             !(lower.contains("first") && lower.contains('?')) && !lower.contains("--first-device"),
-            "{what}: asks whether the device is the first: {line:?}\nin: {text}"
+            "{what}: asks whether the device is the first"
         );
     }
 }
@@ -177,19 +174,80 @@ fn pasted(key: &str) -> String {
     format!("\r{PASTE_START}{}{PASTE_END}", swapped(key))
 }
 
-/// Ada's first machine on her new account, the key it showed and what its sign-in showed.
-struct SignedUp {
-    ada: Person,
-    key: String,
-    shown: String,
-    _opener: Opener,
+#[track_caller]
+fn opened_file(opener: &Opener) -> PathBuf {
+    until("the browser opener ran", || !opener.openings().is_empty());
+    let openings = opener.openings();
+    assert_eq!(openings.len(), 1, "browser opener runs");
+    assert_eq!(openings[0].len(), 1, "browser opener arguments");
+    let file = named_file(&openings[0][0]);
+    assert!(file.is_file(), "the browser opener did not get a file");
+    file
 }
 
-/// GitHub user `id` with `login` signs up on a new machine at a terminal: `skald sign-in` has the
-/// opener open its page, the person approves its device authorization once in the browser, and
-/// presses Enter once it shows a recovery key. Fails unless the run succeeds after one device
-/// authorization and one session of the device flow, and shows one key of 12 characters, in 3
-/// groups of 4, and no other.
+/// Follows the file given to the browser opener and approves the prefilled code.
+#[track_caller]
+fn approve_opened(world: &World, user: &User, opener: &Opener, before: usize) {
+    let file = opened_file(opener);
+    let cloud = &world.cloud;
+    let grant = cloud
+        .grants()
+        .get(before)
+        .cloned()
+        .expect("device authorization");
+    let browser = Browser::launch();
+    let page = browser.page();
+    assert_eq!(
+        page.goto(&cloud.github.sign_in_url(user.id)).status,
+        Some(200),
+        "GitHub stand-in session"
+    );
+    let opened = page.goto_settled(&file_url(&file));
+    assert!(
+        opened.error.is_none(),
+        "could not open the verification page"
+    );
+    assert_eq!(page.count(SIGN_IN_GITHUB), 1, "GitHub sign-in action");
+    let signed_in = page.click_settled(&format!("{SIGN_IN_GITHUB} >> nth=0"));
+    assert!(signed_in.error.is_none(), "browser sign-in failed");
+    assert!(
+        page.values(CODE_FIELD) == [grant.user_code],
+        "the verification page did not prefill this sign-in's code"
+    );
+    assert_eq!(page.click(APPROVE).status, Some(200), "device approval");
+}
+
+#[track_caller]
+fn fallback_line(cloud: &Cloud, output: &str) {
+    let grant = cloud.last_grant();
+    assert_one_line(
+        "browser fallback",
+        output,
+        &["Sign in", &grant.verification_uri, &grant.user_code],
+    );
+}
+
+/// Every required part of a prompt or status appears together on exactly one line.
+#[track_caller]
+fn assert_one_line(what: &str, text: &str, parts: &[&str]) {
+    assert_eq!(
+        text.lines()
+            .filter(|line| parts.iter().all(|part| line.contains(part)))
+            .count(),
+        1,
+        "{what} does not appear on exactly one line"
+    );
+}
+
+struct SignedUp {
+    machine: Machine,
+    user: User,
+    token: String,
+    device: DeviceId,
+    key: String,
+}
+
+/// Signs up a new account via the opened page and captures its key before acknowledging it.
 #[track_caller]
 fn signs_up(world: &World, id: u64, login: &str) -> SignedUp {
     let cloud = &world.cloud;
@@ -197,40 +255,80 @@ fn signs_up(world: &World, id: u64, login: &str) -> SignedUp {
     let (machine, opener) = with_opener(WORKSTATION);
     let (grants, tokens) = (cloud.grants().len(), cloud.tokens().len());
 
-    let mut run = Terminal::start(&machine, &sign_in(cloud, &[]));
-    until("the opener ran", || !opener.openings().is_empty());
-    approve(cloud, &world.browser.page(), &user, &mut run, grants);
-    let key = shown_key(&mut run);
+    let mut run = Terminal::start(&machine, &sign_in(cloud, &[])).with_private_output();
+    approve_opened(world, &user, &opener, grants);
+    run.wait_to_show("Press Enter once it is written down");
+    let shown = run.shown();
+    let mut keys = keys_in(&shown);
+    assert_eq!(
+        keys.len(),
+        1,
+        "the first device did not show one recovery key"
+    );
+    let key = keys.pop().expect("a recovery key");
+    assert_eq!(plain(&key).chars().count(), 12, "recovery key length");
     run.enter();
     let shown = run.finish();
 
-    assert!(shown.success, "signing up failed: {}", shown.text);
-    assert_eq!(cloud.grants().len(), grants + 1, "not one browser sign-in");
-    assert_eq!(cloud.tokens().len(), tokens + 1, "not one browser sign-in");
-    assert_eq!(keys_in(&shown.text), [key.as_str()], "{}", shown.text);
-    assert_eq!(plain(&key).chars().count(), 12, "not a key of 12: {key}");
+    assert!(shown.success, "sign-up failed");
+    assert!(
+        keys_in(&shown.text) == [key.as_str()],
+        "extra recovery key shown"
+    );
+    assert_eq!(
+        cloud.grants().len(),
+        grants + 1,
+        "device authorizations for sign-up"
+    );
+    assert_eq!(
+        cloud.tokens().len(),
+        tokens + 1,
+        "device sessions from browser sign-in"
+    );
+    let token = cloud.last_token();
+    assert_eq!(cloud.login_of(&token), login);
+    let (device, issuer) = certified(cloud, &token, WORKSTATION);
+    assert_eq!(issuer, None, "the first device's certificate issuer");
+    fallback_line(cloud, &shown.text);
+    assert_short_and_unasked("skald sign-in on a new account", &shown.text);
+    assert_one_line(
+        "recovery key heading",
+        &shown.text,
+        &["recovery key", "shown only once"],
+    );
+    assert_one_line(
+        "recovery key keep instruction",
+        &shown.text,
+        &[
+            "Keep it apart from your devices: it recovers the account and its history if all are lost.",
+        ],
+    );
+    assert_one_line(
+        "recovery key confirmation",
+        &shown.text,
+        &["Press Enter", "written down"],
+    );
     SignedUp {
-        ada: world.person(user, machine, WORKSTATION),
+        machine,
+        user,
+        token,
+        device,
         key,
-        shown: shown.text,
-        _opener: opener,
     }
 }
 
-/// Signs up new accounts, as [`signs_up`] does, until one's recovery key holds a 0 or a 1, so the
-/// pasted key reads O as 0 and I as 1; at most [`ACCOUNTS`]. Each sign-up's output is short and asks
-/// nothing.
+/// Selects a key that tests both digit aliases without controlling the CLI's key generator.
 #[track_caller]
-fn signs_up_with_a_0_or_a_1(world: &World) -> SignedUp {
+fn signs_up_with_both_digits(world: &World) -> SignedUp {
     for attempt in 0..ACCOUNTS {
-        let login = format!("{LOGIN}-{}", char::from(b'a' + attempt));
-        let signed_up = signs_up(world, 4_610_500_001 + u64::from(attempt), &login);
-        assert_short_and_unasked("skald sign-in on a new account", &signed_up.shown);
-        if signed_up.key.contains(['0', '1']) {
+        let login = format!("{LOGIN}-{attempt:03}");
+        assert_eq!(login.len(), 39, "GitHub's maximum login length");
+        let signed_up = signs_up(world, 4_610_500_001 + attempt, &login);
+        if signed_up.key.contains('0') && signed_up.key.contains('1') {
             return signed_up;
         }
     }
-    panic!("no recovery key of {ACCOUNTS} accounts holds a 0 or a 1");
+    panic!("no recovery key contained both 0 and 1 after {ACCOUNTS} sign-ups");
 }
 
 /// The one device of the account of the session `token` whose certificate names `name`, and the
@@ -324,24 +422,50 @@ fn an_account_signs_up_in_the_browser_links_by_a_code_and_recovers_by_a_pasted_k
     let (world, _front) = fronted();
     let cloud = &world.cloud;
 
-    let SignedUp { ada, key, .. } = signs_up_with_a_0_or_a_1(&world);
-    let space = create_space(cloud, &ada, ACME);
-    let at_work = bound_work(&ada.machine);
+    let first = signs_up_with_both_digits(&world);
+    let created = run(&first.machine, &[CREATE_SPACE, ACME]);
+    assert!(created.success, "{created:?}");
+    let space = space_id(cloud, &first.token, ACME);
+    let roster = latest(cloud, &first.token, space);
+    let channel = roster.body().channels.first().expect("default channel").id;
+    let at_work = bound_work(&first.machine);
 
-    let (laptop, _laptop_opener) = with_opener(LAPTOP);
+    let (laptop, opener) = with_opener(LAPTOP);
     let tokens = cloud.tokens().len();
-    let mut signing_in = Terminal::start(&laptop, &sign_in(cloud, &[]));
+    let mut signing_in = Terminal::start(&laptop, &sign_in(cloud, &[])).with_private_output();
     let shown = signing_in.wait_for("a link code", |shown| !codes_in(shown).is_empty());
     let code = codes_in(&shown).pop().expect("a link code");
-    let linked = link_with(&ada, &code, LAPTOP, YES);
-    assert!(
-        linked.success,
-        "skald link failed: {}\nthe laptop showed: {}",
-        linked.text,
-        signing_in.shown()
+    opened_file(&opener);
+    let mut linking = Terminal::start(&first.machine, &[LINK]).with_private_output();
+    linking.wait_to_show("Link code:");
+    linking.type_line(&code);
+    let confirmation = linking.wait_to_show("[yes/no]");
+    assert_one_line(
+        "new device identity",
+        &confirmation,
+        &["Link", LAPTOP, "client device"],
     );
+    linking.type_line(YES);
+    let linked = linking.finish();
+    assert!(linked.success, "skald link failed");
     let signed_in = signing_in.finish();
-    assert!(signed_in.success, "the laptop failed: {}", signed_in.text);
+    assert!(signed_in.success, "linking by code failed");
+    fallback_line(cloud, &signed_in.text);
+    assert_one_line(
+        "link-code instruction",
+        &signed_in.text,
+        &["run skald link", "type this code there"],
+    );
+    assert_one_line(
+        "link-code reminder",
+        &linked.text,
+        &["Enter only", OWN_DEVICE, "joins this account"],
+    );
+    assert_one_line(
+        "link confirmation",
+        &linked.text,
+        &["Link it to this account?", "[yes/no]"],
+    );
     assert_short_and_unasked("skald sign-in linked by its code", &signed_in.text);
     assert_short_and_unasked("skald link", &linked.text);
     assert_eq!(
@@ -349,10 +473,10 @@ fn an_account_signs_up_in_the_browser_links_by_a_code_and_recovers_by_a_pasted_k
         tokens,
         "the laptop signed in in the browser"
     );
-    let (laptop_device, issuer) = certified(cloud, &ada.token, LAPTOP);
+    let (laptop_device, issuer) = certified(cloud, &first.token, LAPTOP);
     assert_eq!(
         issuer,
-        Some(ada.device),
+        Some(first.device),
         "the laptop's certificate's issuer"
     );
     let devices = run(&laptop, &[DEVICES]);
@@ -362,59 +486,70 @@ fn an_account_signs_up_in_the_browser_links_by_a_code_and_recovers_by_a_pasted_k
         "{devices:?}"
     );
 
-    for machine in [&laptop, &ada.machine, &laptop] {
+    for machine in [&laptop, &first.machine, &laptop] {
         received(machine);
     }
-    let members = group(cloud, &ada.token, space.id, space.default).members;
-    assert_members(&members, &[ada.device, laptop_device]);
+    let members = group(cloud, &first.token, space, channel).members;
+    assert_members(&members, &[first.device, laptop_device]);
     let on_laptop = bound_work(&laptop);
-    run_as_in(&ada.machine, &at_work, CLAUDE);
+    run_as_in(&first.machine, &at_work, CLAUDE);
     run_as_in(&laptop, &on_laptop, CODEX);
-    let to_claude = format!("{}/{CLAUDE}", ada.handle);
+    let handle = handle_of(cloud, &first.token);
+    let to_claude = format!("{handle}/{CLAUDE}");
     agent_runs(
         &laptop,
         &on_laptop,
         CODEX,
         &["send", "--to", &to_claude, ASKED],
     );
-    agent_gets(&ada.machine, &at_work, CLAUDE, ASKED);
-    let to_codex = format!("{}/{CODEX}", ada.handle);
+    agent_gets(&first.machine, &at_work, CLAUDE, ASKED);
+    let to_codex = format!("{handle}/{CODEX}");
     agent_runs(
-        &ada.machine,
+        &first.machine,
         &at_work,
         CLAUDE,
         &["send", "--to", &to_codex, ANSWERED],
     );
     agent_gets(&laptop, &on_laptop, CODEX, ANSWERED);
 
-    let (third, _third_opener) = with_opener(RECOVERED);
-    let named = [(LOST, ada.device), (KEEP, laptop_device)];
-    let (mut recovering, grants) = start_recovery(&world, &third, &[], &named);
-    let paste = pasted(&key);
-    play(
-        &world,
-        &ada.user,
-        &mut recovering,
-        (grants, Some(&paste)),
-        || false,
+    let (third, opener) = with_opener(RECOVERED);
+    let named = [(LOST, first.device), (KEEP, laptop_device)];
+    let (grants, tokens) = (cloud.grants().len(), cloud.tokens().len());
+    let args = recovery_args(cloud, &[], &named);
+    let mut recovering = Terminal::start(&third, &fixtures::strs(&args)).with_private_output();
+    approve_opened(&world, &first.user, &opener, grants);
+    let prompt = recovering.wait_to_show("then press Enter:");
+    assert_one_line(
+        "recovery input",
+        &prompt,
+        &["Type or paste", "recovery key", "then press Enter:"],
     );
+    let key = &first.key;
+    recovering.type_line(&pasted(key));
     let recovered = recovering.finish();
-    assert!(recovered.success, "recovering failed: {}", recovered.text);
+    assert!(recovered.success, "recovery failed");
+    assert_eq!(
+        cloud.grants().len(),
+        grants + 1,
+        "device authorizations for recovery"
+    );
+    assert_eq!(
+        cloud.tokens().len(),
+        tokens + 1,
+        "device sessions for recovery"
+    );
+    fallback_line(cloud, &recovered.text);
     assert_short_and_unasked("skald sign-in --with-recovery-key", &recovered.text);
+    assert_one_line(
+        "recovery success",
+        &recovered.text,
+        &["Linked with the recovery key, which this device keeps nowhere."],
+    );
     let shown = recovered.text.to_uppercase();
-    for form in [
-        key.clone(),
-        plain(&key),
-        swapped(&key),
-        plain(&swapped(&key)),
-    ] {
-        assert!(
-            !shown.contains(&form),
-            "the key is echoed: {}",
-            recovered.text
-        );
+    for form in [key.clone(), plain(key), swapped(key), plain(&swapped(key))] {
+        assert!(!shown.contains(&form), "the recovery key was echoed");
     }
     let (_, issuer) = certified(cloud, &cloud.last_token(), RECOVERED);
     assert_eq!(issuer, None, "the recovered device's certificate's issuer");
-    history_shows(&third, space.default, &[ASKED, ANSWERED]);
+    history_shows(&third, channel, &[ASKED, ANSWERED]);
 }

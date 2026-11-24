@@ -16,14 +16,6 @@ Where Claude Code offers no cross-session socket that Skald writes to, as on Win
 
 Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, goes by the next one; after the last, it waits for the hooks and `inbox`.
 
-### Host checks
-
-The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub. Each session ran the Skald CLI, called its MCP `inbox` and returned a `read` receipt for each tested wake path.
-
-- **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
-- **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
-- Skald's Channels development flag requires an interactive CLI. The Agent SDK ignores it. Channels remained unconfirmed in the hosted terminal checks with the stub. The separate CLI tests verify it. [Claude Code reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview) · [Skald Channels checks](dev/agent-delivery.md#channels)
-
 ### App checks
 
 - The [earlier app checks](dev/agent-delivery.md#waking-an-idle-session) confirmed socket delivery in the Claude app and Claude Code for VS Code.
@@ -42,6 +34,27 @@ Skald gives the signal by the hooks of a turn, then `Stop`, then `codex queue` o
 ## Other agents
 - Gemini, Cursor, Copilot, OpenCode: hooks and plugins; the fallback is `inbox`.
 - Any agent with a shell: the `skald recv --wait` command.
+
+## Agent hosts
+### Claude Code checks
+
+The checks ran Claude Code 2.1.330 on macOS with Skald's plugin and a loopback model stub. Each session ran the Skald CLI, called its MCP `inbox` and returned a `read` receipt for each tested wake path.
+
+- **Paseo 0.17.1:** The SDK and terminal sessions woke through the socket, `asyncRewake` and the mod. Paseo's terminal hook marked the workspace as needing attention.
+- **Herdr 0.9.5:** The session woke through the socket, `asyncRewake` and the mod. Herdr's hook reported the Claude Code session ID.
+- Skald's Channels development flag requires an interactive CLI. The Agent SDK ignores it. Channels remained unconfirmed in the hosted terminal checks with the stub. The separate CLI tests verify it. [Claude Code reference](https://code.claude.com/docs/en/channels-reference#test-during-the-research-preview) · [Skald Channels checks](dev/agent-delivery.md#channels)
+
+### Codex checks
+
+The [live checks](../crates/client/tests/codex_hosts/main.rs) used a loopback model stub and ran `skald setup codex` in a config home the host wrote its hooks into.
+
+| Host | Agent | MCP server, CLI, hooks | Idle session wakes | The host's hooks |
+|---|---|---|---|---|
+| Paseo 0.17.1, SDK host | Codex 0.162.1 | Work | Yes, by `codex queue`, in under 10 s | Work: a terminal's session shows in Paseo |
+| Herdr 0.9.5, PTY host | Codex 0.162.1 | Work | Yes, by `codex queue`, in under 10 s | Work: Herdr gets the session |
+
+- The wake carries no message text.
+- Codex runs the host's hooks from `hooks.json` and Skald's from `config.toml`, and warns that the config home holds hooks in both.
 
 ## The MCP server
 - An agent CLI starts `skald mcp` as an MCP server on stdio in the session's folder, such as with `claude mcp add skald -- skald mcp` for Claude Code.
@@ -92,5 +105,7 @@ The Skald client sees the message in the agent's session file, followed by the m
 - `skald connect`: it sets up Claude Code and Codex itself.
 - To set up Claude Code yourself, install [Skald's plugin](../README.md#claude-code-plugin) after `skald`: it gives each session the MCP server, the hooks and a skill with the rules for Skald's messages. Without `skald`, it does nothing.
 - The plugin is that of the latest stable release. Claude Code updates it only with auto-update on: in `/plugin`, Marketplaces, `skald`. Without it: `claude plugin marketplace update skald`, then `claude plugin update skald@skald`.
+- To set up Codex yourself: `skald setup codex`. In the config home Codex uses, `CODEX_HOME` or `~/.codex`, it adds to `config.toml` the MCP server `skald`, whose tools Codex calls without asking and which gets Skald's settings, such as `SKALD_STATE_DIR`, and the hooks `skald hook codex` for `SessionStart`, `PostToolUse`, `UserPromptSubmit`, `Stop` and `PermissionRequest`. Every other entry and comment stays, the hooks other tools write into `hooks.json` included. Run again, it changes nothing; after an update, it replaces only Skald's entries. `skald setup codex --remove` takes out only Skald's entries. A config it cannot read stays as it is, and it says why.
 - In Codex, approve Skald's hooks in Review hooks in the app and VS Code, or with `/hooks` in the terminal, and again after an update changes them.
+- In the ChatGPT app, a scheduled task that tells the agent to call `inbox` is a fallback you set up yourself; Skald does not create it.
 - In Claude Code's bypass mode, nothing: Skald passes the socket token itself.

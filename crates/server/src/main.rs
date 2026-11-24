@@ -18,10 +18,12 @@ use tokio::net::TcpListener;
 const GITHUB_SECRET_ENV: &str = "SKALD_GITHUB_CLIENT_SECRET";
 /// The environment variable that holds the Google OAuth client's secret.
 const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
+/// The environment variable that holds the corporate OIDC client's secret.
+const CORPORATE_SECRET_ENV: &str = "SKALD_CORPORATE_CLIENT_SECRET";
 /// The environment variable that holds the attachment bucket's secret key.
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
-/// The least time between two reads of Google's keys.
-const GOOGLE_KEY_REFRESH: Duration = Duration::from_secs(60);
+/// The least time between two reads of an OIDC provider's keys.
+const OIDC_KEY_REFRESH: Duration = Duration::from_secs(60);
 /// The longest `--long-poll-max-wait`, in seconds: a day.
 const LONG_POLL_LONGEST: u64 = 24 * 3_600;
 /// The longest `--sse-keep-alive`, in seconds: an hour.
@@ -60,9 +62,9 @@ struct Cli {
     public_url: Option<PublicUrl>,
 
     /// The origin browsers sign in at, e.g. https://app.skald.example [default: the public
-    /// address]. GitHub's callback is <URL>/auth/github/callback, Google's
-    /// <URL>/auth/google/callback; the verification page is <URL>/device; browser forms are taken
-    /// only from it; under https, cookies go over HTTPS only.
+    /// address]. Register the provider's redirect URI at <URL>/auth/<provider>/callback. The
+    /// verification page is <URL>/device; browser forms are taken only from this origin. Under
+    /// https, cookies go over HTTPS only.
     #[arg(long, env = "SKALD_WEB_URL", value_name = "URL")]
     web_url: Option<PublicUrl>,
 
@@ -124,6 +126,19 @@ struct Cli {
         default_value = "https://accounts.google.com"
     )]
     google_issuer: String,
+
+    /// The optional corporate OIDC issuer. Requires the corporate client ID and secret.
+    #[arg(
+        long,
+        env = "SKALD_CORPORATE_ISSUER",
+        value_name = "URL",
+        hide_env_values = true
+    )]
+    corporate_issuer: Option<String>,
+
+    /// The corporate OIDC client's ID. Set its secret in SKALD_CORPORATE_CLIENT_SECRET.
+    #[arg(long, env = "SKALD_CORPORATE_CLIENT_ID", value_name = "ID")]
+    corporate_client_id: Option<String>,
 
     /// How long a device flow's codes work, from device authorization to the machine's last poll.
     #[arg(
@@ -191,6 +206,10 @@ struct Cli {
     /// of the account's sign-in methods link it [default: no link].
     #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
     privacy_policy_url: Option<PrivacyPolicyUrl>,
+
+    /// Show effective cloud plans and their limits in space usage.
+    #[arg(long, env = "SKALD_SPACE_PLANS")]
+    space_plans: bool,
 
     /// The number of spaces an account may own: the ones it created, its personal space included,
     /// which counts also before it is created [default: no limit].
@@ -396,11 +415,19 @@ fn open_warning(settings: &Settings) -> Option<String> {
     if settings.sign_up != SignUp::Open {
         return None;
     }
-    let providers = match (sign_in.github.is_some(), sign_in.google.is_some()) {
-        (true, true) => "GitHub or Google",
-        (true, false) => "GitHub",
-        (false, true) => "Google",
-        (false, false) => return None,
+    let names: Vec<_> = [
+        (sign_in.github.is_some(), "GitHub"),
+        (sign_in.google.is_some(), "Google"),
+        (sign_in.corporate.is_some(), "corporate"),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, name)| enabled.then_some(name))
+    .collect();
+    let (last, rest) = names.split_last()?;
+    let providers = if rest.is_empty() {
+        (*last).to_owned()
+    } else {
+        format!("{} or {last}", rest.join(", "))
     };
     Some(format!(
         "skald-server: warning: sign-up is open: any {providers} account can sign up; \
@@ -476,6 +503,38 @@ impl Cli {
         }
     }
 
+    fn corporate(
+        issuer: Option<String>,
+        client_id: Option<String>,
+        google: Option<&OidcSettings>,
+    ) -> Result<Option<OidcSettings>, String> {
+        if issuer.is_none() && client_id.is_none() && env::var_os(CORPORATE_SECRET_ENV).is_none() {
+            return Ok(None);
+        }
+        let issuer = issuer.ok_or("corporate sign-in needs --corporate-issuer")?;
+        let client_id = client_id
+            .filter(|id| !id.trim().is_empty())
+            .ok_or("corporate sign-in needs --corporate-client-id")?;
+        let client_secret = secret(CORPORATE_SECRET_ENV)?
+            .ok_or("corporate sign-in needs the client secret in SKALD_CORPORATE_CLIENT_SECRET")?;
+        let url = skald_server::issuer_url(&issuer)
+            .map_err(|reason| format!("invalid --corporate-issuer: {reason}"))?;
+        if let Some(google) = google
+            && skald_server::issuer_url(&google.issuer)?
+                .as_str()
+                .trim_end_matches('/')
+                == url.as_str().trim_end_matches('/')
+        {
+            return Err("the corporate and Google issuers must differ".to_owned());
+        }
+        Ok(Some(OidcSettings {
+            issuer,
+            client_id,
+            client_secret,
+            key_refresh: OIDC_KEY_REFRESH,
+        }))
+    }
+
     /// The settings, or why they do not fit together.
     fn settings(mut self) -> Result<Settings, String> {
         let sign_up = self.sign_up()?;
@@ -499,16 +558,22 @@ impl Cli {
             GOOGLE_SECRET_ENV,
         )?
         .map(|(client_id, client_secret)| {
-            skald_server::issuer_url(&self.google_issuer)?;
+            skald_server::issuer_url(&self.google_issuer)
+                .map_err(|reason| format!("the issuer {:?}: {reason}", self.google_issuer))?;
             Ok::<_, String>(OidcSettings {
                 issuer: self.google_issuer,
                 client_id,
                 client_secret,
-                key_refresh: GOOGLE_KEY_REFRESH,
+                key_refresh: OIDC_KEY_REFRESH,
             })
         })
         .transpose()?;
-        let sign_in = if github.is_none() && google.is_none() {
+        let corporate = Self::corporate(
+            self.corporate_issuer,
+            self.corporate_client_id,
+            google.as_ref(),
+        )?;
+        let sign_in = if github.is_none() && google.is_none() && corporate.is_none() {
             None
         } else {
             Some(SignInSettings {
@@ -516,6 +581,7 @@ impl Cli {
                 web_url: self.web_url,
                 github,
                 google,
+                corporate,
                 state_lifetime: Duration::from_secs(self.sign_in_state_lifetime),
                 link_age: Duration::from_secs(self.link_sign_in_age),
                 device_code_lifetime: Duration::from_secs(self.device_code_lifetime),
@@ -527,6 +593,7 @@ impl Cli {
             sign_in,
             sign_up,
             privacy_policy_url: self.privacy_policy_url,
+            space_plans: self.space_plans,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
@@ -891,8 +958,9 @@ mod tests {
                     issuer: "https://accounts.google.com".to_owned(),
                     client_id: "fake.apps.googleusercontent.com".to_owned(),
                     client_secret: secret(),
-                    key_refresh: GOOGLE_KEY_REFRESH,
+                    key_refresh: OIDC_KEY_REFRESH,
                 }),
+                corporate: None,
                 state_lifetime: Duration::from_secs(600),
                 link_age: Duration::from_secs(300),
                 device_code_lifetime: Duration::from_secs(600),

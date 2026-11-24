@@ -231,6 +231,8 @@ The server issues the session only if:
 - the certificate's account is not deleted;
 - the signature verifies with the certificate's `signing` over `origin` set to the origin of the server's public address.
 
+Once the signature verifies with a server-held certificate on a deleted account, the server answers `account-deleted`. If the request uses a new certificate on a deleted account, the server answers `device-revoked` and stores nothing.
+
 It stores the certificate sent only if the certificate is of the device as a `client` device, issued by a `client` device of its account, passes the proof check and checks 1 and 2 of [Device checks](#device-checks) against that account's master key and the certificates its devices hold, and matches the device's registration if there is one: on that account, with its keys and `name`. A device without a registration is registered by it. With the devices limit, a certificate the account has no place for is refused and gives no session.
 
 - The session is of the certificate's account, has no sign-in method and is listed with its device. The server takes it as any device session. It ends when its device is revoked, when it signs out, when a web session ends it, and when the device gets another session this way: a device has one such session at a time.
@@ -336,6 +338,7 @@ A client MUST warn its user when:
 - an account record's `recovery` changes, or a record the server gives fails the check of [Account](#account), once per record; one that names the master key of the record the client holds and verifies with it does not count, as an account's records stay so after its `master` changes;
 - a KeyPackage the server hands out fails its checks ([MLS profile](#mls-profile));
 - a member's `master` changes in the roster; for an account it [verified](#account-fingerprint), it also says the account is no longer verified;
+- a member handle names different accounts in two consecutive accepted roster revisions.
 - an `ssh` signature it checks is a key change ([Device certificate](#device-certificate));
 - its space's [domain](#domain) lists a member only with other fingerprints, or does not list an admin;
 - the server gives a device it trusted with another certificate in place of the one it kept ([Kept certificates](#device-certificate)), or a device with certificates of two bodies ([Device certificate](#device-certificate));

@@ -25,6 +25,7 @@ pub struct Terminal {
     output: Arc<Mutex<Vec<u8>>>,
     reader: Option<JoinHandle<()>>,
     started: Instant,
+    private_output: bool,
 }
 
 /// What a run at a terminal printed, as the person saw it, and how it exited.
@@ -126,6 +127,23 @@ impl Terminal {
             output,
             reader: Some(reader),
             started: Instant::now(),
+            private_output: false,
+        }
+    }
+
+    /// Suppresses transcripts in failures for runs that display or accept credentials.
+    #[allow(dead_code)]
+    #[must_use]
+    pub fn with_private_output(mut self) -> Self {
+        self.private_output = true;
+        self
+    }
+
+    fn diagnostic(&self) -> String {
+        if self.private_output {
+            "(terminal output withheld)".to_owned()
+        } else {
+            self.shown()
         }
     }
 
@@ -144,6 +162,7 @@ impl Terminal {
 
     /// Waits until what it printed passes `seen`, for up to [`RUN_LIMIT`] from its start; gives
     /// what it printed then. Fails if it exits first.
+    #[track_caller]
     pub fn wait_for(&mut self, what: &str, seen: impl Fn(&str) -> bool) -> String {
         loop {
             let shown = self.shown();
@@ -152,17 +171,20 @@ impl Terminal {
             }
             assert!(
                 !self.exited(),
-                "skald exited without showing {what}: {shown}"
+                "skald exited without showing {what}: {}",
+                self.diagnostic()
             );
             assert!(
                 self.started.elapsed() < RUN_LIMIT,
-                "skald did not show {what}: {shown}"
+                "skald did not show {what}: {}",
+                self.diagnostic()
             );
             thread::sleep(Duration::from_millis(50));
         }
     }
 
     /// Waits until it shows `part`, as [`Terminal::wait_for`] does.
+    #[track_caller]
     pub fn wait_to_show(&mut self, part: &str) -> String {
         self.wait_for(part, |shown| shown.contains(part))
     }
@@ -218,7 +240,7 @@ impl Terminal {
             assert!(
                 Instant::now() < deadline,
                 "skald ran for more than {RUN_LIMIT:?}: {}",
-                self.shown()
+                self.diagnostic()
             );
             thread::sleep(Duration::from_millis(50));
             status = self.child.try_wait().expect("wait for skald at a terminal");

@@ -120,7 +120,7 @@ export const getDeleteAccountUrl = () => {
 };
 
 /**
- * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused under the server's sign-up policy; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
+ * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused under the server's sign-up policy; its username is free; each of its devices is served as a revoked one, with `account-deleted` for devices with server-held certificates asking for a session by key, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
  * @summary Delete the account
  */
 export const deleteAccount = async (
@@ -4290,8 +4290,8 @@ export const getGetSpaceUsageUrl = (space: string) => {
 };
 
 /**
- * The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, its service agents, and the server's limits on the space's messages, history and service agents while it has their settings (docs/dev/architecture.md, "Cloud limits").
- * @summary The space's messages this month and service agents, with their limits
+ * Shows the space's messages this calendar month in UTC and service agents. With space plans enabled, the response gives the space's plan and its allowances. With plans off, it gives the limits from the server settings.
+ * @summary The space's usage and limits
  */
 export const getSpaceUsage = async (
   space: string,

@@ -61,4 +61,5 @@ mod history;
 mod messages;
 mod nothing;
 mod owned;
+mod plans;
 mod settings;
