@@ -354,6 +354,7 @@ if checks tooling; then
   script/pages-workflow-test
   script/release-check-test
   script/production-deploy-workflow-test
+  script/release-winget-test
   script/release-homebrew-test --workflow
   script/install-dist >/dev/null
   cargo metadata --locked --format-version 1 >/dev/null

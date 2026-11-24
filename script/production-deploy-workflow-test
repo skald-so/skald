@@ -45,6 +45,7 @@ import {
   template,
   toText,
   truth,
+  unknown,
   unpublishedEvents,
   usesStatus,
   writes,
@@ -97,26 +98,36 @@ for (const [name, ref] of [
   if (!jobsFor(release, event(name, ref))[key].skipped) fail(`a ${name} on ${ref} deploys nothing, but job ${key} may run`);
 }
 
-// After the release check: when it fails, the deploy is skipped.
+// After the release check: when it fails, every job that needs it is skipped, unless its condition
+// calls a status function.
 const checkers = Object.keys(jobs).filter((k) => String(jobs[k].uses ?? '') === './.github/workflows/release-check.yml');
 if (checkers.length !== 1) fail(`one job of ${releaseFile} calls release-check.yml, not: ${checkers.join(', ') || 'none'}`);
 const checker = checkers[0];
 if (checker) {
   const needs = allNeeds(jobs, key);
   if (!needs.has(checker)) fail(`job ${key} does not need the release check, job ${checker}`);
-  const states = jobsFor(release, event('push', 'refs/tags/v1.2.3'));
+  // The jobs between the release check and the deploy, and the deploy: when the check fails, each is
+  // skipped by the implicit success check or by its explicit condition.
+  const stable = jobsFor(release, event('push', 'refs/tags/v1.2.3'));
   const outcome = { [checker]: 'failure' };
   const visit = (k) => {
     if (k in outcome) return outcome[k];
-    const { scope } = states[k];
-    const needs = Object.fromEntries(needsOf(jobs[k]).map((n) => [n, { ...scope.contexts.needs[n], result: visit(n) }]));
-    const success = Object.values(needs).every((need) => need.result === 'success');
-    const status = { success, always: true, failure: allNeeds(jobs, k).has(checker), cancelled: false };
-    const explicit = jobs[k].if;
-    const runs = (success || usesStatus(explicit)) &&
-      (explicit === undefined || truth(condition(explicit, { contexts: { ...scope.contexts, needs }, status })) !== false);
-    outcome[k] = runs ? 'success' : 'skipped';
-    return outcome[k];
+    const base = stable[k].scope;
+    const needs = Object.fromEntries(needsOf(jobs[k]).map((n) => [
+      n, { ...base.contexts.needs[n], result: visit(n) },
+    ]));
+    const blocked = Object.values(needs).some(({ result }) => result === 'failure' || result === 'skipped');
+    const scope = {
+      contexts: { ...base.contexts, needs },
+      status: {
+        ...base.status, success: blocked ? false : unknown(), cancelled: false,
+        failure: allNeeds(jobs, k).has(checker) ? true : unknown(),
+      },
+    };
+    const test = jobs[k].if;
+    const skipped = stable[k].skipped || (!usesStatus(test) && blocked) ||
+      (test !== undefined && truth(condition(test, scope)) === false);
+    return (outcome[k] = skipped ? 'skipped' : unknown());
   };
   if (needs.has(checker) && visit(key) !== 'skipped') fail(`job ${key} may run when the release check, job ${checker}, fails`);
 }
