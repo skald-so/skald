@@ -10,9 +10,12 @@
 use std::thread;
 use std::time::{Duration, Instant};
 
+use rusqlite::{Connection, OpenFlags, params};
+use skald_proto::Cbor as _;
+
 use crate::behind::{Behind, Forked, TIMEOUT, Transport, answered, recv};
 use crate::cloud::WAIT;
-use crate::filter::{EVENTS, POLL, Seen, WEBSOCKET};
+use crate::filter::{EVENTS, Fate, POLL, Seen, WEBSOCKET};
 use crate::fixtures::{SEND, await_running};
 use crate::helped::{Helped, ONE_SHOT, START_TIMEOUT};
 use crate::kit::RECV;
@@ -34,14 +37,11 @@ const RETRY_SLACK: Duration = Duration::from_secs(3);
 /// loaded machine, which took 13 s.
 const LONG_RETRY: &str = "120";
 
-/// How long the proxy holds back the helper's next long-poll while a revision is stored.
-const HELD_BACK: Duration = Duration::from_secs(4);
-
 /// How long the proxy holds back a send on the helper's WebSocket while Bob's device sends a
 /// message.
 const SEND_HELD_BACK: Duration = Duration::from_secs(2);
 
-/// How long a test gives the helper to settle what it fetched.
+/// How long the proxy must see no requests before a test counts it as settled.
 const SETTLE: Duration = Duration::from_secs(1);
 
 /// The request that gives the challenge an HTTPS request of a device proves.
@@ -59,9 +59,9 @@ fn on_long_poll(ids: [u64; 2], logins: [&str; 2]) -> Behind {
     behind
 }
 
-/// Whether `seen` holds a long-poll with a wait above 0: a connection waiting for what comes.
-fn waiting_poll(seen: &[Seen]) -> bool {
-    (seen.iter()).any(|one| one.is("POST", POLL) && one.parameter("wait") != Some("0"))
+/// Whether `request` is a long-poll with a wait above 0.
+fn waiting_poll(request: &Seen) -> bool {
+    request.is("POST", POLL) && request.parameter("wait") != Some("0")
 }
 
 /// Waits while `run` goes on until the proxy has seen a long-poll with a wait above 0 from its mark
@@ -69,7 +69,7 @@ fn waiting_poll(seen: &[Seen]) -> bool {
 #[track_caller]
 fn await_waiting_poll(behind: &Behind, run: &mut Run, from: usize) {
     await_running(run, "a waiting long-poll", || {
-        waiting_poll(&behind.filter.seen_since(from))
+        behind.filter.seen_since(from).iter().any(waiting_poll)
     });
 }
 
@@ -157,11 +157,11 @@ fn helper_on_long_poll_moves_to_websocket_within_the_interval() {
 }
 
 /// Ada's machine follows a space of hers, `notices-to-helper`. Behind the proxy, the person's
-/// `skald recv --wait` starts a helper, which waits over long-poll; the proxy holds its next
-/// long-poll back for [`HELD_BACK`], and meanwhile a revision of the space adding Bob is stored.
-/// The helper fetches the space's revisions and devices once its long-poll goes on, with no other
-/// command running. Once the relay gives another revision with that number, `skald members` warns
-/// of a fork: the helper accepted the revision.
+/// `skald recv --wait` starts a helper, which waits over long-poll; the relay holds its next
+/// long-poll back until a revision of the space adding Bob is stored. The helper fetches the
+/// space's revisions and devices and records the revision, with no other command running. Once the
+/// helper is stopped and the relay gives another revision with that number, `skald members` warns
+/// of a fork.
 #[test]
 fn helper_on_long_poll_accepts_a_revision_stored_while_its_next_request_is_held_back() {
     let behind = on_long_poll(
@@ -175,21 +175,59 @@ fn helper_on_long_poll_accepts_a_revision_stored_while_its_next_request_is_held_
     let helped = Helped::new(&ada.machine);
     let from = behind.filter.mark();
     let mut helper = helped.start(&[], &[RECV, WAIT_FLAG]);
-    await_waiting_poll(&behind, &mut helper, from);
-    let delayed = behind.filter.delayed_polls();
-    behind.filter.delay_next_poll(HELD_BACK);
-    await_running(&mut helper, "a long-poll held back", || {
-        behind.filter.delayed_polls() > delayed
+    let answered_poll = || {
+        behind
+            .filter
+            .seen_since(from)
+            .into_iter()
+            .find(|request| waiting_poll(request) && request.fate == Fate::Answered(200))
+    };
+    await_running(&mut helper, "an answered waiting long-poll", || {
+        answered_poll().is_some()
     });
-    let since = cloud.relay.mark();
+    let poll = answered_poll().expect("the answered waiting long-poll");
+    let relay = &cloud.relay;
+    relay.hold_next(&format!("POST {POLL}?{} ", poll.query));
+    await_running(&mut helper, "a long-poll held back", || relay.held() > 0);
+    let since = relay.mark();
 
     store(cloud, &ada.token, &forked.late);
+    relay.let_go();
 
+    await_stored_revision(&behind, &helper, &forked);
     let devices = devices_request(forked.space);
-    let fetched = || cloud.count_sent(since, &devices) > 0;
-    await_running(&mut helper, "the space's devices fetched", fetched);
-    thread::sleep(SETTLE);
+    assert!(
+        cloud.count_sent(since, &devices) > 0,
+        "the helper did not fetch the space's devices"
+    );
+    drop(helper);
+    drop(helped);
     forked.assert_late_accepted(&behind, "the helper on long-poll");
+}
+
+/// Waits for the helper to commit the revision. A warning can end the person's wait during intake.
+#[track_caller]
+fn await_stored_revision(behind: &Behind, helper: &Run, forked: &Forked) {
+    let state = behind.ada.machine.state_dir().join("state.sqlite3");
+    let db = Connection::open_with_flags(state, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("open Ada's local state");
+    let mut query = db
+        .prepare("SELECT EXISTS (SELECT 1 FROM space WHERE space = ?1 AND accepted = ?2)")
+        .expect("read the accepted revision");
+    let space = forked.space.to_string();
+    let revision = forked.late.to_cbor();
+    let deadline = Instant::now() + WAIT;
+    while !query
+        .query_row(params![space, revision], |row| row.get::<_, bool>(0))
+        .expect("read the accepted revision")
+    {
+        assert!(
+            Instant::now() < deadline,
+            "revision not accepted: {}",
+            helper.shown()
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// Behind the proxy, which blocks nothing, the person's `skald recv --wait` starts a helper, and a
@@ -260,9 +298,8 @@ fn await_settled(behind: &Behind, mut run: Option<&mut Run>) {
 /// The requests of `seen` other than long-polls with a wait above 0 and the challenges that prove
 /// them.
 fn not_waiting(seen: &[Seen]) -> Vec<&Seen> {
-    let waits = |one: &Seen| one.is("POST", POLL) && one.parameter("wait") != Some("0");
     (seen.iter())
-        .filter(|one| !one.is("POST", CHALLENGE) && !waits(one))
+        .filter(|one| !one.is("POST", CHALLENGE) && !waiting_poll(one))
         .collect()
 }
 
@@ -293,7 +330,10 @@ fn helper_on_long_poll_sends_only_long_polls_that_wait_and_none_once_no_session_
         other.is_empty(),
         "not only long-polls that wait: {other:#?}"
     );
-    assert!(waiting_poll(&seen), "no long-poll that waits: {seen:#?}");
+    assert!(
+        seen.iter().any(waiting_poll),
+        "no long-poll that waits: {seen:#?}"
+    );
     let helper = await_helper_beside(&helped, &[&session]);
     let text = "bob, to the quiet poller";
     let sending = behind.filter.mark();
@@ -403,7 +443,7 @@ fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
 
     waiting.assert_running();
     let mut polls: Vec<Seen> = behind.filter.seen_since(from);
-    polls.retain(|one| waiting_poll(std::slice::from_ref(one)));
+    polls.retain(waiting_poll);
     let at_once = polls
         .windows(2)
         .any(|pair| (pair[0].answering).is_none_or(|answering| pair[1].at < answering));
