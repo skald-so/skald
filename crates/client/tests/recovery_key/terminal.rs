@@ -68,7 +68,7 @@ impl Terminal {
         Self::spawn(&shell, &home)
     }
 
-    fn spawn(command: &Command, dir: &Path) -> Self {
+    pub fn spawn(command: &Command, dir: &Path) -> Self {
         let mut builder = CommandBuilder::new(command.get_program());
         builder.args(command.get_args());
         builder.env_clear();
@@ -197,10 +197,12 @@ impl Terminal {
     /// The person types `text` and presses Enter; a run that no longer reads its terminal does not
     /// see it.
     pub fn type_line(&self, text: &str) {
+        self.send(format!("{text}\r").as_bytes());
+    }
+
+    pub fn send(&self, bytes: &[u8]) {
         let mut input = self.input.lock().expect("the terminal's input");
-        let _ = input
-            .write_all(format!("{text}\r").as_bytes())
-            .and_then(|()| input.flush());
+        let _ = input.write_all(bytes).and_then(|()| input.flush());
     }
 
     /// The person ends the terminal's input at the start of a line: Ctrl-D on Unix, Ctrl-Z and

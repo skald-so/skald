@@ -186,6 +186,56 @@ if (hostTests < 0) {
   }
 }
 
+// The same daily and manual workflow must run the Codex tests on both supported runners.
+const codexCommand = /^cargo (?:test|nextest run) .*--test codex_e2e\b/m;
+const codexJob = Object.entries(jobs).find(([, job]) =>
+  (job.steps ?? []).some((step) => codexCommand.test(run(step))));
+if (!codexJob) {
+  fail('no job runs the Codex E2E test target');
+} else {
+  const [name, job] = codexJob;
+  const runners = [].concat(job.strategy?.matrix?.os ?? job['runs-on'] ?? []);
+  for (const os of ['ubuntu', 'windows']) {
+    if (!runners.some((runner) => String(runner).startsWith(os + '-'))) fail(`${name} does not run on ${os}`);
+  }
+  const steps = job.steps ?? [];
+  const tests = steps.findIndex((step) => codexCommand.test(run(step)));
+  const install = steps.findIndex((step) => /\bnpm install\b[^\n]*@openai\/codex@\d+\.\d+\.\d+\b/.test(run(step)));
+  if (install < 0 || install >= tests) {
+    fail(`${name} needs to install pinned Codex before the tests`);
+  } else {
+    const version = run(steps[install]).match(/@openai\/codex@(\d+\.\d+\.\d+)\b/)[1];
+    const renovate = JSON.parse(fs.readFileSync(path.join(root, 'renovate.json'), 'utf8'));
+    const tracksPin = (renovate.customManagers ?? []).some((manager) =>
+      manager.customType === 'regex'
+      && (manager.managerFilePatterns ?? []).some((pattern) =>
+        pattern === file || (pattern.startsWith('/') && new RegExp(pattern.slice(1, -1)).test(file)))
+      && (manager.matchStrings ?? []).some((pattern) => {
+        const groups = text.match(new RegExp(pattern))?.groups;
+        return groups?.currentValue === version
+          && (groups.datasource ?? manager.datasourceTemplate) === 'npm'
+          && (groups.depName ?? manager.depNameTemplate) === '@openai/codex';
+      }));
+    if (!tracksPin) fail('Renovate does not track the Codex version in the workflow');
+  }
+  if (String(steps[tests].env?.SKALD_E2E_REQUIRED ?? job.env?.SKALD_E2E_REQUIRED) !== '1') {
+    fail(`${name} does not fail when Codex is missing`);
+  }
+  if (steps[tests].if !== undefined || steps[tests]['continue-on-error']) fail(`${name} may omit failing tests`);
+  if (!runsFor(workflow, event('workflow_dispatch', 'refs/heads/codex/nightly-check'))) {
+    fail('the branch that adds Codex E2E cannot run the workflow manually');
+  }
+}
+for (const changed of [
+  'crates/client/src/codex.rs',
+  'crates/client/src/codex_app_server.rs',
+  'crates/client/src/codex_confirm.rs',
+  'crates/client/src/setup.rs',
+  ...modules('crates/client/tests/codex_e2e/main.rs', 5),
+]) {
+  if (!pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} does not start it`);
+}
+
 // No secret.
 if (/\bsecrets\./.test(text)) fail('it reads a secret');
 for (const [key, job] of Object.entries(jobs)) {
