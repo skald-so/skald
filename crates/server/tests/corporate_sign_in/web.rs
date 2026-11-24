@@ -46,7 +46,7 @@ fn the_first_corporate_cabinet_guides_machine_sign_in_only_when_available() {
             page.count("role=row >> text=Corporate") == 1
         });
         if github {
-            let visit = page.goto(&spa.at("/device"));
+            let visit = page.goto_settled(&spa.at("/device"));
             assert_eq!(visit.status, Some(200), "{visit:?}");
             wait_until(&page, "GitHub sign-in link on the device page", |page| {
                 page.count("role=link[name=/sign in with GitHub/i]") == 1
