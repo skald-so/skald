@@ -200,9 +200,9 @@ struct Entries {
 }
 
 impl Entries {
-    /// The entries of the `skald` at `exe`, quoted for Windows' shell if `windows`, else for `sh`.
+    /// The entries of the `skald` at `exe`, invoked by PowerShell on Windows or by `sh`.
     fn of(exe: &str, windows: bool) -> Self {
-        let command = format!("{} hook codex", quoted(exe, windows));
+        let command = format!("{} hook codex", shell_program(exe, windows));
         Entries {
             server: json!({
                 "command": exe,
@@ -217,12 +217,11 @@ impl Entries {
     }
 }
 
-/// `path` as one word of a command line: in double quotes for Windows' shell; for `sh`, as it is
-/// if nothing in it is special, else in single quotes.
-fn quoted(path: &str, windows: bool) -> String {
+/// The program invocation in PowerShell on Windows or as a quoted word in `sh`.
+fn shell_program(path: &str, windows: bool) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c);
     if windows {
-        format!("\"{path}\"")
+        format!("& '{}'", path.replace('\'', "''"))
     } else if !path.is_empty() && path.chars().all(plain) {
         path.to_owned()
     } else {
@@ -230,13 +229,13 @@ fn quoted(path: &str, windows: bool) -> String {
     }
 }
 
-/// Whether `command`, a hook's command line, runs Skald's hook handler for Codex: a program whose
-/// file is `skald`, alone or in quotes, then `hook codex` and nothing more.
+/// Whether `command` invokes `skald hook codex`, including the older Windows command form.
 fn is_skalds(command: &str) -> bool {
     let Some(program) = command.trim().strip_suffix(" hook codex") else {
         return false;
     };
     let program = program.trim_end();
+    let program = program.strip_prefix("& ").map_or(program, str::trim_start);
     let unquoted = ['\'', '"']
         .into_iter()
         .find_map(|quote| program.strip_prefix(quote)?.strip_suffix(quote))
@@ -673,14 +672,17 @@ mod tests {
     }
 
     #[test]
-    fn a_path_is_quoted_only_when_the_shell_needs_it() {
-        assert_eq!(quoted(EXE, false), EXE);
-        assert_eq!(quoted("/Users/a b/skald", false), "'/Users/a b/skald'");
-        assert_eq!(quoted("/it's/skald", false), r"'/it'\''s/skald'");
-        assert_eq!(quoted("", false), "''");
+    fn each_shell_invokes_a_path_with_literal_special_characters() {
+        assert_eq!(shell_program(EXE, false), EXE);
         assert_eq!(
-            quoted(r"C:\Users\ada\skald.exe", true),
-            r#""C:\Users\ada\skald.exe""#
+            shell_program("/Users/a b/skald", false),
+            "'/Users/a b/skald'"
+        );
+        assert_eq!(shell_program("/it's/skald", false), r"'/it'\''s/skald'");
+        assert_eq!(shell_program("", false), "''");
+        assert_eq!(
+            shell_program(r"C:\Ada's tools\skald.exe", true),
+            r"& 'C:\Ada''s tools\skald.exe'"
         );
     }
 
@@ -692,6 +694,7 @@ mod tests {
             "'/Users/a b/skald' hook codex",
             r"'/it'\''s/skald' hook codex",
             r#""C:\Program Files\Skald\skald.exe" hook codex"#,
+            r"& 'C:\Ada''s tools\skald.exe' hook codex",
             r"C:\skald\SKALD.EXE hook codex",
             "  skald hook codex  ",
         ] {

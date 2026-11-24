@@ -127,13 +127,46 @@ fn shell(template: &Command, line: &str) -> Command {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         let root = std::env::var_os("SystemRoot").expect("SystemRoot is set");
-        let cmd = std::path::Path::new(&root).join("System32").join("cmd.exe");
-        let mut command = like(template, cmd);
-        command.raw_arg(format!("/d /s /c \"{line}\""));
+        let powershell =
+            std::path::Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = like(template, powershell);
+        command.args(["-NoProfile", "-Command", line]);
         command
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn the_windows_hook_runs_from_a_path_with_spaces_and_an_apostrophe() {
+    use std::fs;
+
+    use crate::common::CLIENT;
+    use crate::machine::{TestDir, bare_skald};
+
+    let scratch = TestDir::new("codex-setup-powershell");
+    let bin = scratch.join("Skald's tools");
+    fs::create_dir(&bin).expect("local installation directory");
+    let exe = bin.join("skald.exe");
+    fs::copy(CLIENT, &exe).expect("local Skald executable");
+
+    let home = scratch.join("config");
+    let mut template = bare_skald();
+    template
+        .env(CODEX_HOME, &home)
+        .env("SKALD_STATE_DIR", scratch.join("state"));
+    let set_up = like(&template, exe)
+        .args([SETUP, CODEX])
+        .output()
+        .expect("set up local Codex");
+    assert!(set_up.status.success(), "{set_up:?}");
+
+    let line = Read::home(&home).hook_command("SessionStart");
+    let input = json!({
+        "hook_event_name": "SessionStart", "session_id": "fixture", "cwd": scratch.to_string_lossy()
+    });
+    run_hook(&mut shell(&template, &line), &input.to_string())
+        .assert_silent("PowerShell SessionStart");
 }
 
 /// Ada's machine alone in `clienta`, as the tests of Codex's hooks have it. A Codex session in
