@@ -283,7 +283,8 @@ fn with_no_message_codex_hooks_supply_no_context_and_do_not_continue_the_turn() 
     for expected in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
         assert!(
             outputs.iter().any(|(event, _)| event == expected),
-            "{expected} did not run"
+            "{expected} did not run. Hook wrapper statuses: {:?}",
+            session.hook_diagnostics()
         );
     }
     for (event, bytes) in outputs {

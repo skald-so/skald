@@ -63,7 +63,8 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
         let pending = records(&session);
         assert!(
             shown.elapsed() < Duration::from_secs(5),
-            "Skald did not report the approval prompt"
+            "Skald did not report the approval prompt. Hook wrapper statuses: {:?}",
+            session.hook_diagnostics()
         );
         if !pending.is_empty() {
             break pending;
@@ -111,7 +112,12 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
         .into_iter()
         .filter(|(event, _)| event == "PermissionRequest")
         .collect();
-    assert_eq!(observed.len(), usize::from(hook), "permission hook calls");
+    assert_eq!(
+        observed.len(),
+        usize::from(hook),
+        "permission hook calls. Hook wrapper statuses: {:?}",
+        session.hook_diagnostics()
+    );
     assert!(
         observed.iter().all(|(_, bytes)| bytes.is_empty()),
         "permission hook printed output"

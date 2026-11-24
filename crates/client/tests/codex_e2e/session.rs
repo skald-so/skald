@@ -136,6 +136,7 @@ impl Session {
                 "COMSPEC".to_owned(),
                 system.join("cmd.exe").to_string_lossy().into_owned(),
             ));
+            settings.push(("PATHEXT".to_owned(), ".EXE;.COM;.BAT;.CMD".to_owned()));
         }
 
         live.set_up();
@@ -190,6 +191,13 @@ impl Session {
             .outputs()
     }
 
+    pub fn hook_diagnostics(&self) -> Vec<String> {
+        self.capture
+            .as_ref()
+            .map(Capture::diagnostics)
+            .unwrap_or_default()
+    }
+
     pub fn wait_hook_stdout(&self, event: &str) -> Vec<u8> {
         let deadline = Instant::now() + WAIT;
         loop {
@@ -202,7 +210,8 @@ impl Session {
             }
             assert!(
                 Instant::now() < deadline,
-                "{event} printed nothing. Terminal: {}",
+                "{event} printed nothing. Hook wrapper statuses: {:?}. Terminal: {}",
+                self.hook_diagnostics(),
                 self.recent_terminal_output()
             );
             thread::sleep(Duration::from_millis(100));
@@ -228,7 +237,8 @@ impl Session {
             }
             assert!(
                 Instant::now() < deadline,
-                "no matching request. Terminal: {}",
+                "no matching request. Hook wrapper statuses: {:?}. Terminal: {}",
+                self.hook_diagnostics(),
                 self.recent_terminal_output()
             );
             thread::sleep(Duration::from_millis(100));

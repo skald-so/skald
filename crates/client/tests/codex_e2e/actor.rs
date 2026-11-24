@@ -16,6 +16,10 @@ fn main() {
         return;
     }
     assert_eq!(action, "capture");
+    let records = env::var_os("SKALD_E2E_HOOK_CAPTURE").expect("hook record directory");
+    let path = std::path::PathBuf::from(records).join(format!("{name}-{}", process::id()));
+    let status = path.with_extension("status");
+    fs::write(&status, "wrapper started").expect("record hook start");
 
     #[cfg(unix)]
     let parent = std::os::unix::process::parent_id();
@@ -25,16 +29,23 @@ fn main() {
         .args(["hook", "codex"])
         .env("SKALD_LAUNCHER", format!("{} {parent}", process::id()))
         .stdin(Stdio::inherit())
-        .stderr(Stdio::inherit())
         .output()
         .expect("run Skald hook");
-    let records = env::var_os("SKALD_E2E_HOOK_CAPTURE").expect("hook record directory");
-    let path = std::path::PathBuf::from(records).join(format!("{name}-{}", process::id()));
+    let code = output.status.code().unwrap_or(1);
+    let stderr = &output.stderr[..output.stderr.len().min(1_024)];
+    fs::write(
+        &status,
+        format!("{code}\n{}", String::from_utf8_lossy(stderr)),
+    )
+    .expect("record hook exit code");
     let pending = path.with_extension("pending");
     fs::write(&pending, &output.stdout).expect("record hook stdout");
     fs::rename(pending, path).expect("publish hook stdout");
     io::stdout()
         .write_all(&output.stdout)
         .expect("forward hook stdout");
-    process::exit(output.status.code().unwrap_or(1));
+    io::stderr()
+        .write_all(&output.stderr)
+        .expect("forward hook stderr");
+    process::exit(code);
 }

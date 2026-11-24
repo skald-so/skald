@@ -29,7 +29,11 @@ pub struct Capture(PathBuf);
 impl Capture {
     pub fn install(live: &Live, settings: &mut Vec<(String, String)>) -> Self {
         let skald = live.codex.helped.exe();
-        build_actor(skald.parent().expect("Skald binary folder"));
+        let actor = build_actor(skald.parent().expect("Skald binary folder"));
+        let program = actor
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("native fixture name");
         let records = live.home().join("hook-stdout");
         fs::create_dir(&records).expect("create hook record directory");
         for (name, value) in [
@@ -61,7 +65,7 @@ impl Capture {
                     .expect("setup hook command")
                     .ends_with(" hook codex")
             );
-            *command = toml_edit::value(format!("{exec}{ACTOR} capture {event}"));
+            *command = toml_edit::value(format!("{exec}{program} capture {event}"));
         }
         fs::write(config, doc.to_string()).expect("configure hook stdout capture");
         let mut app_server = AppServer::start(live.command(&live.program, settings));
@@ -80,10 +84,28 @@ impl Capture {
                 }
                 let filename = entry.file_name().into_string().expect("hook record name");
                 let (event, _) = filename.split_once('-').expect("hook event and process");
+                let status =
+                    fs::read_to_string(entry.path().with_extension("status")).expect("hook status");
+                assert!(
+                    status.starts_with("0\n"),
+                    "{event} Skald hook exit code and stderr: {status}"
+                );
                 Some((
                     event.to_owned(),
                     fs::read(entry.path()).expect("hook stdout"),
                 ))
+            })
+            .collect()
+    }
+
+    pub fn diagnostics(&self) -> Vec<String> {
+        fs::read_dir(&self.0)
+            .expect("hook record directory")
+            .filter_map(|entry| {
+                let path = entry.expect("hook record").path();
+                let event = path.file_stem()?.to_str()?;
+                let status = (path.extension()? == "status").then(|| fs::read_to_string(&path))?;
+                Some(format!("{event}: {}", status.expect("hook status").trim()))
             })
             .collect()
     }
