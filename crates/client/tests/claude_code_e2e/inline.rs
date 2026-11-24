@@ -6,7 +6,7 @@
 use serde_json::json;
 
 use crate::delivery::{INLINE, assert_inline, set_text};
-use crate::hooks::Bob;
+use crate::hooks::{Bob, api_sends_web};
 use crate::receipts::shows_read_once;
 use crate::senders::PEER;
 use crate::socket_claude::Options;
@@ -52,7 +52,7 @@ fn inline_peer_text_reaches_a_busy_session_by_its_hooks_without_inbox() {
     set_text(&solo, solo.default_channel(), PEER, INLINE);
 
     let asked = bob.sends(&solo, WEB, BY_HOOK);
-    let own = solo.api_sends_web(OWN_BY_HOOK);
+    let own = api_sends_web(&solo, OWN_BY_HOOK);
     session.prompt(AGAIN);
 
     let turn = model.wait_turn_holding(BY_HOOK, "review's message by a hook");
