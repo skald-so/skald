@@ -31,9 +31,9 @@ impl<'a> Server<'a> {
             config,
         };
         until("Herdr's server", || {
-            output(&mut server.command(&["status", "server"]))
-                .1
-                .contains("running")
+            let (ok, status) = output(&mut server.command(&["status", "server", "--json"]));
+            ok && serde_json::from_str::<Value>(&status)
+                .is_ok_and(|status| status["running"].as_bool() == Some(true))
         });
         server
     }
