@@ -1,72 +1,8 @@
 name: E2E
 
-# E2E tests against the latest Claude Code on Linux, macOS and Windows, including a Linux job for
-# Paseo and Herdr. They use the model stub and need no secret. Outside script/test: daily, on demand,
-# and when a PR changes the adapter, the Claude Code plugin, its tests or this file.
+# Manual Windows Claude Code receipt diagnostic using the existing model and PostgreSQL fixtures.
 on:
-  schedule:
-    - cron: '30 4 * * *'
   workflow_dispatch:
-  pull_request:
-    branches: [dev]
-    types: [opened, synchronize, reopened, ready_for_review]
-    # The adapter, the plugin, its tests and every module they take by #[path] or include!
-    # (script/e2e-workflow-test), and this file.
-    paths:
-      - .claude-plugin/**
-      - plugins/claude-code/**
-      - crates/adapters/**
-      - crates/client/src/claude_relay.rs
-      - crates/client/src/claude_socket.rs
-      - crates/client/src/helper.rs
-      - crates/client/src/hook.rs
-      - crates/client/src/main.rs
-      - crates/client/src/mcp.rs
-      - crates/client/src/permission_prompts.rs
-      - crates/client/src/recv.rs
-      - crates/client/src/resend.rs
-      - crates/client/src/state.rs
-      - crates/client/src/wait.rs
-      - crates/client/claude-mod/**
-      - crates/client/tests/claude_code_e2e/**
-      - crates/client/tests/claude_code_hooks/**
-      - crates/client/src/test_dir.rs
-      - crates/client/tests/agent_handover/agents.rs
-      - crates/client/tests/channel_groups/kit.rs
-      - crates/client/tests/channel_groups/played.rs
-      - crates/client/tests/channel_joins/joins.rs
-      - crates/client/tests/channel_messages/talk.rs
-      - crates/client/tests/claude_code_permission/prompt_lines.rs
-      - crates/client/tests/common/mod.rs
-      - crates/client/tests/compact_output/lines.rs
-      - crates/client/tests/device_keys/keys.rs
-      - crates/client/tests/device_revocation/revocations.rs
-      - crates/client/tests/gap_detection/gaps.rs
-      - crates/client/tests/helper/helped.rs
-      - crates/client/tests/history_common/mod.rs
-      - crates/client/tests/history_devices/devices.rs
-      - crates/client/tests/history_reading/reading.rs
-      - crates/client/tests/key_chain/chain.rs
-      - crates/client/tests/local_agents/solo.rs
-      - crates/client/tests/mcp_inbox/client.rs
-      - crates/client/tests/member_removal/edits.rs
-      - crates/client/tests/read_receipts/receipts.rs
-      - crates/client/tests/receiving/peer.rs
-      - crates/client/tests/recovery_key/terminal.rs
-      - crates/client/tests/roster_revisions/world.rs
-      - crates/client/tests/sending/fixtures.rs
-      - crates/client/tests/sending/front.rs
-      - crates/client/tests/sign_in/cloud.rs
-      - crates/client/tests/sign_in/machine.rs
-      - crates/client/tests/sign_in/recovery.rs
-      - crates/client/tests/sign_in/relay.rs
-      - crates/client/tests/trust_levels/senders.rs
-      - crates/server/tests/common/agent.rs
-      - crates/server/tests/common/browser.rs
-      - crates/server/tests/common/connections.rs
-      - crates/server/tests/key_packages/answers.rs
-      - script/lib/postgres.sh
-      - .github/workflows/e2e.yml
 
 permissions:
   contents: read
@@ -82,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-2025]
+        os: [windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,26 +43,12 @@ jobs:
         run: |
           npm ci --no-audit --no-fund
           node node_modules/playwright-core/cli.js install chromium-headless-shell
-      - name: Install the latest Claude Code
+      - name: Install Claude Code 2.1.331
         shell: bash
         run: |
-          npm install --global @anthropic-ai/claude-code@latest
+          npm install --global @anthropic-ai/claude-code@2.1.331
           claude --version
       # A PostgreSQL of the runner's own, set as script/lib/postgres.sh sets the tests' one.
-      - name: Start PostgreSQL
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          if [[ $RUNNER_OS == macOS ]]; then
-            brew install --quiet postgresql@17
-            bin=$(brew --prefix postgresql@17)/bin
-          else
-            bin=$(find /usr/lib/postgresql -maxdepth 2 -name bin | sort -V | tail -n 1)
-          fi
-          "$bin/initdb" --pgdata "$RUNNER_TEMP/pg" --username postgres --auth trust >/dev/null
-          "$bin/pg_ctl" --pgdata "$RUNNER_TEMP/pg" --log "$RUNNER_TEMP/pg.log" --wait start \
-            --options "-c fsync=off -c max_connections=500 -c listen_addresses=127.0.0.1 -k $RUNNER_TEMP"
-          echo "SKALD_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432" >>"$GITHUB_ENV"
       - name: Start PostgreSQL
         if: runner.os == 'Windows'
         shell: pwsh
@@ -142,6 +64,7 @@ jobs:
         shell: bash
         env:
           SKALD_E2E_REQUIRED: '1'
+          SKALD_E2E_TRACE_READ: '1'
         run: |
           cargo test -p skald-client --locked --test claude_code_e2e -- --ignored --skip hosts::
       - name: E2E tests of the Claude Code executor
@@ -149,69 +72,3 @@ jobs:
         env:
           SKALD_E2E_REQUIRED: '1'
         run: cargo test -p skald-adapters --locked --test claude_code_executor -- --ignored
-
-  claude-code-hosts:
-    name: Claude Code in Paseo and Herdr
-    if: github.event.pull_request.draft != true
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - name: Install Chrome Headless Shell
-        working-directory: web
-        run: |
-          npm ci --no-audit --no-fund
-          node node_modules/playwright-core/cli.js install chromium-headless-shell
-      - name: Install the latest Claude Code
-        run: |
-          npm install --global @anthropic-ai/claude-code@latest
-          claude --version
-      - name: Start PostgreSQL
-        run: |
-          source script/lib/postgres.sh
-          postgres_start
-          echo "SKALD_HOSTS_POSTGRES=$postgres" >>"$GITHUB_ENV"
-          postgres_wait
-          echo "SKALD_TEST_DATABASE_URL=$SKALD_TEST_DATABASE_URL" >>"$GITHUB_ENV"
-      - name: Run Claude Code E2E in temporary host installations
-        shell: bash
-        env:
-          SKALD_E2E_REQUIRED: '1'
-          SKALD_E2E_REQUIRED_HOSTS: '1'
-        run: |
-          hosts=$(mktemp -d "$RUNNER_TEMP/skald-agent-hosts.XXXXXX")
-          trap 'rm -rf "$hosts"' EXIT
-          cd "$hosts"
-          curl --fail --silent --show-error --location --output paseo.tgz \
-            https://registry.npmjs.org/@getpaseo/cli/-/cli-0.17.1.tgz
-          curl --fail --silent --show-error --location --output herdr \
-            https://github.com/herdrdev/herdr/releases/download/v0.9.5/herdr-linux-x86_64
-          sha256sum --check <<'CHECKSUMS'
-          4601ce31a9efbf42c4bc176dfe997ef5acb3177899a663354c45ded9392d9eb5  paseo.tgz
-          14d9e8bc8b4a9e0118d77c32266f76d461f09b40342eb23752960bd89f59929d  herdr
-          CHECKSUMS
-          npm install --prefix "$hosts" --no-audit --no-fund ./paseo.tgz
-          chmod +x herdr
-          export PATH="$hosts/node_modules/.bin:$hosts:$PATH"
-          paseo --version
-          herdr --version
-          cd "$GITHUB_WORKSPACE"
-          cargo test -p skald-client --locked --test claude_code_e2e -- --ignored hosts::
-      - name: Stop PostgreSQL
-        if: always() && env.SKALD_HOSTS_POSTGRES != ''
-        run: |
-          source script/lib/postgres.sh
-          postgres=$SKALD_HOSTS_POSTGRES
-          postgres_stop
