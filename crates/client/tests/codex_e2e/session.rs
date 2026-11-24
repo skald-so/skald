@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use skald_proto::{ChannelId, MessageId};
 
-use crate::claude::on_path;
+use crate::capture::Capture;
 use crate::fixtures::{CHANNEL, SEND, TO};
 use crate::hooks::{Bob, REVIEW};
 use crate::host::{Live, WAIT};
@@ -27,8 +27,45 @@ pub const READY: &str = "Use the fixture model.";
 pub const QUIET: Duration = Duration::from_secs(4);
 
 pub fn codex_path() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "codex.exe" } else { "codex" };
-    on_path(&[name], "Codex")
+    #[cfg(not(windows))]
+    return crate::claude::on_path(&["codex"], "Codex");
+    #[cfg(windows)]
+    return crate::claude::on_path_or(&["codex.exe"], "Codex", || {
+        let path = env::var_os("PATH")?;
+        windows_codex(env::split_paths(&path), env::consts::ARCH)
+    });
+}
+
+fn windows_codex(dirs: impl Iterator<Item = PathBuf>, arch: &str) -> Option<PathBuf> {
+    let npm_arch = match arch {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        _ => return None,
+    };
+    let target = format!("{arch}-pc-windows-msvc");
+    let winget = format!("codex-{target}.exe");
+    let platform = format!("@openai/codex-win32-{npm_arch}/vendor/{target}/bin/codex.exe");
+    for dir in dirs {
+        let exe = dir.join(&winget);
+        if exe.is_file() {
+            return Some(exe);
+        }
+        if dir.join("codex.cmd").is_file() {
+            let modules = if dir.ends_with("node_modules/.bin") {
+                dir.parent().expect("npm modules").to_owned()
+            } else {
+                dir.join("node_modules")
+            };
+            if let Some(native) = [modules.clone(), modules.join("@openai/codex/node_modules")]
+                .iter()
+                .map(|modules| modules.join(&platform))
+                .find(|native| native.is_file())
+            {
+                return Some(native);
+            }
+        }
+    }
+    None
 }
 
 pub enum PermissionPath {
@@ -43,6 +80,7 @@ pub struct Session {
     #[cfg(unix)]
     daemon: Option<Daemon>,
     pub live: Live,
+    capture: Option<Capture>,
 }
 
 impl Session {
@@ -53,6 +91,22 @@ impl Session {
         stub: Stub,
         permission: Option<PermissionPath>,
         resend: Option<u64>,
+    ) -> Self {
+        Self::launch(id, login, program, stub, permission, resend, false)
+    }
+
+    pub fn capturing(id: u64, login: &str, program: PathBuf, stub: Stub) -> Self {
+        Self::launch(id, login, program, stub, None, None, true)
+    }
+
+    fn launch(
+        id: u64,
+        login: &str,
+        program: PathBuf,
+        stub: Stub,
+        permission: Option<PermissionPath>,
+        resend: Option<u64>,
+        capture: bool,
     ) -> Self {
         let mut live = Live::new(id, login, program);
         live.stub = stub;
@@ -84,6 +138,7 @@ impl Session {
 
         live.set_up();
         live.configure(&settings);
+        let capture = capture.then(|| Capture::install(&live, &mut settings));
         if permission.is_some() {
             let config = live.home().join("config.toml");
             let text = fs::read_to_string(&config).expect("fixture config");
@@ -122,6 +177,33 @@ impl Session {
             #[cfg(unix)]
             daemon,
             live,
+            capture,
+        }
+    }
+
+    pub fn hook_stdout(&self) -> Vec<(String, Vec<u8>)> {
+        self.capture
+            .as_ref()
+            .expect("hook capture enabled")
+            .outputs()
+    }
+
+    pub fn wait_hook_stdout(&self, event: &str) -> Vec<u8> {
+        let deadline = Instant::now() + WAIT;
+        loop {
+            if let Some((_, bytes)) = self
+                .hook_stdout()
+                .into_iter()
+                .find(|(name, bytes)| name == event && !bytes.is_empty())
+            {
+                return bytes;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{event} printed nothing. Terminal: {}",
+                self.recent_terminal_output()
+            );
+            thread::sleep(Duration::from_millis(100));
         }
     }
 
@@ -224,6 +306,23 @@ impl Session {
     pub fn sender(&self) -> &Machine {
         self.live.codex.machine()
     }
+}
+
+#[test]
+fn windows_discovery_finds_native_winget_and_npm_codex() {
+    let scratch = crate::machine::TestDir::new("codex-e2e-discovery");
+    let winget = scratch.join("codex-x86_64-pc-windows-msvc.exe");
+    fs::write(&winget, []).expect("WinGet executable");
+    let dirs = || std::iter::once(scratch.to_path_buf());
+    assert_eq!(windows_codex(dirs(), "x86_64"), Some(winget.clone()));
+    fs::remove_file(winget).expect("remove WinGet executable");
+    let npm = scratch
+        .join("node_modules/@openai/codex-win32-x64/vendor/x86_64-pc-windows-msvc/bin/codex.exe");
+    fs::create_dir_all(npm.parent().expect("npm native directory")).expect("npm directories");
+    fs::write(scratch.join("codex.cmd"), []).expect("npm shim");
+    assert_eq!(windows_codex(dirs(), "x86_64"), None);
+    fs::write(&npm, []).expect("npm native executable");
+    assert_eq!(windows_codex(dirs(), "x86_64"), Some(npm));
 }
 
 fn rollout(dir: &Path) -> String {

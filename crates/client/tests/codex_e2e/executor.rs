@@ -2,6 +2,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -11,7 +12,9 @@ use skald_adapters::codex::Executor;
 use skald_adapters::executor::{Mode, Request};
 use skald_proto::TrustLevel;
 
-use crate::machine::TestDir;
+use crate::app_server::AppServer;
+use crate::capture::build_actor;
+use crate::machine::{Run, TestDir};
 use crate::session::{codex_path, command};
 use crate::stub::{DONE, PLACEHOLDER, ResponsesReply, Stub, output_of, played};
 
@@ -20,34 +23,82 @@ const MCP: &str = "fixture_mcp_442";
 const HOOK: &str = "fixture-hook-443";
 const PLUGIN: &str = "fixture-plugin-444";
 const REQUEST: &str = "Inspect the fixture input.";
+const WITNESS: &str = "fixture-executor-in-folder-445";
 
-fn plant(home: &Path) {
-    fs::create_dir_all(home.join("plugins").join(PLUGIN).join(".codex-plugin"))
-        .expect("plugin directory");
+fn plant(scratch: &Path, home: &Path, folder: &Path, url: &str) {
+    let config = home.join("config");
+    fs::create_dir_all(&config).expect("config home");
+    fs::create_dir(scratch.join("marks")).expect("fixture marker directory");
+    let actor = build_actor(scratch);
+    let marketplace = scratch.join("marketplace");
+    let workspace = fs::canonicalize(folder).expect("workspace");
     fs::write(
-        home.join("config.toml"),
-        format!("[mcp_servers.{MCP}]\ncommand = \"{MCP}\"\n\n[plugins.\"{PLUGIN}@local\"]\nenabled = true\n"),
-    ).expect("fixture config");
-    fs::write(
-        home.join("hooks.json"),
-        json!({"hooks": {"SessionStart": [{"hooks": [{"type":"command","command": format!("echo {HOOK}") }]}]}}).to_string(),
-    ).expect("fixture hooks");
-    fs::write(
-        home.join("plugins")
-            .join(PLUGIN)
-            .join(".codex-plugin/plugin.json"),
-        json!({"name":PLUGIN, "version":"1.0.0", "description":PLUGIN}).to_string(),
+        config.join("config.toml"),
+        format!(
+            "model_provider = \"fixture\"\nmodel = \"skald-stub\"\ncheck_for_update_on_startup = false\n\
+             projects.{}.trust_level = \"trusted\"\n\
+             model_providers.fixture = {}\n\n\
+             [mcp_servers.{MCP}]\ncommand = {}\nargs = [\"mark\", \"{MCP}\"]\n\n\
+             [marketplaces.local]\nsource_type = \"local\"\nsource = {}\n\n\
+             [plugins.\"{PLUGIN}@local\"]\nenabled = true\n",
+            json!(workspace),
+            provider(url),
+            json!(actor),
+            json!(marketplace),
+        ),
     )
-    .expect("fixture plugin");
+    .expect("fixture config");
+    let hook = |name| {
+        let executable = actor.to_string_lossy();
+        let command = if cfg!(windows) {
+            format!(r#""{executable}" mark {name}"#)
+        } else {
+            format!("'{}' mark {name}", executable.replace('\'', "'\\''"))
+        };
+        json!({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": command}]}]}})
+    };
+    fs::write(config.join("hooks.json"), hook(HOOK).to_string()).expect("fixture hooks");
+
+    let listing = marketplace.join(".agents/plugins");
+    fs::create_dir_all(&listing).expect("marketplace directory");
+    fs::write(
+        listing.join("marketplace.json"),
+        json!({"name": "local", "plugins": [{
+            "name": PLUGIN, "source": {"source": "local", "path": format!("./plugins/{PLUGIN}")},
+            "policy": {"installation": "AVAILABLE", "authentication": "ON_USE"},
+        }]})
+        .to_string(),
+    )
+    .expect("marketplace listing");
+    for plugin in [
+        marketplace.join("plugins").join(PLUGIN),
+        config
+            .join("plugins/cache/local")
+            .join(PLUGIN)
+            .join("1.0.0"),
+    ] {
+        fs::create_dir_all(plugin.join(".codex-plugin")).expect("plugin directory");
+        fs::create_dir_all(plugin.join("hooks")).expect("plugin hook directory");
+        fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            json!({"name": PLUGIN, "version": "1.0.0", "description": PLUGIN, "hooks": "./hooks/hooks.json"}).to_string(),
+        )
+        .expect("fixture plugin");
+        fs::write(plugin.join("hooks/hooks.json"), hook(PLUGIN).to_string()).expect("plugin hook");
+    }
+}
+
+fn provider(url: &str) -> String {
+    format!(
+        r#"{{name="fixture",base_url="{url}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}}"#
+    )
 }
 
 /// Gives the real CLI an explicit loopback provider. Its built-in provider can select a
 /// WebSocket endpoint independently of OPENAI_BASE_URL. The launcher passes through the adapter's
 /// arguments and environment.
 fn local_codex(program: &Path, dir: &Path, url: &str) -> PathBuf {
-    let provider = format!(
-        r#"model_providers.fixture={{name="fixture",base_url="{url}/v1",env_key="OPENAI_API_KEY",wire_api="responses"}}"#
-    );
+    let provider = format!("model_providers.fixture={}", provider(url));
     let model = [
         "-c",
         r#"model_provider="fixture""#,
@@ -87,7 +138,7 @@ fn local_codex(program: &Path, dir: &Path, url: &str) -> PathBuf {
     }
 }
 
-fn executor(codex: &Path, home: &Path, url: &str) -> Executor {
+fn environment(home: &Path, url: &str) -> Vec<(OsString, OsString)> {
     let inherited = [
         "PATH",
         "SYSTEMROOT",
@@ -111,7 +162,11 @@ fn executor(codex: &Path, home: &Path, url: &str) -> Executor {
         ("NO_PROXY".into(), "127.0.0.1".into()),
         ("SKALD_E2E_MARKER".into(), MARKER.into()),
     ]);
-    Executor::new(codex).environment(env)
+    env
+}
+
+fn executor(codex: &Path, home: &Path, url: &str) -> Executor {
+    Executor::new(codex).environment(environment(home, url))
 }
 
 fn request() -> Request {
@@ -124,30 +179,76 @@ fn request() -> Request {
     }
 }
 
+fn inspect_fixture(body: &Value) -> ResponsesReply {
+    if played(body) != 0 || !body.to_string().contains(REQUEST) {
+        return ResponsesReply::Done;
+    }
+    let inspect = if cfg!(windows) {
+        "Get-Content fixture-input.txt; Write-Output \"$env:SKALD_E2E_MARKER\""
+    } else {
+        "cat fixture-input.txt; printf '%s' \"${SKALD_E2E_MARKER-}\""
+    };
+    command(inspect, json!({}))
+}
+
+fn check_planted(codex: &Path, scratch: &Path, home: &Path, folder: &Path, stub: &Stub) {
+    let control = || {
+        let mut command = Command::new(codex);
+        command
+            .env_clear()
+            .envs(environment(home, stub.url()))
+            .current_dir(folder);
+        command
+    };
+    let mut app_server = AppServer::start(control());
+    let (_, trusted) = app_server.trust_hooks(folder);
+    assert!(
+        trusted.iter().any(|command| command.contains(HOOK)),
+        "missing control hook"
+    );
+    drop(app_server);
+    let mut command = control();
+    if cfg!(windows) {
+        command.args(["-c", "windows.sandbox=\"unelevated\""]);
+    }
+    let run = Run::spawn(command.args([
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--json",
+        "--skip-git-repo-check",
+        "--sandbox",
+        "danger-full-access",
+        REQUEST,
+    ]))
+    .finish();
+    assert!(run.success, "control Codex failed: {run:?}");
+    for marker in [MCP, HOOK, PLUGIN] {
+        assert!(
+            scratch.join("marks").join(marker).is_file(),
+            "control Codex did not activate {marker}: {run:?}"
+        );
+    }
+    assert!(
+        stub.requests()
+            .iter()
+            .filter_map(|body| output_of(body, 0))
+            .any(|output| output.contains(MARKER))
+    );
+    stub.assert_no_foreign_credential();
+}
+
 #[test]
 fn codex_exec_runs_in_its_folder_without_user_environment_or_configuration() {
     let Some(codex) = codex_path() else { return };
-    let stub = Stub::start_responses(|body| {
-        if played(body) != 0 || !body.to_string().contains(REQUEST) {
-            return ResponsesReply::Done;
-        }
-        let inspect = if cfg!(windows) {
-            "Get-Content fixture-input.txt; Write-Output \"$env:SKALD_E2E_MARKER\""
-        } else {
-            "cat fixture-input.txt; printf '%s' \"${SKALD_E2E_MARKER-}\""
-        };
-        command(inspect, json!({}))
-    });
+    let stub = Stub::start_responses(inspect_fixture);
+    let control = Stub::start_responses(inspect_fixture);
     let scratch = TestDir::new("codex-e2e-executor");
     let home = scratch.join("home");
     let folder = scratch.join("work");
-    plant(&home.join("config"));
     fs::create_dir(&folder).expect("executor folder");
-    fs::write(
-        folder.join("fixture-input.txt"),
-        "fixture-executor-in-folder-445",
-    )
-    .expect("workspace fixture");
+    plant(&scratch, &home, &folder, control.url());
+    fs::write(folder.join("fixture-input.txt"), WITNESS).expect("workspace fixture");
     let launcher = local_codex(&codex, &scratch, stub.url());
     let executor = executor(&launcher, &home, stub.url());
     let run = executor
@@ -176,7 +277,7 @@ fn codex_exec_runs_in_its_folder_without_user_environment_or_configuration() {
         calls
             .iter()
             .filter_map(|body| output_of(body, 0))
-            .any(|output| output.contains("fixture-executor-in-folder-445")),
+            .any(|output| output.contains(WITNESS)),
         "executor did not read the workspace fixture"
     );
     for body in calls {
@@ -187,7 +288,14 @@ fn codex_exec_runs_in_its_folder_without_user_environment_or_configuration() {
             );
         }
     }
+    for marker in [MCP, HOOK, PLUGIN] {
+        assert!(
+            !scratch.join("marks").join(marker).exists(),
+            "executor activated {marker}"
+        );
+    }
     stub.assert_no_foreign_credential();
+    check_planted(&codex, &scratch, &home, &folder, &control);
 }
 
 #[test]

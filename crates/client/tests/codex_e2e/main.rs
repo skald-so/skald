@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+mod capture;
 mod delivery_cases;
 mod executor;
 mod permission;

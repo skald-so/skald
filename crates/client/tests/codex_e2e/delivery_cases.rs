@@ -152,10 +152,27 @@ fn busy_hook(id: u64, login: &str, token: &str, after_tool: bool) {
             ResponsesReply::Done
         }
     });
-    let session = Session::start(id, login, codex, stub, None, None);
+    let session = Session::capturing(id, login, codex, stub);
     session.wait_request(0, |body| user_text(body).contains(READY));
-    let msg = session.send(token);
+    let solo = &session.live.codex.web.solo;
+    let bob = Bob::join(solo, id + 1, &format!("{login}-peer"));
+    let channel = solo.default_channel();
+    set_text(solo, channel, PEER, INLINE);
+    let text = if after_tool {
+        format!("{token} {}", "boundary ".repeat(420))
+    } else {
+        token.to_owned()
+    };
+    let msg = session.send_in(channel, Some(&bob), &text);
     gate.release();
+
+    let expected_event = if after_tool { "PostToolUse" } else { "Stop" };
+    let bytes = session.wait_hook_stdout(expected_event);
+    assert_hook_output(expected_event, &bytes, token);
+    assert!(
+        String::from_utf8_lossy(&bytes).contains(SIGNAL),
+        "{expected_event} printed no signal"
+    );
 
     let signal = session.wait_request(0, |body| {
         if after_tool {
@@ -185,15 +202,34 @@ fn busy_hook(id: u64, login: &str, token: &str, after_tool: bool) {
         supplied.to_string().len() <= 2_500,
         "hook context exceeded the limit"
     );
-    session.wait_request(0, |body| tool_result(body, token));
-    shows_read_once(session.sender(), msg);
+    session.wait_request(0, |body| tool_result(body, &text));
+    shows_read_once(&bob.person.machine, msg);
     assert_private(session.model(), token);
+
+    for (event, bytes) in session.hook_stdout() {
+        assert_hook_output(&event, &bytes, token);
+    }
+}
+
+fn assert_hook_output(event: &str, bytes: &[u8], token: &str) {
+    assert!(
+        bytes.len() <= 2_500,
+        "{event} raw stdout exceeded 2,500 bytes"
+    );
+    assert!(
+        !String::from_utf8_lossy(bytes).contains(token),
+        "{event} printed the message outside inbox"
+    );
 }
 
 #[test]
 fn a_busy_codex_gets_a_bounded_post_tool_use_signal() {
-    let text = format!("fixture-post-tool-5619 {}", "boundary ".repeat(420));
-    busy_hook(5_340_101_001, "ada-nightly-codex-tool", &text, true);
+    busy_hook(
+        5_340_101_001,
+        "ada-nightly-codex-tool",
+        "fixture-post-tool-5619",
+        true,
+    );
 }
 
 #[test]
@@ -216,14 +252,7 @@ fn with_no_message_codex_hooks_supply_no_context_and_do_not_continue_the_turn() 
             ResponsesReply::Done
         }
     });
-    let session = Session::start(
-        5_340_103_001,
-        "ada-nightly-codex-quiet",
-        codex,
-        stub,
-        None,
-        None,
-    );
+    let session = Session::capturing(5_340_103_001, "ada-nightly-codex-quiet", codex, stub);
     session.wait_idle(0);
     let before = session.model().requests().len();
     thread::sleep(QUIET);
@@ -240,6 +269,19 @@ fn with_no_message_codex_hooks_supply_no_context_and_do_not_continue_the_turn() 
             .iter()
             .all(|body| !body.to_string().contains(SIGNAL))
     );
+    let outputs = session.hook_stdout();
+    for expected in ["SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"] {
+        assert!(
+            outputs.iter().any(|(event, _)| event == expected),
+            "{expected} did not run"
+        );
+    }
+    for (event, bytes) in outputs {
+        assert!(
+            bytes.is_empty(),
+            "{event} printed {bytes:?} with nothing waiting"
+        );
+    }
     assert_wakes(
         &session.live.codex.web.solo,
         session.live.codex.web.solo.default_channel(),

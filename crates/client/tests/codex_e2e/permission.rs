@@ -49,13 +49,13 @@ fn detects_prompt(id: u64, login: &str, path: PermissionPath) {
     let shown = Instant::now();
     let pending = loop {
         let pending = records(&session);
-        if !pending.is_empty() {
-            break pending;
-        }
         assert!(
             shown.elapsed() < Duration::from_secs(5),
             "Skald did not report the approval prompt"
         );
+        if !pending.is_empty() {
+            break pending;
+        }
         thread::sleep(Duration::from_millis(100));
     };
     let [prompt] = pending.as_slice() else {
