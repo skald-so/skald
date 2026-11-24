@@ -2,13 +2,25 @@
 //! messages as one channel event, none while nothing waits: `own` text as its line, a message
 //! below `own` only as the signal, whose `inbox` call then gives its text; within the hooks' limit.
 
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::process::Stdio;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+
 use crate::cloud::WAIT;
 use crate::fallbacks::{
     Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, long_text, wait_events,
 };
-use crate::hooks::{Bob, LIMIT, assert_cut, assert_own_line, assert_signal};
-use crate::receipts::shows_read_once;
+use crate::hooks::{
+    Bob, CLAUDE_CODE, Event, HOOK, LIMIT, assert_cut, assert_own_line, assert_signal,
+};
+use crate::machine::Run;
+use crate::receipts::{shows_no_read, shows_read_once};
 use crate::solo::{API, WEB};
+use crate::world::AGENT;
 
 /// A resend timeout longer than any test waits: each message goes by its first path only.
 const LONG: &str = "600";
@@ -70,6 +82,59 @@ fn an_own_message_goes_as_one_channel_event_and_none_while_nothing_waits() {
     assert_own_line(&sent[0], OWN_SAYS, msg_id, &ada.solo.short(API));
     let later = events(&mut session, 2, QUIET);
     assert_eq!(later.len(), 1, "more than one event: {later:#?}");
+}
+
+#[test]
+fn one_stop_confirms_an_own_channel_message_after_the_assistant_entry_is_written() {
+    let ada = Bare::new(4_919_505_001, "ada-channel-late-assistant");
+    let mut session = ada.channel(WEB, &[(RESEND_SETTING, LONG)]);
+    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
+    let sent = wait_events(&mut session, 1, WAIT);
+    assert_own_line(&sent[0], OWN_SAYS, msg_id, &ada.solo.short(API));
+
+    let dir = ada.solo.dir(WEB);
+    let input = Event::Stop.input(&dir);
+    let parsed: Value = serde_json::from_str(&input).expect("Stop input");
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(parsed["transcript_path"].as_str().expect("transcript path"))
+        .expect("create the transcript");
+    let session_id = &parsed["session_id"];
+    let channel_entry = json!({
+        "type": "user",
+        "sessionId": session_id,
+        "timestamp": jiff::Timestamp::now().to_string(),
+        "message": { "role": "user", "content": format!("<channel source=\"skald\">\n{}\n</channel>", sent[0]) },
+    });
+    let reply = json!({
+        "type": "assistant",
+        "sessionId": session_id,
+        "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
+    })
+    .to_string();
+    let (incomplete, remainder) = reply.split_at(reply.len() - 1);
+    write!(file, "{channel_entry}\n{incomplete}").expect("write the transcript before Stop");
+
+    let mut command = ada
+        .helped
+        .command_in(&dir, &[], &[AGENT, WEB, HOOK, CLAUDE_CODE]);
+    let mut stop = Run::spawn(command.stdin(Stdio::piped()));
+    stop.answer(&input);
+    // Claude can flush the final entry while Stop is still running or just after it returns.
+    let flush_at = Instant::now() + Duration::from_millis(300);
+    while !stop.exited() && Instant::now() < flush_at {
+        thread::sleep(Duration::from_millis(10));
+    }
+    shows_no_read(ada.machine(), msg_id, "before the assistant's reply");
+    writeln!(file, "{remainder}").expect("complete the assistant's reply");
+
+    let stopped = stop.finish();
+    assert!(
+        stopped.success && stopped.stdout.is_empty() && stopped.stderr.is_empty(),
+        "Stop: {stopped:?}"
+    );
+    shows_read_once(ada.machine(), msg_id);
 }
 
 /// What review says to web; it is nowhere else.
