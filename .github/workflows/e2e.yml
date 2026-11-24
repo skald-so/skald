@@ -64,7 +64,7 @@ jobs:
         shell: bash
         env:
           SKALD_E2E_REQUIRED: '1'
-          SKALD_E2E_TRACE_READ: '1'
+          SKALD_E2E_TRACE_READ: 'transcript'
         run: |
           cargo test -p skald-client --locked --test claude_code_e2e -- --ignored --skip hosts::
       - name: E2E tests of the Claude Code executor
