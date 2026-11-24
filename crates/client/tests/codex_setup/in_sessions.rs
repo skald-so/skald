@@ -131,7 +131,10 @@ fn shell(template: &Command, line: &str) -> Command {
         let powershell =
             std::path::Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
         let mut command = like(template, powershell);
-        command.args(["-NoProfile", "-Command", line]);
+        // The fixture clears the environment. PowerShell needs PATHEXT to run the native hook.
+        command
+            .env("PATHEXT", ".EXE")
+            .args(["-NoProfile", "-Command", line]);
         command
     }
 }
@@ -167,6 +170,13 @@ fn the_windows_hook_runs_from_a_path_with_spaces_and_an_apostrophe() {
     });
     run_hook(&mut shell(&template, &line), &input.to_string())
         .assert_silent("PowerShell SessionStart");
+
+    let malformed = run_hook(&mut shell(&template, &line), "not JSON");
+    assert_eq!(
+        malformed.code,
+        Some(1),
+        "Skald did not reject malformed hook input: {malformed:?}"
+    );
 }
 
 /// Ada's machine in `clienta`, as the tests of Codex's hooks have it. A Codex session in
