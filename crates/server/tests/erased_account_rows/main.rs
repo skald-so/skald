@@ -32,6 +32,7 @@ mod held;
 #[path = "../abuse_reports/reporting.rs"]
 mod reporting;
 
+mod findings;
 mod removed;
 mod reports;
 mod roster;

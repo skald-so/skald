@@ -1,6 +1,7 @@
 //! Skald server.
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+mod abuse;
 mod abuse_reports;
 mod accounts;
 mod anchors;
@@ -154,6 +156,8 @@ pub struct Settings {
     pub send_rate_limit: Option<u64>,
     /// The sliding window of [`Settings::send_rate_limit`]; [`SEND_RATE_WINDOW`] without it.
     pub send_rate_window: Option<Duration>,
+    /// Optional file of private rules for review findings.
+    pub abuse_rules_file: Option<PathBuf>,
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
@@ -215,12 +219,19 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             messages,
             window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
         });
+    let counter_retention = settings
+        .mailbox_retention
+        .map(|retention| retention.max(send_rate.map_or(Duration::ZERO, |rate| rate.window)));
     tokio::spawn(expiry::run(
         db.clone(),
         Arc::clone(&wakers),
         settings.mailbox_retention,
-        send_rate.map(|rate| rate.window),
+        counter_retention,
     ));
+    tokio::spawn(abuse::expire(db.clone()));
+    if let Some(path) = settings.abuse_rules_file {
+        tokio::spawn(abuse::run(db.clone(), path, counter_retention));
+    }
     tokio::spawn(link_runs::sweep(db.clone()));
     tokio::spawn(invites::sweep(db.clone()));
     tokio::spawn(claims::run(db.clone(), settings.history_retention));

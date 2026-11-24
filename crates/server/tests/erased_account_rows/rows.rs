@@ -12,6 +12,7 @@ use crate::common::TestDb;
 use crate::common::devices::{Device, random};
 use crate::deletion::deletes;
 use crate::erasure::{ERASED_AFTER, ERASURE, Kept, Traces, erased_within, move_deletion_back};
+use crate::findings::{assert_finding_erased, fill_for_erasure};
 use crate::history::{Item, WRAPS, formed_with, given, stores, wrap};
 use crate::scene::{Scene, empty, payloads, removing};
 use crate::sessions::Api;
@@ -211,6 +212,7 @@ fn until_erased(db: &TestDb, account: AccountId, space: SpaceId) {
 #[test]
 fn every_table_is_erased_but_for_handshake_messages_until_fetched() {
     let mut filled = Filled::new(3_304_050_001);
+    fill_for_erasure(&filled.s.fixture);
 
     // Invite expiry locks the invite, then cascades to its acceptance. Require the same order
     // during erasure without depending on the sweeps running concurrently in this test.
@@ -226,6 +228,7 @@ fn every_table_is_erased_but_for_handshake_messages_until_fetched() {
          WHEN (OLD.invite_id = '{SIGN_UP_INVITE}'::uuid) EXECUTE FUNCTION check_invite_delete_order()"
     ));
     filled.erased();
+    assert_finding_erased(&filled.s.fixture);
 
     let bob = filled.s.bob.id;
     let waiting = payloads(filled.db(), bob);

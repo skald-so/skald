@@ -244,10 +244,19 @@ pub fn add_entries(cloud: &Cloud, at: (SpaceId, ChannelId), added: &[Vec<u8>]) {
         .iter()
         .map(|entry| Value::String(b64(entry)))
         .collect();
+    rewrite_entries(cloud, at, move |list| list.extend(added.iter().cloned()));
+}
+
+/// From now on, changes the entries of `at` the relay gives the machines.
+pub fn rewrite_entries(
+    cloud: &Cloud,
+    at: (SpaceId, ChannelId),
+    rewrite: impl Fn(&mut Vec<Value>) + Send + Sync + 'static,
+) {
     cloud.relay.rewrite(&entries_request(at), move |answer| {
         let mut given: Value = serde_json::from_str(answer).expect("the server's entries");
         let list = given["entries"].as_array_mut().expect("a list of entries");
-        list.extend(added.iter().cloned());
+        rewrite(list);
         given.to_string()
     });
 }

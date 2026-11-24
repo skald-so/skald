@@ -14,11 +14,11 @@ use crate::talk::{Line, Talk};
 use crate::world::ACME;
 
 /// The messages said before Ada's account joined the channel, and the one after.
-struct Joined {
-    talk: Talk,
-    channel: ChannelId,
-    before: Vec<Said>,
-    after: Said,
+pub(super) struct Joined {
+    pub(super) talk: Talk,
+    pub(super) channel: ChannelId,
+    pub(super) before: Vec<Said>,
+    pub(super) after: Said,
 }
 
 /// A revision Bob's device, an admin's, signs adds a channel with Bob and Carol; Bob's device
@@ -27,7 +27,7 @@ struct Joined {
 /// then adds Ada to the channel with `history`, and Bob's device adds Ada's: epoch 4, which Ada's
 /// run joins from the Welcome, and where Bob says one more. Bob's device uploads the link of each
 /// epoch it makes.
-fn joins_after_them(history: bool, ids: &[u64; 3], logins: &[&str; 3]) -> Joined {
+pub(super) fn joins_after_them(history: bool, ids: &[u64; 3], logins: &[&str; 3]) -> Joined {
     let mut talk = Talk::with(ACME, ids, logins, false, (Role::Admin, |_| {}));
     let cloud = &talk.world.cloud;
     let space = talk.space.id;
