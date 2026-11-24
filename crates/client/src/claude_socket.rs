@@ -174,13 +174,19 @@ pub fn defer_stop(
     };
     let started = Instant::now();
     let file = std::path::absolute(file).ok()?;
-    let (transcript, entry) = StopFile::at_tail(&file)?;
+    let (mut transcript, entry) = StopFile::at_tail(&file)?;
+    let expected_turn = turn.or(entry.turn.as_deref());
     if entry.kind != "user"
         || !entry.in_session(id)
-        || turn.is_some_and(|id| entry.turn.as_deref() != Some(id))
+        || !same_stop_turn(
+            expected_turn,
+            entry.turn.as_deref(),
+            transcript.prefix.is_some(),
+        )
     {
         return None;
     }
+    transcript.turn = expected_turn.map(str::to_owned);
     let said = entry.message.filter(|said| said.role == "user")?;
     let at = entry
         .timestamp?
@@ -239,9 +245,22 @@ fn stop_reference(text: &str) -> Option<(&'static str, String)> {
         let body = text.trim_start().strip_prefix(REWAKE_OUTPUT)?;
         (resend::Way::Rewake.name(), body)
     };
-    let mut references = body.lines().filter_map(own_reference);
-    let reference = references.next()?;
-    references.next().is_none().then_some((path, reference))
+    let line = body
+        .trim_start_matches([':', ' ', '\r', '\n', '\t'])
+        .lines()
+        .next()?;
+    let (header, _) = line.strip_prefix('[')?.split_once("] #")?;
+    header
+        .ends_with(" · own")
+        .then(|| own_reference(line).map(|reference| (path, reference)))?
+}
+
+/// Without an exact partial line, both entries have to name the same turn explicitly.
+fn same_stop_turn(expected: Option<&str>, found: Option<&str>, partial: bool) -> bool {
+    match (expected, found) {
+        (Some(expected), Some(found)) => expected == found,
+        _ => partial,
+    }
 }
 
 impl StopFile {
@@ -322,11 +341,11 @@ impl StopFile {
             && entry.kind == "assistant"
             && !entry.api_error
             && entry.message.is_some_and(|said| said.role == "assistant")
-            && self
-                .turn
-                .as_ref()
-                .zip(entry.turn.as_ref())
-                .is_none_or(|(prior, next)| prior == next)
+            && same_stop_turn(
+                self.turn.as_deref(),
+                entry.turn.as_deref(),
+                self.prefix.is_some(),
+            )
             && self
                 .parent
                 .as_ref()
@@ -1099,6 +1118,7 @@ mod tests {
             (json!({ "sessionId": "another" }), None),
             (json!({ "parentUuid": "another" }), None),
             (json!({ "promptId": "another" }), None),
+            (json!({ "promptId": null }), None),
             (json!({ "type": "user" }), None),
         ];
         for (index, (fields, expected)) in appends.into_iter().enumerate() {
