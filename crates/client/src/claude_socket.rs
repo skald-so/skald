@@ -983,18 +983,17 @@ impl Served {
             }
             match deferred.transcript.assistant(id) {
                 Some(false) => return true,
-                Some(true) => {
+                Some(true)
                     if state
                         .confirmed_claude_stop(scope, deferred.path, &deferred.delivery)
-                        .unwrap_or(false)
-                    {
-                        runs.insert(
-                            (deferred.agent.clone(), deferred.space),
-                            deferred.folder.clone(),
-                        );
-                    }
+                        .unwrap_or(false) =>
+                {
+                    runs.insert(
+                        (deferred.agent.clone(), deferred.space),
+                        deferred.folder.clone(),
+                    );
                 }
-                None => {}
+                _ => {}
             }
             false
         });
