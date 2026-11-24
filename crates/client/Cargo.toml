@@ -12,6 +12,17 @@ license.workspace = true
 dist = true
 formula = "skald"
 
+# The skald-so crate installs the same dist archives as the other CLI installers.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/skald-client-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "skald-client-{ target }/{ bin }"
+
+[package.metadata.binstall.overrides.'cfg(windows)']
+pkg-url = "{ repo }/releases/download/v{ version }/skald-client-{ target }.zip"
+pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
+
 [[bin]]
 name = "skald"
 path = "src/main.rs"

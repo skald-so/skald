@@ -7,6 +7,8 @@
 //   - the job that creates the release needs, directly or through other jobs, every job that runs
 //     script/installers-test, and those jobs check every target the build jobs build: no release
 //     is published before each target's installer passed;
+//   - on a PR, manual run and release tag, the native runners also install the prebuilt Cargo
+//     package and run its skald; the release waits for every check;
 //   - the dry run of a PR and of a manual run tests `skald update` on a macOS and a Windows runner:
 //     `cargo test -p skald-client --test update`, in a step that may run and whose failure fails the
 //     run;
@@ -19,11 +21,17 @@ import {
   commands,
   dryRunEvents,
   event,
+  jobsFor,
   jobsRunning,
   matrixTargets,
+  open,
   pathTriggers,
   readWorkflow,
+  stepSkipped,
+  template,
+  toText,
   triggers,
+  words,
 } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
@@ -88,6 +96,39 @@ const built = targets(builders);
 const checked = targets(checkers);
 if (built.length !== 6 || JSON.stringify(built) !== JSON.stringify(checked)) {
   fail(`the installers are checked on ${checked.join(', ') || 'no target'}, not on every target built: ${built.join(', ') || 'none'}`);
+}
+
+// Binstall smoke tests use the packaged crate and the release archives from the native build.
+const testsBinstall = (line) => {
+  const args = line.match(/(?:^|[\s;&|(/])script\/release-binstall-test(?=\s|$)(.*)$/)?.[1];
+  return args !== undefined && words(args.split(/\s(?:&&|\|\||;|\||#|>|2>)/)[0].trim()).length === 4;
+};
+const rows = (key) => [].concat(jobs[key].strategy?.matrix?.include ?? []);
+const withMatrix = (scope, row) => ({ ...scope, contexts: { ...scope.contexts, matrix: open(row) } });
+const runnerTarget = (key, scope, row) => `${row.target} on ${toText(template(jobs[key]['runs-on'], withMatrix(scope, row)))}`;
+for (const [name, ref] of [...dryRunEvents, ['push', 'refs/tags/v1.2.3'], ['push', 'refs/tags/v1.2.4-beta.1']]) {
+  const states = jobsFor(release, event(name, ref));
+  const buildRunners = builders.flatMap((key) => rows(key).map((row) => runnerTarget(key, states[key].scope, row))).sort();
+  const binstall = Object.keys(jobs).filter((key) => !states[key].skipped && !jobs[key]['continue-on-error']);
+  const smokeRunners = [];
+  for (const key of binstall) {
+    const state = states[key];
+    for (const row of rows(key)) {
+      const exercisesBinstall = (step) => !step['continue-on-error']
+        && !stepSkipped(step, { ...state, scope: withMatrix(state.scope, row) })
+        && commands(step.run).some(testsBinstall);
+      if (!(jobs[key].steps ?? []).some(exercisesBinstall)) continue;
+      smokeRunners.push(runnerTarget(key, state.scope, row));
+      if (name === 'push' && creator && !needed(creator).has(key)) {
+        fail(`job ${creator} creates the release without needing job ${key}, which checks cargo-binstall`);
+        break;
+      }
+    }
+  }
+  smokeRunners.sort();
+  if (buildRunners.length !== 6 || JSON.stringify(buildRunners) !== JSON.stringify(smokeRunners)) {
+    fail(`a ${name} on ${ref} checks cargo-binstall on ${smokeRunners.join(', ') || 'no runner'}, expected ${buildRunners.join(', ')}`);
+  }
 }
 
 // The tests of skald update on macOS and Windows.
