@@ -29,6 +29,11 @@ pub(crate) enum Refusal {
     UsernameTaken,
     /// No such space, or the session's account does not get it.
     NoSpace,
+    AbuseReportingOff,
+    NoAbuseReportTarget,
+    AbuseReportConflict,
+    AbuseReportTooLarge,
+    AbuseReportLimit,
     /// No such device of the session's account.
     NoDevice,
     /// No such session of the session's account, or an ended one.
@@ -152,6 +157,36 @@ impl IntoResponse for Refusal {
                 "no-space",
                 "No such space",
                 "No such space, or the session's account does not get it.",
+            ),
+            Refusal::AbuseReportingOff => problem(
+                StatusCode::NOT_FOUND,
+                "abuse-reporting-unavailable",
+                "Reporting unavailable",
+                "This server has reporting turned off.",
+            ),
+            Refusal::NoAbuseReportTarget => problem(
+                StatusCode::NOT_FOUND,
+                "no-report-target",
+                "Member unavailable",
+                "Choose another current member of this space.",
+            ),
+            Refusal::AbuseReportConflict => problem(
+                conflict,
+                "report-key-taken",
+                "Report key already used",
+                "Use a new idempotency key for a different report.",
+            ),
+            Refusal::AbuseReportTooLarge => problem(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too-large",
+                "Request too large",
+                "The report body is over 1024 bytes.",
+            ),
+            Refusal::AbuseReportLimit => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "report-limit",
+                "Report limit reached",
+                "Try again later.",
             ),
             Refusal::NoDevice => problem(
                 StatusCode::NOT_FOUND,

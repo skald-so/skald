@@ -637,6 +637,43 @@ export interface SpaceRequest {
   name: SpaceName;
 }
 
+/**
+ * A reason category configured by the server.
+ * @minLength 1
+ * @maxLength 63
+ * @pattern ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$
+ */
+export type AbuseReportReason = string;
+
+export interface AbuseReporting {
+  /** @minItems 1 */
+  reasons: AbuseReportReason[];
+}
+
+export interface AbuseReportRequest {
+  /**
+   * The member's handle in the latest roster.
+   * @minLength 1
+   * @maxLength 63
+   * @pattern ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$
+   */
+  target: string;
+  reason: AbuseReportReason;
+  /**
+   * A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.
+   * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+   */
+  idempotency_key: string;
+}
+
+export interface AbuseReportReceipt {
+  /**
+   * An opaque acknowledgment of submission.
+   * @pattern ^[A-Za-z0-9_-]{43}$
+   */
+  receipt: string;
+}
+
 export interface WaitingAcceptance {
   /** The invite the acceptance is of, as the server got it. */
   invite: Invite;
