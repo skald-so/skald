@@ -211,7 +211,7 @@ pub fn beat(
         let lease = held.record.lease;
         let third = (lease / 3).max(1);
         let now = state::unix_now();
-        if let Some(why) = claims::lease_passed(&held) {
+        if let Some(why) = claims::lease_passed(&held, state::unix_now()) {
             lose(&follower, &mut held, why)?;
             beaten.lost = true;
             continue;

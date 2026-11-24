@@ -564,6 +564,69 @@ impl TestDb {
         .expect("apply the migrations");
     }
 
+    /// A disposable database with the schema at `version` and the current fixture rows in
+    /// the tables that schema has.
+    pub fn snapshot_at(&self, version: i64) -> Self {
+        let old = Self::create();
+        old.migrate_to(version);
+        let tables: Vec<String> = (old.query(async |conn| {
+            sqlx::query_scalar(
+                "SELECT table_name::text FROM information_schema.tables
+                 WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                   AND table_name <> '_sqlx_migrations'",
+            )
+            .fetch_all(conn)
+            .await
+        }))
+        .expect("the tables at the old migration");
+        let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+        for table in tables {
+            let select = format!("SELECT row_to_json(t)::text FROM \"{table}\" t");
+            let found: Vec<String> = (self.query(async |conn| {
+                sqlx::query_scalar(AssertSqlSafe(select))
+                    .fetch_all(conn)
+                    .await
+            }))
+            .unwrap_or_else(|err| panic!("the rows of {table}: {err}"));
+            rows.push((table, found));
+        }
+        // Foreign keys are checked by triggers, which the replica role skips: the rows go in any order.
+        (old.query(async |conn| {
+            let mut tx = conn.begin().await?;
+            sqlx::raw_sql("SET LOCAL session_replication_role = replica")
+                .execute(&mut *tx)
+                .await?;
+            for (table, found) in &rows {
+                let insert = format!(
+                    "INSERT INTO \"{table}\" OVERRIDING SYSTEM VALUE
+                     SELECT * FROM json_populate_record(NULL::\"{table}\", $1::json)"
+                );
+                for row in found {
+                    sqlx::query(AssertSqlSafe(insert.clone()))
+                        .bind(row)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+            }
+            tx.commit().await
+        }))
+        .expect("copy the rows");
+        // The sequences of identity and serial columns go on past the copied rows.
+        old.execute(
+            "DO $$ DECLARE c record; BEGIN
+               FOR c IN SELECT table_name, column_name,
+                               pg_get_serial_sequence(quote_ident(table_name::text), column_name::text) AS seq
+                        FROM information_schema.columns WHERE table_schema = 'public' LOOP
+                 IF c.seq IS NOT NULL THEN
+                   EXECUTE format('SELECT setval(%L, COALESCE((SELECT max(%I) FROM %I), 0) + 1, false)',
+                                  c.seq, c.column_name, c.table_name);
+                 END IF;
+               END LOOP;
+             END $$;",
+        );
+        old
+    }
+
     /// Every column of every table, as `<schema>.<table>.<column> <type>`, sorted: the schema the
     /// migrations made.
     pub fn columns(&self) -> Vec<String> {

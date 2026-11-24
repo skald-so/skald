@@ -343,6 +343,7 @@ if checks tooling; then
   script/release-image-test
   script/installers-test
   script/npm-package-test
+  script/release-cargo-test
   script/release-npm-workflow-test
   script/move-main-workflow-test
   script/release-web-workflow-test

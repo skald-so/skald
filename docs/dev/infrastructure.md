@@ -111,6 +111,9 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 - **WinGet:** `script/release-winget` checks the x64 and Arm64 release ZIPs against their checksums and writes one version, default locale and portable installer manifest set. The stable release and dry runs install the same loopback manifest artifact on both Windows runners with pinned WinGet. Each runner checks missing and mismatched archives and runs the installed `skald` in a new shell.
   - Before enabling submission, the owner approves the package identifier and the owner of the [catalog fork](https://learn.microsoft.com/en-us/windows/package-manager/package/repository). Set repository variables `WINGET_PACKAGE_ID`, `WINGET_SUBMISSION_REPO` and `WINGET_SUBMIT_LIVE=1`. The `winget` environment holds the approved publisher's `WINGET_SUBMISSION_TOKEN` with access to write the public fork and open a PR against `microsoft/winget-pkgs`. Restrict the environment to release tags.
   - After the stable GitHub Release and the native checks pass, `script/submit-winget` opens one catalog PR for that package and version. Rerun the submission job to check the same PR. The job summary shows pending catalog acceptance or accepted. The stable release check waits for the native checks and, when enabled, the submission.
+- **Cargo source packages:** Run `script/release-cargo <tag> <dir>` from the release checkout to package the `skald` CLI as `skald-so` with its libraries at the workspace version.
+  - Publish `skald-proto` first, then `skald-adapters` and `skald-crypto`, then `skald-so`. Each dependency version must be visible in the registry before publishing its dependents.
+  - `script/release-cargo-test` checks the source and licenses, builds the extracted CLI with its lockfile against a local registry, and checks the error when a library is missing.
 - **Release check:** on a push of a `v*` tag, once the GitHub Release, the npm package and the image are published, the release workflow runs `script/release-check` on the tag, on a runner of each OS and architecture: `.github/workflows/release-check.yml`.
   - Each runner installs the release with `install.sh`, or `install.ps1` on Windows, and with `npx skald-so`, and each `skald` prints the release's version. For a stable release with an earlier one, the release published before it, a beta included, that release's `skald` updates itself with `skald update` and then prints the release's version.
   - `skald update` asks GitHub's API without a token, so a runner's shared address can use up its rate limit. The check then waits for the limit's reset, at most 20 minutes, and runs it again; a later reset fails the step, naming the rate limit.
@@ -195,6 +198,7 @@ All checks except e2e, the PR title, the CLA, the Windows jobs, the release dry 
 
 ## Cloud
 - **The same image that is published for self-hosting.**
+- [Load testing](load-testing.md) covers the runner profile, targets and bounds.
 - **Staging:** `dev.skald.so` on an existing VPS shared with other projects; one Caddy on it serves all sites. `script/staging-status` tells whether staging runs the latest commit on `dev` and how long after its merge it got there, from public data only: the head of `dev`, its CI runs and the health check.
   - Its GitHub sign-in uses an OAuth App of its own under `skald-so`; `script/check-github-sign-in https://dev.skald.so <client ID>` checks it without a person.
   - Its Google sign-in uses an OAuth client of its own; `script/check-google-sign-in https://dev.skald.so <client ID>` checks it without a person.

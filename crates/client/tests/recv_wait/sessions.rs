@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use crate::agents::{CLAUDE, CODEX};
 use crate::cloud::alone;
-use crate::fixtures::person_address;
-use crate::helped::{Helped, WEBSOCKET, times, with_client_b};
+use crate::fixtures::{await_running, person_address};
+use crate::helped::{Helped, VERSION_SETTING, WEBSOCKET, older, times, with_client_b};
 use crate::kit::{RECV, bind_client_a, received};
 use crate::machine::Finished;
 use crate::talk::{
@@ -16,7 +16,7 @@ use crate::talk::{
 };
 use crate::waits::{
     ARRIVAL, AT_ONCE, SHOWN_WITHIN, TRACE_SETTING, TRACED, WAIT_FLAG, Waits, assert_got,
-    assert_idle, assert_keeps_waiting, assert_shown_within,
+    assert_idle, assert_keeps_waiting, assert_shown_within, await_connections,
 };
 use crate::world::{ACME, ADD_RULE, AGENT, CLIENT_A, CLIENT_B, dir_of, path, run};
 
@@ -223,10 +223,42 @@ fn waits_reach_the_server_for_nothing_while_nothing_comes() {
     );
     waits.agents.run_as(CLAUDE);
     received(&waits.agents.talk.ada.machine);
-    let mut person = (waits.agents.talk.ada.machine).start(&[RECV, WAIT_FLAG]);
-    assert_idle(&waits.agents.talk, &mut [&mut person]);
+    let talk = &waits.agents.talk;
+    let cloud = talk.cloud();
+    let since = cloud.relay.mark();
+    let mut person = talk.ada.machine.start(&[RECV, WAIT_FLAG]);
+    await_connections(talk, &mut person, (since, 1));
+    // This local read takes the state lock once the one-shot receive has finished.
+    let fingerprint = run(&talk.ada.machine, &["fingerprint"]);
+    assert!(fingerprint.success, "{fingerprint:?}");
+    assert_idle(talk, &mut [&mut person]);
+
+    let since = cloud.relay.mark();
     let mut session = waits.session(CLAUDE);
-    assert_idle(&waits.agents.talk, &mut [&mut person, &mut session]);
+    // Either wait can reach the helper first. The person's receive lists its spaces, and the
+    // helper uploads presence after the agent's receive joins it.
+    await_running(
+        &mut person,
+        "the person's receive through the helper",
+        || cloud.count_sent(since, "GET /spaces ") > 0,
+    );
+    let presence = format!(
+        "PUT /spaces/{}/channels/{}/presence ",
+        talk.space.id, talk.channel
+    );
+    await_running(&mut session, "the agent's presence upload", || {
+        cloud.count_sent(since, &presence) > 0
+    });
+    // The helper greets this command after the initial receives. The older command ends at the
+    // greeting, leaving both waits idle.
+    let probe = waits
+        .helped
+        .run_with(&[(VERSION_SETTING, &older())], &["fingerprint"]);
+    assert!(
+        !probe.success && probe.shown().contains("is older than the helper"),
+        "{probe:?}"
+    );
+    assert_idle(talk, &mut [&mut person, &mut session]);
     let bob = waits.agents.bob();
 
     let id = waits.agents.bob_sends(&Line::new(&bob, 1, AFTER_QUIET));

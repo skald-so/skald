@@ -881,8 +881,10 @@ pub fn broke(err: tungstenite::Error) -> String {
     format!("the connection to the server broke: {err}")
 }
 
-/// Why the server closed a connection, by its close `frame`.
+/// Why the server closed a connection, by its close `frame`, which it notes
+/// ([`mailbox::note_closing`]).
 pub fn closed(frame: Option<&CloseFrame>) -> String {
+    mailbox::note_closing(frame);
     match frame.map(|frame| frame.reason.as_str()) {
         Some(reason) if !reason.is_empty() => {
             format!("the server closed the connection: {}", printable(reason))

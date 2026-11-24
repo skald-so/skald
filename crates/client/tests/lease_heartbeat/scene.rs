@@ -40,14 +40,7 @@ const READ_EVERY: Duration = Duration::from_millis(500);
 /// `default` shortened to [`LEASE`] past the database's check of the shortest.
 #[track_caller]
 pub fn scene(ids: [u64; 2], logins: [&str; 2]) -> Claims {
-    let claims = Claims::new(ids, logins);
-    claims.cloud().execute(&format!(
-        "ALTER TABLE queues DROP CONSTRAINT queues_lease_check;
-         UPDATE queues SET lease = {} WHERE id = '{}'::uuid",
-        LEASE.as_secs(),
-        claims.queue
-    ));
-    claims
+    Claims::with_lease(ids, logins, LEASE.as_secs())
 }
 
 /// Starts codex's `skald --agent codex-v5d8tm mcp` of `helped`'s copy, the second machine's, in its

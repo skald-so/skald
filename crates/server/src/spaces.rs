@@ -101,7 +101,8 @@ struct NewChannel {
 pub(crate) struct Found {
     pub(crate) id: SpaceId,
     name: Name,
-    creator: String,
+    /// None once the server erased the creator's account.
+    creator: Option<String>,
     /// The ID of the account that finds it.
     account: String,
     /// Whether the account gets the space.
@@ -117,7 +118,7 @@ pub(crate) async fn find(
     account: &str,
 ) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
-    let found: Option<(String, String, bool, bool)> = sqlx::query_as(
+    let found: Option<(String, Option<String>, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)
          FROM spaces s LEFT JOIN space_access a ON a.space_id = s.id AND a.account_id = $1::uuid
          WHERE s.id = $2::uuid",
@@ -562,7 +563,7 @@ pub(crate) async fn store(
     };
     let id: AccountId = account.parse().expect("a stored account ID");
     let allowed = match &previous {
-        None => found.creator == account,
+        None => found.creator.as_deref() == Some(account.as_str()),
         Some(previous) => admin(previous, id),
     };
     if !allowed {

@@ -88,7 +88,7 @@ use behind::{
     Behind, Forked, TIMEOUT, TRANSPORTS, Transport, answered, assert_over, assert_sent_over, first,
     recv,
 };
-use cloud::WAIT;
+use cloud::{WAIT, alone};
 use filter::{EVENTS, Fate, POLL, SEND, Seen, Stream, WEBSOCKET};
 use fixtures::{await_running, send_args};
 use kit::RECV;
@@ -103,7 +103,7 @@ use world::{devices_request, store};
 const LONG_TIMEOUT: &str = "30";
 const LONG_POLL_WAIT: Duration = Duration::from_secs(30);
 
-/// How soon a run whose catch-up ends at once exits, whatever the load on the machine.
+/// How soon a run whose catch-up ends at once exits.
 const AT_ONCE: Duration = Duration::from_secs(5);
 
 /// Fails unless the client tried the transports up to `transport` in order, each before the next,
@@ -190,6 +190,7 @@ fn at_once(behind: &Behind, transport: Transport, args: &[&str], what: &str) -> 
 /// waiting, which `skald recv` shows.
 #[test]
 fn send_and_recv_exit_at_the_end_of_catch_up_over_sse_and_long_poll() {
+    let _alone = alone();
     let mut behind = Behind::start_with(
         [4_144_041_201, 4_144_041_202],
         ["ada-quick-exit", "bob-quick-exit"],
