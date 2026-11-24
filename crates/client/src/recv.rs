@@ -2722,8 +2722,6 @@ mod tests {
         );
     }
 
-    /// An agent's warnings name a message by its reference and a device by its name, escaped,
-    /// without IDs.
     #[test]
     fn a_whole_primary_reference_preserves_short_reply_and_task_references() {
         let msg_id = MessageId::from_bytes([1; 16]);
@@ -2773,6 +2771,8 @@ mod tests {
         assert!(exact.contains(&format!("] #{} ", references.of(forms::as_message(task)))));
     }
 
+    /// An agent's warnings name a message by its reference and a device by its name, escaped,
+    /// without IDs.
     #[test]
     fn agent_warnings_name_a_message_by_its_reference_and_a_device_by_its_name() {
         assert_eq!(
