@@ -97,9 +97,10 @@ fn a_members_messages_reach_the_next_run_once() {
     }
 }
 
-/// Ada says a line. The front swallows the agent's acks, and the agent's run is killed once it
-/// has sent one: it showed the line before. The next run, its acks forwarded, shows the line again
-/// once; the one after shows it no more. None leaves anything on its machine's disk.
+/// Ada says a line. The front swallows the ack the agent sends after showing it. The harness
+/// tries to kill the first run if it is still active. With acks forwarded, the next run shows
+/// the line once even if the first run already exited. The run after that shows it no more.
+/// None leaves anything on the agent's machine's disk.
 #[test]
 fn a_run_killed_after_its_output_and_before_its_ack_shows_the_message_again() {
     let scene = Scene::new(
