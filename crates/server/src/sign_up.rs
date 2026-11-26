@@ -1,5 +1,6 @@
-//! Who may sign up: anyone a provider signs in, or, while sign-up is closed, only the identities on
-//! the operator's lists. Existing accounts sign in and link methods either way.
+//! Who may sign up without an invite: anyone a provider signs in, or, while sign-up is closed,
+//! only the identities on the operator's lists. Existing accounts sign in and link methods either
+//! way.
 
 use crate::sign_in::Identity;
 
@@ -9,7 +10,7 @@ pub enum SignUp {
     /// Anyone a provider signs in creates an account.
     #[default]
     Open,
-    /// Only the identities on these lists create accounts.
+    /// Only the identities on these lists create accounts without an invite.
     Closed(Listed),
 }
 
@@ -33,7 +34,7 @@ fn has(list: &[String], value: Option<&str>) -> bool {
 }
 
 impl SignUp {
-    /// Whether `identity`, which has no account, may create one.
+    /// Whether `identity`, which has no account, may create one without an invite.
     pub(crate) fn admits(&self, identity: &Identity) -> bool {
         match self {
             SignUp::Open => true,

@@ -1,4 +1,4 @@
-import { useContext, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { listSpaceMembers } from "../api/skald.ts";
 import type { ListedMember, ListedMemberRole } from "../api/skald.schemas.ts";
 import { Banner } from "../ui/Banner.tsx";
@@ -10,6 +10,8 @@ import { Search } from "../ui/Search.tsx";
 import { sortRows, type Sort } from "../ui/sort.ts";
 import { Table, TwoLine, type Column } from "../ui/Table.tsx";
 import { signedIn, versioned } from "./api.ts";
+import { InviteLinks } from "./InviteLinks.tsx";
+import { useInviteLinks, type InviteLinksData } from "./invites.ts";
 import { useLoaded } from "./load.ts";
 import { NoSpace } from "./NoSpace.tsx";
 import { ChosenSpace } from "./space.ts";
@@ -44,6 +46,12 @@ function found(member: ListedMember, query: string): boolean {
   return [member.handle, member.github_login ?? ""].some((text) =>
     text.toLowerCase().includes(words),
   );
+}
+
+/** Whether the session's account is the only admin among `members`, and they are more than it. */
+function onlyAdmin(members: readonly ListedMember[]): boolean {
+  const admins = members.filter((member) => member.role === "admin");
+  return members.length > 1 && admins.length === 1 && admins[0]!.you === true;
 }
 
 const columns = (now: number): Column<ListedMember>[] => [
@@ -88,6 +96,7 @@ export interface MembersScreenProps {
   space?: string;
   /** The space's members; none while they load. */
   members?: readonly ListedMember[];
+  invites?: InviteLinksData;
   /** The time the dates count from, in milliseconds since the epoch. */
   now: number;
   /** What failed, shown above the table. */
@@ -98,11 +107,14 @@ export interface MembersScreenProps {
  * The Members section of 09-members.png: a row per member of the chosen space with its handle and
  * GitHub login, role, linked devices and when it joined, in the server's order until a click on a
  * column sorts them; filter buttons by role and a search by handle or login, in the browser. It
- * only shows them: an admin changes them with `skald`.
+ * only shows them: an admin changes them with `skald`. The only admin of a space with another
+ * member gets the design's banner, which names the command that makes a member an admin in place
+ * of the design's button.
  */
 export function MembersScreen({
   space,
   members,
+  invites,
   now,
   failed,
 }: MembersScreenProps) {
@@ -146,6 +158,14 @@ export function MembersScreen({
         }
       />
       {failed && <Banner>{failed}</Banner>}
+      {onlyAdmin(all) && (
+        <Banner>
+          <strong>You are the only admin.</strong> If you lose all your devices
+          and the recovery key, nobody can manage this space. To make a member
+          an admin, run <code>skald make-admin {space} &lt;handle&gt;</code> on
+          your device.
+        </Banner>
+      )}
       <div className={styles.toolbar}>
         <FilterButtons
           label="Filter members"
@@ -192,6 +212,7 @@ export function MembersScreen({
         }
         minWidth={560}
       />
+      {invites && <InviteLinks {...invites} />}
     </>
   );
 }
@@ -217,11 +238,14 @@ async function fetchMembers(
 export function Members({ onSignedOut }: { onSignedOut: () => void }) {
   const space = useContext(ChosenSpace);
   const listed = useLoaded(space?.space, fetchMembers, onSignedOut);
+  const spaces = useMemo(() => (space ? [space] : []), [space]);
+  const invites = useInviteLinks(spaces, onSignedOut);
   return (
     <MembersScreen
       key={space?.space}
       space={space?.name}
       members={listed?.value?.members}
+      invites={invites}
       now={listed?.value?.at ?? 0}
       failed={listed?.failed && "The members did not load."}
     />

@@ -31,12 +31,17 @@
 //!
 //! The sessions of `plugin.rs` run with Skald's Claude Code plugin, installed from a local
 //! marketplace of this checkout, and nothing else of Skald's.
+//!
+//! The host tests run this plugin in sessions of Paseo and Herdr on Unix. They skip without
+//! their host on `PATH`, a failure when `SKALD_E2E_REQUIRED_HOSTS=1`.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]
 
 mod claude;
 mod delivery;
+#[cfg(unix)]
+mod hosts;
 mod inline;
 #[cfg(unix)]
 mod modes;

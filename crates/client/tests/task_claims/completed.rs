@@ -2,7 +2,7 @@
 //! one line with its `#<ref>`, sender and level, extended with the agent's progress, and completed;
 //! its result goes to the channel under `mls`, once, with a history entry.
 
-use skald_proto::{MessageId, Outcome};
+use skald_proto::Outcome;
 
 use crate::claiming::{
     AWAITING_APPROVAL, CLAIMED, COMPLETE, Claims, DONE, EXTEND, JSON_FLAG, NO_TASK, PROGRESS_FLAG,
@@ -11,6 +11,7 @@ use crate::claiming::{
 use crate::entries::entries_of;
 use crate::fixtures::CHANNEL;
 use crate::lines::{json_objects, refers_to};
+use crate::queuing::as_message;
 use crate::senders::{OWN, labelled_of};
 use crate::talk::ADA_HOST;
 
@@ -49,7 +50,7 @@ fn agent_claims_an_own_task_runs_it_started_and_its_result_reaches_the_channel_u
         (claude_short.as_str(), ADA_HOST, OWN),
         "{line:?}"
     );
-    let as_message = MessageId::from_bytes(*task.as_bytes());
+    let as_message = as_message(task);
     assert!(
         refers_to(&line.reference, as_message),
         "not the task's reference: {line:?}"
@@ -100,7 +101,7 @@ fn agent_extends_its_claim_with_its_progress_and_json_has_every_field() {
     };
     let read = claims.read(task);
     let held = read.held();
-    let as_message = MessageId::from_bytes(*task.as_bytes());
+    let as_message = as_message(task);
     let field = |name: &str| object[name].as_str().unwrap_or_default().to_owned();
     assert_eq!(field("task"), task.to_string(), "{object}");
     assert!(

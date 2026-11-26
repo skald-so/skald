@@ -25,7 +25,10 @@ import {
 } from "vitest";
 import { App } from "./App.tsx";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
-import { getSkaldAPIMock } from "./api/skald.msw.ts";
+import {
+  getListSpaceInvitesMockHandler,
+  getSkaldAPIMock,
+} from "./api/skald.msw.ts";
 import { HttpResponse, http } from "msw";
 import { setupServer } from "msw/node";
 import { cleanup, render, screen, within } from "@testing-library/react";
@@ -102,6 +105,7 @@ const server = setupServer(
       ? new HttpResponse(null, { status: 404 })
       : HttpResponse.json({ members });
   }),
+  getListSpaceInvitesMockHandler({ invites: [] }),
   ...getSkaldAPIMock(),
 );
 server.events.on("request:start", ({ request }) => {

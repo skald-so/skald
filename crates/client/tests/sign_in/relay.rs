@@ -415,6 +415,19 @@ impl Relay {
             .collect()
     }
 
+    /// The bytes sent to the server, with each connection's reads reassembled in order.
+    pub fn sent_streams(&self) -> HashMap<usize, Vec<u8>> {
+        let reads = self.reads.lock().expect("the relay's reads");
+        let mut streams = HashMap::<_, Vec<_>>::new();
+        for read in reads.iter().filter(|read| read.to_server) {
+            streams
+                .entry(read.connection)
+                .or_default()
+                .extend(&read.bytes);
+        }
+        streams
+    }
+
     /// The time from which [`Relay::sent_since`] and [`Relay::answered_since`] count.
     pub fn mark(&self) -> Instant {
         Instant::now()

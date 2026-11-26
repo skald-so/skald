@@ -361,6 +361,7 @@ struct Served {
     metadata_reads: usize,
     key_reads: usize,
     client: Option<Client>,
+    required_token_auth: Option<TokenAuth>,
     people: BTreeMap<String, Person>,
     faults: Vec<Fault>,
     grants: HashMap<String, Grant>,
@@ -405,6 +406,13 @@ pub struct Client {
     pub redirect_uri: String,
 }
 
+/// A client authentication method required by the token endpoint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TokenAuth {
+    Basic,
+    Post,
+}
+
 /// A person with an account at the provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
@@ -442,6 +450,8 @@ pub enum Fault {
     TokenStatus { status: u16 },
     /// The token endpoint's ID tokens carry this `nonce` instead of their authorization request's.
     Nonce { nonce: String },
+    /// The token endpoint omits the email and email verification claims.
+    OmitEmail,
 }
 
 /// One of the provider's endpoints of the authorization code flow.
@@ -569,6 +579,7 @@ impl Provider {
             metadata_reads: 0,
             key_reads: 0,
             client: None,
+            required_token_auth: None,
             people: BTreeMap::new(),
             faults: Vec::new(),
             grants: HashMap::new(),
@@ -601,6 +612,11 @@ impl Provider {
     /// The metadata it serves unless [`Provider::set_metadata`] replaced it.
     pub fn metadata(&self) -> Value {
         self.served().default_metadata()
+    }
+
+    /// Allows only `method` at the token endpoint, independently of the published metadata.
+    pub fn require_token_auth(&self, method: TokenAuth) {
+        self.served().required_token_auth = Some(method);
     }
 
     /// The algorithms the default metadata lists in `id_token_signing_alg_values_supported`.
@@ -973,27 +989,44 @@ async fn authorize(
     redirect(authorized)
 }
 
-/// Whether the request authenticates as `client`: by HTTP Basic, with the ID and secret
-/// form-encoded as RFC 6749, §2.3.1, says or as they are, or by `client_id` and `client_secret` in
-/// the form `params`.
-fn authenticates(client: &Client, headers: &HeaderMap, params: &BTreeMap<String, String>) -> bool {
+/// Whether the request authenticates as `client` by one permitted method.
+fn authenticates(
+    client: &Client,
+    headers: &HeaderMap,
+    params: &BTreeMap<String, String>,
+    required: Option<TokenAuth>,
+) -> bool {
+    let param = |name: &str| params.get(name).map(String::as_str);
     let Some(authorization) = headers.get(header::AUTHORIZATION) else {
-        let param = |name: &str| params.get(name).map(String::as_str);
-        return param("client_id") == Some(client.client_id.as_str())
+        return required != Some(TokenAuth::Basic)
+            && param("client_id") == Some(client.client_id.as_str())
             && param("client_secret") == Some(client.client_secret.as_str());
     };
     let given = authorization.to_str().unwrap_or_default();
     let (scheme, encoded) = given.split_once(' ').unwrap_or_default();
+    if required == Some(TokenAuth::Post) || !scheme.eq_ignore_ascii_case("basic") {
+        return false;
+    }
     let Ok(pair) = STANDARD.decode(encoded.trim()) else {
         return false;
     };
+    if required == Some(TokenAuth::Basic) {
+        return param("client_id").is_none()
+            && param("client_secret").is_none()
+            && std::str::from_utf8(&pair)
+                .ok()
+                .and_then(|pair| pair.split_once(':'))
+                .is_some_and(|(id, secret)| {
+                    decode(id) == client.client_id && decode(secret) == client.client_secret
+                });
+    }
     let plain = format!("{}:{}", client.client_id, client.client_secret);
     let encoded = format!(
         "{}:{}",
         encode(&client.client_id),
         encode(&client.client_secret)
     );
-    scheme.eq_ignore_ascii_case("basic") && (pair == plain.as_bytes() || pair == encoded.as_bytes())
+    pair == plain.as_bytes() || pair == encoded.as_bytes()
 }
 
 /// A refusal of the token endpoint (RFC 6749, §5.2).
@@ -1053,7 +1086,7 @@ async fn token(State(shared): State<Shared>, headers: HeaderMap, body: Bytes) ->
             "No client is registered.",
         );
     };
-    if !authenticates(&client, &headers, &params) {
+    if !authenticates(&client, &headers, &params, served.required_token_auth) {
         return token_error(StatusCode::UNAUTHORIZED, "invalid_client", "Unauthorized");
     }
     if param("grant_type") != "authorization_code" {
@@ -1114,11 +1147,13 @@ async fn token(State(shared): State<Shared>, headers: HeaderMap, body: Bytes) ->
         "azp": client.client_id,
         "aud": client.client_id,
         "sub": person.subject,
-        "email": person.email,
-        "email_verified": person.email_verified,
         "iat": now,
         "exp": now + ID_TOKEN_LIFETIME,
     });
+    if !served.faults.contains(&Fault::OmitEmail) {
+        claims["email"] = json!(person.email);
+        claims["email_verified"] = json!(person.email_verified);
+    }
     if let Some(nonce) = nonce {
         claims["nonce"] = json!(nonce);
     }

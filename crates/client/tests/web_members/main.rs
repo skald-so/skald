@@ -38,6 +38,9 @@ mod relay;
 #[path = "../roster_revisions/world.rs"]
 mod world;
 
+// The only-admin warning.
+mod only_admin;
+
 use access::{press, rows_holding};
 use browser::{Browser, Page};
 use cloud::Cloud;

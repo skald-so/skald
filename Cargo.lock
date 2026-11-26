@@ -3328,8 +3328,10 @@ dependencies = [
  "sqlx",
  "ssh-key",
  "tar",
+ "tempfile",
  "tokio",
  "toml",
+ "toml_edit",
  "tungstenite 0.30.0",
  "uds_windows",
  "ureq",
@@ -3380,6 +3382,27 @@ dependencies = [
  "sha2 0.11.1",
  "tokio",
  "ureq",
+]
+
+[[package]]
+name = "skald-load-delivery"
+version = "0.1.2"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "clap",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "skald-crypto",
+ "skald-github-stand-in",
+ "skald-proto",
+ "skald-server",
+ "sqlx",
+ "tokio",
+ "tokio-tungstenite",
+ "ureq",
+ "url",
 ]
 
 [[package]]
@@ -3987,6 +4010,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "toml_edit"
+version = "0.25.19+spec-1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd43688c4858d7264ae1cf9a9f874a67c3feb74a883b1cd7bebd6a4ea8307218"
+dependencies = [
+ "indexmap",
+ "toml_datetime",
+ "toml_parser",
+ "toml_writer",
+ "winnow",
+]
+
+[[package]]
 name = "toml_parser"
 version = "1.1.5+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4587,6 +4623,9 @@ name = "winnow"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "winreg"

@@ -15,7 +15,13 @@ import { Access } from "./app/Access.tsx";
 import { Account } from "./app/Account.tsx";
 import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
+import { InvitePage } from "./app/InvitePage.tsx";
 import { Machines } from "./app/Machines.tsx";
+import {
+  MachineSignIn,
+  machineSignIn,
+  type MachineSignInState,
+} from "./app/machine-sign-in.ts";
 import { Members } from "./app/Members.tsx";
 import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
@@ -31,13 +37,24 @@ type View =
   | { kind: "loading" }
   | { kind: "failed" }
   | { kind: "signed-out"; providers: SignInProviders }
-  | { kind: "signed-in"; session: Session; spaces: ListedSpace[] };
+  | {
+      kind: "signed-in";
+      session: Session;
+      spaces: ListedSpace[];
+      machineSignIn: MachineSignInState;
+    };
 
 /**
- * The web app. With a web session, the cabinet of its account on every page; without one, or when
- * the API refuses it, the sign-in page, which returns to the page opened.
+ * Invite links open outside the cabinet, before sign-in or any API calls.
  */
 export function App() {
+  if (/^\/invite\/[^/]+\/?$/.test(window.location.pathname))
+    return <InvitePage />;
+  return <SessionApp />;
+}
+
+/** The cabinet with a session, or the sign-in page, which returns to the page opened. */
+function SessionApp() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
   /** Loads the web app again, as when it starts. */
@@ -79,68 +96,76 @@ export function App() {
     case "signed-in":
       return (
         <BrowserRouter>
-          <Cabinet
-            session={view.session}
-            spaces={view.spaces}
-            onSignedOut={reload}
-          >
-            <Routes>
-              <Route
-                path="/"
-                element={
-                  <Machines
-                    username={view.session.username}
-                    onSignedOut={reload}
-                  />
-                }
-              />
-              <Route
-                path="/members"
-                element={<Members onSignedOut={reload} />}
-              />
-              <Route
-                path="/access"
-                element={<Access spaces={view.spaces} onSignedOut={reload} />}
-              />
-              <Route path="/usage" element={<Usage onSignedOut={reload} />} />
-              <Route
-                path={accountPath}
-                element={
-                  <Account
-                    session={view.session}
-                    onChanged={refresh}
-                    onSignedOut={reload}
-                  />
-                }
-              />
-              <Route path="*" element={<NotFound />} />
-            </Routes>
-          </Cabinet>
+          <MachineSignIn value={view.machineSignIn}>
+            <Cabinet
+              session={view.session}
+              spaces={view.spaces}
+              onSignedOut={reload}
+            >
+              <Routes>
+                <Route
+                  path="/"
+                  element={
+                    <Machines
+                      username={view.session.username}
+                      onSignedOut={reload}
+                    />
+                  }
+                />
+                <Route
+                  path="/members"
+                  element={<Members onSignedOut={reload} />}
+                />
+                <Route
+                  path="/access"
+                  element={<Access spaces={view.spaces} onSignedOut={reload} />}
+                />
+                <Route path="/usage" element={<Usage onSignedOut={reload} />} />
+                <Route
+                  path={accountPath}
+                  element={
+                    <Account
+                      session={view.session}
+                      onChanged={refresh}
+                      onSignedOut={reload}
+                    />
+                  }
+                />
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            </Cabinet>
+          </MachineSignIn>
         </BrowserRouter>
       );
   }
 }
 
 /**
- * The account's session and spaces; without a session, or when the API refuses it, the sign-in
- * providers. Throws when the server gives neither.
+ * The account's session, spaces, and sign-in availability. Without a session the providers
+ * determine the sign-in page.
  */
 async function load(signal: AbortSignal): Promise<View> {
-  const [session, spaces] = await Promise.all([
-    getSession({ headers: versioned, signal }),
-    getSpaces({ headers: versioned, signal }),
+  const options = { headers: versioned, signal };
+  const [session, spaces, providers] = await Promise.all([
+    getSession(options),
+    getSpaces(options),
+    getSignInProviders(options).catch(() => undefined),
   ]);
+  signal.throwIfAborted();
   if (session.status === 200 && spaces.status === 200)
     return {
       kind: "signed-in",
       session: session.data,
       spaces: spaces.data.spaces,
+      machineSignIn: machineSignIn(
+        providers?.status === 200 ? providers.data.providers : [],
+        session.data.sign_in_method,
+      ),
     };
   if (session.status !== 401 && spaces.status !== 401)
     throw new Error(`GET /session ${session.status}, /spaces ${spaces.status}`);
-  const providers = await getSignInProviders({ headers: versioned, signal });
-  if (providers.status !== 200)
-    throw new Error(`GET /auth/providers ${providers.status}`);
+  if (providers?.status !== 200)
+    throw new Error(`GET /auth/providers ${providers?.status ?? "failed"}`);
   return { kind: "signed-out", providers: providers.data };
 }
 

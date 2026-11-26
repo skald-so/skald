@@ -162,3 +162,41 @@ test("the history is kept for the setting's days, or for good without it", () =>
   expect(text({})).toContain("Channel history is kept for good.");
   expect(text({})).not.toMatch(/history is kept for \d/);
 });
+
+test("space limits are labeled as allowances when a plan is present", () => {
+  const legacy = {
+    ...usage(12_480),
+    monthly_messages: { count: 12_480, limit: 10_000_000 },
+  };
+  const settings = {
+    space: first.name,
+    account: {
+      owned_spaces: { count: 1, spaces: [first] },
+      devices: { count: 1 },
+    },
+  };
+  const { rerender } = render(<UsageScreen {...settings} usage={legacy} />);
+  expect(screen.getByText("of 10,000,000")).toBeTruthy();
+  expect(screen.getByText("of 10")).toBeTruthy();
+  expect(
+    screen.getByText(
+      "A message holds up to 64 KB. Undelivered messages are kept for 7 days. Channel history is kept for 90 days.",
+    ),
+  ).toBeTruthy();
+
+  rerender(<UsageScreen {...settings} usage={{ ...legacy, plan: "team" }} />);
+
+  expect(screen.getByText("of 10,000,000 (plan allowance)")).toBeTruthy();
+  expect(screen.getByText("of 10 (plan allowance)")).toBeTruthy();
+  expect(
+    screen
+      .getByRole("meter", { name: "Messages this month" })
+      .getAttribute("aria-valuetext"),
+  ).toBe("12,480 of 10,000,000 (plan allowance)");
+  expect(
+    screen.getByText(
+      "Plan allowances include 64 KB per message, 7 days for undelivered messages, and 90 days of channel history. Server settings govern enforcement.",
+    ),
+  ).toBeTruthy();
+  expect(screen.queryByText(/Channel history is kept/)).toBeNull();
+});

@@ -7,7 +7,8 @@ use crate::agents::CODEX;
 use crate::claiming::{CLAIM, COMPLETE, FAIL, RETRY_FLAG};
 use crate::fixtures::CHANNEL;
 use crate::queuing::run_in;
-use crate::results::{Results, assert_dropped, assert_result_line, outcome_mark, result_objects};
+use crate::results::{assert_dropped, assert_result_line, outcome_mark, result_objects};
+use crate::returns::Returns;
 use crate::states::passes;
 
 /// What the tests enqueue and answer; no text is anywhere else.
@@ -33,11 +34,11 @@ const BACKOFF: u64 = 3_600;
 /// device gets it under `mls`, as every member device of the group does.
 #[test]
 fn done_result_reaches_the_enqueuing_agent_once_and_the_claiming_device_gets_its_read() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_101_001, 4_268_101_002],
         ["ada-gets-the-notes-result", "bob-sees-the-notes-read"],
     );
-    let task = results.claude_enqueues(&[NOTES]);
+    let task = results.claude_enqueues(NOTES);
     results.claims.codex_claimed(&[]);
     results
         .claims
@@ -79,11 +80,11 @@ fn done_result_reaches_the_enqueuing_agent_once_and_the_claiming_device_gets_its
 /// run gives it no more.
 #[test]
 fn results_of_an_agent_on_the_same_device_reach_the_enqueuing_agent_once() {
-    let results = Results::new(
+    let results = Returns::new(
         [4_268_102_001, 4_268_102_002],
         ["ada-lints-on-one-machine", "bob-watches-one-machine"],
     );
-    let task = results.claude_enqueues(&[LINT]);
+    let task = results.claude_enqueues(LINT);
     let agents = &results.claims.senders.agents;
     let codex = (agents.folder.as_path(), Some(CODEX));
     let machine = &agents.talk.ada.machine;
@@ -134,11 +135,11 @@ fn results_of_an_agent_on_the_same_device_reach_the_enqueuing_agent_once() {
 /// run shows that result as `(task done)`.
 #[test]
 fn failed_result_is_shown_and_a_later_done_one_is_taken() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_103_001, 4_268_103_002],
         ["ada-retries-the-flaky-suite", "bob-sees-the-retry"],
     );
-    let task = results.claude_enqueues(&[SUITE]);
+    let task = results.claude_enqueues(SUITE);
     results.claims.codex_claimed(&[]);
     results
         .claims
@@ -170,11 +171,11 @@ fn failed_result_is_shown_and_a_later_done_one_is_taken() {
 /// with a warning.
 #[test]
 fn only_the_first_done_result_is_taken() {
-    let mut results = Results::new(
+    let mut results = Returns::new(
         [4_268_104_001, 4_268_104_002],
         ["ada-takes-one-digest", "bob-sends-two-digests"],
     );
-    let task = results.claude_enqueues(&[DIGEST]);
+    let task = results.claude_enqueues(DIGEST);
     let held = results.bob_claims();
     results.bob_completes(&held);
     results.bob_results_to_claude(&held, (Outcome::Done, DIGEST_DONE));

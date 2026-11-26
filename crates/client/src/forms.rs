@@ -13,7 +13,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use skald_proto::{Address, ChannelId, DeviceId, MessageId, SpaceId, TrustLevel};
+use skald_proto::{Address, ChannelId, DeviceId, MessageId, SpaceId, TaskId, TrustLevel};
 
 use crate::connection::printable;
 
@@ -45,6 +45,11 @@ impl Form {
             (false, false) => Form::Full,
         }
     }
+}
+
+/// `task` as references count it: the `msg_id` of the same bytes, whose reference is the task's.
+pub fn as_message(task: TaskId) -> MessageId {
+    MessageId::from_bytes(*task.as_bytes())
 }
 
 /// The whole reference of `msg_id`: each reference of the message is a prefix of it.

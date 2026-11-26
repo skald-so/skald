@@ -8,4 +8,12 @@ export const accountPath = "/profile";
 export const providerNames: Record<SignInProvider, string> = {
   github: "GitHub",
   google: "Google",
+  corporate: "Corporate",
+};
+
+/** The browser sign-in entry points. */
+export const signInPaths: Record<SignInProvider, string> = {
+  github: "/auth/github",
+  google: "/auth/google",
+  corporate: "/auth/corporate",
 };

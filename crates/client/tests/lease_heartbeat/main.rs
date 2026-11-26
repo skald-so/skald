@@ -40,37 +40,17 @@ mod unheld;
 mod unreadable;
 mod waits;
 
-// The modules the tests of the channel history share (`history_common/mod.rs`), with the second
-// machines of the tests of the history on new devices and the helpers of the tests of reading the
-// history they need.
+// The modules the tests of the channel history share (`history_common/mod.rs`).
 #[path = "../history_common/mod.rs"]
 mod history_common;
 use history_common::*;
-#[path = "../history_devices/devices.rs"]
-mod devices;
-#[path = "../history_reading/reading.rs"]
-mod reading;
 
-// The claims scene of the tests of claims, with Ada's agents of the tests of handing messages
-// over, the messages of the tests of gap detection, what an agent reads as the tests of compact
-// output have it, the senders of the tests of trust levels, the queue commands of the tests of
-// queues and the task reads of the tests of task states.
-#[path = "../agent_handover/agents.rs"]
-mod agents;
-#[path = "../gap_detection/gaps.rs"]
-mod gaps;
-#[path = "../compact_output/lines.rs"]
-mod lines;
-// These tests use none of the states `claiming` passes on but some.
-#[allow(unused_imports)]
-#[path = "../task_claims/claiming.rs"]
-mod claiming;
-#[path = "../queues/queuing.rs"]
-mod queuing;
-#[path = "../trust_levels/senders.rs"]
-mod senders;
-#[path = "../task_states/states.rs"]
-mod states;
+// The modules the tests of tasks after their claim share (`task_common/mod.rs`): Ada's agents,
+// what an agent reads, the senders, the queue commands, the task states, the claims, Ada's second
+// machine and the helpers of reading the history.
+#[path = "../task_common/mod.rs"]
+mod task_common;
+use task_common::*;
 
 // The runs of a machine's own copy of `skald` of the tests of the helper, the agent CLI of the
 // tests of the MCP server, and the values and presence of the tests of presence uploads.

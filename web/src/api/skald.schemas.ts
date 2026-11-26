@@ -310,12 +310,26 @@ export const ListedSessionKind = {
 } as const;
 
 /**
+ * The sign-in provider: GitHub, Google, or the corporate OpenID Connect issuer.
+ */
+export type SignInProvider =
+  (typeof SignInProvider)[keyof typeof SignInProvider];
+
+export const SignInProvider = {
+  github: "github",
+  google: "google",
+  corporate: "corporate",
+} as const;
+
+/**
  * A session of the account: a web session, from a sign-in in the browser, or a device session, from the device flow. No IP address or location.
  */
 export interface ListedSession {
   session: SessionId;
   /** `web` for a web session, `device` for a device session. */
   kind: ListedSessionKind;
+  /** The provider a web session signed in with; only for a web session. */
+  sign_in_method?: SignInProvider;
   /** A web session's browser, as the `User-Agent` of its sign-in names it, such as `Chrome`; only when it names a known one. */
   browser?: string;
   /** A web session's operating system, as the `User-Agent` of its sign-in names it, such as `macOS`; only when it names a known one. */
@@ -342,23 +356,11 @@ export interface Sessions {
 export type SignInMethodId = string;
 
 /**
- * `github`, or `google` for the server's OIDC provider.
- */
-export type SignInMethodProvider =
-  (typeof SignInMethodProvider)[keyof typeof SignInMethodProvider];
-
-export const SignInMethodProvider = {
-  github: "github",
-  google: "google",
-} as const;
-
-/**
  * A sign-in method: a provider and the subject it gives the person, which the server does not show.
  */
 export interface SignInMethod {
   method: SignInMethodId;
-  /** `github`, or `google` for the server's OIDC provider. */
-  provider: SignInMethodProvider;
+  provider: SignInProvider;
   /** When the method was linked, or the account created with it. */
   linked_at: string;
   /** A GitHub method's GitHub login as of its latest sign-in, for display; only for GitHub. */
@@ -373,16 +375,18 @@ export interface SignInMethods {
 }
 
 /**
- * The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.
+ * The spaces the account created. `spaces` lists all that exist, including paid spaces. The count includes the personal space before it is created. With plans enabled, only Free spaces count, and an uncreated personal space counts as Free.
  */
 export interface OwnedSpaces {
-  /** @minimum 1 */
+  /** @minimum 0 */
   count: number;
   /**
-   * The value of `--owned-spaces-limit`; absent without it.
+   * Two Free spaces with plans enabled. With plans off, the value of `--owned-spaces-limit`, if set.
    * @minimum 1
    */
   limit?: number;
+  /** True when the count and limit apply only to Free spaces. Absent with plans off. */
+  free_only?: boolean;
   spaces: Space[];
 }
 
@@ -426,17 +430,6 @@ export type SignInProvidersSignUp =
 export const SignInProvidersSignUp = {
   open: "open",
   closed: "closed",
-} as const;
-
-/**
- * A sign-in provider: `github`, or `google` for the server's OIDC provider.
- */
-export type SignInProvider =
-  (typeof SignInProvider)[keyof typeof SignInProvider];
-
-export const SignInProvider = {
-  github: "github",
-  google: "google",
 } as const;
 
 export interface SignInProviders {
@@ -613,6 +606,8 @@ export type ServerName = string;
 export interface Server {
   /** The server's name; `null` without a valid one, such as with no public address or an IP address as its host. */
   name: ServerName | null;
+  /** The server's public address as an origin, for devices starting sign-in from the web address. Absent on a server without sign-in. */
+  public?: string;
 }
 
 export interface Session {
@@ -645,6 +640,8 @@ export interface SpaceRequest {
 }
 
 export interface WaitingAcceptance {
+  /** The invite the acceptance is of, as the server got it. */
+  invite: Invite;
   /** The acceptance as the server got it. */
   acceptance: Acceptance;
   /** The devices of the acceptance's account, each with its certificate as the device sent it, or `null` while it has none. */
@@ -715,6 +712,37 @@ export interface SpaceDevices {
  */
 export type InviteId = string;
 
+export type ListedInviteRole =
+  (typeof ListedInviteRole)[keyof typeof ListedInviteRole];
+
+export const ListedInviteRole = {
+  admin: "admin",
+  member: "member",
+} as const;
+
+/**
+ * An active invite without its key or signed bytes.
+ */
+export interface ListedInvite {
+  invite: InviteId;
+  role: ListedInviteRole;
+  /** The invite's creator, while their account exists. */
+  username?: Username;
+  /** The name of the device that signed the invite, while its account exists. */
+  device_name?: string;
+  /** When the server stored the invite. For invites stored before this date was recorded, when the server issued its ID. */
+  created_at: string;
+  expires_at: string;
+  /** An acceptance waits for an admin device to admit the newcomer. */
+  acceptance_waiting: boolean;
+  /** The newcomer's requested handle, present when an acceptance is waiting. */
+  acceptance_handle?: string;
+}
+
+export interface ListedInvites {
+  invites: ListedInvite[];
+}
+
 export interface NewInvite {
   invite: InviteId;
   /** The server's web URL, which the invite's link starts with (docs/protocol/membership.md, "Invite"); absent on a server without sign-in. */
@@ -760,6 +788,8 @@ export interface ListedMember {
   joined_at: string;
   /** `true` when the member's account is deleted: the server's word; absent otherwise. */
   deleted?: boolean;
+  /** `true` on the member whose account is the session's, of a web or a device session; absent on every other member. */
+  you?: boolean;
 }
 
 export interface ListedMembers {
@@ -839,6 +869,16 @@ export interface ServiceTokens {
 }
 
 /**
+ * The space's effective cloud plan.
+ */
+export type SpacePlan = (typeof SpacePlan)[keyof typeof SpacePlan];
+
+export const SpacePlan = {
+  free: "free",
+  team: "team",
+} as const;
+
+/**
  * A limit; `limit` is absent while no limit applies.
  */
 export interface UsageLimit {
@@ -847,18 +887,25 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, and the limits on its messages, history and service agents, each while one applies.
+ * A space's messages this month and service agents, with its limits. When `plan` is present, the server enforces the plan's member and service agent limits. The other plan allowances are informational and the server's existing limits still apply to those features.
  */
 export interface SpaceUsage {
-  /** The space's messages this calendar month in UTC, each counted once whatever its envelopes, a handshake message not at all; the limit is the value of `--monthly-messages-limit`. */
+  plan?: SpacePlan;
+  /** The effective plan limit for space members. Team has no member limit. Absent with plans off. */
+  members?: UsageLimit;
+  /** The plan allowance for devices per space member. */
+  devices_per_member?: UsageLimit;
+  /** The space's messages this calendar month in UTC. Each message counts once regardless of its envelopes. Handshake messages are excluded. With plans off, the limit comes from `--monthly-messages-limit`. */
   monthly_messages: UsageCount;
-  /** The longest payload of an envelope, in bytes: the value of `--message-size-limit`. */
+  /** The message text size allowance in bytes. With plans off, it is the envelope payload limit from `--message-size-limit`. */
   message_size: UsageLimit;
-  /** How long an undelivered message waits at most, in seconds: the value of `--mailbox-retention`. */
+  /** The plan allowance for attachment size in bytes. */
+  attachment_size?: UsageLimit;
+  /** Undelivered message retention in seconds. With plans off, the limit comes from `--mailbox-retention`. */
   mailbox_retention: UsageLimit;
-  /** How long the server keeps a channel's history entries, in seconds: the value of `--history-retention`. */
+  /** Channel history retention in seconds. With plans off, the limit comes from `--history-retention`. */
   history_retention: UsageLimit;
-  /** The service agent entries of the space's latest revision, none before its first; the limit is the value of `--service-agents-limit`. */
+  /** Service agent entries in the space's latest revision. Before the first revision the count is zero. The effective limit comes from the space's plan or, with plans off, `--service-agents-limit`. */
   service_agents: UsageCount;
 }
 
