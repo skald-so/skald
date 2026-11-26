@@ -146,7 +146,7 @@ fn no_read_meanwhile(machine: &Machine, msg_id: MessageId, when: &str) {
 pub fn assert_hooks_silent(session: &Session, events: &[&str]) {
     for event in events {
         let responses = session.hook_responses(event);
-        assert!(!responses.is_empty(), "no {event}: {}", session.output());
+        assert!(!responses.is_empty(), "no {event}: {}", session.shown());
     }
     let quiet: &[&str] = match SOCKET {
         true => &["SessionStart", "PostToolUse", "Stop", "SessionEnd"],

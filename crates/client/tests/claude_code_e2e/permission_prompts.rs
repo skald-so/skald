@@ -137,7 +137,7 @@ fn a_session_waiting_on_its_permission_prompt_is_detected_within_seconds() {
     let [(started, line)] = seen.as_slice() else {
         panic!(
             "not one line of the prompt within {WATCHED:?}: {seen:#?}; the session printed: {}",
-            session.output()
+            session.shown()
         );
     };
     assert!(
