@@ -21,9 +21,8 @@ fn connect(provider: &Provider) -> TcpStream {
 /// The status of the answer to a request for the metadata on `stream`, which stays open; the error
 /// if none comes.
 fn status(stream: &mut TcpStream) -> io::Result<u16> {
-    stream.write_all(
-        b"GET /.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n",
-    )?;
+    stream
+        .write_all(b"GET /.well-known/openid-configuration HTTP/1.1\r\nhost: 127.0.0.1\r\n\r\n")?;
     let mut reader = BufReader::new(stream);
     let mut head = Vec::new();
     loop {
@@ -42,7 +41,9 @@ fn status(stream: &mut TcpStream) -> io::Result<u16> {
         .expect("a content length");
     reader.read_exact(&mut vec![0; length])?;
     let status = head.first().and_then(|line| line.split(' ').nth(1));
-    Ok(status.and_then(|status| status.parse().ok()).expect("a status"))
+    Ok(status
+        .and_then(|status| status.parse().ok())
+        .expect("a status"))
 }
 
 #[test]
@@ -52,8 +53,14 @@ fn a_stopped_stand_in_answers_nothing_and_answers_again_on_its_port_once_restart
     assert_eq!(status(&mut before).expect("an answer"), 200);
 
     provider.stop();
-    assert!(status(&mut before).is_err(), "answered on a connection of before the stop");
-    assert!(status(&mut connect(&provider)).is_err(), "answered while stopped");
+    assert!(
+        status(&mut before).is_err(),
+        "answered on a connection of before the stop"
+    );
+    assert!(
+        status(&mut connect(&provider)).is_err(),
+        "answered while stopped"
+    );
 
     provider.restart();
     assert_eq!(status(&mut connect(&provider)).expect("an answer"), 200);
