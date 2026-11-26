@@ -420,10 +420,17 @@ fn entries(dir: &Path) -> Vec<String> {
     names
 }
 
-/// A loopback port nothing listens on.
+/// A loopback port nothing listens on, below the ephemeral ports: one the OS gives a
+/// socket bound to port 0 and takes back could be another test's before this test is done with it.
 fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    listener.local_addr().expect("local address").port()
+    let start = 20_000 + std::process::id() % 10_000;
+    (start..30_000)
+        .chain(20_000..start)
+        .find_map(|port| {
+            let port = u16::try_from(port).ok()?;
+            TcpListener::bind(("127.0.0.1", port)).ok().map(|_| port)
+        })
+        .expect("a free local port below the ephemeral range")
 }
 
 /// A new directory under the system's temporary directory; removed on drop.
