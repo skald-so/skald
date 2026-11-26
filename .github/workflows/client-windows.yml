@@ -1,8 +1,9 @@
 name: Client on Windows
 
-# The client's and the adapters' tests on Windows. On a PR they run only once it has the label
-# ready-to-merge, on its every push from then on; the check Rust on Windows, which dev requires,
-# is reported only when they passed on the PR's last commit or its workspace part is unchanged.
+# The client's, the adapters' and the OIDC stand-in's tests on Windows. On a PR they run only once
+# it has the label ready-to-merge, on its every push from then on; the check Rust on Windows, which
+# dev requires, is reported only when they passed on the PR's last commit or its workspace part is
+# unchanged.
 on:
   # Not on a draft: every job is skipped until the PR is ready for review.
   pull_request:
@@ -67,7 +68,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.151
       - name: Build the client's tests
-        run: cargo nextest run -p skald-client --locked --no-run
+        run: cargo nextest run -p skald-client -p skald-oidc-stand-in --locked --no-run
       # The temporary directory of the next steps on D:, where the workspace is, not under the
       # user's profile on C:: the tests keep their state, databases and browser profiles there.
       - name: Move the temporary directory to D
@@ -132,8 +133,8 @@ jobs:
           Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
       # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
-      # tests of all the client's and the adapters' test binaries at once, each in a process of its
-      # own.
+      # tests of all the client's, the adapters' and the OIDC stand-in's test binaries at once, each
+      # in a process of its own.
       - name: Test the client and the adapters
         shell: pwsh
         env:
@@ -141,7 +142,7 @@ jobs:
         run: |
           $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
           $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
-          cargo nextest run -p skald-client -p skald-adapters --locked --no-fail-fast --test-threads 8
+          cargo nextest run -p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast --test-threads 8
       - name: Show the most ephemeral ports in use
         if: ${{ !cancelled() }}
         shell: pwsh

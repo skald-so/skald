@@ -22,9 +22,13 @@
 //! faulty, with [`Key`], [`signed`], [`hmac`] and [`unsigned`].
 
 use std::collections::{BTreeMap, HashMap};
+use std::io;
 use std::net::{SocketAddr, TcpListener};
+use std::pin::Pin;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
@@ -43,6 +47,7 @@ use ring::signature::{
     RsaPublicKeyComponents,
 };
 use serde_json::{Map, Value, json};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::runtime::Runtime;
 
 /// The path of the metadata under the issuer.
@@ -491,14 +496,111 @@ struct Grant {
 /// The running stand-in; it stops when dropped.
 pub struct Provider {
     issuer: String,
-    path: String,
     shared: Shared,
-    /// Its port, held from start to drop: stopped, it resets what connects, so that no other
-    /// socket takes the port before a restart.
-    bound: TcpListener,
-    /// What serves its endpoints, or resets connections while it is stopped.
+    /// What serves its endpoints on its port, from start to drop, so that no other socket takes
+    /// the port while it is stopped.
     runtime: Option<Runtime>,
-    stopped: bool,
+    /// How many times it stopped or restarted: odd while it is stopped.
+    turns: Arc<AtomicU64>,
+}
+
+/// Whether the stand-in is stopped at its turn `turn`.
+fn stopped(turn: u64) -> bool {
+    !turn.is_multiple_of(2)
+}
+
+/// The stand-in's port as it serves it: while the stand-in is stopped, it resets each connection
+/// it accepts.
+struct Port {
+    listener: tokio::net::TcpListener,
+    turns: Arc<AtomicU64>,
+}
+
+impl axum::serve::Listener for Port {
+    type Io = Connection;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Connection, SocketAddr) {
+        loop {
+            let (stream, address) = axum::serve::Listener::accept(&mut self.listener).await;
+            let turn = self.turns.load(Ordering::SeqCst);
+            if stopped(turn) {
+                // A reset, as close to a refused connection as an accepted one comes.
+                let _ = stream.set_zero_linger();
+                continue;
+            }
+            let turns = Arc::clone(&self.turns);
+            return (
+                Connection {
+                    stream,
+                    turn,
+                    turns,
+                },
+                address,
+            );
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.listener.local_addr()
+    }
+}
+
+/// A connection the stand-in serves, accepted at its turn `turn`: once the stand-in stops, it is
+/// reset at its next read or write.
+struct Connection {
+    stream: tokio::net::TcpStream,
+    turn: u64,
+    turns: Arc<AtomicU64>,
+}
+
+impl Connection {
+    /// The connection's stream, or the reset once the stand-in stopped after it was accepted.
+    fn stream(self: Pin<&mut Self>) -> io::Result<Pin<&mut tokio::net::TcpStream>> {
+        let this = self.get_mut();
+        if this.turns.load(Ordering::SeqCst) != this.turn {
+            let _ = this.stream.set_zero_linger();
+            return Err(io::ErrorKind::ConnectionReset.into());
+        }
+        Ok(Pin::new(&mut this.stream))
+    }
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match self.stream() {
+            Ok(stream) => stream.poll_read(cx, buf),
+            Err(reset) => Poll::Ready(Err(reset)),
+        }
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match self.stream() {
+            Ok(stream) => stream.poll_write(cx, buf),
+            Err(reset) => Poll::Ready(Err(reset)),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match self.stream() {
+            Ok(stream) => stream.poll_flush(cx),
+            Err(reset) => Poll::Ready(Err(reset)),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
 }
 
 /// A runtime for the stand-in's server.
@@ -577,40 +679,25 @@ impl Provider {
             issued: Vec::new(),
             requests: Vec::new(),
         }));
-        let mut provider = Provider {
-            issuer,
-            path: path.to_owned(),
-            shared,
-            bound,
-            runtime: None,
-            stopped: true,
-        };
-        provider.restart();
-        provider
-    }
-
-    /// A runtime for the stand-in's port, the `tokio` listener of which `accept` takes.
-    fn on_port<F>(&self, accept: impl FnOnce(tokio::net::TcpListener) -> F) -> Runtime
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
         let runtime = runtime();
-        let listener = self
-            .bound
-            .try_clone()
-            .and_then(|port| {
-                let _entered = runtime.enter();
-                tokio::net::TcpListener::from_std(port)
-            })
-            .expect("listen on the stand-in's port");
-        runtime.spawn(accept(listener));
-        runtime
-    }
-
-    /// Shuts `runtime` down, ending its connections.
-    fn shut(runtime: Option<Runtime>) {
-        if let Some(runtime) = runtime {
-            runtime.shutdown_timeout(Duration::from_secs(5));
+        let listener = {
+            let _entered = runtime.enter();
+            tokio::net::TcpListener::from_std(bound).expect("listen on the stand-in's port")
+        };
+        let turns = Arc::new(AtomicU64::new(0));
+        let port = Port {
+            listener,
+            turns: Arc::clone(&turns),
+        };
+        let app = router(path, shared.clone());
+        runtime.spawn(async move {
+            let _ = axum::serve(port, app).await;
+        });
+        Provider {
+            issuer,
+            shared,
+            runtime: Some(runtime),
+            turns,
         }
     }
 
@@ -695,37 +782,21 @@ impl Provider {
         signed(&key, json!({}), claims)
     }
 
-    /// Stops serving, as a provider that is down: its connections end, and from now on it resets
-    /// each connection to its address before reading a request. It keeps the address's port, so
-    /// that [`Provider::restart`] serves on it again.
+    /// Stops serving, as a provider that is down: from now on it resets each connection to its
+    /// address before reading a request, and each connection open before at its next request. It
+    /// keeps the address's port, so that [`Provider::restart`] serves on it again.
     pub fn stop(&mut self) {
-        if self.stopped {
-            return;
+        if !stopped(self.turns.load(Ordering::SeqCst)) {
+            self.turns.fetch_add(1, Ordering::SeqCst);
         }
-        self.stopped = true;
-        Provider::shut(self.runtime.take());
-        self.runtime = Some(self.on_port(|listener| async move {
-            loop {
-                if let Ok((connection, _)) = listener.accept().await {
-                    // A reset, as close to a refused connection as an accepted one comes.
-                    let _ = connection.set_zero_linger();
-                }
-            }
-        }));
     }
 
     /// After [`Provider::stop`], serves again at the same issuer, with what it served and was
     /// asked before.
     pub fn restart(&mut self) {
-        if !self.stopped {
-            return;
+        if stopped(self.turns.load(Ordering::SeqCst)) {
+            self.turns.fetch_add(1, Ordering::SeqCst);
         }
-        self.stopped = false;
-        Provider::shut(self.runtime.take());
-        let app = router(&self.path, self.shared.clone());
-        self.runtime = Some(self.on_port(|listener| async move {
-            let _ = axum::serve(listener, app).await;
-        }));
     }
 
     /// Registers `client`, replacing the one registered before.
@@ -783,7 +854,9 @@ impl Provider {
 
 impl Drop for Provider {
     fn drop(&mut self) {
-        Provider::shut(self.runtime.take());
+        if let Some(runtime) = self.runtime.take() {
+            runtime.shutdown_timeout(Duration::from_secs(5));
+        }
     }
 }
 
