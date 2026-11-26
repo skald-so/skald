@@ -4,6 +4,7 @@ import {
   KitAccess,
   KitAccount,
   KitAccountPage,
+  KitInvite,
   KitMachines,
   KitMembers,
   KitSignIn,
@@ -20,7 +21,8 @@ import "../theme/index.ts";
 // ?screen=members the Members section, ?screen=access the Access section,
 // ?screen=access-confirm its question before "Sign out everywhere else", ?screen=account-page the
 // Account page, ?screen=account-page-confirm its question before removing this session's sign-in
-// method and ?screen=usage the Usage section. Without it, the kit page.
+// method, ?screen=invite the invite link page and ?screen=usage the Usage section.
+// Without it, the kit page.
 const params = new URLSearchParams(location.search);
 const param = params.get("theme");
 const theme: Theme | undefined =
@@ -34,6 +36,8 @@ createRoot(document.getElementById("root")!).render(
       <KitCabinet menuOpen={screen === "cabinet-menu"} />
     ) : screen === "sign-in" ? (
       <KitSignIn />
+    ) : screen === "invite" ? (
+      <KitInvite />
     ) : screen === "account" ? (
       <KitAccount />
     ) : screen === "machines" ? (

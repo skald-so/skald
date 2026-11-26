@@ -36,6 +36,8 @@ pub enum Reply {
     Bash(&'static str),
     /// A call of the tool of the MCP server `skald` with no arguments.
     Skald(&'static str),
+    /// A call of an MCP tool under its full name.
+    Mcp(&'static str),
     /// An error that Claude Code does not retry: `400 Bad Request`.
     Fail,
 }
@@ -237,6 +239,7 @@ async fn messages(State(shared): State<Arc<Shared>>, headers: HeaderMap, body: B
         ),
         Reply::Bash(command) => tool_use(count, "Bash".to_owned(), json!({ "command": command })),
         Reply::Skald(tool) => tool_use(count, skald_tool(tool), json!({})),
+        Reply::Mcp(tool) => tool_use(count, tool.to_owned(), json!({})),
     };
     let usage = json!({ "input_tokens": 1, "output_tokens": 1 });
     let message = json!({

@@ -1,5 +1,5 @@
-//! `skald history`: the device reads a channel's history (`docs/protocol/membership.md`, "Key
-//! chain", "History entry" and "Access"); as an agent, only a channel of its folder's space.
+//! Verification for `skald history` and `skald export` (`docs/protocol/membership.md`, "Key
+//! chain", "History entry" and "Access"); as an agent, only channels of its folder's space.
 //!
 //! - It accepts the space's latest revisions, then gets the channel's links and entries from the
 //!   server. Given a text, it searches on the device: no request carries the text.
@@ -22,16 +22,19 @@ use std::io::{self, Write as _};
 use std::path::Path;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::{
     HistoryKey, HistoryMessage, MlsDevice, check_device, follow_links, trust_level,
 };
 use skald_proto::{
     Address, Cbor as _, Cert, ChannelId, DeviceId, DeviceKind, HistoryEntry, HistoryLink,
-    MessageId, Roster, ServerName, TrustLevel, VersionRange,
+    MessageId, Roster, ServerName, SpaceId, TrustLevel, VersionRange,
 };
 
 use crate::agents::server_name;
 use crate::connection::printable;
+use crate::device::Keys;
 use crate::devices;
 use crate::follow::{self, Own, SpaceDevices, master_of};
 use crate::forms::{self, bracketed};
@@ -55,29 +58,8 @@ pub fn run(
 ) -> Result<(), String> {
     let channel = send::channel_id(channel)?;
     let scope = Scope::of_run(dir, agent)?;
-    let Synced {
-        mut follower,
-        space,
-        roster,
-        devices,
-    } = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)?;
-    let revisions = accepted(&follower, &space, roster)?;
-    let server = server_name(&mut follower.connection)?;
-    let at = (space.id, channel);
-    let links = key_chain::links(&mut follower, at)?;
-    let entries = key_chain::listed(&mut follower, at, key_chain::ENTRIES)?;
-    let keys = follower.keys()?;
-    let opened = groups::read(&follower, &keys, |device| {
-        open(device, channel, &links, &entries)
-    })?;
-    let checks = Checks {
-        own: &follower.own,
-        revisions: &revisions,
-        devices: &devices,
-        server: server.as_ref(),
-        channel,
-    };
-    let (mut read, without_key) = checks.read(opened);
+    let synced = spaces::of_channel(dir, storage, speaks, timeout, channel, scope)?;
+    let (mut read, without_key) = Reader::new(synced)?.read(channel)?;
     read.sort_by_key(|message| message.timestamp);
     let mut out = io::stdout().lock();
     let mut warned = false;
@@ -102,10 +84,78 @@ pub fn run(
 }
 
 /// The line that says how many entries, `without_key`, the device holds no key for; none for none.
-fn no_key_line(without_key: u64) -> Option<String> {
+pub fn no_key_line(without_key: u64) -> Option<String> {
     (without_key > 0).then(|| {
         format!("skald: history entries under no key this device holds, not shown: {without_key}")
     })
+}
+
+/// Reads channels in one synced space under the device's session and its accepted revisions.
+pub struct Reader {
+    follower: Follower,
+    keys: Keys,
+    space: SpaceId,
+    revisions: Vec<Roster>,
+    devices: SpaceDevices,
+    server: Option<ServerName>,
+}
+
+impl Reader {
+    pub fn new(synced: Synced) -> Result<Self, String> {
+        let Synced {
+            mut follower,
+            space,
+            roster,
+            devices,
+        } = synced;
+        let revisions = accepted(&follower, &space, roster)?;
+        let server = server_name(&mut follower.connection)?;
+        let keys = follower.keys()?;
+        Ok(Self {
+            follower,
+            keys,
+            space: space.id,
+            revisions,
+            devices,
+            server,
+        })
+    }
+
+    /// Channels the server lists history for under the device's account session.
+    pub fn member_channels(&self) -> Vec<ChannelId> {
+        let account = self.follower.own.account;
+        self.revisions[0]
+            .body()
+            .channels
+            .iter()
+            .filter(|channel| {
+                channel
+                    .members
+                    .iter()
+                    .any(|member| member.account == account)
+            })
+            .map(|channel| channel.id)
+            .collect()
+    }
+
+    /// Reads the retained entries and links the session can see, applying the same checks to each
+    /// channel. The server applies the account's join cutoff when listing them.
+    pub fn read(&mut self, channel: ChannelId) -> Result<(Vec<Read>, u64), String> {
+        let at = (self.space, channel);
+        let links = key_chain::links(&mut self.follower, at)?;
+        let entries = key_chain::entries(&mut self.follower, at)?;
+        let opened = groups::read(&self.follower, &self.keys, |device| {
+            open(device, channel, &links, &entries)
+        })?;
+        let checks = Checks {
+            own: &self.follower.own,
+            revisions: &self.revisions,
+            devices: &self.devices,
+            server: self.server.as_ref(),
+            channel,
+        };
+        Ok(checks.read(opened))
+    }
 }
 
 /// The revisions of `space` the device accepted that the server gave the run, `latest` its last
@@ -163,7 +213,7 @@ fn open(
     device: &MlsDevice,
     channel: ChannelId,
     links: &[HistoryLink],
-    entries: &[Vec<u8>],
+    entries: &[String],
 ) -> Vec<Opened> {
     let reached = reach(device, channel, links);
     let key = |epoch| {
@@ -172,8 +222,11 @@ fn open(
             .or_else(|| reached.get(&epoch))
     };
     (entries.iter())
-        .map(|bytes| {
-            let entry = match HistoryEntry::from_cbor(bytes) {
+        .map(|encoded| {
+            let Ok(bytes) = URL_SAFE_NO_PAD.decode(encoded) else {
+                return Opened::Failed("it is not base64url".to_owned());
+            };
+            let entry = match HistoryEntry::from_cbor(&bytes) {
                 Ok(entry) => entry,
                 Err(err) => return Opened::Failed(format!("it does not decode: {err}")),
             };
@@ -207,17 +260,17 @@ struct Checks<'c> {
 
 /// A message of the history that passed the checks.
 #[derive(Debug)]
-struct Read {
-    sender: DeviceId,
-    msg_id: MessageId,
+pub struct Read {
+    pub sender: DeviceId,
+    pub msg_id: MessageId,
     /// When it was sent, as its sender states it, in seconds since the Unix epoch.
-    timestamp: u64,
-    from: Address,
+    pub timestamp: u64,
+    pub from: Address,
     /// The sending device's certificate `name`.
-    device: String,
+    pub device: String,
     /// The sending device's trust level.
     level: TrustLevel,
-    text: String,
+    pub text: String,
 }
 
 impl Read {

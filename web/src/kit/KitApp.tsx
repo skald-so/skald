@@ -8,11 +8,13 @@ import {
   getListServiceTokensResponseMock,
   getListSessionsResponseMock,
   getListSignInMethodsResponseMock,
+  getListSpaceInvitesResponseMock,
   getListSpaceMembersResponseMock,
 } from "../api/skald.msw.ts";
 import { AccessScreen } from "../app/Access.tsx";
 import { AccountScreen } from "../app/Account.tsx";
 import { Cabinet } from "../app/Cabinet.tsx";
+import { InvitePage } from "../app/InvitePage.tsx";
 import { MachinesScreen } from "../app/Machines.tsx";
 import { MembersScreen } from "../app/Members.tsx";
 import { accountPath } from "../app/names.ts";
@@ -52,6 +54,35 @@ const now = Date.parse("2026-11-10T15:00:00Z");
 const before = (minutes: number) =>
   new Date(now - minutes * 60_000).toISOString();
 const day = 24 * 60;
+
+const { invites } = getListSpaceInvitesResponseMock({
+  invites: [
+    {
+      invite: "01968a2e-0000-7000-8000-000000000811",
+      role: "member",
+      username: "ana",
+      device_name: "ana-laptop",
+      created_at: before(2 * day),
+      expires_at: before(-6 * day),
+      acceptance_waiting: false,
+    },
+    {
+      invite: "01968a2e-0000-7000-8000-000000000812",
+      role: "admin",
+      username: "sam",
+      device_name: "sam-workstation",
+      created_at: before(day),
+      expires_at: before(-4 * day),
+      acceptance_waiting: true,
+      acceptance_handle: "lee",
+    },
+  ],
+});
+const teamInvites = {
+  rows: invites.map((invite) => ({ space: team, invite })),
+  now,
+  revoke: async () => {},
+};
 
 /** The sessions of 10-access.png: this browser, two machines and another browser. */
 const { sessions } = getListSessionsResponseMock({
@@ -189,7 +220,10 @@ const { devices } = getListAccountDevicesResponseMock({
   ],
 });
 
-/** The members of 09-members.png: an admin and two members, one of them without a GitHub login. */
+/**
+ * The members of 09-members.png: the account, the only admin, and two members, one of them without
+ * a GitHub login.
+ */
 const { members } = getListSpaceMembersResponseMock({
   members: [
     {
@@ -198,6 +232,7 @@ const { members } = getListSpaceMembersResponseMock({
       github_login: "ana",
       linked_devices: 4,
       joined_at: before(39 * day),
+      you: true,
     },
     {
       handle: "lee-park",
@@ -228,6 +263,7 @@ const accountUsage = getGetAccountUsageResponseMock({
   devices: { count: 4, limit: 50 },
 });
 const spaceUsage = getGetSpaceUsageResponseMock({
+  plan: undefined,
   monthly_messages: { count: 12_480, limit: 10_000_000 },
   message_size: { limit: 64 * 1024 },
   mailbox_retention: { limit: 7 * 86_400 },
@@ -241,6 +277,10 @@ const spaceUsage = getGetSpaceUsageResponseMock({
  */
 export function KitSignIn() {
   return <SignInPage providers={providers} returnTo="/" />;
+}
+
+export function KitInvite() {
+  return <InvitePage />;
 }
 
 /**
@@ -282,7 +322,12 @@ export function KitMembers() {
         defaultSpace={team.space}
         onSignedOut={() => {}}
       >
-        <MembersScreen space={team.name} members={members} now={now} />
+        <MembersScreen
+          space={team.name}
+          members={members}
+          invites={teamInvites}
+          now={now}
+        />
       </Cabinet>
     </MemoryRouter>
   );
@@ -323,6 +368,7 @@ export function KitAccess({ asking = false }: { asking?: boolean }) {
         <AccessScreen
           sessions={sessions}
           tokens={tokens.map((token) => ({ space: team, token }))}
+          invites={teamInvites}
           now={now}
           onRevoke={() => {}}
           onEndOthers={async () => {}}

@@ -25,13 +25,13 @@ use crate::stub::{PLACEHOLDER, Stub, skald_tool};
 use crate::world::AGENT;
 
 /// The setting that turns a skip into a failure.
-const REQUIRED: &str = "SKALD_E2E_REQUIRED";
+pub const REQUIRED: &str = "SKALD_E2E_REQUIRED";
 
 /// How long a session may run.
 const SESSION_LIMIT: Duration = Duration::from_secs(180);
 
 /// The prompt of every session: the stub, not the prompt, decides what the session does.
-const PROMPT: &str = "Run the steps of the test.";
+pub const PROMPT: &str = "Run the steps of the test.";
 
 /// Claude Code's binary on `PATH`, if any. Without it, says that the test is skipped, or fails if
 /// [`REQUIRED`] is set.
@@ -41,17 +41,20 @@ pub fn claude_code() -> Option<PathBuf> {
     } else {
         &["claude"]
     };
+    on_path(names, "Claude Code")
+}
+
+/// The first file on `PATH` of `names`, the names of the program `what`, if any. Without it, says
+/// that the test is skipped, or fails if [`REQUIRED`] is set.
+pub fn on_path(names: &[&str], what: &str) -> Option<PathBuf> {
     let found = (env::var_os("PATH").iter())
         .flat_map(env::split_paths)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|path| path.is_file());
     if found.is_none() {
         let required = env::var_os(REQUIRED).is_some_and(|value| !value.is_empty() && value != "0");
-        assert!(
-            !required,
-            "Claude Code is not on PATH, and {REQUIRED} is set"
-        );
-        eprintln!("skipped: Claude Code is not on PATH");
+        assert!(!required, "{what} is not on PATH, and {REQUIRED} is set");
+        eprintln!("skipped: {what} is not on PATH");
     }
     found
 }

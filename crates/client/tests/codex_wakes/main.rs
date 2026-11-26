@@ -54,6 +54,8 @@ include!("../claude_code_hooks/modules.rs");
 
 use std::process::ExitCode;
 
+use harness::harness;
+
 /// Each test, by the name the harness gives it.
 const TESTS: &[(&str, fn())] = &[
     (
@@ -94,5 +96,5 @@ fn main() -> ExitCode {
     if let Some(code) = standin::acts() {
         return code;
     }
-    harness::harness(TESTS)
+    harness(TESTS)
 }

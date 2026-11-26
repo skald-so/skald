@@ -25,7 +25,7 @@ test_stand_ins() {
       stand_in "$dir" "$name" "$name"
     fi
   done
-  for name in cargo cargo-deny cargo-mutants cargo-nextest node npm npx jq curl docker openssl tar \
+  for name in cargo cargo-binstall cargo-deny cargo-mutants cargo-nextest node npm npx jq curl docker openssl tar zip \
     ssh ssh-add ssh-agent ssh-keygen sshd; do
     stand_in "$dir" "bin/$name" "$name"
   done
