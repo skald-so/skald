@@ -7,7 +7,9 @@ use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use crate::fallbacks::{Bare, late_reply_confirms_once, long_text, rewake_of, session_start, woke};
+use crate::fallbacks::{
+    Bare, Rewake, late_reply_confirms_once, long_text, rewake_of, session_start, woke,
+};
 use crate::hooks::{Bob, Event, LIMIT, assert_cut, assert_own_line, assert_signal};
 use crate::solo::{API, WEB};
 
@@ -35,6 +37,13 @@ fn a_waiting_own_message_wakes_the_session_as_its_line() {
     assert_own_line(&woke(&hooked), WAITING_SAYS, msg_id, &ada.solo.short(API));
 }
 
+/// web's `asyncRewake` hook, started on `Stop`, waiting [`WAITS`] seconds.
+fn on_stop(ada: &Bare) -> Rewake {
+    let stop =
+        serde_json::from_str(&Event::Stop.input(&ada.solo.dir(WEB))).expect("an input is JSON");
+    ada.rewake(WEB, &stop, WAITS, &[])
+}
+
 /// What api says to web; it is nowhere else.
 const LATER_SAYS: &str = "rewake test: api asks web while the session is idle";
 
@@ -44,9 +53,7 @@ const LATER_SAYS: &str = "rewake test: api asks web while the session is idle";
 #[test]
 fn an_own_message_that_comes_while_it_waits_wakes_the_session() {
     let ada = Bare::new(4_919_512_001, "ada-rewake-later-message");
-    let dir = ada.solo.dir(WEB);
-    let stop = serde_json::from_str(&Event::Stop.input(&dir)).expect("an input is JSON");
-    let mut rewake = ada.rewake(WEB, &stop, WAITS, &[]);
+    let mut rewake = on_stop(&ada);
     thread::sleep(Duration::from_secs(2));
     rewake.assert_running("with nothing waiting");
 
@@ -65,9 +72,7 @@ const LATE_SAYS: &str = "rewake test: api asks web before its reply is written";
 #[test]
 fn one_stop_confirms_an_own_message_of_the_hook_whose_reply_follows_bookkeeping_lines() {
     let ada = Bare::new(4_919_517_001, "ada-rewake-bookkeeping");
-    let dir = ada.solo.dir(WEB);
-    let stop = serde_json::from_str(&Event::Stop.input(&dir)).expect("an input is JSON");
-    let mut rewake = ada.rewake(WEB, &stop, WAITS, &[]);
+    let mut rewake = on_stop(&ada);
     let msg_id = ada.solo.api_sends_web(LATE_SAYS);
     let (hooked, _) = rewake.finished();
     let output = woke(&hooked);

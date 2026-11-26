@@ -2,7 +2,7 @@
 //! that Claude Code's MCP server and hooks run without the one-shot setting, the channel events of
 //! a `skald mcp`, runs of the `asyncRewake` hook in the background, and the mod's polls.
 
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -331,22 +331,56 @@ pub fn woke(hooked: &Hooked) -> String {
     hooked.stderr.clone()
 }
 
-/// `delivery`, what a path gave web, ends web's session file as Claude Code 2.1.332 writes it when
-/// `Stop` runs: its user entry, then the bookkeeping lines `api-request-blob` and `api-request`. Its
-/// reply, which names no turn, only its parent, the delivery, comes once `Stop` ran or while it
-/// still runs. Fails unless the person's `skald recv` shows no `read` of `msg_id` before the reply
-/// and `read` once after it, and `Stop` printed nothing.
-#[track_caller]
-pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
-    let dir = ada.solo.dir(WEB);
-    let input = Event::Stop.input(&dir);
+/// web's `Stop` input, as given and parsed, and web's session file, which it names and creates.
+pub fn stop_transcript(ada: &Bare) -> (String, Value, File) {
+    let input = Event::Stop.input(&ada.solo.dir(WEB));
     let parsed: Value = serde_json::from_str(&input).expect("Stop input");
-    let session = &parsed["session_id"];
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .create_new(true)
         .append(true)
         .open(parsed["transcript_path"].as_str().expect("transcript path"))
         .expect("create the transcript");
+    (input, parsed, file)
+}
+
+/// Runs web's `Stop` on `input` while `file` still lacks `rest`, the rest of the assistant's reply
+/// to a delivery of `msg_id`, and writes it once `Stop` ran or while it still runs, as Claude can.
+/// Fails unless the person's `skald recv` shows no `read` of `msg_id` before `rest` and `read`
+/// once after it, and `Stop` printed nothing.
+#[track_caller]
+pub fn stop_before_reply(
+    ada: &Bare,
+    input: &str,
+    (file, rest): (&mut File, &str),
+    msg_id: MessageId,
+) {
+    let mut command =
+        ada.helped
+            .command_in(&ada.solo.dir(WEB), &[], &[AGENT, WEB, HOOK, CLAUDE_CODE]);
+    let mut stop = Run::spawn(command.stdin(Stdio::piped()));
+    stop.answer(input);
+    let flush_at = Instant::now() + Duration::from_millis(300);
+    while !stop.exited() && Instant::now() < flush_at {
+        thread::sleep(Duration::from_millis(10));
+    }
+    shows_no_read(ada.machine(), msg_id, "before the assistant's reply");
+    writeln!(file, "{rest}").expect("write the rest of the assistant's reply");
+
+    let stopped = stop.finish();
+    assert!(
+        stopped.success && stopped.stdout.is_empty() && stopped.stderr.is_empty(),
+        "Stop: {stopped:?}"
+    );
+    shows_read_once(ada.machine(), msg_id);
+}
+
+/// `delivery`, what a path gave web, ends web's session file as Claude Code 2.1.332 writes it when
+/// `Stop` runs: its user entry, then the bookkeeping lines `api-request-blob` and `api-request`. Its
+/// reply, which names no turn, only its parent, the delivery, comes later ([`stop_before_reply`]).
+#[track_caller]
+pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
+    let (input, parsed, mut file) = stop_transcript(ada);
+    let session = &parsed["session_id"];
     let entries = [
         json!({
             "type": "user", "sessionId": session, "uuid": "delivery", "parentUuid": "before",
@@ -363,23 +397,5 @@ pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
         "type": "assistant", "sessionId": session, "uuid": "reply", "parentUuid": "delivery",
         "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
     });
-
-    let mut command = ada
-        .helped
-        .command_in(&dir, &[], &[AGENT, WEB, HOOK, CLAUDE_CODE]);
-    let mut stop = Run::spawn(command.stdin(Stdio::piped()));
-    stop.answer(&input);
-    let flush_at = Instant::now() + Duration::from_millis(300);
-    while !stop.exited() && Instant::now() < flush_at {
-        thread::sleep(Duration::from_millis(10));
-    }
-    shows_no_read(ada.machine(), msg_id, "before the assistant's reply");
-    writeln!(file, "{reply}").expect("write the assistant's reply");
-
-    let stopped = stop.finish();
-    assert!(
-        stopped.success && stopped.stdout.is_empty() && stopped.stderr.is_empty(),
-        "Stop: {stopped:?}"
-    );
-    shows_read_once(ada.machine(), msg_id);
+    stop_before_reply(ada, &input, (&mut file, &reply.to_string()), msg_id);
 }
