@@ -451,6 +451,16 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     let Some(roster) = latest else {
         return Ok(Json(ListedMembers { members: vec![] }).into_response());
     };
+    // A revision may have removed the session's account since `Gotten` checked access.
+    let account: AccountId = found.account.parse().expect("a stored account ID");
+    if !roster
+        .body()
+        .members
+        .iter()
+        .any(|member| member.account == account)
+    {
+        return Err(Refusal::NoSpace);
+    }
     let revision =
         i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
@@ -507,7 +517,11 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
             })
         })
         .collect();
-    Ok(Json(ListedMembers { members }).into_response())
+    Ok((
+        [("skald-roster-revision", revision.to_string())],
+        Json(ListedMembers { members }),
+    )
+        .into_response())
 }
 
 /// `POST /spaces/<space>/channels`: a new channel ID for the space, with its queue `default`, for an
