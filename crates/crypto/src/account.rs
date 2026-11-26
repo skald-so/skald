@@ -2,8 +2,6 @@
 //! "Account".
 
 use std::fmt;
-#[cfg(feature = "test-cost")]
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use aes_gcm::aead::{Aead as _, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit as _, Nonce};
@@ -42,28 +40,60 @@ compile_error!(
      recovery key at the spec's cost"
 );
 
-/// Whether a test build with the feature `test-cost` derives at the spec's cost, after
-/// [`derive_at_spec_cost`].
 #[cfg(feature = "test-cost")]
-static AT_SPEC_COST: AtomicBool = AtomicBool::new(false);
+std::thread_local! {
+    /// Whether this thread of a test build with the feature `test-cost` derives at the spec's
+    /// cost: while a [`SpecCost`] of it lives.
+    static AT_SPEC_COST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 
-/// Whether this process derives the recovery key at the spec's cost: always, but in a test build
-/// with the feature `test-cost` until [`derive_at_spec_cost`].
+/// Whether this thread derives the recovery key at the spec's cost: always, but in a test build
+/// with the feature `test-cost` only while a [`SpecCost`] of this thread lives.
 pub fn derives_at_spec_cost() -> bool {
     #[cfg(feature = "test-cost")]
-    return AT_SPEC_COST.load(Ordering::Relaxed);
+    return AT_SPEC_COST.with(std::cell::Cell::get);
     #[cfg(not(feature = "test-cost"))]
     true
 }
 
-/// From now on this process derives the recovery key at the spec's cost, in a test build with the
-/// feature `test-cost` too: for the tests of the derivation itself. Every other build already does.
-pub fn derive_at_spec_cost() {
+/// While it lives, the thread that made it derives the recovery key at the spec's cost, in a test
+/// build with the feature `test-cost` too: for the tests of the derivation itself. Every other
+/// build always does. Only its own thread: a test that runs beside it in the same process, as
+/// `cargo test` and WASM run them, keeps its own cost.
+#[must_use = "the spec's cost lasts only while it lives"]
+pub struct SpecCost {
+    /// Whether the thread derived at the spec's cost before.
     #[cfg(feature = "test-cost")]
-    AT_SPEC_COST.store(true, Ordering::Relaxed);
+    before: bool,
+    /// Of its own thread only.
+    _thread: std::marker::PhantomData<*const ()>,
 }
 
-/// Argon2id's memory in KiB, passes and lanes for this process: [`derives_at_spec_cost`].
+impl SpecCost {
+    /// The spec's cost on this thread until the value is dropped.
+    pub fn enter() -> Self {
+        Self {
+            #[cfg(feature = "test-cost")]
+            before: AT_SPEC_COST.with(|at| at.replace(true)),
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for SpecCost {
+    fn drop(&mut self) {
+        #[cfg(feature = "test-cost")]
+        AT_SPEC_COST.with(|at| at.set(self.before));
+    }
+}
+
+impl fmt::Debug for SpecCost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SpecCost")
+    }
+}
+
+/// Argon2id's memory in KiB, passes and lanes for this thread: [`derives_at_spec_cost`].
 fn argon2_cost() -> (u32, u32, u32) {
     #[cfg(feature = "test-cost")]
     if !derives_at_spec_cost() {

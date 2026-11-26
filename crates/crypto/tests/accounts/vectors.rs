@@ -6,8 +6,7 @@
 //! byte with that nonce, and they open as "Account" says.
 
 use skald_crypto::{
-    RecoveryKey, SigningKey, derive_at_spec_cost, new_recovery_with_nonce, open_recovery,
-    sign_account,
+    RecoveryKey, SigningKey, SpecCost, new_recovery_with_nonce, open_recovery, sign_account,
 };
 use skald_proto::{AccountBody, AccountId, AccountRecord, Cbor, MasterBackup};
 
@@ -64,7 +63,7 @@ fn vectors() -> (AccountRecord, MasterBackup) {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_test_vectors_are_derived_and_sealed_as_the_spec_says() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let (record, backup) = vectors();
     let (aead, recovery_public) = derived(RECOVERY, account());
 
@@ -93,7 +92,7 @@ fn the_test_vectors_are_derived_and_sealed_as_the_spec_says() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_recovery_made_with_the_vectors_nonce_matches_them_byte_for_byte() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let master = SigningKey::from_bytes(&hex32(MASTER_SECRET));
     assert_eq!(master.public_key(), hex32(MASTER_PUBLIC));
     let recovery = RecoveryKey::parse(RECOVERY).expect("a recovery key");

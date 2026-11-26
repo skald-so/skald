@@ -16,8 +16,8 @@
 //!   AccountError>`: the backup opened with the recovery key, refused unless it opens to the private
 //!   key of the record's `master`; one derivation. `Recovered { master: SigningKey, hpke: HpkeKey }`
 //!   holds the master key and the recovery HPKE key pair;
-//! - `skald_crypto::derive_at_spec_cost()`: the derivations at the spec's cost in a test build too,
-//!   as each test here derives.
+//! - `skald_crypto::SpecCost::enter()`: the thread's derivations at the spec's cost while it lives,
+//!   in a test build too, as each test here derives.
 //!
 //! Where the salt is kept is the spec's: these tests take it only through these calls.
 
@@ -25,8 +25,7 @@
 mod common;
 
 use skald_crypto::{
-    RecoveryKey, SigningKey, check_account, derive_at_spec_cost, new_recovery, open_recovery,
-    sign_account,
+    RecoveryKey, SigningKey, SpecCost, check_account, new_recovery, open_recovery, sign_account,
 };
 use skald_proto::{AccountId, AccountRecord, Cbor, MasterBackup};
 
@@ -92,7 +91,7 @@ fn vector(name: &str) -> Vec<u8> {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_and_record_open_with_their_recovery_key_to_the_master_key_and_the_records_hpke_key() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let master = SigningKey::generate();
     let recovery = RecoveryKey::generate();
     let on = account(ACCOUNT);
@@ -125,7 +124,7 @@ fn a_backup_and_record_open_with_their_recovery_key_to_the_master_key_and_the_re
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_opens_only_with_its_recovery_key() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let master = SigningKey::generate();
     let (record, backup) = made(&master, &key(VECTOR_KEY), account(ACCOUNT));
 
@@ -143,7 +142,7 @@ fn a_backup_opens_only_with_its_recovery_key() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_derivation_is_salted_per_account() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let master = SigningKey::generate();
     let recovery = key(VECTOR_KEY);
 
@@ -170,7 +169,7 @@ fn the_derivation_is_salted_per_account() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_whose_key_is_not_the_records_master_key_is_refused() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let master = SigningKey::generate();
     let recovery = RecoveryKey::generate();
     let (record, backup) = made(&master, &recovery, account(ACCOUNT));
@@ -192,7 +191,7 @@ fn a_backup_whose_key_is_not_the_records_master_key_is_refused() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_test_vectors_are_the_record_and_backup_of_their_recovery_key() {
-    derive_at_spec_cost();
+    let _spec = SpecCost::enter();
     let record_bytes = vector("Account record");
     let backup_bytes = vector("Master backup");
 

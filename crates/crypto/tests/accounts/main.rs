@@ -16,8 +16,8 @@
 //!   MasterBackup)` and `new_recovery_with_nonce(.., nonce: [u8; 12])`, for the vector;
 //!   `open_recovery(&AccountRecord, &MasterBackup, &RecoveryKey) -> Result<Recovered,
 //!   AccountError>`;
-//! - `skald_crypto::derive_at_spec_cost()`: the derivations at the spec's cost in a test build too,
-//!   as each test here derives.
+//! - `skald_crypto::SpecCost::enter()`: the thread's derivations at the spec's cost while it lives,
+//!   in a test build too, as each test here derives.
 //!
 //! The fixtures encode records with the tests' CBOR writer, sign them with the tests' keys and
 //! derive keys and seal and open backups with the `argon2`, `aes-gcm` and `hpke` crates as
