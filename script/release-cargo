@@ -34,21 +34,29 @@ for crate in proto adapters crypto client; do
   done <"$tmp/files"
 
   # Keep the runtime manifests and make the local dependencies registry-resolvable.
-  awk -v name="$name" -v version="$version" '
+  awk -v name="$name" -v version="$version" -v repository='repository = "https://github.com/skald-so/skald"' '
+    function finish_package() {
+      if (section == "[package]" && !has_repository) print repository
+    }
     /^\[/ {
+      finish_package()
       section = $0
       omit = /^\[\[test\]\]$/ || /^\[(.*\.)?dev-dependencies\]$/ || /^\[package\.metadata\.dist\]$/
     }
     omit { next }
     section == "[package]" && /^name *=/ {
       print "name = \"" name "\""
-      print "repository = \"https://github.com/skald-so/skald\""
       next
+    }
+    section == "[package]" && /^[[:blank:]]*repository(\.workspace)?[[:blank:]]*=/ {
+      has_repository = 1
+      $0 = repository
     }
     / = \{ path = "\.\.\/(proto|adapters|crypto)"[ ,}]/ {
       sub(/\{ path = /, "{ version = \"=" version "\", path = ")
     }
     { print }
+    END { finish_package() }
   ' "$root/$src/Cargo.toml" >"$tmp/$src/Cargo.toml"
 done
 

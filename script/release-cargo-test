@@ -124,6 +124,7 @@ async function unpack(artifact, out, env) {
   const [pkg] = await metadata(dir, env);
   assert.equal(artifact, `${pkg.name}-${pkg.version}.crate`);
   assert.equal(pkg.license, 'MIT OR Apache-2.0', `${artifact} must declare the release license`);
+  assert.equal(pkg.repository, 'https://github.com/skald-so/skald', `${artifact} must declare the release repository`);
   assert(pkg.dependencies.every((dep) => !dep.path), `${artifact} has a workspace path dependency`);
   const bytes = fs.readFileSync(archive);
   return { pkg, dir, bytes, index: registryEntry(pkg, bytes) };
