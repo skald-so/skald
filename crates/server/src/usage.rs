@@ -11,7 +11,7 @@ use crate::AppState;
 use crate::mailboxes;
 use crate::refusal::{Answer, Refusal, SignedIn};
 use crate::space_plans::{self, SpacePlan};
-use crate::spaces::{Gotten, Space};
+use crate::spaces::{self, Gotten, OwnedSpaces};
 
 /// `UsageCount` in the spec.
 #[derive(Serialize)]
@@ -26,15 +26,6 @@ struct UsageCount {
 struct UsageLimit {
     #[serde(skip_serializing_if = "Option::is_none")]
     limit: Option<u64>,
-}
-
-/// `OwnedSpaces` in the spec.
-#[derive(Serialize)]
-struct OwnedSpaces {
-    count: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    limit: Option<u64>,
-    spaces: Vec<Space>,
 }
 
 /// `AccountUsage` in the spec.
@@ -73,14 +64,9 @@ fn counted(count: i64) -> u64 {
 /// before it is created, and its devices with a certificate, `service` and revoked ones aside.
 pub(crate) async fn account(State(state): State<AppState>, SignedIn(account): SignedIn) -> Answer {
     let failed = |err| Refusal::Database("read the account's usage", err);
-    let created: Vec<(String, String, bool)> = sqlx::query_as(
-        "SELECT id::text, name, personal FROM spaces WHERE creator_id = $1::uuid
-         ORDER BY created_at, id",
-    )
-    .bind(&account)
-    .fetch_all(&state.db)
-    .await
-    .map_err(failed)?;
+    let owned_spaces = spaces::owned(&state.db, &state, &account)
+        .await
+        .map_err(failed)?;
     let (devices,): (i64,) = sqlx::query_as(
         "SELECT count(*) FROM devices
          WHERE account_id = $1::uuid AND cert IS NOT NULL AND kind <> 'service' AND NOT revoked",
@@ -89,16 +75,6 @@ pub(crate) async fn account(State(state): State<AppState>, SignedIn(account): Si
     .fetch_one(&state.db)
     .await
     .map_err(failed)?;
-    // As `POST /spaces` counts them: the personal space counts whether or not it is created yet.
-    let team = created.iter().filter(|(_, _, personal)| !personal).count();
-    let owned_spaces = OwnedSpaces {
-        count: team as u64 + 1,
-        limit: state.owned_spaces_limit.map(u64::from),
-        spaces: created
-            .into_iter()
-            .map(|(space, name, _)| Space { space, name })
-            .collect(),
-    };
     let devices = UsageCount {
         count: counted(devices),
         limit: state.devices_limit.map(u64::from),

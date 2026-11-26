@@ -1504,7 +1504,7 @@ export const getGetAccountUsageUrl = () => {
 };
 
 /**
- * The spaces the session's account owns and its devices, each counted as its limit counts it, with the limit while the server has its setting (docs/dev/architecture.md, "Cloud limits"). Asking creates no personal space.
+ * The spaces the session's account owns and its devices, each counted as its limit counts it (docs/dev/architecture.md, "Cloud limits"). Asking creates no personal space.
  * @summary The spaces the account owns and its devices, with their limits
  */
 export const getAccountUsage = async (

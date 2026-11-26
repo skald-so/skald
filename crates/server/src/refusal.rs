@@ -67,8 +67,10 @@ pub(crate) enum Refusal {
     OwnedSpacesLimit(u32),
     /// The account has as many devices with a certificate as it may: the number it holds.
     DevicesLimit(u32),
+    /// A roster revision would give the space more members than it may: the limit.
+    MembersLimit(u64),
     /// A roster revision would give the space more service agents than it may: the number it holds.
-    ServiceAgentsLimit(u32),
+    ServiceAgentsLimit(u64),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
     /// A link message the server does not relay there, for the reason it holds.
@@ -272,6 +274,12 @@ impl IntoResponse for Refusal {
                 "devices-limit",
                 "Device limit reached",
                 &format!("The account has as many devices with a certificate as it may: {limit}."),
+            ),
+            Refusal::MembersLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "members-limit",
+                "Member limit reached",
+                &format!("The space may have up to {limit} members."),
             ),
             Refusal::ServiceAgentsLimit(limit) => problem(
                 StatusCode::FORBIDDEN,

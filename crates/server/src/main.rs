@@ -211,7 +211,7 @@ struct Cli {
     #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
     privacy_policy_url: Option<PrivacyPolicyUrl>,
 
-    /// Show effective cloud plans and their limits in space usage.
+    /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
     #[arg(long, env = "SKALD_SPACE_PLANS")]
     space_plans: bool,
 
@@ -231,8 +231,8 @@ struct Cli {
     #[arg(long, env = "SKALD_ABUSE_REPORT_RETENTION", value_name = "SECONDS")]
     abuse_report_retention: Option<NonZeroU32>,
 
-    /// The number of spaces an account may own: the ones it created, its personal space included,
-    /// which counts also before it is created [default: no limit].
+    /// With plans off, the number of spaces an account may own, including its personal space
+    /// before creation [default: no limit].
     #[arg(
         long,
         env = "SKALD_OWNED_SPACES_LIMIT",
@@ -311,7 +311,7 @@ struct Cli {
     )]
     devices_limit: Option<u32>,
 
-    /// The number of service agent entries a space's latest revision may list; a revision that
+    /// With plans off, the number of service agent entries a space's roster may list. A revision that
     /// lists more than the setting and than the revision before it is not stored [default: no
     /// limit].
     #[arg(

@@ -375,16 +375,18 @@ export interface SignInMethods {
 }
 
 /**
- * The spaces an account owns, as `--owned-spaces-limit` counts them: the ones it created, its personal space included also before it is created. `spaces` lists those that exist.
+ * The spaces the account created. `spaces` lists all that exist, including paid spaces. The count includes the personal space before it is created. With plans enabled, only Free spaces count, and an uncreated personal space counts as Free.
  */
 export interface OwnedSpaces {
-  /** @minimum 1 */
+  /** @minimum 0 */
   count: number;
   /**
-   * The value of `--owned-spaces-limit`; absent without it.
+   * Two Free spaces with plans enabled. With plans off, the value of `--owned-spaces-limit`, if set.
    * @minimum 1
    */
   limit?: number;
+  /** True when the count and limit apply only to Free spaces. Absent with plans off. */
+  free_only?: boolean;
   spaces: Space[];
 }
 
@@ -929,11 +931,11 @@ export interface UsageLimit {
 }
 
 /**
- * A space's messages this month and service agents, with its limits. When `plan` is present, the limits describe plan allowances, including those for members, devices and attachments. The server enforces limits from its settings.
+ * A space's messages this month and service agents, with its limits. When `plan` is present, the server enforces the plan's member and service agent limits. The other plan allowances are informational and the server's existing limits still apply to those features.
  */
 export interface SpaceUsage {
   plan?: SpacePlan;
-  /** The plan allowance for space members. Team has no member limit. */
+  /** The effective plan limit for space members. Team has no member limit. Absent with plans off. */
   members?: UsageLimit;
   /** The plan allowance for devices per space member. */
   devices_per_member?: UsageLimit;
@@ -947,7 +949,7 @@ export interface SpaceUsage {
   mailbox_retention: UsageLimit;
   /** Channel history retention in seconds. With plans off, the limit comes from `--history-retention`. */
   history_retention: UsageLimit;
-  /** Service agent entries in the space's latest revision. Before the first revision the count is zero. With plans off, the limit comes from `--service-agents-limit`. */
+  /** Service agent entries in the space's latest revision. Before the first revision the count is zero. The effective limit comes from the space's plan or, with plans off, `--service-agents-limit`. */
   service_agents: UsageCount;
 }
 

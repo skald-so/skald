@@ -60,7 +60,9 @@ export function UsageScreen({
             {account && (
               <>
                 <UsageCard
-                  label="Spaces"
+                  label={
+                    account.owned_spaces.free_only ? "Free spaces" : "Spaces"
+                  }
                   count={account.owned_spaces.count}
                   limit={account.owned_spaces.limit}
                 />
@@ -102,8 +104,12 @@ function OwnedSpaces({ owned }: { owned: AccountUsage["owned_spaces"] }) {
           ))}
         </ul>
       )}
-      {owned.count > owned.spaces.length && (
-        <p>Your personal space counts before it is made.</p>
+      {owned.free_only ? (
+        <p>A Free personal space counts before it is made.</p>
+      ) : (
+        owned.count > owned.spaces.length && (
+          <p>Your personal space counts before it is made.</p>
+        )
       )}
     </section>
   );
