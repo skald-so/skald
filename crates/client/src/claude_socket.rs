@@ -235,7 +235,8 @@ impl ConfirmingStop {
     }
 }
 
-/// A delivery line and the exact place its next entry starts in this file.
+/// A delivery line, the bookkeeping lines after it, and the exact place the next line starts in
+/// this file.
 struct StopFile {
     file: PathBuf,
     identity: (u64, u64),
@@ -319,15 +320,14 @@ fn stop_reference(text: &str) -> Option<(resend::Way, String, [u8; 32])> {
         (resend::Way::Channel, body.trim())
     } else {
         let text = text
+            .strip_prefix("<task-notification>")
+            .and_then(|rest| rest.split_once("</task-notification>"))
+            .map_or(text, |(_, rest)| rest.trim_start());
+        let text = text
             .strip_prefix("<system-reminder>")
             .and_then(|body| body.strip_suffix("</system-reminder>"))
             .unwrap_or(text);
-        let body = text.trim_start().strip_prefix(REWAKE_OUTPUT)?;
-        (
-            resend::Way::Rewake,
-            body.trim_start_matches([':', ' ', '\r', '\n', '\t'])
-                .trim_end(),
-        )
+        (resend::Way::Rewake, rewake_output(text.trim())?)
     };
     let line = body.lines().next()?;
     let (header, _) = line.strip_prefix('[')?.split_once("] #")?;
@@ -339,6 +339,24 @@ fn stop_reference(text: &str) -> Option<(resend::Way, String, [u8; 32])> {
         .then(|| (path, reference, Sha256::digest(body.as_bytes()).into()))
 }
 
+/// The output in `text`, an `asyncRewake` hook's blocking error as Claude Code words it:
+/// `<event> hook blocking error from command "<command>": <output>`.
+fn rewake_output(text: &str) -> Option<&str> {
+    let (event, rest) = text.split_once(REWAKE_OUTPUT)?;
+    if event.trim_end().contains(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let rest = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split_once("\":")?.1,
+        None => rest,
+    };
+    Some(
+        rest.trim_start_matches([':', ' ', '\r', '\n', '\t'])
+            .trim_end(),
+    )
+}
+
 /// Without an exact partial line, both entries have to name the same turn explicitly.
 fn same_stop_turn(expected: Option<&str>, found: Option<&str>, partial: bool) -> bool {
     match (expected, found) {
@@ -348,7 +366,8 @@ fn same_stop_turn(expected: Option<&str>, found: Option<&str>, partial: bool) ->
 }
 
 impl StopFile {
-    /// The delivery must be the last complete line when Stop reads this file.
+    /// The delivery must be the last complete entry of the conversation when Stop reads this file:
+    /// only bookkeeping lines may follow it ([`StopEntry::bookkeeping`]).
     fn at_tail(file: &Path) -> Option<(StopFile, StopEntry)> {
         let mut opened = open_transcript(file)?;
         let identity = file_identity(&opened).ok()?;
@@ -358,12 +377,22 @@ impl StopFile {
         let mut bytes = vec![0; usize::try_from(length - first).ok()?];
         opened.read_exact(&mut bytes).ok()?;
         let next = bytes.iter().rposition(|&byte| byte == b'\n')? + 1;
-        let anchor = match bytes[..next - 1].iter().rposition(|&byte| byte == b'\n') {
-            Some(at) => at + 1,
-            None if first == 0 => 0,
-            None => return None,
+        let mut end = next;
+        let (anchor, entry) = loop {
+            let start = match bytes[..end - 1].iter().rposition(|&byte| byte == b'\n') {
+                Some(at) => at + 1,
+                None if first == 0 => 0,
+                None => return None,
+            };
+            let entry: StopEntry = serde_json::from_slice(&bytes[start..end]).ok()?;
+            if !entry.bookkeeping() {
+                break (start, entry);
+            }
+            if start == 0 {
+                return None;
+            }
+            end = start;
         };
-        let entry: StopEntry = serde_json::from_slice(&bytes[anchor..next]).ok()?;
         let parent = entry.uuid.clone();
         let incomplete = &bytes[next..];
         let prefix =
@@ -406,34 +435,47 @@ impl StopFile {
         if <[u8; 32]>::from(Sha256::digest(&anchor)) != self.anchor_hash {
             return None;
         }
-        let mut line = Vec::new();
-        BufReader::new(opened)
-            .take(STOP_TAIL + 1)
-            .read_until(b'\n', &mut line)
-            .ok()?;
-        if line.len() as u64 > STOP_TAIL
-            || self.prefix.is_some_and(|(len, hash)| {
-                line.get(..len)
-                    .is_none_or(|prefix| <[u8; 32]>::from(Sha256::digest(prefix)) != hash)
-            })
-        {
-            return None;
+        let mut after = BufReader::new(opened).take(STOP_TAIL + 1);
+        let mut first = true;
+        // The bookkeeping lines Claude Code writes before its reply are passed over.
+        loop {
+            let mut line = Vec::new();
+            after.read_until(b'\n', &mut line).ok()?;
+            if after.limit() == 0
+                || (first
+                    && self.prefix.is_some_and(|(len, hash)| {
+                        line.get(..len)
+                            .is_none_or(|prefix| <[u8; 32]>::from(Sha256::digest(prefix)) != hash)
+                    }))
+            {
+                return None;
+            }
+            first = false;
+            if !line.ends_with(b"\n") {
+                return Some(false);
+            }
+            let entry: StopEntry = serde_json::from_slice(&line).ok()?;
+            if entry.bookkeeping() {
+                continue;
+            }
+            return (entry.assistant_in(session)
+                && self.replies_in_turn(entry.turn.as_deref())
+                && self
+                    .parent
+                    .as_ref()
+                    .is_none_or(|parent| entry.parent.as_ref() == Some(parent)))
+            .then_some(true);
         }
-        if !line.ends_with(b"\n") {
-            return Some(false);
+    }
+
+    /// Whether a reply that names the turn `found`, or none, answers the delivery's turn. Claude
+    /// Code's reply names none: its parent, the delivery's own entry, ties it to the turn.
+    fn replies_in_turn(&self, found: Option<&str>) -> bool {
+        match (self.turn.as_deref(), found) {
+            (Some(expected), Some(found)) => expected == found,
+            (_, None) => self.parent.is_some() || self.identified_reply,
+            (None, Some(_)) => self.identified_reply,
         }
-        let entry: StopEntry = serde_json::from_slice(&line).ok()?;
-        (entry.assistant_in(session)
-            && same_stop_turn(
-                self.turn.as_deref(),
-                entry.turn.as_deref(),
-                self.identified_reply,
-            )
-            && self
-                .parent
-                .as_ref()
-                .is_none_or(|parent| entry.parent.as_ref() == Some(parent)))
-        .then_some(true)
     }
 }
 
@@ -641,6 +683,16 @@ struct StopEntry {
 }
 
 impl StopEntry {
+    /// A line Claude Code writes beside the conversation, such as `api-request` or `last-prompt`:
+    /// no entry of the conversation's type, and no `uuid` to join its chain.
+    fn bookkeeping(&self) -> bool {
+        self.uuid.is_none()
+            && !matches!(
+                self.kind.as_str(),
+                "user" | "assistant" | "attachment" | "system"
+            )
+    }
+
     fn in_session(&self, session: &str) -> bool {
         !self.sidechain && self.session.as_deref() == Some(session)
     }
@@ -1246,6 +1298,7 @@ mod tests {
         file
     }
 
+    /// Claude Code's reply names no turn: its parent, the delivery, ties it to the turn.
     #[test]
     fn a_deferred_stop_only_accepts_its_adjacent_assistant_entry() {
         let reply = json!({
@@ -1259,7 +1312,8 @@ mod tests {
             (json!({ "sessionId": "another" }), None),
             (json!({ "parentUuid": "another" }), None),
             (json!({ "promptId": "another" }), None),
-            (json!({ "promptId": null }), None),
+            (json!({ "promptId": null }), Some(true)),
+            (json!({ "promptId": null, "parentUuid": null }), None),
             (json!({ "type": "user" }), None),
         ];
         for (index, (fields, expected)) in appends.into_iter().enumerate() {
@@ -1276,6 +1330,82 @@ mod tests {
             writeln!(output, "{appended}\n{reply}").unwrap();
             assert_eq!(watch.assistant("session"), expected, "{appended}");
         }
+    }
+
+    /// As Claude Code 2.1.332 writes them: bookkeeping lines without a `uuid` follow the delivery,
+    /// before and after Stop, and its reply follows them, naming no turn. A conversation entry
+    /// between them, or a delivery a conversation entry follows at Stop, confirms nothing.
+    #[test]
+    fn a_deferred_stop_passes_over_bookkeeping_lines() {
+        let line = |entry: serde_json::Value| format!("{entry}\n");
+        let blob = line(json!({ "type": "api-request-blob", "sessionId": "session" }));
+        let request = line(json!({ "type": "api-request", "sessionId": "session" }));
+        let reply = line(json!({
+            "type": "assistant", "sessionId": "session", "uuid": "reply",
+            "parentUuid": "delivery", "message": { "role": "assistant" },
+        }));
+        let attachment = line(json!({
+            "type": "attachment", "sessionId": "session", "uuid": "attached",
+            "parentUuid": "delivery",
+        }));
+        let unknown = line(json!({ "type": "new-kind", "sessionId": "session", "uuid": "new" }));
+        let cases = [
+            (vec![], Some(true)),
+            (vec![unknown.as_str()], None),
+            (vec![attachment.as_str()], None),
+        ];
+        for (index, (between, expected)) in cases.into_iter().enumerate() {
+            let dir =
+                crate::test_dir::TestDir::new(&format!("deferred-claude-bookkeeping-{index}"));
+            let file = write_delivery_entry(&dir);
+            let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            output.write_all(blob.as_bytes()).unwrap();
+            let (watch, entry) = StopFile::at_tail(&file).unwrap();
+            assert_eq!(entry.uuid.as_deref(), Some("delivery"));
+            assert_eq!(watch.assistant("session"), Some(false));
+            output.write_all(request.as_bytes()).unwrap();
+            assert_eq!(watch.assistant("session"), Some(false));
+            for line in &between {
+                output.write_all(line.as_bytes()).unwrap();
+            }
+            output.write_all(reply.as_bytes()).unwrap();
+            assert_eq!(watch.assistant("session"), expected, "{between:?}");
+        }
+        let dir = crate::test_dir::TestDir::new("deferred-claude-bookkeeping-attached");
+        let file = write_delivery_entry(&dir);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(format!("{attachment}{blob}").as_bytes())
+            .unwrap();
+        let (_, entry) = StopFile::at_tail(&file).unwrap();
+        assert_eq!(entry.kind, "attachment");
+    }
+
+    /// The deliveries of both paths, as Claude Code 2.1.332 puts them in the session file, name
+    /// their own line's whole reference.
+    #[test]
+    fn a_stop_names_the_reference_of_a_channel_event_and_of_a_rewake_hook_s_output() {
+        use crate::forms::whole_reference;
+        let reference = whole_reference(skald_proto::MessageId::generate());
+        let own = format!("[clienta/api · laptop · own] #{reference}: tag the release");
+        let channel = format!("<channel source=\"skald\">\n{own}\n</channel>");
+        let rewake = format!(
+            "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n\
+             <system-reminder>\nStop hook blocking error from command \"SessionStart:startup\": \
+             {own}\n</system-reminder>"
+        );
+        let digest: [u8; 32] = Sha256::digest(own.as_bytes()).into();
+        for (text, path) in [
+            (channel, resend::Way::Channel),
+            (rewake, resend::Way::Rewake),
+        ] {
+            let named = stop_reference(&text);
+            assert_eq!(named, Some((path, reference.clone(), digest)), "{text}");
+        }
+        let typed = format!("please look at hook blocking error from command \"x\": {own}");
+        assert_eq!(stop_reference(&typed), None);
     }
 
     #[test]

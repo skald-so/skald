@@ -7,7 +7,7 @@ use std::fs;
 use std::thread;
 use std::time::Duration;
 
-use crate::fallbacks::{Bare, long_text, rewake_of, session_start, woke};
+use crate::fallbacks::{Bare, late_reply_confirms_once, long_text, rewake_of, session_start, woke};
 use crate::hooks::{Bob, Event, LIMIT, assert_cut, assert_own_line, assert_signal};
 use crate::solo::{API, WEB};
 
@@ -54,6 +54,31 @@ fn an_own_message_that_comes_while_it_waits_wakes_the_session() {
 
     let (hooked, _) = rewake.finished();
     assert_own_line(&woke(&hooked), LATER_SAYS, msg_id, &ada.solo.short(API));
+}
+
+/// What api says to web; it is nowhere else.
+const LATE_SAYS: &str = "rewake test: api asks web before its reply is written";
+
+/// web's `asyncRewake` hook starts on `Stop`; api sends web a message, which the hook gives. Its
+/// output, as Claude Code puts it, ends web's session file at the next `Stop`, before bookkeeping
+/// lines, and the reply comes later ([`late_reply_confirms_once`]).
+#[test]
+fn one_stop_confirms_an_own_message_of_the_hook_whose_reply_follows_bookkeeping_lines() {
+    let ada = Bare::new(4_919_517_001, "ada-rewake-bookkeeping");
+    let dir = ada.solo.dir(WEB);
+    let stop = serde_json::from_str(&Event::Stop.input(&dir)).expect("an input is JSON");
+    let mut rewake = ada.rewake(WEB, &stop, WAITS, &[]);
+    let msg_id = ada.solo.api_sends_web(LATE_SAYS);
+    let (hooked, _) = rewake.finished();
+    let output = woke(&hooked);
+    assert_own_line(&output, LATE_SAYS, msg_id, &ada.solo.short(API));
+
+    let delivery = format!(
+        "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n\
+         <system-reminder>\nStop hook blocking error from command \"Stop\": {}\n</system-reminder>",
+        output.trim()
+    );
+    late_reply_confirms_once(&ada, &delivery, msg_id);
 }
 
 /// What review says to web; it is nowhere else.

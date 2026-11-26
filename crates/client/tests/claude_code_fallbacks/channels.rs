@@ -15,7 +15,8 @@ use crate::client::Session;
 
 use crate::cloud::WAIT;
 use crate::fallbacks::{
-    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, long_text, wait_events,
+    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, late_reply_confirms_once,
+    long_text, wait_events,
 };
 use crate::hooks::{
     Bob, CLAUDE_CODE, Event, HOOK, LIMIT, assert_cut, assert_own_line, assert_signal,
@@ -141,6 +142,18 @@ fn one_stop_confirms_an_own_channel_message_after_the_assistant_entry_is_written
         "Stop: {stopped:?}"
     );
     shows_read_once(ada.machine(), msg_id);
+}
+
+/// api sends web a message, which goes as a channel event. Its event ends web's session file at
+/// `Stop`, before bookkeeping lines, and the reply comes later ([`late_reply_confirms_once`]).
+#[test]
+fn one_stop_confirms_an_own_channel_message_whose_reply_follows_bookkeeping_lines() {
+    let ada = Bare::new(4_919_506_001, "ada-channel-bookkeeping");
+    let mut session = ada.channel(WEB, &[(RESEND_SETTING, LONG)]);
+    let (msg_id, event) = own_event(&ada, &mut session);
+
+    let delivery = format!("<channel source=\"skald\">\n{event}\n</channel>");
+    late_reply_confirms_once(&ada, &delivery, msg_id);
 }
 
 /// What review says to web; it is nowhere else.

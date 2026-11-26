@@ -541,6 +541,9 @@ fn pipe(
                 Ok(0) => break,
                 // A front before the relay resets a connection it is done with.
                 Err(err) if err.kind() == io::ErrorKind::ConnectionReset => break,
+                // On Windows, the relay's own reset of a connection ([`reset`]) aborts the read of
+                // its other half.
+                Err(err) if err.kind() == io::ErrorKind::ConnectionAborted => break,
                 Err(err) => {
                     eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
                     break;

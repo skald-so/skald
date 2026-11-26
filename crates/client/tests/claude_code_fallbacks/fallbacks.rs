@@ -2,18 +2,21 @@
 //! that Claude Code's MCP server and hooks run without the one-shot setting, the channel events of
 //! a `skald mcp`, runs of the `asyncRewake` hook in the background, and the mod's polls.
 
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::{sync::Arc, sync::Mutex, thread, time::Duration, time::Instant};
 
 use serde_json::{Value, json};
+use skald_proto::MessageId;
 
 use crate::client::{CLIENT, MCP, Session};
 use crate::helped::Helped;
-use crate::hooks::{CLAUDE_CODE, HOOK, Hooked};
+use crate::hooks::{CLAUDE_CODE, Event, HOOK, Hooked};
 use crate::kit::RECV;
-use crate::machine::{Machine, RUN_LIMIT};
+use crate::machine::{Machine, RUN_LIMIT, Run};
+use crate::receipts::{shows_no_read, shows_read_once};
 use crate::solo::{Solo, WEB};
 use crate::world::AGENT;
 
@@ -326,4 +329,57 @@ pub fn woke(hooked: &Hooked) -> String {
         "it gave nothing: {hooked:?}"
     );
     hooked.stderr.clone()
+}
+
+/// `delivery`, what a path gave web, ends web's session file as Claude Code 2.1.332 writes it when
+/// `Stop` runs: its user entry, then the bookkeeping lines `api-request-blob` and `api-request`. Its
+/// reply, which names no turn, only its parent, the delivery, comes once `Stop` ran or while it
+/// still runs. Fails unless the person's `skald recv` shows no `read` of `msg_id` before the reply
+/// and `read` once after it, and `Stop` printed nothing.
+#[track_caller]
+pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
+    let dir = ada.solo.dir(WEB);
+    let input = Event::Stop.input(&dir);
+    let parsed: Value = serde_json::from_str(&input).expect("Stop input");
+    let session = &parsed["session_id"];
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .append(true)
+        .open(parsed["transcript_path"].as_str().expect("transcript path"))
+        .expect("create the transcript");
+    let entries = [
+        json!({
+            "type": "user", "sessionId": session, "uuid": "delivery", "parentUuid": "before",
+            "promptId": parsed["prompt_id"], "timestamp": jiff::Timestamp::now().to_string(),
+            "message": { "role": "user", "content": delivery },
+        }),
+        json!({ "type": "api-request-blob", "sessionId": session, "hash": "h" }),
+        json!({ "type": "api-request", "sessionId": session, "id": "r" }),
+    ];
+    for entry in entries {
+        writeln!(file, "{entry}").expect("write the transcript before Stop");
+    }
+    let reply = json!({
+        "type": "assistant", "sessionId": session, "uuid": "reply", "parentUuid": "delivery",
+        "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
+    });
+
+    let mut command = ada
+        .helped
+        .command_in(&dir, &[], &[AGENT, WEB, HOOK, CLAUDE_CODE]);
+    let mut stop = Run::spawn(command.stdin(Stdio::piped()));
+    stop.answer(&input);
+    let flush_at = Instant::now() + Duration::from_millis(300);
+    while !stop.exited() && Instant::now() < flush_at {
+        thread::sleep(Duration::from_millis(10));
+    }
+    shows_no_read(ada.machine(), msg_id, "before the assistant's reply");
+    writeln!(file, "{reply}").expect("write the assistant's reply");
+
+    let stopped = stop.finish();
+    assert!(
+        stopped.success && stopped.stdout.is_empty() && stopped.stderr.is_empty(),
+        "Stop: {stopped:?}"
+    );
+    shows_read_once(ada.machine(), msg_id);
 }
