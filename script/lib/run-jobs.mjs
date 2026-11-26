@@ -41,9 +41,12 @@ const git = (cwd, ...args) => {
 };
 
 // commitAll <dir> [<tag>]: a new repository in <dir> with one commit of all its files, tagged <tag>
-// if given; returns the commit.
+// if given; returns the commit. No automatic maintenance: git 2.47 and later runs it detached after a
+// commit with many objects, and its repack writes into .git while the test removes the directory.
 export function commitAll(dir, tag) {
   git(dir, 'init', '-q');
+  git(dir, 'config', 'gc.auto', '0');
+  git(dir, 'config', 'maintenance.auto', 'false');
   git(dir, 'add', '-A');
   git(dir, 'commit', '-q', '-m', 'release');
   if (tag) git(dir, 'tag', tag);
