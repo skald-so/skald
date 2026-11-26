@@ -39,10 +39,10 @@ fn at_an_acceptance_the_admins_devices_get_a_space_notice_on_any_instance_and_ot
     }
 }
 
-/// With eve's tablet revoked, alice's and bob's sessions get eve's waiting acceptance with eve's
-/// devices, each with its certificate or none, and eve's revocation, as eve's own devices list
-/// gives them; carol's and dave's, members who are no admins, and eve's and frank's, outside the
-/// space, get none.
+/// With eve's tablet revoked, alice's and bob's sessions get eve's waiting acceptance with its
+/// invite and eve's devices, each with its certificate or none, and eve's revocation, as eve's own
+/// devices list gives them; carol's and dave's, members who are no admins, and eve's and frank's,
+/// outside the space, get none.
 #[test]
 fn admins_sessions_get_the_waiting_acceptance_with_its_accounts_devices_and_revocations() {
     let scene = Scene::new(3_817_400_101);
@@ -55,6 +55,7 @@ fn admins_sessions_get_the_waiting_acceptance_with_its_accounts_devices_and_revo
     assert_taken(&eve.session.accept(invite.id, &accepted));
 
     let expected = Waiting {
+        invite: invite.bytes.clone(),
         acceptance: accepted.clone(),
         devices: devices_of(&eve.session.call("get", DEVICES, None)),
         revocations: eve.session.revocations(),

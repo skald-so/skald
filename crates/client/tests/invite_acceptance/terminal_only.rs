@@ -1,7 +1,7 @@
 //! The link comes only from the person at a terminal: given as an argument, through a pipe, with no
 //! terminal for input, or in the environment, it is not taken, and run as an agent the command
-//! refuses; none of them sends anything. On a machine that never signed in, the command says to
-//! sign in first.
+//! refuses; none of them sends anything. A machine that has never signed in still needs a valid
+//! invite link before it makes a request.
 
 use std::io::{Read as _, Write as _};
 use std::process::Stdio;
@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use crate::machine::{Machine, RUN_LIMIT};
 use crate::terminal::Terminal;
 use crate::world::{ADD_RULE, AGENT, CREATE_SPACE, GLOBEX, dir_of, path, run};
-use crate::{ACCEPT, Scene, asked_for_link, start};
+use crate::{ACCEPT, Scene, asked_for_link, assert_refused_saying, refused_at_terminal, start};
 
 /// The agent the tests run the command as.
 const AGENT_NAME: &str = "builder";
@@ -153,41 +153,24 @@ fn as_an_agent_at_a_terminal_it_refuses_and_sends_nothing() {
     scene.assert_nothing_accepted(&made, since);
 }
 
-/// On a machine that never signed in, `skald accept-invite` at a terminal, given the link of an
-/// invite if it asks for one, fails saying to run `skald sign-in`; the server holds no acceptance.
+/// A machine that never signed in rejects an invite link missing its secret without sending
+/// anything.
 #[test]
-fn machine_that_never_signed_in_is_told_to_sign_in() {
+fn a_signed_out_machine_refuses_a_malformed_link_before_sending_anything() {
     let scene = Scene::new(
         (7_305_404_501, "ada-invites-a-newcomer"),
         (7_305_404_502, "bob-on-a-new-machine"),
     );
     let made = scene.invite();
     let fresh = Machine::new().with_host_name("bob-new-machine");
+    let (without_secret, _) = made.link.split_once('#').expect("an invite fragment");
+    let since = scene.cloud().relay.mark();
 
-    let mut terminal = start(&fresh, &[]);
-    let started = Instant::now();
-    let mut typed = false;
-    while !terminal.exited() {
-        if !typed && terminal.shown().to_lowercase().contains("link") {
-            terminal.type_line(&made.link);
-            typed = true;
-        }
-        assert!(
-            started.elapsed() < RUN_LIMIT,
-            "skald did not exit: {}",
-            terminal.shown()
-        );
-        thread::sleep(Duration::from_millis(50));
-    }
-    let refused = terminal.finish();
+    let refused = refused_at_terminal(&fresh, without_secret);
 
-    assert!(!refused.success, "{}", refused.text);
-    assert!(
-        refused.text.to_lowercase().contains("sign-in"),
-        "it does not say to sign in first: {}",
-        refused.text
-    );
-    assert_eq!(scene.waiting(), Vec::new(), "acceptances held");
+    assert_refused_saying(&refused, &["link"]);
+    scene.assert_nothing_sent(since);
+    scene.assert_nothing_accepted(&made, since);
 }
 
 /// Runs `skald accept-invite` on `machine` with `input` on its input through a pipe and its outputs

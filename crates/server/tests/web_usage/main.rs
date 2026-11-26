@@ -41,6 +41,8 @@ mod sessions;
 mod api;
 #[path = "../mailbox/fixture.rs"]
 mod fixture;
+#[path = "../invites/scene.rs"]
+mod invites;
 #[path = "../revocations/kit.rs"]
 mod kit;
 #[path = "../cloud_limits/limits.rs"]
@@ -61,4 +63,7 @@ mod history;
 mod messages;
 mod nothing;
 mod owned;
+mod plan_ownership;
+mod plan_roster;
+mod plans;
 mod settings;

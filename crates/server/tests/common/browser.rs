@@ -362,6 +362,16 @@ pub struct Answer {
     pub body: String,
 }
 
+/// An HTTP request recorded by [`Page::record_requests`].
+#[derive(Debug, Deserialize)]
+pub struct Request {
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    /// The bytes of the request body, as Latin-1 so ASCII survives in binary bodies too.
+    pub body: Option<String>,
+}
+
 impl Drop for Browser {
     fn drop(&mut self) {
         // Also after a test failed: nothing to do when the driver is gone.
@@ -495,5 +505,18 @@ impl Page<'_> {
     pub fn answers(&self) -> Vec<Answer> {
         serde_json::from_value(self.browser.call("answers", json!({ "page": self.id })))
             .expect("answers")
+    }
+
+    /// From now on records the HTTP requests of this browser, including navigations, assets and
+    /// requests that finish without a response.
+    pub fn record_requests(&self) {
+        self.browser
+            .call("recordRequests", json!({ "page": self.id }));
+    }
+
+    /// Waits for network idle and gives the requests since [`Page::record_requests`], in order.
+    pub fn requests(&self) -> Vec<Request> {
+        serde_json::from_value(self.browser.call("requests", json!({ "page": self.id })))
+            .expect("requests")
     }
 }

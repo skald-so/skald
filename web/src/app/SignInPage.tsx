@@ -4,19 +4,13 @@ import a11y from "../ui/a11y.module.css";
 import { Button } from "../ui/Button.tsx";
 import { GitHubIcon, GoogleIcon, LogoIcon } from "../ui/icons.tsx";
 import styles from "./SignInPage.module.css";
+import { machineSignIn } from "./machine-sign-in.ts";
+import { providerNames, signInPaths } from "./names.ts";
 
-/** Each provider's button: its sign-in's start and its face, as 03-sign-in.png. */
-const faces: Record<
-  SignInProvider,
-  { start: string; name: string; icon: ReactNode; look?: string }
-> = {
-  github: {
-    start: "/auth/github",
-    name: "GitHub",
-    icon: <GitHubIcon />,
-    look: styles.github,
-  },
-  google: { start: "/auth/google", name: "Google", icon: <GoogleIcon /> },
+const faces: Record<SignInProvider, { icon?: ReactNode; look?: string }> = {
+  github: { icon: <GitHubIcon />, look: styles.github },
+  google: { icon: <GoogleIcon /> },
+  corporate: {},
 };
 
 /**
@@ -44,13 +38,14 @@ export function SignInPage({
         {providers.providers.map((provider) => (
           <a
             key={provider}
-            href={`${faces[provider].start}?${back}`}
+            href={`${signInPaths[provider]}?${back}`}
             className={[styles.provider, faces[provider].look]
               .filter(Boolean)
               .join(" ")}
           >
             {faces[provider].icon}
-            Continue with {faces[provider].name}
+            Continue with {providerNames[provider]}
+            {provider === "corporate" && " account"}
           </a>
         ))}
         <p className={styles.note}>
@@ -67,27 +62,29 @@ export function SignInPage({
           )}
         </p>
       </section>
-      <section aria-labelledby={terminal} className={styles.card}>
-        <h2 id={terminal}>Signing in from a terminal?</h2>
-        <p className={styles.hint}>
-          Enter the code that <code>skald</code> shows.
-        </p>
-        <form method="get" action="/device" className={styles.code}>
-          <label htmlFor={field} className={a11y.visuallyHidden}>
-            Code
-          </label>
-          <input
-            id={field}
-            name="user_code"
-            required
-            placeholder="XXXX-XXXX"
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-          />
-          <Button type="submit">Continue</Button>
-        </form>
-      </section>
+      {machineSignIn(providers.providers) !== "off" && (
+        <section aria-labelledby={terminal} className={styles.card}>
+          <h2 id={terminal}>Signing in from a terminal?</h2>
+          <p className={styles.hint}>
+            Enter the code that <code>skald</code> shows.
+          </p>
+          <form method="get" action="/device" className={styles.code}>
+            <label htmlFor={field} className={a11y.visuallyHidden}>
+              Code
+            </label>
+            <input
+              id={field}
+              name="user_code"
+              required
+              placeholder="XXXX-XXXX"
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+            />
+            <Button type="submit">Continue</Button>
+          </form>
+        </section>
+      )}
     </CenteredPage>
   );
 }

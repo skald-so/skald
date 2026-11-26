@@ -10,6 +10,7 @@ use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -47,6 +48,23 @@ const DEVICE_SESSION_LABEL: &str = "skald device session";
 
 /// An open WebSocket to the server.
 pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
+
+/// The problem of a request without a session, or with one the server does not hold.
+const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
+
+/// Whether a request of the process got [`NOT_SIGNED_IN`] since [`forget_refused`].
+static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
+
+/// Whether a request of the process got the server's refusal of its session since
+/// [`forget_refused`].
+pub fn session_refused() -> bool {
+    SESSION_REFUSED.load(Ordering::SeqCst)
+}
+
+/// Forgets the refusals [`session_refused`] gives.
+pub fn forget_refused() {
+    SESSION_REFUSED.store(false, Ordering::SeqCst);
+}
 
 /// Why a request to the server failed.
 #[derive(Debug)]
@@ -875,6 +893,12 @@ impl Connection {
         self.http(path, None, Body::Json(Method::Post, json))
     }
 
+    /// `PUT <path>` of the JSON `json` without a session.
+    pub fn put_json(&mut self, path: &str, json: &[u8]) -> Result<(), Error> {
+        self.http(path, None, Body::Json(Method::Put, json))
+            .map(drop)
+    }
+
     /// `POST <path>` with the form `form`; the body of the answer that serves it.
     pub fn post_form(&mut self, path: &str, form: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
         self.http(path, None, Body::Form(form))
@@ -1287,6 +1311,9 @@ impl Connection {
                 return Err(Error::TooOld { supported, speaks });
             }
             if kind != VersionProblem::TooNew.type_uri() {
+                if status == 401 && kind == NOT_SIGNED_IN {
+                    SESSION_REFUSED.store(true, Ordering::SeqCst);
+                }
                 return Err(Error::Refused {
                     status,
                     kind,
@@ -1755,6 +1782,16 @@ pub(crate) mod tests {
         body: Vec<u8>,
     }
 
+    /// A connection to a server that gives `answers`, each at once, one per request.
+    fn answered<const N: usize>(
+        answers: [String; N],
+    ) -> (Connection, thread::JoinHandle<Vec<Taken>>) {
+        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
+        let connection =
+            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        (connection, served)
+    }
+
     /// A stand-in server that answers each request in turn with the next of `answers`, a head and
     /// body after a pause; gives what it took.
     fn serving(answers: Vec<(Duration, String)>) -> (String, thread::JoinHandle<Vec<Taken>>) {
@@ -1898,10 +1935,7 @@ pub(crate) mod tests {
                          content-length: 7\r\n\r\nblocked"
             .to_owned();
         let page = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 0\r\n\r\n";
-        let answers = [stream, forbidden, page.to_owned()];
-        let (origin, served) = serving(answers.map(|it| (Duration::ZERO, it)).into());
-        let mut connection =
-            Connection::new(&origin, VersionRange::default(), 10 * SECOND).expect("a connection");
+        let (mut connection, served) = answered([stream, forbidden, page.to_owned()]);
         let open = |connection: &mut Connection| {
             connection.open_events_as("/mailbox/events", ("token", "proof"), 7)
         };
@@ -1927,6 +1961,39 @@ pub(crate) mod tests {
         ] {
             assert!(head.iter().any(|line| line == header), "{header}: {head:?}");
         }
+    }
+
+    /// Only the server's `not-signed-in` notes a refused session, until it is forgotten: not
+    /// another refusal with 401, nor another problem.
+    #[test]
+    fn only_not_signed_in_notes_a_refused_session() {
+        let problem = |status: &str, kind: &str| {
+            let body = format!(r#"{{"type":"{kind}","title":"t","status":0}}"#);
+            format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\n\
+                 content-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+        };
+        let answers = [
+            problem("401 Unauthorized", "https://skald.so/problems/other"),
+            problem("403 Forbidden", NOT_SIGNED_IN),
+            problem("401 Unauthorized", NOT_SIGNED_IN),
+        ];
+        let (mut connection, served) = answered(answers);
+        forget_refused();
+
+        for noted in [false, false, true] {
+            let refused = connection.get_as("/session", "token").err();
+            assert!(
+                matches!(refused, Some(Error::Refused { .. })),
+                "{refused:?}"
+            );
+            assert_eq!(session_refused(), noted, "{refused:?}");
+        }
+        forget_refused();
+        assert!(!session_refused());
+        served.join().unwrap();
     }
 
     /// A connection over this machine: the client's end and its peer's.

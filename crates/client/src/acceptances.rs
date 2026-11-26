@@ -2,8 +2,8 @@
 //! (`docs/protocol/membership.md`, "Invite").
 //!
 //! - It takes the link only from its person at a terminal, never from an argument, a pipe or the
-//!   environment; the CLI refuses it as an agent (`main`). It needs a `client` device with a
-//!   certificate, and refuses a malformed link and one of another server, sending nothing.
+//!   environment; the CLI refuses it as an agent (`main`). It refuses a malformed link and one
+//!   of another server, sending nothing. Without a session, it signs in through the invite.
 //! - The person's own process takes the invite by its ID and takes the newcomer's steps: the
 //!   revision with the link's hash as its anchor, every later one the server gives accepted as
 //!   [`crate::follow`] accepts them; the invite signed by an admin's device per those revisions,
@@ -44,8 +44,10 @@ use crate::invites::resent;
 use crate::person::Person;
 use crate::revocations;
 use crate::secrets;
+use crate::sign_in;
 use crate::spaces::{self, Follower, Scope};
 use crate::state::{self, State};
+use crate::{helper, lock, ssh_signing};
 
 /// Why a link given as an argument is not taken.
 pub const GIVEN: &str = "skald accept-invite takes the invite link only at the terminal, where it \
@@ -94,18 +96,19 @@ struct Reader {
 }
 
 impl Reader {
-    /// The reader of the machine whose state is in `dir`, its secrets in `storage`; fails unless
-    /// it has a session and a certified `client` device.
-    fn open(dir: &Path, storage: secrets::Storage) -> Result<Self, String> {
-        let (state, server, token) =
-            devices::signed_in(dir, storage).map_err(|_| SIGN_IN_FIRST.to_owned())?;
+    /// The reader of a signed-in machine. Accepting an invite needs a certified `client` device.
+    fn open(dir: &Path, storage: secrets::Storage) -> Result<Option<Self>, String> {
+        let Some((state, server, token, _, _)) = devices::session_with_secrets(dir, storage)?
+        else {
+            return Ok(None);
+        };
         let Some((_, master, cert)) = spaces::certified(&state)? else {
             return Err(SIGN_IN_FIRST.to_owned());
         };
         if cert.body().kind != DeviceKind::Client {
             return Err(SIGN_IN_FIRST.to_owned());
         }
-        Ok(Reader {
+        Ok(Some(Reader {
             state,
             server,
             token,
@@ -113,13 +116,69 @@ impl Reader {
                 account: cert.body().account,
                 master,
             },
-        })
+        }))
     }
 
     /// Whether `web`, an invite link's web address, is the server's ([`serves`]).
     fn serves(&self, web: &str) -> Result<bool, String> {
         let recorded = self.state.web(&self.server).map_err(text)?;
         Ok(serves(&self.server, recorded.as_deref(), web))
+    }
+}
+
+/// Signs in on the link's server with its proof, holding the local state's lock as sign-in does.
+fn signed_in(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    link: &InviteLink,
+) -> Result<Option<Reader>, String> {
+    helper::stop(dir, timeout)?;
+    let _lock = lock::take(dir, true, timeout)?;
+    if let Some(reader) = Reader::open(dir, storage)? {
+        return Ok(Some(reader));
+    }
+    let mut connection = invite_server(&link.web, speaks, timeout)?;
+    let options = sign_in::Options {
+        storage,
+        name: None,
+        host_name: sign_in::host_name(),
+        person: Some(Person::Terminal),
+        recovery: None,
+        invite: Some(link),
+        ssh: ssh_signing::Options {
+            may_ask: true,
+            ..ssh_signing::Options::default()
+        },
+    };
+    sign_in::run(&mut connection, dir, &options).map_err(text)?;
+    spaces::take_personal(dir, storage, speaks, timeout);
+    Reader::open(dir, storage)
+}
+
+/// The public server of an invite link's web address, which may have a separate device API.
+fn invite_server(
+    web: &str,
+    speaks: VersionRange,
+    timeout: Duration,
+) -> Result<connection::Connection, String> {
+    #[derive(Deserialize)]
+    struct Server {
+        public: Option<String>,
+    }
+
+    let mut connection = devices::to_session(web, speaks, timeout)?;
+    let body = connection.get("/server").map_err(text)?;
+    let server: Server = serde_json::from_slice(&body)
+        .map_err(|_| "unexpected answer from the server to GET /server".to_owned())?;
+    match server.public {
+        None => Ok(connection),
+        Some(public) if origin(&public).as_deref() != Some(&public) => {
+            Err("unexpected public address from the invite's server".to_owned())
+        }
+        Some(public) if public == web => Ok(connection),
+        Some(public) => devices::to_session(&public, speaks, timeout),
     }
 }
 
@@ -187,13 +246,21 @@ fn accepted(
     if !crate::link_code::at_terminal() {
         return Err(NOT_AT_TERMINAL.to_owned());
     }
-    let reader = Reader::open(dir, storage)?;
     let entered = Person::Terminal
         .enter("Paste the invite link", "")?
         .ok_or("the terminal's input ended before an invite link; nothing was sent")?;
     let link = InviteLink::parse(entered.trim())
         .map_err(|err| format!("that is no invite link: {err}; nothing was sent"))?;
     drop(entered);
+    let reader = match Reader::open(dir, storage)? {
+        Some(reader) => reader,
+        None => {
+            let Some(reader) = signed_in(dir, storage, speaks, timeout, &link)? else {
+                return Ok(None);
+            };
+            reader
+        }
+    };
     if !reader.serves(&link.web)? {
         return Err(format!(
             "the invite link is of another server, {}, than this device's, {}; nothing was sent",
@@ -205,11 +272,7 @@ fn accepted(
     let body = match connection.get_as(&invite_path(link.invite), &reader.token) {
         Ok(body) => body,
         Err(connection::Error::Refused { status: 404, .. }) => {
-            return Err(
-                "the invite ended: the server no longer holds it, as it expired, was \
-                 revoked or admitted another account; nothing was signed"
-                    .to_owned(),
-            );
+            return Err("the invite ended or is reserved for another account".to_owned());
         }
         Err(err) => return Err(text(err)),
     };
@@ -219,7 +282,7 @@ fn accepted(
         .find(|followed| followed.id == checked.latest.body().space)
     {
         return Err(format!(
-            "this device follows the space {} already; nothing was signed",
+            "this device follows the space {} already",
             followed.name
         ));
     }
@@ -227,10 +290,10 @@ fn accepted(
     match Person::Terminal.ask("Accept the invite?")? {
         Some(true) => {}
         Some(false) => {
-            println!("Declined: nothing was signed.");
+            println!("Invite declined.");
             return Ok(None);
         }
-        None => return Err("the terminal's input ended; nothing was signed".to_owned()),
+        None => return Err("the terminal's input ended".to_owned()),
     }
     let mut asked = match handle {
         Some(handle) => handle.to_owned(),
@@ -243,7 +306,7 @@ fn accepted(
                 println!("{why}");
                 asked = Person::Terminal
                     .enter("Another handle", "")?
-                    .ok_or("the terminal's input ended; nothing was signed")?;
+                    .ok_or("the terminal's input ended")?;
             }
         }
     };
@@ -287,8 +350,7 @@ fn check(reader: &Reader, link: &InviteLink, body: &[u8]) -> Result<Checked, Str
         .find(|revision| revision.hash() == link.revision && revision.body().space == space)
         .ok_or(
             "the server gives no revision of the invite's space with the hash the link names, so \
-             the link was altered on its way or the server swapped the revision; nothing was \
-             signed",
+             the link was altered on its way or the server swapped the revision",
         )?;
     let latest = latest_from(anchor, &revisions, &devices, &reader.own)?;
     let name = latest.body().name.as_str();
@@ -296,19 +358,19 @@ fn check(reader: &Reader, link: &InviteLink, body: &[u8]) -> Result<Checked, Str
     if link.secret.invite_key().public_key() != invite.body().key {
         return Err(
             "the link's secret does not derive the invite's key, so the link was altered on its \
-             way; nothing was signed"
-                .to_owned(),
+             way"
+            .to_owned(),
         );
     }
     if invite.body().expires <= spaces::now() {
         return Err(format!(
-            "the invite expired on {} (UTC); nothing was signed",
+            "the invite expired on {} (UTC)",
             date(invite.body().expires)
         ));
     }
     if latest.body().member(reader.own.account).is_some() {
         return Err(format!(
-            "this account is already a member of the space {name}; nothing was signed"
+            "this account is already a member of the space {name}"
         ));
     }
     let admin = (latest.body().member(cert.body().account))
@@ -342,7 +404,7 @@ fn latest_from(
     {
         return Err(format!(
             "revision {} the server gives of the space {} does not follow revision {number}, the \
-             one the link names; nothing was signed",
+             one the link names",
             off.body().revision,
             anchor.body().name.as_str()
         ));
@@ -368,27 +430,25 @@ fn signer<'d>(
     else {
         return Err(format!(
             "the invite is signed by the device {id}, which is no device of an admin of the space \
-             {name}; nothing was signed"
+             {name}"
         ));
     };
     let cert = check_valid_device(&member.master, &devices.certs, &devices.revocations, id)
         .map_err(|err| {
             format!(
                 "the invite's signer, the device {id} of the admin {}, has no valid certificate \
-                 of its account: {err}; nothing was signed",
+                 of its account: {err}",
                 member.handle.as_str()
             )
         })?;
     if !matches!(cert.body().kind, DeviceKind::Client | DeviceKind::Browser) {
         return Err(format!(
             "the invite is signed by the device {id}, which is neither a client nor a browser \
-             device of an admin of the space {name}; nothing was signed"
+             device of an admin of the space {name}"
         ));
     }
-    check_invite(invite, &cert.body().signing).map_err(|_| {
-        "the invite's signature does not verify with its signer's key; nothing was signed"
-            .to_owned()
-    })?;
+    check_invite(invite, &cert.body().signing)
+        .map_err(|_| "the invite's signature does not verify with its signer's key".to_owned())?;
     Ok(cert)
 }
 

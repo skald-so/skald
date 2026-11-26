@@ -20,6 +20,7 @@ use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
+use crate::space_plans::{self, FREE_OWNED_SPACES_LIMIT, SpacePlan};
 use crate::{AppState, history, invites, mailboxes, queues, revocations, sessions};
 
 /// `SpaceRequest` in the spec.
@@ -34,6 +35,56 @@ struct SpaceRequest {
 pub(crate) struct Space {
     pub(crate) space: String,
     pub(crate) name: String,
+}
+
+/// `OwnedSpaces` in the spec.
+#[derive(Serialize)]
+pub(crate) struct OwnedSpaces {
+    count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    free_only: bool,
+    spaces: Vec<Space>,
+}
+
+fn owned_limit(state: &AppState) -> Option<u32> {
+    if state.space_plans {
+        Some(FREE_OWNED_SPACES_LIMIT)
+    } else {
+        state.owned_spaces_limit
+    }
+}
+
+/// Lists all the account's own spaces and counts the ones that use its allowance.
+pub(crate) async fn owned(
+    db: impl sqlx::PgExecutor<'_>,
+    state: &AppState,
+    account: &str,
+) -> Result<OwnedSpaces, sqlx::Error> {
+    let created: Vec<(String, String, bool, Option<SpacePlan>)> = sqlx::query_as(
+        "SELECT s.id::text, s.name, s.personal, e.plan
+         FROM spaces s LEFT JOIN space_entitlements e ON $2 AND e.space_id = s.id
+         WHERE s.creator_id = $1::uuid ORDER BY s.created_at, s.id",
+    )
+    .bind(account)
+    .bind(state.space_plans)
+    .fetch_all(db)
+    .await?;
+    let counted = created
+        .iter()
+        .filter(|(_, _, _, plan)| plan.unwrap_or_default().counts_towards_ownership())
+        .count() as u64;
+    let personal_pending = !created.iter().any(|(_, _, personal, _)| *personal);
+    Ok(OwnedSpaces {
+        count: counted + u64::from(personal_pending),
+        limit: owned_limit(state),
+        free_only: state.space_plans,
+        spaces: created
+            .into_iter()
+            .map(|(space, name, _, _)| Space { space, name })
+            .collect(),
+    })
 }
 
 /// `ListedSpace` in the spec.
@@ -81,6 +132,8 @@ struct ListedMember {
     joined_at: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     deleted: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    you: bool,
 }
 
 /// `ListedMembers` in the spec.
@@ -99,7 +152,10 @@ struct NewChannel {
 pub(crate) struct Found {
     pub(crate) id: SpaceId,
     name: Name,
-    creator: String,
+    /// None once the server erased the creator's account.
+    creator: Option<String>,
+    /// The ID of the account that finds it.
+    account: String,
     /// Whether the account gets the space.
     pub(crate) gets: bool,
     /// Whether the account is an admin in the latest revision.
@@ -107,9 +163,13 @@ pub(crate) struct Found {
 }
 
 /// The space `space`, a path parameter, as the account `account` finds it.
-pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Found, Refusal> {
+pub(crate) async fn find(
+    db: impl sqlx::PgExecutor<'_>,
+    space: &str,
+    account: &str,
+) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
-    let found: Option<(String, String, bool, bool)> = sqlx::query_as(
+    let found: Option<(String, Option<String>, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)
          FROM spaces s LEFT JOIN space_access a ON a.space_id = s.id AND a.account_id = $1::uuid
          WHERE s.id = $2::uuid",
@@ -124,6 +184,7 @@ pub(crate) async fn find(db: &PgPool, space: &str, account: &str) -> Result<Foun
         id,
         name: name.parse().expect("a stored space name is a valid name"),
         creator,
+        account: account.to_owned(),
         gets,
         admin,
     })
@@ -208,7 +269,7 @@ pub(crate) async fn create(
         name: name.to_string(),
     };
     let mut tx = state.db.begin().await.map_err(failed)?;
-    if let Some(limit) = state.owned_spaces_limit {
+    if let Some(limit) = owned_limit(&state) {
         // The account's lock makes its creations wait for each other, so none passes the limit.
         // It lets a request for the personal space insert it meanwhile, which changes no count.
         sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE")
@@ -219,15 +280,8 @@ pub(crate) async fn create(
         if let Some(id) = unrevised(&mut tx, &name, &account).await? {
             return taken(false, space(id));
         }
-        // The personal space counts whether or not it is created yet.
-        let (team,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM spaces WHERE creator_id = $1::uuid AND NOT personal",
-        )
-        .bind(&account)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(failed)?;
-        if team + 1 >= i64::from(limit) {
+        let owned = owned(&mut *tx, &state, &account).await.map_err(failed)?;
+        if owned.count >= u64::from(limit) {
             return Err(Refusal::OwnedSpacesLimit(limit));
         }
     }
@@ -387,8 +441,8 @@ pub(crate) async fn space_devices(db: &PgPool, space: SpaceId) -> Result<Devices
 }
 
 /// `GET /spaces/<space>/members`: the members of the space's latest stored revision as the web app
-/// shows them, in its order. A member joined when the server stored the first revision of the run
-/// up to the latest that lists it.
+/// shows them, in its order, the session's account marked. A member joined when the server stored
+/// the first revision of the run up to the latest that lists it.
 pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten) -> Answer {
     let space = found.id.to_string();
     let latest = mailboxes::latest(&state.db, found.id)
@@ -400,14 +454,15 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     let revision =
         i64::try_from(roster.body().revision).expect("a stored revision's number fits its column");
     // `to_char` gives RFC 3339 in UTC; an account this server does not hold has no login or device.
-    let rows: Vec<(String, Option<String>, i64, String, bool)> = sqlx::query_as(
+    let rows: Vec<(String, Option<String>, i64, String, bool, bool)> = sqlx::query_as(
         "SELECT m.account_id::text,
              (SELECT login FROM sign_in_methods
               WHERE account_id = m.account_id AND provider = $3 ORDER BY created_at LIMIT 1),
              (SELECT count(*) FROM devices
               WHERE account_id = m.account_id AND cert IS NOT NULL AND NOT revoked),
              to_char(r.stored_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
-             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL)
+             EXISTS (SELECT 1 FROM accounts WHERE id = m.account_id AND deleted_at IS NOT NULL),
+             m.account_id = $4::uuid
          FROM roster_members m
          JOIN roster_revisions r ON r.space_id = m.space_id AND r.revision = 1 + COALESCE(
              (SELECT max(o.revision) FROM roster_revisions o
@@ -421,13 +476,14 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
     .bind(&space)
     .bind(revision)
     .bind(GITHUB)
+    .bind(&found.account)
     .fetch_all(&state.db)
     .await
     .map_err(|err| Refusal::Database("read the space's members", err))?;
-    let mut shown: HashMap<String, (Option<String>, i64, String, bool)> = rows
+    let mut shown: HashMap<String, (Option<String>, i64, String, bool, bool)> = rows
         .into_iter()
-        .map(|(account, login, linked, joined, deleted)| {
-            (account, (login, linked, joined, deleted))
+        .map(|(account, login, linked, joined, deleted, you)| {
+            (account, (login, linked, joined, deleted, you))
         })
         .collect();
     let members = roster
@@ -435,7 +491,7 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
         .members
         .iter()
         .filter_map(|member| {
-            let (github_login, linked_devices, joined_at, deleted) =
+            let (github_login, linked_devices, joined_at, deleted, you) =
                 shown.remove(&member.account.to_string())?;
             Some(ListedMember {
                 handle: member.handle.to_string(),
@@ -447,6 +503,7 @@ pub(crate) async fn members(State(state): State<AppState>, Gotten(found): Gotten
                 linked_devices,
                 joined_at,
                 deleted,
+                you,
             })
         })
         .collect();
@@ -550,7 +607,7 @@ pub(crate) async fn store(
     };
     let id: AccountId = account.parse().expect("a stored account ID");
     let allowed = match &previous {
-        None => found.creator == account,
+        None => found.creator.as_deref() == Some(account.as_str()),
         Some(previous) => admin(previous, id),
     };
     if !allowed {
@@ -566,24 +623,41 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
-    within_agents_limit(&state, &roster, previous.as_ref())?;
     insert(&state, found.id, &roster, previous.as_ref(), &sent).await
 }
 
-/// Refuses `roster` if it lists more service agent entries than the server's limit and than
-/// `previous`, the revision it follows, if any: a space over a lowered limit still removes agents
-/// and changes the rest (`docs/dev/architecture.md`, "Cloud limits").
-fn within_agents_limit(
+/// Refuses growth past either roster limit. A space over a lowered limit can still make edits
+/// and reductions.
+async fn within_roster_limits(
+    tx: &mut sqlx::PgConnection,
     state: &AppState,
     roster: &Roster,
     previous: Option<&Roster>,
 ) -> Result<(), Refusal> {
-    let Some(limit) = state.service_agents_limit else {
-        return Ok(());
+    let body = roster.body();
+    let limits = space_plans::resolve(tx, body.space, state.space_plans)
+        .await
+        .map_err(|err| Refusal::Database("read the space's plan", err))?
+        .map(SpacePlan::limits);
+    let before = previous.map(Roster::body);
+    let grows_past = |count: usize, before: usize, limit: Option<u64>| {
+        limit.filter(|&limit| count > before && count as u64 > limit)
     };
-    let agents = roster.body().service_agents.len();
-    let before = previous.map_or(0, |previous| previous.body().service_agents.len());
-    if agents > before && agents > limit as usize {
+    if let Some(limit) = grows_past(
+        body.members.len(),
+        before.map_or(0, |body| body.members.len()),
+        limits.and_then(|limits| limits.members),
+    ) {
+        return Err(Refusal::MembersLimit(limit));
+    }
+    let agents_limit = limits
+        .map(|limits| limits.service_agents)
+        .or_else(|| state.service_agents_limit.map(u64::from));
+    if let Some(limit) = grows_past(
+        body.service_agents.len(),
+        before.map_or(0, |body| body.service_agents.len()),
+        agents_limit,
+    ) {
         return Err(Refusal::ServiceAgentsLimit(limit));
     }
     Ok(())
@@ -798,8 +872,7 @@ async fn insert(
         .begin()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
-    // A service token's creation waits for the revision, and the revision for the creation
-    // (`service_tokens::create`).
+    // A space's revisions, token creations and invite changes take the same lock.
     sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
         .bind(space.to_string())
         .execute(&mut *tx)
@@ -823,6 +896,9 @@ async fn insert(
         let stored = stored(db, space, number).await?.unwrap_or_default();
         return again(space, number, sent, &stored);
     }
+    // This number is new, so its predecessor is still the latest committed roster.
+    within_roster_limits(&mut tx, state, roster, previous).await?;
+    invites::admitted(&mut tx, space, roster, previous).await?;
     let (accounts, admins): (Vec<String>, Vec<bool>) = body
         .members
         .iter()
@@ -843,13 +919,6 @@ async fn insert(
     history::added(&mut tx, roster, previous)
         .await
         .map_err(|err| Refusal::Database("store a revision's channel additions", err))?;
-    // An invite ends once a stored revision lists a member with it.
-    let invites: Vec<String> = (body.members.iter())
-        .filter_map(|member| member.invite.map(|invite| invite.to_string()))
-        .collect();
-    invites::admitted(&mut tx, space, &invites)
-        .await
-        .map_err(|err| Refusal::Database("end the invites of admitted members", err))?;
     // A token ends once the latest revision lists its device in no service agent entry.
     let agents: Vec<String> = body
         .service_agents

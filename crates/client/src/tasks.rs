@@ -16,11 +16,11 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde::Deserialize;
 use serde_json::json;
-use skald_proto::{Cbor as _, ChannelId, MessageId, Name, QueuedTask, SpaceId, TaskId};
+use skald_proto::{Cbor as _, ChannelId, Name, QueuedTask, SpaceId, TaskId};
 
 use crate::connection::{self, Method, printable};
 use crate::devices::text;
-use crate::forms::References;
+use crate::forms::{References, as_message};
 use crate::queues::{self, Queue, Run};
 use crate::recv;
 use crate::reply;
@@ -156,11 +156,6 @@ fn references(follower: &Follower, tasks: &[Listed]) -> References {
     let kept = follower.state.kept_ids().unwrap_or_default();
     let listed = tasks.iter().map(|one| as_message(one.task()));
     References::new(kept.into_iter().chain(listed))
-}
-
-/// `task` as a `msg_id`, whose reference is the task's.
-fn as_message(task: TaskId) -> MessageId {
-    MessageId::from_bytes(*task.as_bytes())
 }
 
 /// `skald tasks`: lists the tasks of the run's channel, or of its queue `queue`, as JSON objects,

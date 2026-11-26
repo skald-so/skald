@@ -1563,6 +1563,10 @@ describe.each(views)(
 
     test("outlines every element focused from the keyboard", async () => {
       const focused = await keyboardFocus(view.page);
+      if (screen === "invite") {
+        expect(focused).toEqual([]);
+        return;
+      }
       expect(focused.length).toBeGreaterThan(0);
       expect(focused).toEqual(
         focused.map(({ element }) => ({
@@ -1603,8 +1607,8 @@ test("the screenshot command saves every view of the kit page, as the references
     });
     // The kit page and the cabinet in full, the open side menu at phone width and the questions over
     // Access and the Account page in the window; the sign-in page, the cabinet of an account with
-    // no space, Machines, Members, Access, the Account page and Usage fill the window, Usage at
-    // 360 px in full.
+    // no space, Machines, Members, Access, the Account page and Usage fill the window, with
+    // Members, Access and Usage at 360 px in full.
     const expected = [
       ["kit-light-1440.png", 1440, "Background", "light"],
       ["kit-light-360.png", 360, "Background", "light"],
@@ -1620,6 +1624,10 @@ test("the screenshot command saves every view of the kit page, as the references
       ["sign-in-light-360.png", 360, "Side panel", "light", 900],
       ["sign-in-dark-1440.png", 1440, "Side panel", "dark", 900],
       ["sign-in-dark-360.png", 360, "Side panel", "dark", 900],
+      ["invite-light-1440.png", 1440, "Side panel", "light", 900],
+      ["invite-light-360.png", 360, "Side panel", "light", 900],
+      ["invite-dark-1440.png", 1440, "Side panel", "dark", 900],
+      ["invite-dark-360.png", 360, "Side panel", "dark", 900],
       ["account-light-1440.png", 1440, "Side panel", "light", 900],
       ["account-light-360.png", 360, "Side panel", "light", 900],
       ["account-dark-1440.png", 1440, "Side panel", "dark", 900],
@@ -1629,13 +1637,13 @@ test("the screenshot command saves every view of the kit page, as the references
       ["machines-dark-1440.png", 1440, "Side panel", "dark", 900],
       ["machines-dark-360.png", 360, "Side panel", "dark", 900],
       ["members-light-1440.png", 1440, "Side panel", "light", 900],
-      ["members-light-360.png", 360, "Side panel", "light", 900],
+      ["members-light-360.png", 360, "Side panel", "light"],
       ["members-dark-1440.png", 1440, "Side panel", "dark", 900],
-      ["members-dark-360.png", 360, "Side panel", "dark", 900],
+      ["members-dark-360.png", 360, "Side panel", "dark"],
       ["access-light-1440.png", 1440, "Side panel", "light", 900],
-      ["access-light-360.png", 360, "Side panel", "light", 900],
+      ["access-light-360.png", 360, "Side panel", "light"],
       ["access-dark-1440.png", 1440, "Side panel", "dark", 900],
-      ["access-dark-360.png", 360, "Side panel", "dark", 900],
+      ["access-dark-360.png", 360, "Side panel", "dark"],
       ["access-confirm-light-1440.png", 1440, null, "light", 900],
       ["access-confirm-light-360.png", 360, null, "light", 900],
       ["access-confirm-dark-1440.png", 1440, null, "dark", 900],
