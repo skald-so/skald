@@ -1,0 +1,164 @@
+#!/usr/bin/env node
+// Usage: script/submit-winget <manifest dir>
+import fs from 'node:fs';
+import path from 'node:path';
+import { archiveName, checkPackage, manifests, releaseUrl, windowsTargets } from './lib/winget.mjs';
+
+const env = process.env;
+const catalog = 'microsoft/winget-pkgs';
+const github = 'https://api.github.com';
+
+function submission() {
+  const api = env.GITHUB_API_URL || github;
+  const fixture = /^http:\/\/127\.0\.0\.1:[0-9]+$/.test(api);
+  const upstream = env.WINGET_CATALOG_REPO || catalog;
+  const fork = env.WINGET_SUBMISSION_REPO;
+  if (![upstream, fork].every((repo) => /^[\w-]+\/[\w.-]+$/.test(repo)) ||
+      upstream.toLowerCase() === fork.toLowerCase()) {
+    throw new Error('Expected a separate WinGet submission fork.');
+  }
+  if (!fixture && (api !== github || upstream !== catalog || env.WINGET_SUBMIT_LIVE !== '1')) {
+    throw new Error('Live WinGet submission requires explicit approval.');
+  }
+  const token = fixture ? env.GH_TOKEN || env.GITHUB_TOKEN : env.WINGET_SUBMISSION_TOKEN;
+  if (!token) throw new Error('Missing WinGet submission token.');
+
+  async function request(endpoint, { body, allowed = [], method = body ? 'POST' : 'GET' } = {}) {
+    const response = await fetch(`${api}/repos/${endpoint}`, {
+      method,
+      body: JSON.stringify(body),
+      redirect: 'error',
+      signal: AbortSignal.timeout(60_000),
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (allowed.includes(response.status)) return null;
+    if (!response.ok) throw new Error(`${method} ${endpoint} returned HTTP ${response.status}.`);
+    return response.json();
+  }
+  return { fixture, upstream, fork, request };
+}
+
+function readManifests(dir) {
+  const files = Object.fromEntries(fs.readdirSync(dir).map((name) =>
+    [name, fs.readFileSync(path.join(dir, name), 'utf8')]));
+  const versionFile = Object.keys(files).find((name) => files[name].includes('ManifestType: version\n'));
+  const id = versionFile?.slice(0, -5);
+  const version = files[versionFile]?.match(/^PackageVersion: "([0-9.]+)"$/m)?.[1];
+  checkPackage(id, version);
+
+  const installer = files[`${id}.installer.yaml`] ?? '';
+  const hashes = [...installer.matchAll(/^    InstallerSha256: "([0-9A-F]{64})"$/gm)];
+  const entries = Object.entries(windowsTargets).map(([architecture, target], index) => ({
+    architecture,
+    url: `${releaseUrl(version)}/${archiveName(target)}`,
+    sha256: hashes[index]?.[1],
+  }));
+  const expected = manifests(id, version, entries);
+  if (hashes.length !== entries.length || Object.keys(files).length !== Object.keys(expected).length ||
+      !Object.entries(expected).every(([name, content]) => files[name] === content)) {
+    throw new Error('Expected one complete manifest set for the published Skald archives.');
+  }
+  return { id, version, files: expected };
+}
+
+async function main() {
+  const [dir] = process.argv.slice(2);
+  if (process.argv.length !== 3) throw new Error('Usage: script/submit-winget <manifest dir>');
+  const { fixture, upstream, fork, request } = submission();
+  const { id, version, files } = readManifests(dir);
+  if (!fixture && id !== env.WINGET_PACKAGE_ID) throw new Error('Manifest package identifier has not been approved.');
+
+  const [source, destination] = await Promise.all([request(upstream), request(fork)]);
+  if (!destination.fork || (!fixture && destination.parent?.full_name?.toLowerCase() !== catalog)) {
+    throw new Error('The submission repository must be a fork of the WinGet catalog.');
+  }
+  const base = source.default_branch;
+  const branch = `skald/${id.toLowerCase()}/${version}`;
+  const head = `${destination.owner.login}:${branch}`;
+  const pullQuery = new URLSearchParams({ state: 'all', base, head });
+  const title = `${id} version ${version}`;
+  const prefix = `manifests/${id[0].toLowerCase()}/${id.replaceAll('.', '/')}/${version}`;
+  const changes = Object.entries(files).map(([name, content]) => ({
+    path: `${prefix}/${name}`, content, mode: '100644', type: 'blob',
+  }));
+
+  async function findPull() {
+    const pulls = await request(`${upstream}/pulls?${pullQuery}`);
+    return pulls.find((pull) => pull.head.repo?.full_name.toLowerCase() === fork.toLowerCase() ||
+      (!pull.head.repo && pull.head.label.toLowerCase() === head.toLowerCase()));
+  }
+
+  async function report(pull) {
+    const prefix = `WinGet ${id} ${version}`;
+    if (pull.state === 'open') {
+      console.log(`${prefix}: pending catalog acceptance (${pull.html_url}).`);
+      return;
+    }
+    const detail = await request(`${upstream}/pulls/${pull.number}`);
+    if (!detail.merged) throw new Error(`${prefix}: catalog PR closed without acceptance (${pull.html_url}).`);
+    console.log(`${prefix}: accepted (${pull.html_url}).`);
+  }
+
+  const existing = await findPull();
+  if (existing) return report(existing);
+
+  const baseUri = `${upstream}/git`;
+  const git = `${fork}/git`;
+  const { object: { sha: parent } } = await request(`${baseUri}/ref/heads/${base}`);
+  const { tree: { sha: baseTree } } = await request(`${baseUri}/commits/${parent}`);
+  const branchUri = `${git}/ref/heads/${branch}`;
+  let ref = await request(branchUri, { allowed: [404] });
+  if (!ref) {
+    const { sha: tree } = await request(`${git}/trees`, { body: { base_tree: baseTree, tree: changes } });
+    if (tree === baseTree) {
+      console.log(`WinGet ${id} ${version}: already accepted in the catalog.`);
+      return;
+    }
+    const { sha } = await request(`${git}/commits`, { body: { message: title, tree, parents: [parent] } });
+    ref = await request(`${git}/refs`, { body: { ref: `refs/heads/${branch}`, sha }, allowed: [422] });
+    if (!ref) ref = await request(branchUri);
+  }
+
+  // A retry may find a branch left by an interrupted submission. Check the exact files on it.
+  const { tree: { sha: tree } } = await request(`${git}/commits/${ref.object.sha}`);
+  const { tree: root } = await request(`${git}/trees/${tree}`);
+  let entries = root;
+  if (root.some((entry) => entry.type === 'tree')) {
+    for (const component of prefix.split('/')) {
+      const child = entries.find((entry) => entry.type === 'tree' && entry.path === component);
+      if (!child) throw new Error(`Submission branch does not contain ${prefix}.`);
+      ({ tree: entries } = await request(`${git}/trees/${child.sha}`));
+    }
+  }
+  for (const file of changes) {
+    const candidate = entries.find((entry) => entry.type === 'blob' &&
+      (entry.path === file.path || entry.path === path.posix.basename(file.path)));
+    if (!candidate) throw new Error(`Submission branch is missing ${file.path}.`);
+    const blob = await request(`${git}/blobs/${candidate.sha}`);
+    if (Buffer.from(blob.content, 'base64').toString('utf8') !== file.content) {
+      throw new Error(`Submission branch differs at ${file.path}.`);
+    }
+  }
+
+  const pull = await request(`${upstream}/pulls`, {
+    body: {
+      head, base, title,
+      body: `Manifest set for [Skald v${version}](${releaseUrl(version).replace('/download/', '/tag/')}).`,
+    },
+    allowed: [422],
+  }) || await findPull();
+  if (!pull) throw new Error('GitHub did not create a WinGet catalog PR.');
+  await report(pull);
+}
+
+try {
+  await main();
+} catch (error) {
+  console.error(`submit-winget: ${error.message}`);
+  process.exitCode = 1;
+}

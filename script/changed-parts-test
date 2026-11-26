@@ -133,6 +133,7 @@ expect "$crates" crates/server/src/lib.rs
 expect "$crates site" crates/server/README.md
 expect "$crates" Cargo.toml
 expect "$crates" Cargo.lock
+expect "$crates tooling" crates/client/Cargo.toml
 expect "$crates site" crates/server/src/lib.rs docs/dev/roadmap.md
 # The skald-server image: its definition and its build context.
 expect "$crates" crates/server/Dockerfile
@@ -443,6 +444,9 @@ prototype() {
 for path in crates/server/src/lib.rs crates/server/Dockerfile Cargo.toml Cargo.lock; do
   reads "$path" "${crate_checks[@]}" "${tree_checks[@]}"
 done
+# Cargo packaging and prebuilt installation both read the CLI manifest.
+reads crates/client/Cargo.toml "${crate_checks[@]}" "${tree_checks[@]}" \
+  script/release-cargo-test script/release-binstall-package-test
 reads deny.toml 'script/deny check advisories licenses' script/deny-test
 prototype prototypes/mls
 mls_checks=(

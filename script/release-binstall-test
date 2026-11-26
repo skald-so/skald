@@ -1,0 +1,184 @@
+#!/usr/bin/env node
+// Install the packaged skald-so with cargo-binstall from a local registry and release.
+// With a dist output directory and target, also run that runner's installed binary.
+import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import fs from 'node:fs';
+import http from 'node:http';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { reporter } from './lib/report.mjs';
+
+const exec = promisify(execFile);
+const { fail, done } = reporter('release-binstall-test');
+const [crate, tag, release, nativeTarget] = process.argv.slice(2);
+if (![2, 4].includes(process.argv.length - 2) || !tag.startsWith('v')) {
+  fail('usage: script/release-binstall-test <crate> <tag> [<release-dir> <target>]');
+  done();
+}
+
+const targets = [
+  'x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu',
+  'x86_64-apple-darwin', 'aarch64-apple-darwin',
+  'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc',
+];
+const version = tag.slice(1);
+const prefix = `skald-so-${version}`;
+const repo = '/skald-so/skald';
+const download = `${repo}/releases/download/${tag}/`;
+const indexRoute = '/registry/sk/al/skald-so';
+const crateRoute = `/registry/crate/${version}/skald-so`;
+const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'release-binstall-test-')));
+const windows = process.platform === 'win32';
+const tar = windows ? path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe') : 'tar';
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+const archive = (target) => `skald-client-${target}.${target.includes('windows') ? 'zip' : 'tar.gz'}`;
+const binary = (target) => target.includes('windows') ? 'skald.exe' : 'skald';
+const member = (target) => target.includes('windows') ? 'skald.exe' : `skald-client-${target}/skald`;
+
+async function registryCrate(base) {
+  assert.equal(path.basename(crate), `${prefix}.crate`, 'the crate has the requested release version');
+  await exec(tar, ['-xzf', path.resolve(crate), '-C', scratch]);
+  const manifest = path.join(scratch, prefix, 'Cargo.toml');
+  const original = fs.readFileSync(manifest, 'utf8');
+  const origin = 'https://github.com';
+  assert(original.includes(`repository = "${origin}${repo}"`), 'the crate names the Skald release repository');
+  // Change only the fixture's GitHub origin. Keep the package's release URL and path templates.
+  fs.writeFileSync(manifest, original.replaceAll(`${origin}${repo}`, `${base}${repo}`));
+  const repacked = path.join(scratch, `${prefix}.crate`);
+  await exec(tar, ['-czf', repacked, '-C', scratch, prefix]);
+  const bytes = fs.readFileSync(repacked);
+  const index = { name: 'skald-so', vers: version, deps: [], cksum: sha256(bytes), features: {}, yanked: false };
+  return { bytes, index };
+}
+
+async function syntheticAsset(target) {
+  const dir = path.join(scratch, target);
+  const embedded = path.join(dir, member(target));
+  const file = path.join(scratch, archive(target));
+  const expected = Buffer.from(`#!/bin/sh\necho 'skald ${version} ${target}'\n`);
+  fs.mkdirSync(path.dirname(embedded), { recursive: true });
+  fs.writeFileSync(embedded, expected, { mode: 0o755 });
+  if (target.includes('windows')) {
+    await exec('zip', ['-q', file, member(target)], { cwd: dir });
+  } else {
+    await exec(tar, ['-czf', file, '-C', dir, path.dirname(member(target))]);
+  }
+  return { file, expected };
+}
+
+async function nativeAsset(target) {
+  const osTarget = { linux: 'unknown-linux-gnu', darwin: 'apple-darwin', win32: 'pc-windows-msvc' }[process.platform];
+  const arch = { x64: 'x86_64', arm64: 'aarch64' }[process.arch];
+  assert.equal(target, `${arch}-${osTarget}`, 'the release runner is native to the requested target');
+  const file = path.resolve(release, archive(target));
+  const expectedHash = fs.readFileSync(`${file}.sha256`, 'utf8').trim().split(/\s+/)[0];
+  assert.equal(sha256(fs.readFileSync(file)), expectedHash, `${archive(target)} matches its release checksum`);
+  await exec(tar, ['-xf', file, '-C', scratch, member(target)]);
+  return { file, expected: fs.readFileSync(path.join(scratch, member(target))) };
+}
+
+const requests = [];
+const assets = new Map();
+let registry;
+let base;
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url, base);
+  if (url.origin !== base) return res.writeHead(403).end();
+  const route = url.pathname;
+  requests.push({ method: req.method, route });
+  if (route === repo && ['GET', 'HEAD'].includes(req.method)) return res.end();
+  if (req.method !== 'GET') return res.writeHead(405).end();
+  if (route === '/registry/config.json') return res.end(JSON.stringify({ dl: `${base}/registry/crate/{version}/{crate}` }));
+  if (route === indexRoute) return res.end(`${JSON.stringify(registry.index)}\n`);
+  if (route === crateRoute) return res.end(registry.bytes);
+  const file = assets.get(route);
+  if (!file) return res.writeHead(404).end();
+  res.writeHead(200, { 'content-length': fs.statSync(file).size, 'content-type': 'application/octet-stream' });
+  fs.createReadStream(file).pipe(res);
+});
+server.on('connect', (_request, socket) => socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'));
+
+function install(target) {
+  const home = fs.mkdtempSync(path.join(scratch, 'cargo-'));
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(path|systemroot|tmpdir|temp|tmp)$/i.test(key)));
+  const env = {
+    ...inherited,
+    HOME: home,
+    USERPROFILE: home,
+    CARGO_HOME: home,
+    RUSTUP_HOME: process.env.RUSTUP_HOME ?? path.join(os.homedir(), '.rustup'),
+    HTTP_PROXY: base,
+    HTTPS_PROXY: base,
+    ALL_PROXY: base,
+    NO_PROXY: '127.0.0.1',
+  };
+  requests.length = 0;
+  const installed = path.join(home, 'bin', binary(target));
+  const args = ['binstall', '--no-confirm', '--no-discover-github-token', '--allow-insecure-http',
+    '--strategies', 'crate-meta-data', '--targets', target, '--index', `sparse+${base}/registry/`,
+    '--root', home, `skald-so@${version}`];
+  return { installed, result: exec('cargo', args, { cwd: home, env, timeout: 30_000 }) };
+}
+
+function requested(target) {
+  const routes = requests.filter(({ method }) => method === 'GET').map(({ route }) => route);
+  assert(routes.includes(indexRoute), 'cargo-binstall accesses the sparse registry index');
+  assert(routes.includes(crateRoute), 'cargo-binstall downloads the requested crate version from the registry');
+  assert.deepEqual([...new Set(routes.filter((route) => route.startsWith(download)))],
+    [`${download}${archive(target)}`], `cargo-binstall requests the exact release archive for ${target}`);
+}
+
+async function installs(target, asset) {
+  const { installed, result } = install(target);
+  try {
+    await result;
+  } catch (error) {
+    throw new Error(`cargo-binstall failed for ${target}: ${error.stderr?.trim() || error.stdout?.trim() || error.message}`);
+  }
+  requested(target);
+  assert(fs.readFileSync(installed).equals(asset.expected), `the installed binary matches ${member(target)} in the release`);
+  if (nativeTarget) {
+    const { stdout } = await exec(installed, ['--version'], { timeout: 30_000 });
+    assert.equal(stdout.trim(), `skald ${version}`);
+  }
+}
+
+async function refuses(target, reason) {
+  const { installed, result } = install(target);
+  await assert.rejects(result, (error) => Number.isInteger(error.code) && error.code !== 0, reason);
+  requested(target);
+  assert(!fs.existsSync(installed), `${reason}: nothing is installed`);
+}
+
+try {
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  base = `http://127.0.0.1:${server.address().port}`;
+  registry = await registryCrate(base);
+
+  const all = new Map();
+  for (const target of nativeTarget ? [nativeTarget] : targets) {
+    const asset = nativeTarget ? await nativeAsset(target) : await syntheticAsset(target);
+    all.set(target, asset);
+    assets.set(`${download}${archive(target)}`, asset.file);
+  }
+  for (const [target, asset] of all) await installs(target, asset);
+  if (!nativeTarget) {
+    const [target, other] = targets;
+    assets.clear();
+    await refuses(target, 'an absent archive must fail');
+    assets.set(`${download}${archive(other)}`, all.get(other).file);
+    await refuses(target, 'an archive for another target must fail');
+  }
+} catch (error) {
+  fail(error.stderr?.trim() || error.stdout?.trim() || error.message);
+} finally {
+  server.close();
+  fs.rmSync(scratch, { recursive: true, force: true });
+}
+
+done();
