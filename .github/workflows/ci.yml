@@ -67,8 +67,8 @@ jobs:
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
-      # The tests mostly wait: on the server, a device flow's polls and the ends of leases, codes
-      # and challenges. 16 at a time on the runner's 4 CPUs keep them busy.
+      # Many tests wait, for a device flow's polls and the ends of leases, codes and challenges: 16
+      # at a time keep the runner's 4 CPUs busy.
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: workspace
