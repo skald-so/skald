@@ -62,7 +62,7 @@ export interface Kit {
  * references hold on macOS and in CI. Its version is the playwright-core version in package.json.
  */
 export const pinnedChrome =
-  "mcr.microsoft.com/playwright:v1.65.0-noble@sha256:bc4fbb329a25287ed23e9216c97063646abdd1bf2da669a9895fa3e2078b2302";
+  "mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579";
 
 /**
  * Flags of the pinned Chrome. Without partial raster a repaint redraws whole tiles, so the pixels
