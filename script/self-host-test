@@ -860,8 +860,22 @@ check_https() {
   fi
 }
 
-# stack_down <scenario>: removes the scenario's stack, its volumes included, and the proxy.
+# helpers_down: stops the skald processes of every machine, their helpers among them. A helper
+# outlives its commands and reconnects to the domain, so it would reach the next stack there, which
+# does not know its device; v0.2.0 and later then store a device challenge.
+helpers_down() {
+  m sh -c 'for environ in /proc/[0-9]*/environ; do
+      if tr "\0" "\n" 2>/dev/null <"$environ" | grep -q "^SKALD_STATE_DIR="; then
+        pid=${environ#/proc/}
+        kill "${pid%/environ}" 2>/dev/null || true
+      fi
+    done' || true
+}
+
+# stack_down <scenario>: removes the scenario's stack, its volumes included, and the proxy, and stops
+# the machines' helpers.
 stack_down() {
+  helpers_down
   if m test -f "/self-host/run/$1/compose-file"; then
     in_stack "$1" docker compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   fi
