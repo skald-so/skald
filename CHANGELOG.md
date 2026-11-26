@@ -7,6 +7,172 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/skald-so/skald/compare/v0.1.2...v0.2.0) - 2026-11-26
+
+### Added
+
+- *(server)* receive structured member reports ([#429](https://github.com/skald-so/skald/pull/429))
+- *(client)* expose Rust SDK message operations ([#424](https://github.com/skald-so/skald/pull/424))
+- *(server)* add scoped A2A gateway routes ([#423](https://github.com/skald-so/skald/pull/423))
+- *(server)* enforce space ownership and roster plan limits ([#426](https://github.com/skald-so/skald/pull/426))
+- *(release)* install the Skald CLI with cargo-binstall
+- *(release)* prepare verified WinGet packages
+- *(server)* record findings from server metadata
+- *(release)* package the Skald CLI source
+- *(client)* export readable channel history
+- *(client)* set skald up in the codex config
+- *(client)* delete the account from the CLI
+- *(auth)* support corporate OIDC browser sign-in
+- *(server)* expose opt-in per-space usage limits
+- *(server)* erase a deleted account's data after 30 days
+- *(web)* warn the only admin of a space in members
+- *(web)* list and revoke invite links
+- *(invites)* allow sign-up through an invite
+- *(client)* remove a deleted account's devices from channels
+- *(client)* give read only once a Codex session confirms it
+- *(client)* admit invited newcomers on an admin's device
+- *(client)* carry SSH signatures through a link code
+- *(client)* follow delivery modes and count wakes on Codex sessions ([#383](https://github.com/skald-so/skald/pull/383))
+- *(client)* wake idle Claude Code sessions by fallbacks and resend lost messages ([#355](https://github.com/skald-so/skald/pull/355))
+- *(client)* accept a space invite at the terminal ([#388](https://github.com/skald-so/skald/pull/388))
+- *(client)* take task results only from the claiming device ([#370](https://github.com/skald-so/skald/pull/370))
+- *(client)* keep key changes until the person sees them ([#381](https://github.com/skald-so/skald/pull/381))
+- *(adapters)* run requests in codex executor sessions ([#375](https://github.com/skald-so/skald/pull/375))
+- *(client)* extend claims while the agent's session runs ([#372](https://github.com/skald-so/skald/pull/372))
+- *(client)* sign device keys with a GitHub SSH key ([#379](https://github.com/skald-so/skald/pull/379))
+- *(client)* detect a Codex session waiting on its permission prompt ([#376](https://github.com/skald-so/skald/pull/376))
+- *(client)* sign up, link and recover end to end in short lines ([#380](https://github.com/skald-so/skald/pull/380))
+- *(client)* create invite links in the cli ([#374](https://github.com/skald-so/skald/pull/374))
+- keep queue key objects and enqueue tasks from stateless service agents ([#363](https://github.com/skald-so/skald/pull/363))
+- *(client)* wake idle Codex sessions with codex queue ([#377](https://github.com/skald-so/skald/pull/377))
+- *(client)* check space members against their domain's DNS records ([#371](https://github.com/skald-so/skald/pull/371))
+- *(client)* detect a Claude Code session waiting on its permission prompt ([#344](https://github.com/skald-so/skald/pull/344))
+- *(client)* sign in by a link code or the browser, in short lines ([#373](https://github.com/skald-so/skald/pull/373))
+- *(client)* check devices' SSH signatures against GitHub ([#369](https://github.com/skald-so/skald/pull/369))
+- *(client)* register Codex sessions and signal them through hooks ([#353](https://github.com/skald-so/skald/pull/353))
+- *(server)* keep invites and acceptances ([#367](https://github.com/skald-so/skald/pull/367))
+- *(client)* claim, extend, complete and fail tasks in the cli ([#362](https://github.com/skald-so/skald/pull/362))
+- *(client)* show account fingerprints and mark verified accounts ([#351](https://github.com/skald-so/skald/pull/351))
+- shorten recovery keys to 12 characters, typed or pasted ([#352](https://github.com/skald-so/skald/pull/352))
+- *(client)* follow spaces joined on another device of the account ([#350](https://github.com/skald-so/skald/pull/350))
+- *(client)* [**breaking**] open the sign-in page and drop the first-device question ([#358](https://github.com/skald-so/skald/pull/358))
+- *(client)* list task states and restart and cancel tasks in the cli ([#357](https://github.com/skald-so/skald/pull/357))
+- *(server)* link a device that has no session yet ([#359](https://github.com/skald-so/skald/pull/359))
+- *(prototypes)* live-check codex signals and executors ([#361](https://github.com/skald-so/skald/pull/361))
+- *(client)* ship the Claude Code plugin from the monorepo marketplace ([#343](https://github.com/skald-so/skald/pull/343))
+- *(crypto)* encode, sign and check invites, acceptances and invite links ([#349](https://github.com/skald-so/skald/pull/349))
+- *(client)* warn of certificates and master keys the server swaps ([#347](https://github.com/skald-so/skald/pull/347))
+- *(prototypes)* live-check codex permission prompts ([#360](https://github.com/skald-so/skald/pull/360))
+- *(server)* delete an account by a session with a recent sign-in ([#354](https://github.com/skald-so/skald/pull/354))
+- *(client)* make a second admin and hand over admin rights in the cli ([#356](https://github.com/skald-so/skald/pull/356))
+- *(client)* set delivery modes and inline text per channel and trust level ([#345](https://github.com/skald-so/skald/pull/345))
+- *(crypto)* carry and check SSH signatures of device keys ([#346](https://github.com/skald-so/skald/pull/346))
+- *(client)* manage queues and enqueue tasks in the cli ([#338](https://github.com/skald-so/skald/pull/338))
+- *(client)* deliver messages to Claude Code sessions over their socket ([#330](https://github.com/skald-so/skald/pull/330))
+- *(server)* claim tasks with leases, fencing and the DLQ ([#337](https://github.com/skald-so/skald/pull/337))
+- *(server)* keep channels' queues and enqueued tasks ([#334](https://github.com/skald-so/skald/pull/334))
+- *(client)* upload each device's presence ([#324](https://github.com/skald-so/skald/pull/324))
+- *(prototypes)* live-check claude code permission prompts ([#320](https://github.com/skald-so/skald/pull/320))
+- *(crypto)* derive queue keys and seal, sign and check tasks ([#333](https://github.com/skald-so/skald/pull/333))
+- *(adapters)* run Claude Code executor sessions ([#329](https://github.com/skald-so/skald/pull/329))
+- *(proto)* encode and decode the queue's CBOR items ([#332](https://github.com/skald-so/skald/pull/332))
+- *(client)* stop agents answering each other at ten hops ([#315](https://github.com/skald-so/skald/pull/315))
+- *(client)* show where a message is with message-status ([#317](https://github.com/skald-so/skald/pull/317))
+- *(client)* give agents their messages through Claude Code hooks ([#318](https://github.com/skald-so/skald/pull/318))
+- *(client)* hold messages until the person decides ([#325](https://github.com/skald-so/skald/pull/325))
+- replace service agents' keys and remove service agents ([#322](https://github.com/skald-so/skald/pull/322))
+- *(client)* list a space's agents from presence values ([#323](https://github.com/skald-so/skald/pull/323))
+- *(client)* refuse messages by an agent's inbound mode and allowlist ([#316](https://github.com/skald-so/skald/pull/316))
+- *(server)* limit how many messages a device sends per minute ([#313](https://github.com/skald-so/skald/pull/313))
+- *(crypto)* seal and open presence values ([#314](https://github.com/skald-so/skald/pull/314))
+- *(client)* run service agents without a persistent disk ([#311](https://github.com/skald-so/skald/pull/311))
+- *(server)* keep and give each device's presence value in its channels ([#312](https://github.com/skald-so/skald/pull/312))
+- read the history through the recovery key ([#308](https://github.com/skald-so/skald/pull/308))
+- *(prototypes)* live-check claude code signals and executors ([#319](https://github.com/skald-so/skald/pull/319))
+- *(client)* copy channel messages to service agents outside the group ([#301](https://github.com/skald-so/skald/pull/301))
+- *(client)* link a device on a local page ([#307](https://github.com/skald-so/skald/pull/307))
+- *(client)* hand messages to agents of the sending device ([#306](https://github.com/skald-so/skald/pull/306))
+- *(client)* run service agents as members of their channels ([#302](https://github.com/skald-so/skald/pull/302))
+- link a new device with the recovery key ([#304](https://github.com/skald-so/skald/pull/304))
+- tell linked devices of a device waiting for linking ([#305](https://github.com/skald-so/skald/pull/305))
+- *(client)* reply to a message in its channel and show replied ([#299](https://github.com/skald-so/skald/pull/299))
+- *(client)* send read once the addressed agent has a message ([#300](https://github.com/skald-so/skald/pull/300))
+- *(web)* show service agent tokens in Access and limit service agents per space ([#303](https://github.com/skald-so/skald/pull/303))
+- *(client)* add the MCP send tool ([#298](https://github.com/skald-so/skald/pull/298))
+- link a new device with a link code ([#288](https://github.com/skald-so/skald/pull/288))
+- *(client)* create service agents and their tokens in the CLI ([#297](https://github.com/skald-so/skald/pull/297))
+- *(client)* serve the inbox tool over MCP ([#293](https://github.com/skald-so/skald/pull/293))
+- *(server)* take service tokens' requests within their permissions and device key ([#296](https://github.com/skald-so/skald/pull/296))
+- *(client)* label each agent's line with its sender's trust level ([#294](https://github.com/skald-so/skald/pull/294))
+- *(server)* create, list and revoke tokens of service devices ([#292](https://github.com/skald-so/skald/pull/292))
+- *(client)* accept content from service devices only with a valid grant ([#290](https://github.com/skald-so/skald/pull/290))
+- *(client)* name the addressee and default channel in skald send ([#291](https://github.com/skald-so/skald/pull/291))
+- create the recovery key on the account's first device ([#281](https://github.com/skald-so/skald/pull/281))
+- *(site)* give the docs pages the website's look ([#285](https://github.com/skald-so/skald/pull/285))
+- keep each device's anchors object on the server ([#283](https://github.com/skald-so/skald/pull/283))
+- *(server)* relay link code runs over CPace between an account's sessions ([#284](https://github.com/skald-so/skald/pull/284))
+- *(client)* keep certified devices on revocation and join groups of revoked devices ([#280](https://github.com/skald-so/skald/pull/280))
+- *(server)* link the operator's privacy policy on sign-in pages ([#279](https://github.com/skald-so/skald/pull/279))
+- *(client)* show agents short lines by message reference, with --json ([#274](https://github.com/skald-so/skald/pull/274))
+- *(site)* add the website's main page ([#278](https://github.com/skald-so/skald/pull/278))
+- *(client)* wait for messages with skald recv --wait ([#273](https://github.com/skald-so/skald/pull/273))
+- *(ci)* deploy the web app to staging with its image ([#276](https://github.com/skald-so/skald/pull/276))
+- *(self-host)* serve the web app in the self-host stack ([#272](https://github.com/skald-so/skald/pull/272))
+- *(client)* run commands through one automatic helper ([#268](https://github.com/skald-so/skald/pull/268))
+- *(web)* show space limits, usage and owned spaces on Usage ([#261](https://github.com/skald-so/skald/pull/261))
+- *(client)* fall back to SSE and long-poll behind a blocking proxy ([#263](https://github.com/skald-so/skald/pull/263))
+- *(client)* read and search a channel's history ([#265](https://github.com/skald-so/skald/pull/265))
+
+### Fixed
+
+- *(client)* warn when a handle changes accounts
+- *(server)* refuse a deleted account's devices new sessions
+- *(client)* never lose the answer to a shown recovery key ([#391](https://github.com/skald-so/skald/pull/391))
+- *(deps)* update url to 2.5.9 ([#382](https://github.com/skald-so/skald/pull/382))
+- *(server)* close connections left with unread bodies; fix test races ([#326](https://github.com/skald-so/skald/pull/326))
+- *(client)* read the history on new and revoked devices ([#269](https://github.com/skald-so/skald/pull/269))
+
+### Other
+
+- *(client)* keep closed-port tests off ephemeral ports ([#441](https://github.com/skald-so/skald/pull/441))
+- *(load)* measure delivery on a local fixture ([#422](https://github.com/skald-so/skald/pull/422))
+- *(server)* wait for the corporate device sign-in link
+- *(client)* synchronize the held long-poll fixture
+- *(client)* match formatted Codex wake references
+- *(client)* wait for Herdr server readiness
+- *(dev)* define the load-test profile
+- *(client)* isolate the timed transport fallback check
+- *(client)* wait for receive startup before checking idle
+- *(client)* check the claim lease against a fixed time
+- share the task queue's repeated code
+- *(client)* exercise invite sign-up and peer messaging
+- *(client)* exercise browser sign-in and recovery prompts
+- *(client)* verify Claude Code in Paseo and Herdr
+- add the privacy policy and link it from the main page ([#282](https://github.com/skald-so/skald/pull/282))
+- run the client tests on Windows in parallel ([#368](https://github.com/skald-so/skald/pull/368))
+- run no jobs on draft PRs ([#365](https://github.com/skald-so/skald/pull/365))
+- *(client)* keep each schema migration in its own file ([#366](https://github.com/skald-so/skald/pull/366))
+- *(client)* show each session's hook events when the routing e2e times out ([#364](https://github.com/skald-so/skald/pull/364))
+- *(client)* include the presence helpers in the queues tests ([#348](https://github.com/skald-so/skald/pull/348))
+- share linking and recovery prompts and test helpers ([#342](https://github.com/skald-so/skald/pull/342))
+- *(client)* share presence requests, state keys and status test helpers ([#340](https://github.com/skald-so/skald/pull/340))
+- *(client)* give the held expiry test's message room to be taken in ([#339](https://github.com/skald-so/skald/pull/339))
+- *(client)* retry a database connect that fails with WSAENOBUFS ([#335](https://github.com/skald-so/skald/pull/335))
+- *(rules)* keep user-facing text short ([#341](https://github.com/skald-so/skald/pull/341))
+- *(client)* retry a test browser link click that fails with ERR_NO_BUFFER_SPACE ([#331](https://github.com/skald-so/skald/pull/331))
+- share the service agents' token checks and test helpers ([#327](https://github.com/skald-so/skald/pull/327))
+- *(client)* time the two folders' waits with no other test's cloud beside them ([#328](https://github.com/skald-so/skald/pull/328))
+- add github actions and docker recipes for service agents ([#321](https://github.com/skald-so/skald/pull/321))
+- *(client)* check that linking with a code leaves no Commit refused ([#310](https://github.com/skald-so/skald/pull/310))
+- *(client)* share read and replied statuses and MCP test helpers ([#309](https://github.com/skald-so/skald/pull/309))
+- *(client)* retry a test browser navigation that fails with ERR_NO_BUFFER_SPACE ([#295](https://github.com/skald-so/skald/pull/295))
+- reset idle test proxy connections and tune Windows CI's PostgreSQL ([#289](https://github.com/skald-so/skald/pull/289))
+- *(client)* share the timeout check, challenge signing and proxy test helpers ([#287](https://github.com/skald-so/skald/pull/287))
+- *(site)* check the main page against reference screenshots ([#286](https://github.com/skald-so/skald/pull/286))
+- *(web)* share the answer check, the loading hook and the no-space text ([#277](https://github.com/skald-so/skald/pull/277))
+- *(history)* share list readers, upload filters and sweep loops ([#275](https://github.com/skald-so/skald/pull/275))
+- run the tests with cargo-nextest and compile through sccache ([#271](https://github.com/skald-so/skald/pull/271))
+
 ## [0.1.2](https://github.com/skald-so/skald/compare/v0.1.1...v0.1.2) - 2026-11-17
 
 ### Added
