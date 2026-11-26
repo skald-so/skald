@@ -1,6 +1,8 @@
 //! Every process an executor's agent starts, which a run ends at once: on Unix, the agent's process
 //! group and each process that keeps the run's marker variable, which the agent's commands inherit
-//! also in a session or group of their own, as Codex starts them; on Windows, a job object.
+//! also in a session or group of their own, as Codex starts them; on macOS also each process that
+//! holds the run's marker pipe, as macOS hides the environment of its own programs; on Windows, a
+//! job object.
 
 pub use imp::{Tree, prepare};
 
@@ -22,9 +24,11 @@ mod imp {
     /// starting none.
     const ROUNDS: usize = 50;
 
-    /// Sets up `command` so that every process it starts belongs to its run, marked by `marker`.
-    pub fn prepare(command: &mut Command, marker: &str) {
+    /// Sets up `command` so that every process it starts belongs to its run, marked by `marker`
+    /// and, on macOS, by the returned pipe, which [`Tree::new`] takes.
+    pub fn prepare(command: &mut Command, marker: &str) -> io::Result<Mark> {
         command.process_group(0).env(MARKER, marker);
+        Mark::new(command)
     }
 
     #[derive(Debug)]
@@ -33,15 +37,16 @@ mod imp {
         pid: libc::pid_t,
         /// The marker variable as a process's environment holds it.
         entry: Vec<u8>,
+        mark: Mark,
     }
 
     impl Tree {
-        /// The processes of the run whose agent is `child`, marked by `marker`.
-        pub fn new(child: &Child, marker: &str) -> io::Result<Tree> {
+        /// The processes of the run whose agent is `child`, marked by `marker` and `mark`.
+        pub fn new(child: &Child, marker: &str, mark: Mark) -> io::Result<Tree> {
             let pid = libc::pid_t::try_from(child.id())
                 .map_err(|_| io::Error::other("the agent's process ID does not fit pid_t"))?;
             let entry = format!("{MARKER}={marker}").into_bytes();
-            Ok(Tree { pid, entry })
+            Ok(Tree { pid, entry, mark })
         }
 
         /// Kills the agent's group, then each marked process until none is left. Until the agent
@@ -52,7 +57,7 @@ mod imp {
                 libc::kill(-self.pid, libc::SIGKILL);
             }
             for _ in 0..ROUNDS {
-                let marked = marked(&self.entry);
+                let marked = marked(&self.entry, &self.mark);
                 if marked.is_empty() {
                     break;
                 }
@@ -87,12 +92,137 @@ mod imp {
         }
     }
 
-    /// The live processes whose environment holds `entry`, a variable as `NAME=value`.
-    fn marked(entry: &[u8]) -> Vec<libc::pid_t> {
+    /// The live processes whose environment holds `entry`, a variable as `NAME=value`, or that
+    /// hold `mark`.
+    fn marked(entry: &[u8], mark: &Mark) -> Vec<libc::pid_t> {
         let me = std::process::id() as libc::pid_t;
         let pids = processes().into_iter().filter(|&pid| pid > 0 && pid != me);
-        pids.filter(|&pid| environment(pid).is_some_and(|vars| holds(&vars, entry)))
-            .collect()
+        pids.filter(|&pid| {
+            environment(pid).is_some_and(|vars| holds(&vars, entry)) || mark.held_by(pid)
+        })
+        .collect()
+    }
+
+    /// Elsewhere the variable alone marks a run's processes.
+    #[cfg(not(target_os = "macos"))]
+    #[derive(Debug)]
+    pub struct Mark;
+
+    #[cfg(not(target_os = "macos"))]
+    impl Mark {
+        fn new(_command: &mut Command) -> io::Result<Mark> {
+            Ok(Mark)
+        }
+
+        fn held_by(&self, _pid: libc::pid_t) -> bool {
+            false
+        }
+    }
+
+    /// A pipe whose write end the agent inherits without close-on-exec, so every process it starts
+    /// holds it unless it closes it. Both ends stay open here while the run lives, so the write
+    /// end's kernel handle names no other pipe meanwhile.
+    #[cfg(target_os = "macos")]
+    #[derive(Debug)]
+    pub struct Mark {
+        _read: std::os::fd::OwnedFd,
+        _write: std::os::fd::OwnedFd,
+        /// The write end's `pipe_handle`.
+        handle: u64,
+    }
+
+    /// `PROC_PIDFDPIPEINFO` of `sys/proc_info.h`, which libc lacks.
+    #[cfg(target_os = "macos")]
+    const PROC_PIDFDPIPEINFO: libc::c_int = 6;
+
+    /// `struct pipe_fdinfo` of `sys/proc_info.h`, which libc lacks; only `pipe_handle` is read.
+    #[cfg(target_os = "macos")]
+    #[repr(C)]
+    struct PipeFdInfo {
+        /// `struct proc_fileinfo`.
+        _pfi: [u8; 24],
+        _pipe_stat: libc::vinfo_stat,
+        pipe_handle: u64,
+        _pipe_peerhandle: u64,
+        _pipe_status: libc::c_int,
+        _rfu_1: libc::c_int,
+    }
+
+    #[cfg(target_os = "macos")]
+    const _: () = assert!(size_of::<PipeFdInfo>() == 184);
+
+    #[cfg(target_os = "macos")]
+    impl Mark {
+        fn new(command: &mut Command) -> io::Result<Mark> {
+            use std::os::fd::{AsRawFd as _, OwnedFd};
+
+            // Both ends close on exec: only the agent gets the write end, below.
+            let (read, write) = io::pipe()?;
+            let (read, write) = (OwnedFd::from(read), OwnedFd::from(write));
+            let fd = write.as_raw_fd();
+            let handle = pipe_handle(std::process::id() as libc::pid_t, fd)
+                .ok_or_else(io::Error::last_os_error)?;
+            // SAFETY: fcntl is async-signal-safe, and `fd` stays open in the parent until the
+            // child has exec'd.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            Ok(Mark {
+                _read: read,
+                _write: write,
+                handle,
+            })
+        }
+
+        /// Whether process `pid` holds this pipe's write end.
+        fn held_by(&self, pid: libc::pid_t) -> bool {
+            pipes(pid).any(|fd| pipe_handle(pid, fd) == Some(self.handle))
+        }
+    }
+
+    /// The pipe descriptors of process `pid`: none for another user's process.
+    #[cfg(target_os = "macos")]
+    fn pipes(pid: libc::pid_t) -> impl Iterator<Item = libc::c_int> {
+        // SAFETY: a null buffer asks only for the size.
+        let size =
+            unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+        let count = usize::try_from(size).unwrap_or(0) / size_of::<libc::proc_fdinfo>();
+        let mut fds: Vec<libc::proc_fdinfo> = Vec::with_capacity(count + 16);
+        let capacity = (fds.capacity() * size_of::<libc::proc_fdinfo>()) as libc::c_int;
+        // SAFETY: the buffer holds `capacity` bytes.
+        let size = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDLISTFDS,
+                0,
+                fds.as_mut_ptr().cast(),
+                capacity,
+            )
+        };
+        let filled = usize::try_from(size).unwrap_or(0) / size_of::<libc::proc_fdinfo>();
+        // SAFETY: proc_pidinfo filled `filled` entries, at most the capacity.
+        unsafe { fds.set_len(filled.min(fds.capacity())) };
+        fds.into_iter()
+            .filter(|fd| fd.proc_fdtype == libc::PROX_FDTYPE_PIPE as u32)
+            .map(|fd| fd.proc_fd)
+    }
+
+    /// The `pipe_handle` of descriptor `fd` of process `pid`, if it is a pipe.
+    #[cfg(target_os = "macos")]
+    fn pipe_handle(pid: libc::pid_t, fd: libc::c_int) -> Option<u64> {
+        let mut info = std::mem::MaybeUninit::<PipeFdInfo>::zeroed();
+        let size = size_of::<PipeFdInfo>() as libc::c_int;
+        // SAFETY: `info` holds `size` bytes.
+        let read = unsafe {
+            libc::proc_pidfdinfo(pid, fd, PROC_PIDFDPIPEINFO, info.as_mut_ptr().cast(), size)
+        };
+        // SAFETY: zeroed is a valid PipeFdInfo, and a full read fills it.
+        (read == size).then(|| unsafe { info.assume_init() }.pipe_handle)
     }
 
     /// Whether `vars`, variables each ended by NUL, holds `entry`.
@@ -221,7 +351,13 @@ mod imp {
     };
     use windows_sys::Win32::System::Threading::{INFINITE, WaitForSingleObject};
 
-    pub fn prepare(_command: &mut Command, _marker: &str) {}
+    pub fn prepare(_command: &mut Command, _marker: &str) -> io::Result<Mark> {
+        Ok(Mark)
+    }
+
+    /// The job object alone holds a run's processes.
+    #[derive(Debug)]
+    pub struct Mark;
 
     /// A job object that holds the agent and every process it starts, none of which may break
     /// away; closing it kills what is left.
@@ -237,7 +373,7 @@ mod imp {
     unsafe impl Sync for Tree {}
 
     impl Tree {
-        pub fn new(child: &Child, _marker: &str) -> io::Result<Tree> {
+        pub fn new(child: &Child, _marker: &str, _mark: Mark) -> io::Result<Tree> {
             // SAFETY: an unnamed job object with the default security.
             let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
             if job.is_null() {
