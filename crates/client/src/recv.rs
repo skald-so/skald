@@ -70,9 +70,11 @@ use skald_proto::{
 };
 
 use crate::acceptances;
+use crate::admission;
 use crate::agents::server_name;
 use crate::claims;
 use crate::claude_socket;
+use crate::codex;
 use crate::connection::printable;
 use crate::delivery;
 use crate::devices::text;
@@ -512,7 +514,9 @@ fn receive(
         .map(|space| space.id)
         .collect();
     while !due.is_empty() {
+        let admitting = due.clone();
         sync_due(follower, scope, &mut due, synced)?;
+        admission::admit(follower, &admitting, synced, |space| scope.excludes(space));
         due.extend(mailbox.waiting_notices(follower, &keys));
         if scope == Scope::All && joined::names_unfollowed(follower, &due) {
             joined::follow(follower);
@@ -937,6 +941,7 @@ fn kept(
         wait: agent_wait(header.ttl),
         hops: message.hops,
         agents,
+        level: message.level,
         held,
         read,
         replied,
@@ -1045,6 +1050,7 @@ pub fn own_message(
             wait: agent_wait(None),
             hops: content.hops,
             agents: Vec::new(),
+            level: TrustLevel::Own,
             held: Vec::new(),
             replied,
             read: None,
@@ -1159,20 +1165,29 @@ pub fn hand_over(
 }
 
 /// As [`hand_over`], gathering the lines and writing them in one write, after which it marks
-/// each status and message handed over; a failed write marks none.
+/// each status and message handed over; a failed write marks none. Where the agent's Codex session
+/// confirms what it gets ([`codex::confirms`]), each message it shows waits for its confirmation
+/// instead, from before the write ([`crate::codex_confirm`]).
 fn hand_over_whole(
     follower: &Follower,
     (space, agent): (SpaceId, &Name),
     form: Form,
 ) -> Result<usize, String> {
     let state = &follower.state;
+    let (now, timeout) = codex::clock();
+    (state.end_confirmation_waits(now.saturating_sub(timeout))).map_err(text)?;
+    let confirms = codex::confirms(state, space, agent.as_str())?;
     let mut lines = String::new();
-    let (mut statuses, mut messages) = (Vec::new(), Vec::new());
+    let (mut statuses, mut messages, mut unopened) = (Vec::new(), Vec::new(), Vec::new());
+    // Whether a message's line was put since the last message was marked: one that does not open
+    // has none.
+    let put = std::cell::Cell::new(false);
     let shown = handing_over(
         follower,
         (space, agent),
         form,
-        |_, line| {
+        |what, line| {
+            put.set(what == "a message");
             lines.push_str(&line);
             Ok(())
         },
@@ -1182,20 +1197,35 @@ fn hand_over_whole(
                 Ok(())
             },
             &mut |seq| {
-                messages.push(seq);
+                match put.replace(false) || !confirms {
+                    true => messages.push(seq),
+                    false => unopened.push(seq),
+                }
                 Ok(())
             },
         ),
     )?;
-    if !lines.is_empty() {
-        output::write(Stream::Out, lines.as_bytes())
-            .map_err(|err| format!("cannot write the messages to the output: {err}"))?;
+    let waits = |waits| state.await_confirmation(&messages, agent.as_str(), (waits, now));
+    if confirms {
+        waits(true).map_err(text)?;
+    }
+    if !lines.is_empty()
+        && let Err(err) = output::write(Stream::Out, lines.as_bytes())
+    {
+        if confirms {
+            waits(false).map_err(text)?;
+        }
+        return Err(format!("cannot write the messages to the output: {err}"));
     }
     for seq in statuses {
         state.status_taken_by_agent(seq).map_err(text)?;
     }
-    for seq in messages {
-        state.handed_over(seq, agent.as_str()).map_err(text)?;
+    let handed = match confirms {
+        true => &unopened,
+        false => &messages,
+    };
+    for seq in handed {
+        state.handed_over(*seq, agent.as_str()).map_err(text)?;
     }
     Ok(shown)
 }
@@ -1333,7 +1363,7 @@ fn pushing(
     let state = &follower.state;
     let key = groups::inbox_key(follower)?;
     let settings = delivery::Settings::load(state)?;
-    let came = state.kept_came(space).map_err(text)?;
+    let came = state.kept_waiting(space).map_err(text)?;
     let (mut opened, mut unopened) = (Vec::new(), Vec::new());
     for (seq, sealed) in kept {
         let Some(open) = key.open(follower.this, &kept_item(seq), &sealed) else {
@@ -1347,7 +1377,7 @@ fn pushing(
             seq,
             channel: record.map(|record| record.channel),
             level,
-            came: came.get(&seq).copied().unwrap_or(0),
+            came: came.get(&seq).map_or(0, |kept| kept.came),
         };
         opened.push((waiting, open, msg_id));
     }
@@ -1514,8 +1544,7 @@ pub(crate) fn kept_line(
                 .and_then(|reply_to| reply_to.parse::<MessageId>().ok())
                 .map(|reply_to| references.of(reply_to));
             let shown_id = match &record.result {
-                Some(result) => (result.task.parse::<TaskId>())
-                    .map_or(msg_id, |task| MessageId::from_bytes(*task.as_bytes())),
+                Some(result) => (result.task.parse::<TaskId>()).map_or(msg_id, forms::as_message),
                 None => msg_id,
             };
             let line = record.shown(form, &references.of(shown_id), answered.as_deref());
@@ -2169,6 +2198,7 @@ mod tests {
                 certs: self.devices.certs.clone(),
                 revocations: Vec::new(),
                 records: Vec::new(),
+                deleted: Default::default(),
             };
             devices.ids.push(id);
             devices.certs.push(cert);

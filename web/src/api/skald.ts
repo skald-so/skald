@@ -32,6 +32,7 @@ import type {
   LinkMessages,
   LinkSession,
   ListedDevices,
+  ListedInvites,
   ListedMembers,
   MasterKey,
   MasterKeyRequest,
@@ -119,7 +120,7 @@ export const getDeleteAccountUrl = () => {
 };
 
 /**
- * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused while sign-up is closed; its username is free; each of its devices is served as a revoked one, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
+ * Deletes the session's account, never while a space blocks it, as `GET /account/deletion` gives them: of a deletion and a revision at once that would leave such a space, one is refused. At once, on every instance: every session of the account ends, its WebSocket connections closing with the reason `account-deleted`; its service devices' tokens, its link runs and its approved device codes end; its sign-in methods are removed, so a method's next sign-in signs up as a new account, or is refused under the server's sign-up policy; its username is free; each of its devices is served as a revoked one, with `account-deleted` for devices with server-held certificates asking for a session by key, and no wrap to its recovery key or browsers is kept; each space `deletes` lists is deleted with its channels, history and tokens. Each space with other members keeps the account in its revisions and still gives its devices' certificates and revocations, marks it deleted in `GET /spaces/{space}/members` and `GET /spaces/{space}/devices`, and its members' devices get a `space-notice`. Nothing undoes a deletion. Only with a device session's bearer token, or a web session's cookie from a page of the web URL, whose sign-in is more recent than the server setting `--link-sign-in-age`; never with a service token.
  * @summary Delete the account
  */
 export const deleteAccount = async (
@@ -1437,7 +1438,7 @@ export const getRemoveSignInMethodUrl = (method: SignInMethodId) => {
 };
 
 /**
- * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused while sign-up is closed, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
+ * Removes a sign-in method of the web session's account, never its last one: of two removals at once that would leave none, one is refused. The web sessions it signed in end at once, as at `DELETE /account/sessions/{session}`; device sessions stay. The removed method reaches no account: its next sign-in signs up as a new account, or is refused under the server's sign-up policy, and another account may link it. Only with a web session's cookie, from a page of the web URL, and a sign-in more recent than the server setting `--link-sign-in-age`: anything else removes nothing.
  * @summary Remove a sign-in method of the account
  */
 export const removeSignInMethod = async (
@@ -1500,7 +1501,7 @@ export const getGetAccountUsageUrl = () => {
 };
 
 /**
- * The spaces the session's account owns and its devices, each counted as its limit counts it, with the limit while the server has its setting (docs/dev/architecture.md, "Cloud limits"). Asking creates no personal space.
+ * The spaces the session's account owns and its devices, each counted as its limit counts it (docs/dev/architecture.md, "Cloud limits"). Asking creates no personal space.
  * @summary The spaces the account owns and its devices, with their limits
  */
 export const getAccountUsage = async (
@@ -2191,7 +2192,7 @@ export const getGetInviteUrl = (invite: string) => {
 };
 
 /**
- * The invite as the server got it (docs/protocol/membership.md, "Invite"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite has an acceptance; then only sessions of that acceptance's account, which also get the space's revisions and devices until the invite ends.
+ * The invite as the server got it (docs/protocol/membership.md, "Invite"), with its space's revisions and devices as `GET /spaces/{space}/revisions` and `GET /spaces/{space}/devices` give them to a member. Any session that names the invite's ID gets it until the invite is used for sign-up or acceptance; then only sessions of that account get it. Once accepted, sessions of that account also get the space's revisions and devices until the invite ends.
  * @summary An invite with its space
  */
 export const getInvite = async (
@@ -2277,7 +2278,7 @@ export const getStoreAcceptanceUrl = (invite: string) => {
 };
 
 /**
- * Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, "Invite"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.
+ * Stores the invite's acceptance as the bytes the server got (docs/protocol/membership.md, "Invite"): from a session of the account it names, with the master key the server holds for that account, signed by the invite's `key`, before the invite's `expires`. An invite used for sign-up takes only that account's acceptance. An invite admits one account: the server keeps its first acceptance and refuses others; of two sent at once, one is kept. Once stored, the devices of the space's admins get a `space-notice`.
  * @summary Store an invite's acceptance
  */
 export const storeAcceptance = async (
@@ -2520,8 +2521,8 @@ export const getGetServerUrl = () => {
 };
 
 /**
- * The `server` of every agent address on this server (docs/protocol/README.md, "Agent address"): its operator's setting, by default the host of its public address. It never changes.
- * @summary The server's name in agent addresses
+ * Names the `server` of its agent addresses (docs/protocol/README.md, "Agent address"): its operator's setting, by default the host of its public address. The name never changes. A new device taking an invite link from the web address gets the device flow's public address here.
+ * @summary The server's name and public address
  */
 export const getServer = async (
   options?: RequestInit,
@@ -2871,7 +2872,7 @@ export const getGetWaitingAcceptancesUrl = (space: string) => {
 };
 
 /**
- * The acceptances of the space's invites that have not ended, for an admin's session, each with its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, "Invite").
+ * The acceptances of the space's invites that have not ended, for an admin's session, each with its invite and its account's devices and revocations, so that an admin's device checks the newcomer's devices before it admits them (docs/protocol/membership.md, "Invite").
  * @summary The space's waiting acceptances
  */
 export const getWaitingAcceptances = async (
@@ -3439,6 +3440,79 @@ export const getSpaceDevices = async (
   } as getSpaceDevicesResponse;
 };
 
+export type listSpaceInvitesResponse200 = {
+  data: ListedInvites;
+  status: 200;
+};
+
+export type listSpaceInvitesResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type listSpaceInvitesResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type listSpaceInvitesResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type listSpaceInvitesResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type listSpaceInvitesResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type listSpaceInvitesResponseSuccess = listSpaceInvitesResponse200 & {
+  headers: Headers;
+};
+export type listSpaceInvitesResponseError = (
+  | listSpaceInvitesResponse400
+  | listSpaceInvitesResponse401
+  | listSpaceInvitesResponse403
+  | listSpaceInvitesResponse404
+  | listSpaceInvitesResponse500
+) & {
+  headers: Headers;
+};
+
+export type listSpaceInvitesResponse =
+  listSpaceInvitesResponseSuccess | listSpaceInvitesResponseError;
+
+export const getListSpaceInvitesUrl = (space: string) => {
+  return `/spaces/${space}/invites`;
+};
+
+/**
+ * The space's stored, active invites, oldest first, with their metadata and waiting state. Only for a web session of an admin in the space's latest revision.
+ * @summary The space's active invites
+ */
+export const listSpaceInvites = async (
+  space: string,
+  options?: RequestInit,
+): Promise<listSpaceInvitesResponse> => {
+  const res = await fetch(getListSpaceInvitesUrl(space), {
+    ...options,
+    method: "GET",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: listSpaceInvitesResponse["data"] = body ? JSON.parse(body) : {};
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as listSpaceInvitesResponse;
+};
+
 export type createInviteResponse201 = {
   data: NewInvite;
   status: 201;
@@ -3510,6 +3584,82 @@ export const createInvite = async (
     status: res.status,
     headers: res.headers,
   } as createInviteResponse;
+};
+
+export type revokeSpaceInviteResponse204 = {
+  data: void;
+  status: 204;
+};
+
+export type revokeSpaceInviteResponse400 = {
+  data: ProtocolProblem;
+  status: 400;
+};
+
+export type revokeSpaceInviteResponse401 = {
+  data: Problem;
+  status: 401;
+};
+
+export type revokeSpaceInviteResponse403 = {
+  data: Problem;
+  status: 403;
+};
+
+export type revokeSpaceInviteResponse404 = {
+  data: Problem;
+  status: 404;
+};
+
+export type revokeSpaceInviteResponse500 = {
+  data: Problem;
+  status: 500;
+};
+
+export type revokeSpaceInviteResponseSuccess = revokeSpaceInviteResponse204 & {
+  headers: Headers;
+};
+export type revokeSpaceInviteResponseError = (
+  | revokeSpaceInviteResponse400
+  | revokeSpaceInviteResponse401
+  | revokeSpaceInviteResponse403
+  | revokeSpaceInviteResponse404
+  | revokeSpaceInviteResponse500
+) & {
+  headers: Headers;
+};
+
+export type revokeSpaceInviteResponse =
+  revokeSpaceInviteResponseSuccess | revokeSpaceInviteResponseError;
+
+export const getRevokeSpaceInviteUrl = (space: string, invite: string) => {
+  return `/spaces/${space}/invites/${invite}`;
+};
+
+/**
+ * Deletes a stored, active invite and its acceptance, if any. Only for a web session of an admin in the space's latest revision, from a page of the web URL: a request whose `Origin` is any other, or that has none, revokes nothing. Members already admitted by a stored revision keep their access.
+ * @summary Revoke an invite
+ */
+export const revokeSpaceInvite = async (
+  space: string,
+  invite: string,
+  options?: RequestInit,
+): Promise<revokeSpaceInviteResponse> => {
+  const res = await fetch(getRevokeSpaceInviteUrl(space, invite), {
+    ...options,
+    method: "DELETE",
+  });
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+
+  const data: revokeSpaceInviteResponse["data"] = body
+    ? JSON.parse(body)
+    : undefined;
+  return {
+    data,
+    status: res.status,
+    headers: res.headers,
+  } as revokeSpaceInviteResponse;
 };
 
 export type storeInviteResponse200 = {
@@ -4140,8 +4290,8 @@ export const getGetSpaceUsageUrl = (space: string) => {
 };
 
 /**
- * The space's messages this calendar month in UTC, counted as the monthly limit counts them also without its setting, its service agents, and the server's limits on the space's messages, history and service agents while it has their settings (docs/dev/architecture.md, "Cloud limits").
- * @summary The space's messages this month and service agents, with their limits
+ * Shows the space's messages this calendar month in UTC and service agents. With space plans enabled, the response gives the space's plan and its allowances. With plans off, it gives the limits from the server settings.
+ * @summary The space's usage and limits
  */
 export const getSpaceUsage = async (
   space: string,

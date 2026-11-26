@@ -16,7 +16,7 @@ use skald_proto::MessageId;
 use crate::cloud::WAIT;
 use crate::helped::Helped;
 use crate::hooks::{HOOK, Hooked, INBOX_WORD, Web, run_hook};
-use crate::lines::{agent_lines, refers_to};
+use crate::lines::{agent_lines, assert_no_uuid, lines_referring_to};
 use crate::machine::{Machine, RUN_LIMIT};
 use crate::senders::data_warnings;
 use crate::world::AGENT;
@@ -194,8 +194,8 @@ pub fn given(hooked: &Hooked, event: Event) -> String {
 
 /// Fails unless `text`, what a hook gave, is the signal alone: one line that names
 /// [`INBOX_WORD`]; no message line and no warning line; none of `texts`, nor their first 40
-/// characters; none of `names`, the senders' handles and devices, in any case; and no word that is
-/// the reference of one of `msg_ids`.
+/// characters; none of `names`, the senders' handles and devices, in any case; no UUID; and no
+/// `#<ref>` of any of `msg_ids`.
 #[track_caller]
 pub fn assert_bare(text: &str, texts: &[&str], msg_ids: &[MessageId], names: &[&str]) {
     assert_eq!(text.trim().lines().count(), 1, "not one line: {text}");
@@ -210,10 +210,12 @@ pub fn assert_bare(text: &str, texts: &[&str], msg_ids: &[MessageId], names: &[&
     for name in names {
         assert!(!lower.contains(&name.to_lowercase()), "{name:?}: {text}");
     }
-    let words: Vec<&str> = text.split(|c: char| !c.is_ascii_alphanumeric()).collect();
-    for msg_id in msg_ids {
-        let named = words.iter().any(|word| refers_to(word, *msg_id));
-        assert!(!named, "the reference of {msg_id}: {text}");
+    assert_no_uuid(text);
+    for &msg_id in msg_ids {
+        assert!(
+            lines_referring_to(text, msg_id).is_empty(),
+            "the reference of {msg_id}: {text}"
+        );
     }
 }
 

@@ -308,6 +308,7 @@ impl Cloud {
                     url: stand_in.url().parse().expect("the stand-in's address"),
                 }),
                 google: oidc,
+                corporate: None,
                 state_lifetime: Duration::from_secs(600),
                 link_age: Duration::from_secs(300),
                 device_code_lifetime: Duration::from_secs(lifetime),

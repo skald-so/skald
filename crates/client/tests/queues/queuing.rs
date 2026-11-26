@@ -135,12 +135,16 @@ pub fn references(shown: &str) -> Vec<String> {
     found
 }
 
+/// `task` as references count it: the `msg_id` of the same bytes, whose reference is the task's.
+pub fn as_message(task: TaskId) -> MessageId {
+    MessageId::from_bytes(*task.as_bytes())
+}
+
 /// Whether `shown` holds a reference, `#<ref>`, to the task `task`.
 pub fn refers_to_task(shown: &str, task: TaskId) -> bool {
-    let as_message = MessageId::from_bytes(*task.as_bytes());
     references(shown)
         .iter()
-        .any(|short| refers_to(short, as_message))
+        .any(|short| refers_to(short, as_message(task)))
 }
 
 /// Fails unless `finished`, a run of `skald enqueue`, says the reference of `task`.

@@ -89,6 +89,16 @@ pub fn assert_refused(response: &Response, what: &str) {
     );
 }
 
+/// The problem of a revoked device.
+pub const DEVICE_REVOKED: &str = "https://skald.so/problems/device-revoked";
+
+/// Checks that `response` refuses a device as revoked: `403` with `device-revoked`.
+#[track_caller]
+pub fn assert_revoked(response: &Response, what: &str) {
+    assert_eq!(problem_of(response, what), DEVICE_REVOKED, "{what}");
+    assert_eq!(response.status, 403, "{what}");
+}
+
 /// The problem type of `response`, a refusal.
 #[track_caller]
 pub fn problem_of(response: &Response, what: &str) -> String {
@@ -264,6 +274,14 @@ pub fn deleted_accounts(response: &Response) -> BTreeSet<String> {
         assert!(accounts.insert(id.to_owned()), "{id} twice: {body}");
     }
     accounts
+}
+
+/// The count `sql` gives in `db`, `$1` bound to `id`, an ID as text.
+pub fn count(db: &TestDb, sql: &'static str, id: &str) -> i64 {
+    let (count,): (i64,) = db
+        .query(async |conn| sqlx::query_as(sql).bind(id).fetch_one(conn).await)
+        .unwrap_or_else(|err| panic!("{sql}: {err}"));
+    count
 }
 
 /// Gives `person` the role `role` among `body`'s members.

@@ -142,7 +142,7 @@ read -rsp 'Google client secret: ' secret && echo "SKALD_GOOGLE_CLIENT_SECRET=$s
 
 Sign-up is open by default: anyone your providers sign in gets an account, any GitHub user and any Google account your client's audience admits. The server's log then warns of it at every start.
 
-Closed, only the listed people create accounts; existing accounts sign in as before. Each list is comma-separated, compared without case, and may stay empty:
+When sign-up is closed, listed people can create accounts and existing accounts can sign in. An unlisted person can use an [invite link](protocol/membership.md#invite) to create one account with `skald accept-invite`. Each list is comma-separated, compared without case, and may stay empty:
 
 - GitHub logins. GitHub gives no verified email, so a login counts, never an email: whoever holds a listed login when signing up gets the account, also after a rename frees it.
 - Google emails, once Google has verified them.

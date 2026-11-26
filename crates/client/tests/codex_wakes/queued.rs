@@ -45,7 +45,7 @@ fn long_spec() -> String {
 
 /// Ada's second machine, linked by hand, with `~/work/clientA` bound to `clienta`; gives it and
 /// that folder.
-fn second_device(codex: &Codex) -> (Person, PathBuf) {
+pub fn second_device(codex: &Codex) -> (Person, PathBuf) {
     let talk = &codex.web.solo.talk;
     let laptop = second_machine(&talk.world, &talk.ada, LAPTOP);
     for machine in [&laptop.machine, codex.machine()] {
