@@ -13,14 +13,14 @@ use skald_proto::{ChannelId, MessageId};
 use crate::client::Session;
 use crate::cloud::WAIT;
 use crate::fixtures::{CHANNEL, SEND, TO};
-use crate::hooks::{Bob, REVIEW};
+use crate::hooks::{Bob, REVIEW, assert_user_send};
 use crate::kit::{Change, latest, received, revise};
 use crate::lines::{JSON_FLAG, agent_line, json_objects, refers_to};
 use crate::machine::{Finished, Machine};
 use crate::receipts::{READ, read_lines, shows_read};
 use crate::senders::{DATA, OWN, PEER, holds_word};
 use crate::solo::{API, Solo, WEB, assert_got};
-use crate::talk::{BOB_HOST, one_message_sent};
+use crate::talk::BOB_HOST;
 use crate::world::AGENT;
 
 /// The person's commands: set a channel's mode for a level, set its text setting for a level, and
@@ -151,8 +151,8 @@ pub fn other_channel(solo: &Solo) -> ChannelId {
 }
 
 /// `agent` sends web `text` in `channel` with `skald --agent <agent> send --to <web> --channel
-/// <channel>` on `machine` in `dir`; fails unless it succeeds and the front saw one message in
-/// `channel` meanwhile. Gives its `msg_id`.
+/// <channel>` on `machine` in `dir`. Gives the ID of the one user message the front saw and the
+/// command reported.
 #[track_caller]
 pub fn sends_in(
     solo: &Solo,
@@ -164,8 +164,7 @@ pub fn sends_in(
     let (to, at) = (solo.short(WEB), channel.to_string());
     let args = [AGENT, agent, SEND, TO, &to, CHANNEL, &at, text];
     let sent = machine.start_in(dir, &args).finish();
-    assert!(sent.success, "{sent:?}");
-    one_message_sent(&solo.talk.front, channel, mark)
+    assert_user_send(solo, channel, mark, &sent)
 }
 
 /// api sends web `text` in `channel` from its folder, as [`sends_in`] says.

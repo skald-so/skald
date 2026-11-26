@@ -115,3 +115,44 @@ test("a click inside the dialog cancels nothing", async () => {
   expect(onCancel).not.toHaveBeenCalled();
   expect(dialog()).not.toBeNull();
 });
+
+/** A dialog with a field that must hold "yes" before the action confirms. */
+function Typed({ onConfirm }: { onConfirm: () => void }) {
+  const [typed, setTyped] = useState("");
+  return (
+    <ConfirmDialog
+      title="End it?"
+      confirm="End it"
+      confirmDisabled={typed !== "yes"}
+      onConfirm={onConfirm}
+      onCancel={() => {}}
+    >
+      <label>
+        Type yes
+        <input
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+        />
+      </label>
+    </ConfirmDialog>
+  );
+}
+
+test("with a field, the focus starts on it, Tab skips the disabled action, and the action confirms once enabled", async () => {
+  const user = userEvent.setup();
+  const onConfirm = vi.fn();
+  render(<Typed onConfirm={onConfirm} />);
+  const field = screen.getByRole("textbox", { name: "Type yes" });
+  expect(document.activeElement).toBe(field);
+
+  await user.tab();
+  expect(focused()).toBe("Cancel");
+  await user.tab();
+  expect(document.activeElement).toBe(field);
+  await user.click(screen.getByRole("button", { name: "End it" }));
+  expect(onConfirm).not.toHaveBeenCalled();
+
+  await user.type(field, "yes");
+  await user.click(screen.getByRole("button", { name: "End it" }));
+  expect(onConfirm).toHaveBeenCalledTimes(1);
+});

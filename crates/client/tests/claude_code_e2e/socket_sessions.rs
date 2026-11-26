@@ -13,7 +13,7 @@ use serde_json::Value;
 use skald_proto::MessageId;
 
 use crate::claude::claude_code;
-use crate::hooks::{Bob, INBOX_WORD, assert_own_line, assert_signal};
+use crate::hooks::{Bob, INBOX_WORD, api_sends_web, assert_own_line, assert_signal};
 use crate::lines::agent_line_of;
 use crate::machine::Machine;
 use crate::receipts::{read_lines, shows_read_once};
@@ -182,7 +182,7 @@ fn idle_terminal_session_gets_own_text_and_a_peer_s_signal_without_a_prompt() {
         return;
     };
 
-    let own = solo.api_sends_web(OWN_SAYS);
+    let own = api_sends_web(&solo, OWN_SAYS);
     nudged_unless_socket(&mut session);
     let turn = model.wait_turn_holding(OWN_SAYS, "api's message");
     assert_own_in(&turn, OWN_SAYS, own, &solo.short(API));
@@ -221,7 +221,7 @@ fn idle_app_sessions_get_own_text_without_a_prompt_bypassing_permissions_or_not(
             return;
         };
 
-        let own = solo.api_sends_web(says);
+        let own = api_sends_web(&solo, says);
         nudged_unless_socket(&mut session);
 
         let turn = model.wait_turn_holding(says, &format!("{surface:?}: api's message"));
@@ -268,7 +268,7 @@ fn busy_session_gets_own_text_once_after_its_running_tool() {
     session.prompt(START);
     session.wait_turn_holding(&model, START);
 
-    let own = solo.api_sends_web(BUSY_SAYS);
+    let own = api_sends_web(&solo, BUSY_SAYS);
 
     let turn = model.wait_turn_holding(BUSY_SAYS, "api's message");
     assert!(after_a_tool(&turn), "not after the tool: {turn}");
@@ -321,7 +321,7 @@ fn an_api_error_after_the_message_gives_no_read_until_the_model_answers() {
         return;
     };
 
-    let own = solo.api_sends_web(FAILED_SAYS);
+    let own = api_sends_web(&solo, FAILED_SAYS);
     model.wait_turn_holding(FAILED_SAYS, "api's message");
     // The stub records a turn before it answers.
     let until = Instant::now() + QUIET;

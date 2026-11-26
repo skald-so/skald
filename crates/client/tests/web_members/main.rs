@@ -41,11 +41,11 @@ mod world;
 // The only-admin warning.
 mod only_admin;
 
-use access::{press, rows_holding};
+use access::{open_members, press, rows_holding};
 use browser::{Browser, Page};
 use cloud::Cloud;
 use skald_proto::Role;
-use spa::{Spa, answers_without_secrets, space_options, wait_for_cabinet, wait_until};
+use spa::{Spa, answers_without_secrets, space_options, wait_until};
 use world::{ACME, ADMIN, MEMBER, World, create, next_by, space_id, store};
 
 /// A host of the server's public address that the machines resolve, as Chrome does.
@@ -115,9 +115,7 @@ fn members_lists_the_chosen_spaces_members_with_their_roles() {
     let ida = world.person(user, laptop, "ida-laptop");
     let personal = ida.handle.to_string();
     let open = |space: &str| {
-        page.goto(&spa.at("/"));
-        wait_for_cabinet(&page, &personal);
-        press(&page, None, "a, [role=link]", "^members\\b");
+        open_members(&page, &spa, &personal);
         choose(&page, space);
     };
     open(&personal);
