@@ -90,7 +90,7 @@ fn members_and_access_receive_only_invite_metadata_for_an_admin() {
     });
     let roster = create_with_member(&world.cloud, &ada, ACME, &bob);
     let url = spa.at(&format!("/spaces/{}/invites", roster.body().space));
-    let link = InviteLink::parse(&create_invite(&ada, &spa)).expect("an invite link");
+    let (_, link) = create_invite(&ada, &spa);
 
     for (page, status) in [(&admin, 200), (&member, 403)] {
         page.record_answers();
@@ -116,7 +116,7 @@ fn an_invite_page_explains_account_creation_when_sign_up_is_closed() {
     let world = World { cloud, browser };
     let owner = world.sign_up(3_819_814_001, OWNER, DEVICE);
     create(&world.cloud, &owner, ACME);
-    let link = create_invite(&owner, &spa);
+    let (link, _) = create_invite(&owner, &spa);
     let page = world.browser.page_of_width(PHONE);
     assert!(page.cookies().is_empty());
     assert_eq!(page.goto(&link).status, Some(200));
