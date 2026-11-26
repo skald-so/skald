@@ -375,8 +375,9 @@ pub fn stop_before_reply(
 }
 
 /// `delivery`, what a path gave web, ends web's session file as Claude Code 2.1.332 writes it when
-/// `Stop` runs: its user entry, then the bookkeeping lines `api-request-blob` and `api-request`. Its
-/// reply, which names no turn, only its parent, the delivery, comes later ([`stop_before_reply`]).
+/// `Stop` runs: its user entry, then the bookkeeping lines `api-request-blob`, which carries the
+/// conversation, here 256 KiB of it, and `api-request`. Its reply, which names no turn, only its
+/// parent, the delivery, comes later ([`stop_before_reply`]).
 #[track_caller]
 pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
     let (input, parsed, mut file) = stop_transcript(ada);
@@ -387,7 +388,10 @@ pub fn late_reply_confirms_once(ada: &Bare, delivery: &str, msg_id: MessageId) {
             "promptId": parsed["prompt_id"], "timestamp": jiff::Timestamp::now().to_string(),
             "message": { "role": "user", "content": delivery },
         }),
-        json!({ "type": "api-request-blob", "sessionId": session, "hash": "h" }),
+        json!({
+            "type": "api-request-blob", "sessionId": session, "hash": "h",
+            "message": { "role": "user", "content": [{ "type": "text", "text": "x".repeat(256 << 10) }] },
+        }),
         json!({ "type": "api-request", "sessionId": session, "id": "r" }),
     ];
     for entry in entries {
