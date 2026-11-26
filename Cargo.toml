@@ -26,8 +26,8 @@ opt-level = 2
 [profile.dev.package.skald-crypto]
 opt-level = 2
 
-# Argon2id of the recovery key runs at the spec's cost in every build: optimized, a test build's
-# derivation takes as long as a release's.
+# Argon2id of the recovery key, optimized: the tests that derive at the spec's cost take as long as
+# a release build does. Other tests derive at a test build's cost: `test-cost` of skald-crypto.
 [profile.dev.package.argon2]
 opt-level = 3
 
