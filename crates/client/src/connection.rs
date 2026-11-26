@@ -1847,7 +1847,9 @@ pub(crate) mod tests {
         body: Vec<u8>,
     }
 
-    /// A connection to a server that gives `answers`, each at once, one per request.
+    /// A connection to a server that gives `answers`, each at once, one per request. The server
+    /// takes each request on a new connection, so an answer that does not end a stream closes its
+    /// own: the client would otherwise send the next request on a connection the server dropped.
     fn answered<const N: usize>(
         answers: [String; N],
     ) -> (Connection, thread::JoinHandle<Vec<Taken>>) {
@@ -1997,9 +1999,10 @@ pub(crate) mod tests {
             URL_SAFE_NO_PAD.encode(b"frame")
         );
         let forbidden = "HTTP/1.1 403 Forbidden\r\ncontent-type: text/plain\r\n\
-                         content-length: 7\r\n\r\nblocked"
+                         content-length: 7\r\nconnection: close\r\n\r\nblocked"
             .to_owned();
-        let page = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 0\r\n\r\n";
+        let page = "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 0\r\n\
+                    connection: close\r\n\r\n";
         let (mut connection, served) = answered([stream, forbidden, page.to_owned()]);
         let open = |connection: &mut Connection| {
             connection.open_events_as("/mailbox/events", ("token", "proof"), 7)
@@ -2036,7 +2039,7 @@ pub(crate) mod tests {
             let body = format!(r#"{{"type":"{kind}","title":"t","status":0}}"#);
             format!(
                 "HTTP/1.1 {status}\r\ncontent-type: application/problem+json\r\n\
-                 content-length: {}\r\n\r\n{body}",
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
             )
         };
