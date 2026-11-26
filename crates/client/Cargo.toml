@@ -20,6 +20,10 @@ pkg-url = "{ repo }/releases/download/v{ version }/skald-client-{ target }.zip"
 pkg-fmt = "zip"
 bin-dir = "{ bin }{ binary-ext }"
 
+# Keep the Rust crate name when the release renames the package.
+[lib]
+name = "skald_client"
+
 [[bin]]
 name = "skald"
 path = "src/main.rs"

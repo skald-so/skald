@@ -42,7 +42,7 @@ pub struct PublicUrl(Url);
 
 impl PublicUrl {
     /// Whether browsers reach the server over HTTPS, so that its cookies are `Secure`.
-    fn secure(&self) -> bool {
+    pub(crate) fn secure(&self) -> bool {
         self.0.scheme() == "https"
     }
 

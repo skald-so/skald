@@ -7,7 +7,7 @@
   - MLS Delivery Service;
   - mailboxes, history, queues;
   - push, notification relay, quotas, anti-abuse.
-- **`skald`** — the client, a single binary: CLI, MCP server (stdio), hook handler, local helper. Keys and all encryption live only here and in a linked browser.
+- **`skald`** — the client, a single binary: CLI, MCP server (stdio), hook handler, local helper. The client and linked browsers hold device keys for end-to-end encryption.
   - **One-shot mode** (CI, cron, sandboxes; `--one-shot` or `SKALD_ONE_SHOT=1`): load state → sync → run the operation → save. Such a command starts no helper, but goes through one that runs.
   - **Helper `skald helper`:** one per local state, started in the background by the first command that connects as the device, such as `skald send` or `skald recv`. Holds the device's connection over any transport and the local state's lock, dispatches messages to sessions. No root or system service needed.
     - Each command that changes the local state hands its operation, working directory and `--agent` to the helper over a unix socket in the state directory, and shows its output and exit code. A command whose helper cannot start runs one-shot.
@@ -40,6 +40,10 @@
     - Each tool call goes through the helper or runs one-shot, as a command does, and through a newer helper too. Once the `skald` installed where the server's binary was is newer, as after an update while the server runs, the server starts it from there for each call, which it hands over as to a helper.
 - **Adapters**, one per agent: [Delivery to agents](#delivery-to-agents). The Claude Code adapter also ships a skill.
 - **GitHub Action:** the client in one-shot mode and the GitHub bridge, which runs inside the Action, not on the server. A `/skald <template> …` comment on an issue or PR from a user with write access becomes a task; the result returns as a PR comment. The trust level of such tasks: [threat model](../threat-model.md#the-idp-or-github).
+- **A2A gateway:** a separate HTTPS handler for single-turn text exchanges. Access and discovery are available only in local fixtures.
+  - Each route binds a Skald server, space and channel to a queue or a named agent on a member device. The gateway selects the destination from its configuration.
+  - Each request needs an active gateway credential for the route and the route's live Skald service token and device proof. The grant needs `send` and `receive`, plus `queues` for a queue route.
+  - The service key and token belong in the gateway's secret store. The [threat model](../threat-model.md#the-a2a-gateway-or-its-operator) describes the encryption boundary.
 - **Frontend** — a single static SPA at `app.skald.so`:
   - its pages' paths start with none of the first segments of the OpenAPI spec's paths, such as `/device`, so one origin serves the SPA and the API;
   - a self-hosted server serves its release's SPA on its own domain: [self-host.md](../self-host.md#the-web-app);
@@ -226,10 +230,10 @@ The public cloud applies these limits; a self-hosted server does not.
 
 | Limit | Value |
 |---|---|
-| Spaces an account owns: the ones it created, its personal space included | 2: the server setting `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
-| Members per space | No limit |
+| Spaces an account owns | Two Free spaces with plans on. With plans off, `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
+| Members per space | Three in Free with plans on. Team and plans-off servers have no member limit |
 | Devices per member | 50: the server setting `--devices-limit` (`SKALD_DEVICES_LIMIT`), devices with a certificate per account, `service` and revoked devices aside; unset, no limit |
-| Service agents per space | 10: the server setting `--service-agents-limit` (`SKALD_SERVICE_AGENTS_LIMIT`), service agent entries in the space's latest revision; a revision that adds entries beyond it is refused, one that keeps or lowers their number is taken; unset, no limit |
+| Service agents per space | Three in Free and ten in Team with plans on. With plans off, `--service-agents-limit` (`SKALD_SERVICE_AGENTS_LIMIT`); unset, no limit |
 | Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes, a handshake message ([Mailbox](../protocol/delivery.md#mailbox)) not at all; unset, no limit |
 | Messages per device | 120 per minute: the server setting `--send-rate-limit` (`SKALD_SEND_RATE_LIMIT`), messages one device stores within a sliding window of `--send-rate-window` (`SKALD_SEND_RATE_WINDOW`) seconds, a minute unset, counted as the messages per space, across the server's instances; unset, no limit |
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), an envelope's payload or a task's `ct` in bytes; unset, no limit |
@@ -239,4 +243,4 @@ The public cloud applies these limits; a self-hosted server does not.
 
 The web app's Usage section shows the owned spaces, devices, monthly messages and service agents with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.
 
-`--space-plans` (`SKALD_SPACE_PLANS=true`) opts in to showing a space's plan and allowances in `getSpaceUsage`. Spaces without an entitlement default to Free. The server continues to enforce the settings above.
+`--space-plans` (`SKALD_SPACE_PLANS=true`) enables Free ownership limits and plan limits on signed roster revisions. Spaces without an entitlement default to Free. The account's personal space counts even before creation. Paid spaces appear in the owned list without using a Free slot. Roster edits and reductions can leave a count above its limit. The remaining plan allowances in `getSpaceUsage` are informational.
