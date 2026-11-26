@@ -56,6 +56,7 @@
 use std::cell::Cell;
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::num::NonZeroU64;
 use std::path::Path;
 use std::time::Duration;
@@ -99,6 +100,7 @@ use crate::receipts;
 use crate::reply;
 use crate::resend;
 use crate::results;
+use crate::sdk::{MessageError, ReceivedMessage, check_reported_deletion};
 use crate::secrets;
 use crate::send::{self, Reported};
 use crate::spaces::{self, Follower, Scope};
@@ -207,7 +209,8 @@ pub fn hook(
     storage: secrets::Storage,
     settings: (VersionRange, Duration),
     agent: &Name,
-    (event, cap, session): (hook::Event, u64, &hook::Session),
+    (input, event): (&hook::Input, hook::Event),
+    deferred: Option<&mut Option<claude_socket::DeferredStop>>,
 ) -> Result<(), String> {
     holding_warnings(dir, true, || {
         let Ok(space) = crate::folders::working_space(dir) else {
@@ -216,7 +219,15 @@ pub fn hook(
         let state = State::open(dir).map_err(text)?;
         state.add_agent(space.id, agent.as_str()).map_err(text)?;
         if let hook::Event::Stop { .. } = event {
-            claude_socket::confirm(&state, agent, session).map_err(text)?;
+            if let Some(deferred) = deferred {
+                *deferred = claude_socket::defer_stop(
+                    &state,
+                    (space.id, agent),
+                    &input.session,
+                    input.turn.as_deref(),
+                );
+            }
+            claude_socket::confirm(&state, agent, &input.session).map_err(text)?;
         }
         let stops = match event {
             hook::Event::Stop { continued: true } => {
@@ -225,7 +236,7 @@ pub fn hook(
             _ => state.count_stops(space.id, agent.as_str(), Some(0)),
         }
         .map_err(text)?;
-        if matches!(event, hook::Event::Stop { .. }) && stops >= cap {
+        if matches!(event, hook::Event::Stop { .. }) && stops >= input.cap {
             return Ok(());
         }
         drop(state);
@@ -357,6 +368,31 @@ pub fn keep_held(kept: Result<(), state::Error>, held: &[String]) {
 /// space: gives how many messages it handed over.
 type Whole<'w> = &'w dyn Fn(&Follower, (SpaceId, &Name)) -> Result<usize, String>;
 
+type Receiver<'a> = dyn FnMut(ReceivedMessage) -> io::Result<()> + 'a;
+
+enum PersonHandover<'a> {
+    Cli(Form),
+    Application(&'a mut Receiver<'a>),
+}
+
+/// Receives as the person and hands over typed messages to the application.
+pub fn receive_messages(
+    dir: &Path,
+    storage: secrets::Storage,
+    settings: (VersionRange, Duration),
+    hand_over: &mut impl FnMut(ReceivedMessage) -> io::Result<()>,
+) -> Result<(), MessageError> {
+    receive_with(
+        dir,
+        storage,
+        settings,
+        None,
+        (false, PersonHandover::Application(hand_over), None),
+        true,
+    )
+    .map(drop)
+}
+
 /// [`run`], showing in `form`; handing over with `whole`, if given, as [`inbox`] does; handing
 /// nothing over to the agent unless `hands`.
 fn received(
@@ -367,6 +403,29 @@ fn received(
     (waits, form, whole): (bool, Form, Option<Whole>),
     hands: bool,
 ) -> Result<bool, String> {
+    receive_with(
+        dir,
+        storage,
+        (speaks, timeout),
+        agent,
+        (waits, PersonHandover::Cli(form), whole),
+        hands,
+    )
+    .map_err(|err| err.to_string())
+}
+
+fn receive_with(
+    dir: &Path,
+    storage: secrets::Storage,
+    (speaks, timeout): (VersionRange, Duration),
+    agent: Option<&Name>,
+    (waits, handover, whole): (bool, PersonHandover<'_>, Option<Whole>),
+    hands: bool,
+) -> Result<bool, MessageError> {
+    let form = match &handover {
+        PersonHandover::Cli(form) => Some(*form),
+        PersonHandover::Application(_) => None,
+    };
     let written = output::written();
     let scope = Scope::of_run(dir, agent.is_some())?;
     SPACE.with(|space| {
@@ -392,9 +451,10 @@ fn received(
     }
     let queued = send::queued(&follower.state, scope)?;
     let mut delivered = send::deliver(&mut follower, &queued, timeout, None);
+    check_reported_deletion(dir)?;
     let reported = match (agent, form) {
-        (Some(_), _) => Reported::Quiet,
-        (None, Form::Json) => Reported::Json(None),
+        (Some(_), _) | (None, None) => Reported::Quiet,
+        (None, Some(Form::Json)) => Reported::Json(None),
         (None, _) => Reported::Full,
     };
     if let Err(err) = send::report(&follower.state, &queued, &delivered, timeout, reported) {
@@ -407,6 +467,7 @@ fn received(
     let mailbox = std::mem::replace(&mut link.mailbox, flushed);
     let mut synced = BTreeMap::new();
     let received = receive(&mut follower, mailbox, (timeout, scope), &mut synced);
+    check_reported_deletion(dir)?;
     let aligned = align(&mut follower, &mut link, scope, &mut synced);
     // Completes and fails that wait, and their results, go out before what the run shows.
     claims::finish_waiting(&mut follower, scope, &synced);
@@ -415,15 +476,22 @@ fn received(
         Ok(checks) => show(&mut follower, (scope, ran_as.is_some()), checks),
         Err(err) => Err(err.clone()),
     };
-    let handed = match (ran_as, whole) {
-        (Some(_), _) if !hands => Ok(0),
+    check_reported_deletion(dir)?;
+    let handed = match (ran_as, whole, handover) {
+        (Some(_), _, _) if !hands => Ok(0),
         // A failed run hands nothing over.
-        (Some((space, agent)), Some(whole)) => match (&received, &aligned, &shown) {
-            (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)),
+        (Some((space, agent)), Some(whole), _) => match (&received, &aligned, &shown) {
+            (Ok(()), Ok(()), Ok(())) => whole(&follower, (space, agent)).map_err(Into::into),
             _ => Ok(0),
         },
-        (Some((space, agent)), None) => hand_over(&follower, (space, agent), form),
-        (None, _) => show_to_person(&follower, form),
+        (Some((space, agent)), None, PersonHandover::Cli(form)) => {
+            hand_over(&follower, (space, agent), form).map_err(Into::into)
+        }
+        (_, _, PersonHandover::Application(_)) if crate::connection::session_refused() => Ok(0),
+        (_, _, PersonHandover::Application(receiver)) => {
+            hand_over_to_application(&follower, receiver)
+        }
+        (None, _, PersonHandover::Cli(form)) => show_to_person(&follower, form).map_err(Into::into),
     };
     if let Ok(checks) = &checks {
         receipts::send(&mut follower, &checks.synced, scope);
@@ -432,6 +500,7 @@ fn received(
     let person_shown = output::written() > written;
     if ran_as.is_none()
         && !follower.stateless()
+        && let Some(form) = form
         && let Err(err) = held::say_waiting(&follower.state, form)
     {
         eprintln!("skald: warning: {err}");
@@ -450,6 +519,9 @@ fn received(
         // Its connection goes back to be kept.
         link.mailbox = None;
         intake::leave(Intake::new(follower, checks, link));
+    }
+    if let Err(err @ MessageError::Handover(_)) = handed {
+        return Err(err);
     }
     received?;
     aligned?;
@@ -1144,6 +1216,26 @@ pub fn show_to_person(follower: &Follower, form: Form) -> Result<usize, String> 
     Ok(shown + permission_prompts::show_to_person(state, form)?)
 }
 
+/// Hands over the person's message records, leaving other records for the CLI.
+fn hand_over_to_application(
+    follower: &Follower,
+    receiver: &mut Receiver<'_>,
+) -> Result<usize, MessageError> {
+    let state = &follower.state;
+    hand_over_kept(
+        follower,
+        state.for_person().map_err(text)?,
+        |opened| {
+            let Some(message) = ReceivedMessage::from_record(opened) else {
+                return Ok(false);
+            };
+            receiver(message).map_err(MessageError::Handover)?;
+            Ok(true)
+        },
+        &mut |seq| state.shown_to_person(seq, false),
+    )
+}
+
 /// Hands each kept status of a message `agent` sent in `space`, then each kept message that waits
 /// for it there, over to it, in `form`, in `seq` order: shows it, then marks it handed over. A
 /// message whose wait ended is dropped first. Gives how many messages it handed over.
@@ -1500,24 +1592,45 @@ fn shown_kept(
     (form, references): (Form, &References),
     (put, mark): (&mut Put, &mut Mark),
 ) -> Result<usize, String> {
+    let mut warned = false;
+    hand_over_kept(
+        follower,
+        kept,
+        |opened| {
+            let (line, level) = kept_line(opened, form, references);
+            let warns = form == Form::Short && !warned && level < TrustLevel::Own;
+            let line = if warns {
+                warned = true;
+                format!("{}\n{line}", forms::DATA_WARNING)
+            } else {
+                line
+            };
+            put(format!("{line}\n"))?;
+            Ok(true)
+        },
+        mark,
+    )
+}
+
+/// Opens each kept record in order and marks it after `put` accepts it. Leaves records
+/// that `put` skips and stops on its first error.
+fn hand_over_kept<E: From<String>>(
+    follower: &Follower,
+    kept: Vec<(u64, Vec<u8>)>,
+    mut put: impl FnMut(&[u8]) -> Result<bool, E>,
+    mark: &mut Mark,
+) -> Result<usize, E> {
     if kept.is_empty() {
         return Ok(0);
     }
     let key = groups::inbox_key(follower)?;
     let mut shown = 0;
-    let mut warned = false;
     for (seq, sealed) in kept {
         match key.open(follower.this, &kept_item(seq), &sealed) {
             Some(opened) => {
-                let (line, level) = kept_line(&opened, form, references);
-                let warns = form == Form::Short && !warned && level < TrustLevel::Own;
-                let line = if warns {
-                    warned = true;
-                    format!("{}\n{line}", forms::DATA_WARNING)
-                } else {
-                    line
-                };
-                put(format!("{line}\n"))?;
+                if !put(&opened)? {
+                    continue;
+                }
                 shown += 1;
             }
             None => eprintln!(
@@ -1536,6 +1649,18 @@ pub(crate) fn kept_line(
     form: Form,
     references: &References,
 ) -> (String, TrustLevel) {
+    let (line, level, _) = kept_line_with_whole(opened, form, references, None);
+    (line, level)
+}
+
+/// As `kept_line`, with the whole primary reference of an ordinary message when its ID is
+/// `whole`. The third result names the whole reference if it was shown.
+pub(crate) fn kept_line_with_whole(
+    opened: &[u8],
+    form: Form,
+    references: &References,
+    whole: Option<MessageId>,
+) -> (String, TrustLevel, Option<String>) {
     let record = serde_json::from_slice::<forms::Message>(opened).ok();
     let msg_id = (record.as_ref()).and_then(|record| record.msg_id.parse::<MessageId>().ok());
     match (record, msg_id) {
@@ -1547,12 +1672,16 @@ pub(crate) fn kept_line(
                 Some(result) => (result.task.parse::<TaskId>()).map_or(msg_id, forms::as_message),
                 None => msg_id,
             };
-            let line = record.shown(form, &references.of(shown_id), answered.as_deref());
-            (line, record.level)
+            let whole = (Some(msg_id) == whole && record.result.is_none())
+                .then(|| forms::whole_reference(msg_id));
+            let reference = whole.clone().unwrap_or_else(|| references.of(shown_id));
+            let line = record.shown(form, &reference, answered.as_deref());
+            (line, record.level, whole)
         }
         _ => (
             String::from_utf8_lossy(opened).into_owned(),
             TrustLevel::Peer,
+            None,
         ),
     }
 }
@@ -2695,6 +2824,55 @@ mod tests {
              01a1dcab-ee8a-7872-9adc-6efd0851e3ee are missing: the server refused, expired or \
              dropped them"
         );
+    }
+
+    #[test]
+    fn a_whole_primary_reference_preserves_short_reply_and_task_references() {
+        let msg_id = MessageId::from_bytes([1; 16]);
+        let reply_to = MessageId::from_bytes([2; 16]);
+        let task = TaskId::generate();
+        let references = References::new([msg_id, reply_to, forms::as_message(task)]);
+        let mut message = forms::Message {
+            msg_id: msg_id.to_string(),
+            space: "test".to_owned(),
+            channel: "general".to_owned(),
+            from: "space/person/agent@skald.test".to_owned(),
+            device: "device".to_owned(),
+            device_name: "laptop".to_owned(),
+            level: TrustLevel::Own,
+            text: "payload".to_owned(),
+            after_missing: false,
+            reply_to: Some(reply_to.to_string()),
+            refused: Vec::new(),
+            result: None,
+        };
+
+        let record = serde_json::to_vec(&message).unwrap();
+        let (short, _) = kept_line(&record, Form::Short, &references);
+        assert!(short.contains(&format!("] #{} ", references.of(msg_id))));
+        assert!(short.contains(&format!("(reply to #{})", references.of(reply_to))));
+        let (exact, _, whole) =
+            kept_line_with_whole(&record, Form::Short, &references, Some(msg_id));
+        let expected = forms::whole_reference(msg_id);
+        assert_eq!(whole.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            exact,
+            short.replacen(
+                &format!("] #{} ", references.of(msg_id)),
+                &format!("] #{expected} "),
+                1
+            )
+        );
+
+        message.result = Some(forms::ResultOf {
+            task: task.to_string(),
+            outcome: "done".to_owned(),
+        });
+        let record = serde_json::to_vec(&message).unwrap();
+        let (exact, _, whole) =
+            kept_line_with_whole(&record, Form::Short, &references, Some(msg_id));
+        assert_eq!(whole, None);
+        assert!(exact.contains(&format!("] #{} ", references.of(forms::as_message(task)))));
     }
 
     /// An agent's warnings name a message by its reference and a device by its name, escaped,

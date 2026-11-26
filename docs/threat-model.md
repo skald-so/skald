@@ -7,6 +7,7 @@ What Skald protects against and what it does not. Formats and checks are in the 
 ## Contents
 - [Attackers](#attackers)
   - [The server or its operator](#the-server-or-its-operator)
+  - [The A2A gateway or its operator](#the-a2a-gateway-or-its-operator)
   - [A network observer](#a-network-observer)
   - [The IdP or GitHub](#the-idp-or-github)
   - [Anyone without a session](#anyone-without-a-session)
@@ -75,6 +76,10 @@ Also whoever takes over the server or its database.
 - Receipt messages and replies are signed by the recipient device ([Receipts](protocol/delivery.md#receipts)); gap detection reports dropped messages ([Gap detection](protocol/delivery.md#gap-detection)).
 - A presence `revision` blocks a rollback for a reader that saw a newer value; `expires` bounds a replay ([Presence](protocol/agents.md#presence)).
 - The web build is reproducible ([infrastructure.md, "Trust in builds"](dev/infrastructure.md#trust-in-builds)).
+
+### The A2A gateway or its operator
+
+Skald end-to-end encryption ends at the gateway. The gateway sees bridged content and its service agent's mailbox copies in plaintext. HTTPS protects the A2A leg in transit. The gateway's service key and token give it that service identity's permissions. See [Architecture](dev/architecture.md#components) for route authorization.
 
 ### A network observer
 Watches or alters traffic between devices and the server, or the channel an invite link is sent over.

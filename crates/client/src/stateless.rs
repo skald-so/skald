@@ -76,7 +76,7 @@ pub fn send(
     (channel, server): (ChannelId, ServerName),
     draft: &Draft,
     reported: Reported,
-) -> Result<(), String> {
+) -> Result<MessageId, String> {
     let (from, grant) = service::sender(follower, (roster, devices), (channel, server))?;
     let recipients = recipients(follower, (roster, devices), channel)?;
     let msg_id = MessageId::generate();
@@ -117,7 +117,8 @@ pub fn send(
     }
     let timeout = follower.timeout;
     let delivered = send::deliver(follower, &sealed, timeout, None);
-    send::report(&follower.state, &sealed, &delivered, timeout, reported)
+    send::report(&follower.state, &sealed, &delivered, timeout, reported)?;
+    Ok(msg_id)
 }
 
 /// The member devices of the latest GroupInfo of `channel`, each with the HPKE key of its
