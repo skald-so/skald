@@ -8,7 +8,8 @@
 //     module the e2e tests take by #[path] or include!, found by following them from
 //     claude_code_e2e/main.rs and
 //     claude_code_executor/main.rs, or the workflow; a PR that changes none of them does not start
-//     it;
+//     it; on a PR no job runs until it has the label ready-to-merge, then on each of its pushes and
+//     when it gets that label; on a schedule or a manual run every job runs;
 //   - one job runs on Linux, macOS and Windows; it installs @anthropic-ai/claude-code@latest with
 //     npm, then runs the ignored claude_code_e2e tests of the client and claude_code_executor tests
 //     of the adapters with SKALD_E2E_REQUIRED=1, so a skip fails, each in a step without a
@@ -20,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { reporter } from './lib/report.mjs';
-import { event, pathTriggers, permissions, readWorkflow, runsFor, triggers, writes } from './lib/workflows.mjs';
+import { event, jobsFor, pathTriggers, permissions, readWorkflow, runsFor, triggers, writes } from './lib/workflows.mjs';
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const file = '.github/workflows/e2e.yml';
@@ -116,6 +117,25 @@ for (const changed of [
 }
 for (const changed of ['crates/server/src/main.rs', 'docs/dev/infrastructure.md', '.github/workflows/ci.yml']) {
   if (pathTriggers(on.pull_request ?? {}, changed)) fail(`a PR that changes only ${changed} starts it`);
+}
+
+// The label ready-to-merge: on a PR, the jobs wait for it.
+for (const type of ['synchronize', 'labeled']) {
+  if (![].concat(on.pull_request?.types ?? []).includes(type)) fail(`a PR's ${type} event does not start it`);
+}
+const running = (ev) => Object.entries(jobsFor(workflow, ev)).filter(([, state]) => !state.skipped).map(([key]) => key);
+for (const labels of [[], ['bug']]) {
+  const early = running(event('pull_request', 'refs/pull/7/merge', { labels }));
+  if (early.length > 0) fail(`a PR without the label ready-to-merge may run its jobs ${early.join(', ')}`);
+}
+const everyJob = Object.keys(workflow.jobs ?? {}).sort().join(', ');
+for (const [name, labels] of [
+  ['pull_request', ['bug', 'ready-to-merge']],
+  ['schedule'],
+  ['workflow_dispatch'],
+]) {
+  const ran = running(event(name, name === 'pull_request' ? 'refs/pull/7/merge' : 'refs/heads/dev', { labels })).sort().join(', ');
+  if (ran !== everyJob) fail(`a ${name}${labels ? ' with the label ready-to-merge' : ''} runs only the jobs ${ran || 'none'}, not ${everyJob}`);
 }
 
 const jobs = workflow.jobs ?? {};
