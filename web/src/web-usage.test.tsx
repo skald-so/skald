@@ -3,7 +3,7 @@
 //
 // The API, as these tests use it, beside the spec:
 // - `GET /account/usage`: `{"owned_spaces": {"count", "limit"?, "spaces": [{"space", "name"}]},
-//   "devices": {"count", "limit"?}}`;
+//   "devices": {"count", "limit"?}}`, with `owned_spaces.free_only` when plans are on;
 // - `GET /spaces/{space}/usage`: `{"monthly_messages": {"count", "limit"?}, "message_size":
 //   {"limit"?}, "mailbox_retention": {"limit"?}, "history_retention": {"limit"?},
 //   "service_agents": {"count", "limit"?}}`, the size in bytes and the retentions in seconds.
@@ -16,8 +16,8 @@
 // month", and whose value is the count and maximum the limit. The section lists the spaces the
 // account owns by name, and says the largest message, as "64 KB", and how long an undelivered
 // message is kept, as "7 days". A count without a limit has no bar, and the section says "no
-// limit" or "unlimited". It names no plan. Without a space, it says to sign in a machine with
-// `skald`, and still shows the owned spaces.
+// limit" or "unlimited". With plans off it names no plan. Without a space, it says to sign in a
+// machine with `skald`, and still shows the owned spaces.
 import { App } from "./App.tsx";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
 import { getSkaldAPIMock } from "./api/skald.msw.ts";
@@ -40,7 +40,10 @@ interface Counted {
 }
 
 interface AccountUsage {
-  owned_spaces: Counted & { spaces: { space: string; name: string }[] };
+  owned_spaces: Counted & {
+    free_only?: boolean;
+    spaces: { space: string; name: string }[];
+  };
   devices: Counted;
 }
 
@@ -265,6 +268,24 @@ test("a count at its limit fills its bar", async () => {
     );
   expect(mainText()).toMatch(/\bkovac\b/);
   expect(mainText()).toMatch(/\bblue-river\b/);
+});
+
+test("the Free quota is labeled separately from the list of all owned spaces", async () => {
+  const user = userEvent.setup();
+  account.owned_spaces = {
+    ...counted(1, 2),
+    free_only: true,
+    spaces: [own, team],
+  };
+  await usageOf(user, team.name);
+
+  await expect.poll(() => bar(/^free spaces\b/i)).toEqual([1, 2]);
+  const owned = screen.getByRole("region", { name: "Spaces you own" });
+  const names = Array.from(
+    owned.querySelectorAll("li"),
+    (item) => item.textContent,
+  );
+  expect(names).toEqual([own.name, team.name]);
 });
 
 test("without the settings, each count shows that no limit applies, without a bar", async () => {

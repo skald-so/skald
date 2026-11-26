@@ -39,7 +39,7 @@
   background: var(--color-accent);
 }
 
-/* At the limit: the next one is refused. */
+/* The count has reached the displayed limit. */
 .full {
   background: var(--color-warning);
 }

@@ -75,14 +75,19 @@ pub(crate) async fn store(
     let failed = |err| Refusal::Database("store a revocation", err);
     let mut tx = state.db.begin().await.map_err(failed)?;
     // The account's lock makes its revocations wait for each other, so that each counts against
-    // those stored before it.
-    let (master,): (Option<Vec<u8>>,) =
-        sqlx::query_as("SELECT master FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE")
-            .bind(&account)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(failed)?
-            .ok_or(Refusal::NotSignedIn)?;
+    // those stored before it, and for a deletion of the account, which ends its sessions.
+    let (master, deleted): (Option<Vec<u8>>, bool) = sqlx::query_as(
+        "SELECT master, deleted_at IS NOT NULL FROM accounts WHERE id = $1::uuid
+         FOR NO KEY UPDATE",
+    )
+    .bind(&account)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(failed)?
+    .ok_or(Refusal::NotSignedIn)?;
+    if deleted {
+        return Err(Refusal::NotSignedIn);
+    }
     let stored: Vec<(Vec<u8>,)> =
         sqlx::query_as("SELECT revocation FROM revocations WHERE account_id = $1::uuid")
             .bind(&account)

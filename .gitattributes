@@ -8,3 +8,6 @@ web/** text=auto eol=lf
 # every platform: LF only.
 script/** text eol=lf
 installers/** text eol=lf
+
+# The tests of Codex's setup compare their fixture config homes byte for byte: LF only.
+crates/client/tests/codex_setup/homes/** text eol=lf

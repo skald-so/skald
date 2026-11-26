@@ -31,6 +31,14 @@
 //!   ...]`, the listed devices' accounts that are deleted, each once; left out, it is empty.
 //! - A revision that leaves a space with other members whose every admin is deleted is refused with
 //!   a `4xx` and a problem details object.
+//! - `POST /devices/{device}/session` answers a deleted account's device with `403
+//!   account-deleted` once the signature by the key in its server-held certificate verifies, and
+//!   `403 device-revoked` for a new certificate it would need to store. `POST /links` answers
+//!   `403 device-revoked` and the link runs its devices opened without a session end. So too with
+//!   `devices.revoked` false in the database, as a request racing the deletion could leave it.
+//! - A request whose session the server read before a deletion ended it, still running then, acts
+//!   for no deleted account. The tests hold a deletion while it runs by a lock on the account's
+//!   `sign_in_methods` rows in the database, which it takes once it holds the account's row.
 //! - `sessions.created_at` in the database is a session's sign-in.
 
 // Each test target uses a part of the shared modules.
@@ -66,9 +74,16 @@ mod wire;
 #[path = "../web_sessions/sessions.rs"]
 mod sessions;
 
-// The link runs of the tests of the link code relay.
+// The link runs of the tests of the link code relay, those of a new device without a session, the
+// certificates a linked device issues and a session by a device's key.
+#[path = "../device_key_sessions/kit.rs"]
+mod by_key;
 #[path = "../link_relay/kit.rs"]
 mod relay;
+#[path = "../sessionless_links/kit.rs"]
+mod runs;
+#[path = "../linked_certificates/upload.rs"]
+mod upload;
 
 // The KeyPackages of the tests of KeyPackages on the server.
 #[path = "../key_packages/answers.rs"]
@@ -88,6 +103,9 @@ mod after;
 mod blocking;
 mod deleting;
 mod delivery;
+mod held;
+mod racing;
+mod revoked;
 mod sign_ins;
 mod spaces;
 mod traces;

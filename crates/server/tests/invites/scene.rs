@@ -217,6 +217,8 @@ pub fn wait_past(expires: u64) {
 /// A waiting acceptance as an admin's session gets it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Waiting {
+    /// The invite it is of.
+    pub invite: Vec<u8>,
     pub acceptance: Vec<u8>,
     /// Each device of its account by its ID, with its certificate.
     pub devices: BTreeMap<String, Option<Vec<u8>>>,
@@ -244,6 +246,7 @@ impl Waiting {
             .collect();
         revocations.sort();
         Waiting {
+            invite: bytes(&entry["invite"]),
             acceptance: bytes(&entry["acceptance"]),
             devices,
             revocations,

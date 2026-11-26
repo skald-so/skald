@@ -16,7 +16,9 @@ use sqlx::{Postgres, Transaction};
 
 use crate::instances::Event;
 use crate::refusal::{Refusal, answer};
-use crate::sign_in::{Session, bearer, digest, from_this_server, not_signed_in, signed_in};
+use crate::sign_in::{
+    ProviderKind, Session, bearer, digest, from_this_server, not_signed_in, signed_in,
+};
 use crate::{AppState, database_failed};
 
 /// How long a web session lasts after its sign-in, and its cookie with it.
@@ -27,6 +29,8 @@ pub(crate) const WEB_LIFETIME: Duration = Duration::from_secs(30 * 86_400);
 struct Listed {
     session: String,
     kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sign_in_method: Option<ProviderKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     browser: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -53,6 +57,7 @@ type Row = (
     Option<String>,
     Option<String>,
     Option<Vec<u8>>,
+    Option<String>,
     String,
     String,
     Option<String>,
@@ -64,7 +69,7 @@ const LISTS_OR_ENDS: &str = "lists or ends the account's sessions";
 
 /// The web session of the request's cookie; a device session is refused, as only a web session
 /// `does` this, such as [`LISTS_OR_ENDS`].
-async fn web_session(
+pub(crate) async fn web_session(
     state: &AppState,
     headers: &HeaderMap,
     does: &str,
@@ -137,7 +142,7 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         let session = web_session(&state, &headers, LISTS_OR_ENDS).await?;
         // `to_char` gives RFC 3339 in UTC; a device's name is its UTF-8 bytes.
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT s.id::text, s.kind, s.browser, s.os, d.name,
+            "SELECT s.id::text, s.kind, s.browser, s.os, d.name, s.method_provider,
                  to_char(s.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
                  to_char(s.last_used_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"'),
                  CASE WHEN s.kind = 'web' THEN to_char(
@@ -158,9 +163,10 @@ pub(crate) async fn list(State(state): State<AppState>, headers: HeaderMap) -> R
         let sessions = rows
             .into_iter()
             .map(
-                |(id, kind, browser, os, device, started, used, expires, current)| Listed {
+                |(id, kind, browser, os, device, method, started, used, expires, current)| Listed {
                     session: id,
                     kind,
+                    sign_in_method: method.as_deref().map(ProviderKind::from_key),
                     browser,
                     os,
                     device_name: device.map(|name| String::from_utf8_lossy(&name).into_owned()),

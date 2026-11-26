@@ -27,17 +27,15 @@ pub(crate) fn deliverable(v: NonZeroU64, version: NonZeroU64) -> bool {
     v.get().abs_diff(version.get()) <= 1
 }
 
-/// Looks for expired entries, as [`sweeps::every`] says, on a server with the mailbox retention
-/// `retention` and the send rate window `window`, if it has a send rate limit; wakes the sending
-/// devices' connections in `wakers`.
+/// Looks for expired entries and counters, as [`sweeps::every`] says, using their respective
+/// retentions. Wakes the sending devices' connections in `wakers`.
 pub(crate) async fn run(
     db: PgPool,
     wakers: Arc<Wakers>,
     retention: Option<Duration>,
-    window: Option<Duration>,
+    counter_retention: Option<Duration>,
 ) {
-    // The rate counts a device's messages within the window.
-    let counted = seconds(retention.map(|retention| retention.max(window.unwrap_or_default())));
+    let counted = seconds(counter_retention);
     let retention = seconds(retention);
     sweeps::every("expire mailbox entries", || {
         let (db, wakers) = (db.clone(), Arc::clone(&wakers));

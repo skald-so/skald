@@ -554,6 +554,7 @@ mod tests {
                 certs: self.certs.clone(),
                 revocations: revocations.iter().map(|&one| one.clone()).collect(),
                 records: Vec::new(),
+                deleted: Default::default(),
             }
         }
 

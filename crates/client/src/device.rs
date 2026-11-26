@@ -366,7 +366,7 @@ pub struct Setup<'a> {
     /// With the recovery key, the devices its person names: then, waiting for linking, it links
     /// with the account's recovery key instead.
     pub recovery: Option<&'a recovery_link::Named>,
-    /// How it signs its key if it issues its own certificate.
+    /// How it signs its key if it issues its own certificate or links with a link code.
     pub ssh: &'a ssh_signing::Options,
 }
 
@@ -422,21 +422,21 @@ impl Setup<'_> {
         if offered {
             println!("{RECOVERY_OFFERED}");
         }
+        let mut new = link_code::NewDevice {
+            connection: self.connection,
+            state: self.state,
+            token: Some(self.token.to_owned()),
+            account: Some(self.account),
+            device: &self.device,
+            keys: self.keys,
+            sessionless: false,
+            signed: None,
+        };
+        new.sign(self.ssh);
         let presses = person.presses("Fresh code").map_err(sign_in::Error::Io)?;
-        link_code::show(
-            &mut link_code::NewDevice {
-                connection: self.connection,
-                state: self.state,
-                token: Some(self.token.to_owned()),
-                account: Some(self.account),
-                device: &self.device,
-                keys: self.keys,
-                sessionless: false,
-            },
-            (person, &presses),
-            link_code::NOT_LINKED,
-            |_| Ok(false),
-        )
+        link_code::show(&mut new, (person, &presses), link_code::NOT_LINKED, |_| {
+            Ok(false)
+        })
         .map(drop)
     }
 

@@ -1,6 +1,7 @@
 //! Skald server.
 
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +16,7 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+mod abuse;
 mod accounts;
 mod anchors;
 mod attachments;
@@ -26,11 +28,11 @@ mod device_certs;
 mod device_flow;
 mod device_sessions;
 mod devices;
+mod erasure;
 mod error_reports;
 mod events;
 mod expiry;
 mod github;
-mod google;
 mod groups;
 mod history;
 mod history_retention;
@@ -43,6 +45,7 @@ mod links;
 mod mailboxes;
 mod notices;
 mod oidc;
+mod oidc_browser;
 mod presence;
 mod protocol;
 mod queues;
@@ -53,6 +56,7 @@ mod service_tokens;
 mod sessions;
 mod sign_in;
 mod sign_up;
+mod space_plans;
 mod spaces;
 mod sweeps;
 mod unread_bodies;
@@ -63,9 +67,9 @@ pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
 pub use events::SSE_KEEP_ALIVE;
 pub use github::{ClientSecret, GitHubApp, GitHubUrl};
-use google::Google;
 pub use link_runs::LINK_CODE_LIFETIME;
 pub use oidc::{OidcError, OidcIdentity, OidcProvider, OidcSettings, issuer_url};
+use oidc_browser::{Corporate, Google, OidcSignIn};
 use protocol::Statement;
 pub use protocol::Versions;
 pub use requests::LONG_POLL_MAX_WAIT;
@@ -121,8 +125,9 @@ pub struct Settings {
     /// The privacy policy that the answer on sign-in and the server's pages that start one link;
     /// none without it.
     pub privacy_policy_url: Option<PrivacyPolicyUrl>,
-    /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
-    /// limit without it.
+    /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
+    pub space_plans: bool,
+    /// With plans off, the number of spaces an account may own. No limit when unset.
     pub owned_spaces_limit: Option<u32>,
     /// The server's name in agent addresses; without it, the host of sign-in's public address, if
     /// that is a valid server name.
@@ -146,11 +151,12 @@ pub struct Settings {
     pub send_rate_limit: Option<u64>,
     /// The sliding window of [`Settings::send_rate_limit`]; [`SEND_RATE_WINDOW`] without it.
     pub send_rate_window: Option<Duration>,
+    /// Optional file of private rules for review findings.
+    pub abuse_rules_file: Option<PathBuf>,
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
-    /// The number of service agent entries a space's latest revision may list
-    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    /// With plans off, the limit on service agent entries in a space's roster. No limit when unset.
     pub service_agents_limit: Option<u32>,
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
@@ -169,9 +175,11 @@ struct AppState {
     db: PgPool,
     versions: Versions,
     sign_in: Option<Arc<SignInSettings>>,
-    google: Option<Arc<Google>>,
+    google: Option<Arc<OidcSignIn<Google>>>,
+    corporate: Option<Arc<OidcSignIn<Corporate>>>,
     sign_up: Arc<SignUp>,
     privacy_policy_url: Option<Arc<PrivacyPolicyUrl>>,
+    space_plans: bool,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
@@ -204,15 +212,23 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             messages,
             window: settings.send_rate_window.unwrap_or(SEND_RATE_WINDOW),
         });
+    let counter_retention = settings
+        .mailbox_retention
+        .map(|retention| retention.max(send_rate.map_or(Duration::ZERO, |rate| rate.window)));
     tokio::spawn(expiry::run(
         db.clone(),
         Arc::clone(&wakers),
         settings.mailbox_retention,
-        send_rate.map(|rate| rate.window),
+        counter_retention,
     ));
+    tokio::spawn(abuse::expire(db.clone()));
+    if let Some(path) = settings.abuse_rules_file {
+        tokio::spawn(abuse::run(db.clone(), path, counter_retention));
+    }
     tokio::spawn(link_runs::sweep(db.clone()));
     tokio::spawn(invites::sweep(db.clone()));
     tokio::spawn(claims::run(db.clone(), settings.history_retention));
+    tokio::spawn(erasure::run(db.clone()));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
@@ -323,15 +339,33 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             post(device_flow::authorize).layer(checked(Statement::Header)),
         )
         .route(
+            "/auth/device/invite",
+            put(device_flow::attach_invite).layer(checked(Statement::Header)),
+        )
+        .route(
             "/auth/providers",
             get(sign_in::providers).layer(checked(Statement::Header)),
         )
         .route(sign_in::START_PATH, get(sign_in::start::<GitHubApp>))
         .route(CALLBACK_PATH, get(sign_in::callback::<GitHubApp>))
         .route(links::GITHUB_PATH, post(links::start::<GitHubApp>))
-        .route(google::START_PATH, get(sign_in::start::<Google>))
-        .route(google::CALLBACK_PATH, get(sign_in::callback::<Google>))
-        .route(links::GOOGLE_PATH, post(links::start::<Google>))
+        .route(
+            oidc_browser::GOOGLE_START,
+            get(sign_in::start::<OidcSignIn<Google>>),
+        )
+        .route(
+            oidc_browser::GOOGLE_CALLBACK,
+            get(sign_in::callback::<OidcSignIn<Google>>),
+        )
+        .route(links::GOOGLE_PATH, post(links::start::<OidcSignIn<Google>>))
+        .route(
+            oidc_browser::CORPORATE_START,
+            get(sign_in::start::<OidcSignIn<Corporate>>),
+        )
+        .route(
+            oidc_browser::CORPORATE_CALLBACK,
+            get(sign_in::callback::<OidcSignIn<Corporate>>),
+        )
         .route(
             "/auth/token",
             post(device_flow::token).layer(checked(Statement::Header)),
@@ -522,11 +556,15 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         )
         .route(
             "/spaces/{space}/invites",
-            post(invites::issue).layer(checked(Statement::Header)),
+            get(invites::list)
+                .post(invites::issue)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/invites/{invite}",
-            put(invites::store).layer(checked(Statement::Header)),
+            delete(invites::revoke)
+                .put(invites::store)
+                .layer(checked(Statement::Header)),
         )
         .route(
             "/spaces/{space}/members",
@@ -565,6 +603,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
         .with_state(AppState {
             db,
             versions,
+            space_plans: settings.space_plans,
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,
@@ -587,7 +626,12 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .sign_in
                 .as_ref()
                 .and_then(|sign_in| sign_in.google.clone())
-                .map(|google| Arc::new(Google::new(google))),
+                .map(|settings| Arc::new(OidcSignIn::new(settings))),
+            corporate: settings
+                .sign_in
+                .as_ref()
+                .and_then(|sign_in| sign_in.corporate.clone())
+                .map(|settings| Arc::new(OidcSignIn::new(settings))),
             sign_in: settings.sign_in.map(Arc::new),
             sign_up: Arc::new(settings.sign_up),
             privacy_policy_url: settings.privacy_policy_url.map(Arc::new),
@@ -669,10 +713,13 @@ async fn protocol_versions(State(state): State<AppState>) -> Json<Protocol> {
 #[derive(Serialize)]
 struct Server {
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public: Option<String>,
 }
 
 async fn server(State(state): State<AppState>) -> Json<Server> {
     Json(Server {
         name: state.server_name.as_ref().map(ToString::to_string),
+        public: sign_in::settings(&state).map(|settings| settings.public_url.origin()),
     })
 }

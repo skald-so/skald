@@ -12,14 +12,14 @@ use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::refusal::{Refusal, account, answer, parse};
 use crate::sign_in::{digest, random_token};
-use crate::{AppState, sessions, user_agent};
+use crate::{AppState, device_flow, sessions, user_agent};
 
-/// The provider of GitHub methods; an OIDC provider is named by its issuer.
+/// The provider of GitHub methods.
 pub(crate) const GITHUB: &str = "github";
 
 /// A sign-in method: a provider and the subject it gives the person.
 pub(crate) struct Method<'a> {
-    /// [`GITHUB`] or an OIDC provider's issuer.
+    /// The provider's storage key.
     pub provider: &'a str,
     /// For GitHub, the GitHub user's ID in decimal.
     pub subject: String,
@@ -28,15 +28,16 @@ pub(crate) struct Method<'a> {
 }
 
 /// Starts a web session of the account that holds `method`, and gives its token. The method's first
-/// sign-in signs up, if `may_sign_up`: it creates an account with that method, its username made
-/// from `source`, such as a GitHub login or an email's local part; else it creates nothing and gives
-/// `None`. A GitHub method's login is updated. The session records the browser and OS that `agent`,
+/// sign-in creates an account if allowed by policy or if the device authorization of `device_return`
+/// reserves an invite for it. The new username is made from `source`, such as a GitHub login or
+/// an email's local part. A GitHub method's login is updated. The session records the browser and OS that `agent`,
 /// the sign-in's `User-Agent`, names; the account's expired web sessions go.
 pub(crate) async fn sign_in(
     db: &PgPool,
     method: &Method<'_>,
     source: &str,
     may_sign_up: bool,
+    device_return: Option<&str>,
     agent: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     let mut tx = db.begin().await?;
@@ -56,8 +57,14 @@ pub(crate) async fn sign_in(
     .await?;
     if created {
         if !may_sign_up {
-            // Dropped, the transaction rolls the method back.
-            return Ok(None);
+            let reserved = match device_return {
+                Some(to) => device_flow::reserve_invite(&mut tx, to, &account).await?,
+                None => false,
+            };
+            if !reserved {
+                // Dropped, the transaction rolls the method and any reservation back.
+                return Ok(None);
+            }
         }
         sign_up(&mut tx, &account, source).await?;
     }

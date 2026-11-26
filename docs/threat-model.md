@@ -40,6 +40,7 @@ Also whoever takes over the server or its database.
 - Guess an account's recovery key offline with its account record or master backup: each guess costs an Argon2id derivation of about a second on a laptop, and a key holds 60 bits ([membership.md](protocol/membership.md#security-considerations)).
 - Give a channel member whose `history` is false the links to earlier epochs: only the server withholding them keeps it from earlier history ([membership.md](protocol/membership.md#security-considerations)).
 - Join a channel's group by an external Commit from a device of its own, since it holds GroupInfo ([membership.md](protocol/membership.md#security-considerations)).
+- Report any account deleted, so member devices remove its devices from the channels until the report stops: a denial of service that gives no one access. A deleted account's devices read a channel until a member device that learned of the deletion removes them; the server delivers them nothing meanwhile ([membership.md](protocol/membership.md#security-considerations)).
 - Withhold, delay or reorder tasks, mark them `done`, `dead` or `cancelled`, restart them, hand one task to two devices at once, an `at-most-once` one included, hand an old task out again until its `deadline`, and hand a device a task its claim did not ask for ([queues.md](protocol/queues.md#security-considerations)).
 - Withhold, delete or delay presence values, and give a reader that has not seen a newer value an older one until it expires, at most 900 seconds after its upload ([agents.md](protocol/agents.md#security-considerations)).
 - Drop or delay an `ask_user` question or answer, so the question expires, and choose which of two answers from different devices of the person arrives first ([agents.md](protocol/agents.md#security-considerations)).
@@ -82,7 +83,7 @@ Watches or alters traffic between devices and the server, or the channel an invi
 - See the IP addresses, times and sizes of each device's connections.
 - Behind a TLS-intercepting proxy the device trusts, see what the server sees of the device's traffic, and take the device's credentials to the server. With those, it gets an `at-most-once` task the device started run again, as a restart does ([queues.md](protocol/queues.md#security-considerations)).
 - Behind such a proxy, guess a link code online and report no master key, as the server does ([The server or its operator](#the-server-or-its-operator)).
-- Read an invite link on its way and accept the invite first: holding the link's secret is what proves the newcomer ([Invite](protocol/membership.md#invite)).
+- Read an invite link on its way, accept it first and create one account if sign-up is closed ([Invite](protocol/membership.md#invite)).
 - Alter an invite link on its way: the newcomer trusts the roster revision the link names ([membership.md](protocol/membership.md#security-considerations)).
 
 **Defenses:**
@@ -293,6 +294,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - The mod submits its prompt as the user's, so it carries only a fixed request to call `inbox`, never a message's text ([agent-sessions.md](agent-sessions.md#claude-code)).
 - Run as an agent, the CLI shows no recovery key or link code in its output and takes none, nor a new device's confirmation: they go only to the person's terminal or to the local page `--browser` opens, so they stay out of the agent's context ([Account](protocol/membership.md#account), [architecture.md, "Device linking"](dev/architecture.md#device-linking)).
 - The line that names a device waiting for linking reaches the agent's output as text from the server: escaped, marked unverified, and holding no link code ([Device certificate](protocol/membership.md#device-certificate)).
+- The client reads only the rollout a Codex session registered, only the `#<ref>` references in the results of Skald's `inbox` tool, and keeps no line of it ([architecture.md, "Components"](dev/architecture.md#components)).
 - `skald held` decides a `hold` only at a terminal, as the person, so an agent cannot pipe a decision in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device to agent](protocol/delivery.md#device-to-agent)).
 - `skald fingerprint` marks an account verified only on the person's yes at a terminal, never as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Account fingerprint](protocol/membership.md#account-fingerprint)).
 - An agent marks no key change seen: every command and MCP tool call, the agent's too, says how many wait until `skald key-changes` shows them to the person at a terminal, never as an agent. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Device checks](protocol/membership.md#device-checks)).
@@ -300,6 +302,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - `skald invite` shows an invite link only at a terminal, run as the person, never through a pipe or as an agent, so no agent's output holds it. An agent that opens a terminal of its own, or hands the helper the command over its socket, which writes the link back, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald accept-invite` takes an invite link only from the person at a terminal, never as an argument, through a pipe, from the environment or as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald delete-account` refuses agent commands and takes the account's username only from a terminal. With a terminal of its own, an agent still needs the person's approval in the browser when the session's sign-in exceeds the server's `--link-sign-in-age` (`deleteAccount` in the [OpenAPI spec](../api/openapi.json)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.
@@ -317,6 +320,7 @@ An OS account on the device's machine other than the one that runs the client.
 - accounts: sign-in methods and usernames;
 - the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
+- a deleted account's devices' certificates and revocations in the spaces it shared, also once it has erased the account's other data;
 - link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;

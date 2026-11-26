@@ -1,9 +1,11 @@
-/** What a page says while the account has no space: how to make its personal space. */
+import { MachineSignInHint } from "./MachineSignInHint.tsx";
+
+/** What a page says while the account has no space. */
 export function NoSpace() {
   return (
     <>
-      No space yet. Sign in a machine with <code>skald</code> to make your
-      personal space.
+      No space yet.
+      <MachineSignInHint purpose="to make your personal space" />
     </>
   );
 }

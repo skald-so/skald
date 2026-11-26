@@ -26,7 +26,7 @@ use crate::ssh_checks::{self, Results};
 use crate::state::{self, Link, State, StatusChange};
 
 /// What `skald devices` and `skald set-username` say when the machine has no session.
-const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
+pub const NOT_SIGNED_IN: &str = "this machine is not signed in; run skald sign-in --server <URL>";
 
 /// `Devices` in the API spec, or `SpaceDevices` with its `records`.
 #[derive(Deserialize)]
@@ -36,6 +36,8 @@ struct Devices {
     revocations: Vec<String>,
     #[serde(default)]
     records: Vec<String>,
+    #[serde(default)]
+    deleted: Vec<String>,
     /// The server's web address, in `Devices` alone.
     #[serde(default)]
     web: Option<String>,
@@ -188,10 +190,10 @@ pub fn shared_name_warnings(linked: &[&Cert]) -> Vec<String> {
 
 /// `GET <path>` as the session `token`: a device list, as the IDs of its devices, the
 /// certificates it gives with those `state` keeps of devices with two bodies, and the revocations
-/// it gives with those `state` holds; a certificate or revocation that does not decode counts as
-/// none. Prints the warning of each device given with a certificate other than the one `state`
-/// keeps ([`kept_certs`]). Records the server's web address the list names
-/// ([`crate::acceptances::record_web`]).
+/// it gives with those `state` holds, and the accounts it reports deleted; a certificate,
+/// revocation or account ID that does not decode counts as none. Prints the warning of each device
+/// given with a certificate other than the one `state` keeps ([`kept_certs`]). Records the server's
+/// web address the list names ([`crate::acceptances::record_web`]).
 pub fn fetch(
     connection: &mut Connection,
     path: &str,
@@ -247,11 +249,15 @@ fn decoded(body: &[u8]) -> Result<(SpaceDevices, Option<String>), String> {
     let records = (decoded(&devices.records).iter())
         .filter_map(|bytes| AccountRecord::from_cbor(bytes).ok())
         .collect();
+    let deleted = (devices.deleted.iter())
+        .filter_map(|id| id.parse().ok())
+        .collect();
     let given = SpaceDevices {
         ids,
         certs,
         revocations,
         records,
+        deleted,
     };
     Ok((given, devices.web))
 }
@@ -266,20 +272,27 @@ pub fn signed_in(dir: &Path, storage: secrets::Storage) -> Result<(State, String
 pub fn signed_in_with_secrets(
     dir: &Path,
     storage: secrets::Storage,
-) -> Result<(State, String, String, secrets::Map, Secrets), String> {
+) -> Result<SessionSecrets, String> {
+    session_with_secrets(dir, storage)?.ok_or_else(|| NOT_SIGNED_IN.to_owned())
+}
+
+type SessionSecrets = (State, String, String, secrets::Map, Secrets);
+
+/// The stored session with its secrets, if the machine has one.
+pub fn session_with_secrets(
+    dir: &Path,
+    storage: secrets::Storage,
+) -> Result<Option<SessionSecrets>, String> {
     if !dir.is_dir() {
-        return Err(NOT_SIGNED_IN.to_owned());
+        return Ok(None);
     }
     let (state, secrets) = sign_in::open(dir, storage).map_err(text)?;
-    let session = state
-        .session()
-        .map_err(text)?
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?;
+    let Some(session) = state.session().map_err(text)? else {
+        return Ok(None);
+    };
     let stored = secrets.load().map_err(text)?;
-    let token = sign_in::token_for(&stored, &session.server)
-        .ok_or_else(|| NOT_SIGNED_IN.to_owned())?
-        .clone();
-    Ok((state, session.server, token, stored, secrets))
+    let token = sign_in::token_for(&stored, &session.server).cloned();
+    Ok(token.map(|token| (state, session.server, token, stored, secrets)))
 }
 
 /// A connection to `server`, the server of the machine's stored session, as [`Connection::new`]
@@ -488,6 +501,7 @@ mod tests {
             certs,
             revocations,
             records: Vec::new(),
+            deleted: Default::default(),
         }
     }
 

@@ -28,7 +28,10 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
-import { getSkaldAPIMock } from "./api/skald.msw.ts";
+import {
+  getListSpaceInvitesMockHandler,
+  getSkaldAPIMock,
+} from "./api/skald.msw.ts";
 import { getGetSessionUrl, getGetSpacesUrl } from "./api/skald.ts";
 import { App } from "./App.tsx";
 
@@ -38,6 +41,7 @@ const endOthersUrl = "/account/sessions/end-others";
 interface Listed {
   session: string;
   kind: "web" | "device";
+  sign_in_method?: "corporate";
   browser?: string;
   os?: string;
   device_name?: string;
@@ -87,6 +91,7 @@ const laptop: Listed = {
 let listed: Listed[] = [];
 /** Whether the page's web session has signed out. */
 let signedOut = false;
+let signedInWith: "github" | "corporate" = "github";
 /** Each request the web app sent, as `DELETE /session`. */
 let sent: string[] = [];
 
@@ -104,8 +109,8 @@ const server = setupServer(
       : HttpResponse.json({
           account: "01968a2e-0000-7000-8000-000000000001",
           username: "ana",
-          github_login: "ana-gh",
-          sign_in_method: "github",
+          ...(signedInWith === "github" ? { github_login: "ana-gh" } : {}),
+          sign_in_method: signedInWith,
         }),
   ),
   http.get(`*${getGetSpacesUrl()}`, () =>
@@ -142,6 +147,7 @@ const server = setupServer(
   http.get("*/spaces/:space/service-tokens", () =>
     signedOut ? refused() : HttpResponse.json({ tokens: [] }),
   ),
+  getListSpaceInvitesMockHandler({ invites: [] }),
   ...getSkaldAPIMock(),
 );
 /** Records `request` in `sent`. */
@@ -155,6 +161,7 @@ beforeEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
   [listed, signedOut, sent] = [[chrome, firefox, laptop], false, []];
+  signedInWith = "github";
 });
 beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterAll(() => server.close());
@@ -312,4 +319,15 @@ test("Sign out in the account menu ends this web session and shows the sign-in p
   await screen.findByText(/creates? an account/i);
   expect(sent).toContain(`DELETE ${getGetSessionUrl()}`);
   expect(screen.queryByRole("button", { name: "Account" })).toBeNull();
+});
+
+test("Access shows the current web session after corporate sign-in", async () => {
+  signedInWith = "corporate";
+  listed = [{ ...chrome, sign_in_method: "corporate" }];
+  await openAccess(userEvent.setup());
+
+  const row = rowOf(/this session/i);
+  for (const part of ["Web", "Corporate", "Chrome", "macOS"])
+    expect(row.textContent).toContain(part);
+  expect(revokes(row)).toHaveLength(0);
 });

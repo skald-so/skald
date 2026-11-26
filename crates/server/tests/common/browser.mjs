@@ -717,6 +717,34 @@ const ops = {
     const answers = await Promise.all(found.answers ?? []);
     return answers.filter((answer) => answer !== null);
   },
+
+  /** Records requests from every tab, whether or not they get an answer. */
+  async recordRequests({ page: id }) {
+    const found = page(id);
+    if (found.requests) return null;
+    found.requests = [];
+    found.context.on("request", (request) => {
+      found.requests.push({
+        method: request.method(),
+        // The HTTP request target has no fragment, even for a navigation that opens one.
+        url: request.url().split("#", 1)[0],
+        headers: request.allHeaders().catch(() => request.headers()),
+        body: request.postDataBuffer()?.toString("latin1") ?? null,
+      });
+    });
+    return null;
+  },
+
+  async requests({ page: id }) {
+    const found = page(id);
+    await found.page.waitForLoadState("networkidle");
+    return Promise.all(
+      (found.requests ?? []).map(async (request) => ({
+        ...request,
+        headers: await request.headers,
+      })),
+    );
+  },
 };
 
 lines.on("line", async (line) => {
