@@ -5,6 +5,7 @@
 # an unknown one to its index page.
 {$SKALD_SITE} {
 	@server {
+		path /.well-known/agent-card.json /a2a/*
 		path /account /account/anchors /account/deletion /account/devices /account/links
 		path /account/links/* /account/master
 		path /account/personal-space /account/revocations
