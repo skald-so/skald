@@ -114,18 +114,10 @@ impl Proxy {
     }
 }
 
-/// A free local port that nothing listens on: a proxy that is down. It is below the ephemeral
-/// ports: one the OS gives a socket bound to port 0 and takes back could be another test's before
-/// this test is done with it.
+/// A free local port that nothing listens on: a proxy that is down.
 pub fn closed_port() -> u16 {
-    let start = 20_000 + std::process::id() % 10_000;
-    (start..30_000)
-        .chain(20_000..start)
-        .find_map(|port| {
-            let port = u16::try_from(port).ok()?;
-            TcpListener::bind(("127.0.0.1", port)).ok().map(|_| port)
-        })
-        .expect("a free local port below the ephemeral range")
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    listener.local_addr().expect("a local address").port()
 }
 
 /// Takes one client's request: refuses it with `refusal` if given, otherwise tunnels a `CONNECT`
