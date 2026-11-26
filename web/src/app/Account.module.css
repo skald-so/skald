@@ -1,0 +1,61 @@
+/* The account's deletion under its sign-in methods: a heading, what it deletes and what blocks it. */
+.deletion {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+  padding-top: 8px;
+
+  h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  > p {
+    margin: 0;
+    color: var(--color-muted);
+    font-size: 14px;
+    line-height: 1.55;
+  }
+
+  > [role="alert"] {
+    align-self: stretch;
+  }
+}
+
+/* Each blocking space with the command that hands over admin rights, which wraps at phone width. */
+.blocks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 20px;
+  font-size: 14px;
+  line-height: 1.55;
+
+  code {
+    overflow-wrap: anywhere;
+  }
+}
+
+/* The typed confirmation in the question of Delete. */
+.confirm {
+  display: block;
+  margin-top: 10px;
+  color: var(--color-text);
+}
+
+.field {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-side);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
