@@ -12,6 +12,9 @@ import type {
 
 import { ServicePermission, SignInProvider, SpacePlan } from "./skald.schemas";
 import type {
+  AbuseReportReceipt,
+  AbuseReportRequest,
+  AbuseReporting,
   AcceptanceRequest,
   AccountAnchors,
   AccountDeletion,
@@ -1573,9 +1576,13 @@ export const getGetAccountUsageResponseMock = (
   overrideResponse: Partial<Extract<AccountUsage, object>> = {},
 ): AccountUsage => ({
   owned_spaces: {
-    count: faker.number.int({ min: 1 }),
+    count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    free_only: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
       undefined,
     ]),
     spaces: Array.from(
@@ -1602,9 +1609,13 @@ export const getGetAccountUsageResponseMock200 = (
   overrideResponse: Partial<Extract<AccountUsage, object>> = {},
 ): AccountUsage => ({
   owned_spaces: {
-    count: faker.number.int({ min: 1 }),
+    count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    free_only: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
       undefined,
     ]),
     spaces: Array.from(
@@ -3017,6 +3028,211 @@ export const getCreateSpaceResponseMock409 = (
 });
 
 export const getCreateSpaceResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock = (
+  overrideResponse: Partial<Extract<AbuseReporting, object>> = {},
+): AbuseReporting => ({
+  reasons: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock200 = (
+  overrideResponse: Partial<Extract<AbuseReporting, object>> = {},
+): AbuseReporting => ({
+  reasons: Array.from(
+    { length: faker.number.int({ min: 1, max: 10 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.helpers.fromRegExp("^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock400 = (
+  overrideResponse: Partial<Extract<ProtocolProblem, object>> = {},
+): ProtocolProblem => ({
+  type: faker.helpers.arrayElement([
+    "https://skald.so/problems/protocol-too-old",
+    "https://skald.so/problems/protocol-too-new",
+    "https://skald.so/problems/protocol-version-invalid",
+  ] as const),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.helpers.arrayElement([400] as const),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  supported: Array.from(
+    { length: faker.number.int({ min: 1, max: 2 }) },
+    (_, i) => i + 1,
+  ).map(() => faker.number.int({ min: 1 })),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getGetAbuseReportingResponseMock500 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock = (
+  overrideResponse: Partial<Extract<AbuseReportReceipt, object>> = {},
+): AbuseReportReceipt =>
+  faker.helpers.arrayElement([
+    {
+      receipt: faker.helpers.fromRegExp("^[A-Za-z0-9_-]{43}$"),
+      ...overrideResponse,
+    },
+    {
+      receipt: faker.helpers.fromRegExp("^[A-Za-z0-9_-]{43}$"),
+      ...overrideResponse,
+    },
+  ]);
+
+export const getSubmitAbuseReportResponseMock200 = (
+  overrideResponse: Partial<Extract<AbuseReportReceipt, object>> = {},
+): AbuseReportReceipt => ({
+  receipt: faker.helpers.fromRegExp("^[A-Za-z0-9_-]{43}$"),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock201 = (
+  overrideResponse: Partial<Extract<AbuseReportReceipt, object>> = {},
+): AbuseReportReceipt => ({
+  receipt: faker.helpers.fromRegExp("^[A-Za-z0-9_-]{43}$"),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseProtocolProblemMock = (
+  overrideResponse: Partial<ProtocolProblem> = {},
+): ProtocolProblem => ({
+  ...{
+    type: faker.helpers.arrayElement([
+      "https://skald.so/problems/protocol-too-old",
+      "https://skald.so/problems/protocol-too-new",
+      "https://skald.so/problems/protocol-version-invalid",
+    ] as const),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.helpers.arrayElement([400] as const),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    supported: Array.from(
+      { length: faker.number.int({ min: 1, max: 2 }) },
+      (_, i) => i + 1,
+    ).map(() => faker.number.int({ min: 1 })),
+  },
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseProblemMock = (
+  overrideResponse: Partial<Problem> = {},
+): Problem => ({
+  ...{
+    type: faker.internet.url(),
+    title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+    status: faker.number.int({ min: 400, max: 599 }),
+    detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  },
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock400 = ():
+  ProtocolProblem | Problem =>
+  faker.helpers.arrayElement([
+    { ...getSubmitAbuseReportResponseProtocolProblemMock() },
+    { ...getSubmitAbuseReportResponseProblemMock() },
+  ]);
+
+export const getSubmitAbuseReportResponseMock401 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock403 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock404 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock409 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock413 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock429 = (
+  overrideResponse: Partial<Extract<Problem, object>> = {},
+): Problem => ({
+  type: faker.internet.url(),
+  title: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  status: faker.number.int({ min: 400, max: 599 }),
+  detail: faker.string.alpha({ length: { min: 10, max: 20 } }),
+  ...overrideResponse,
+});
+
+export const getSubmitAbuseReportResponseMock500 = (
   overrideResponse: Partial<Extract<Problem, object>> = {},
 ): Problem => ({
   type: faker.internet.url(),
@@ -10615,6 +10831,517 @@ export const getCreateSpaceMockHandler500 = (
   );
 };
 
+export const getGetAbuseReportingMockHandler = (
+  overrideResponse?:
+    | AbuseReporting
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<AbuseReporting> | AbuseReporting),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAbuseReportingMockHandler200 = (
+  overrideResponse?:
+    | AbuseReporting
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<AbuseReporting> | AbuseReporting),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAbuseReportingMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<ProtocolProblem> | ProtocolProblem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAbuseReportingMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAbuseReportingMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getGetAbuseReportingMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<HttpResponseResolver<{ space: string }>>[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.get<{ space: string }>(
+    "*/spaces/:space/abuse-reporting",
+    async (info: Parameters<HttpResponseResolver<{ space: string }>>[0]) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getGetAbuseReportingResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler = (
+  overrideResponse?:
+    | AbuseReportReceipt
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<AbuseReportReceipt> | AbuseReportReceipt),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler200 = (
+  overrideResponse?:
+    | AbuseReportReceipt
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<AbuseReportReceipt> | AbuseReportReceipt),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock200(),
+        { status: 200 },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler201 = (
+  overrideResponse?:
+    | AbuseReportReceipt
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<AbuseReportReceipt> | AbuseReportReceipt),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock201(),
+        { status: 201 },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler400 = (
+  overrideResponse?:
+    | ProtocolProblem
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<ProtocolProblem | Problem> | ProtocolProblem | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock400(),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler401 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock401(),
+        {
+          status: 401,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler403 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock403(),
+        {
+          status: 403,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler404 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock404(),
+        {
+          status: 404,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler409 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock409(),
+        {
+          status: 409,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler413 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock413(),
+        {
+          status: 413,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler429 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock429(),
+        {
+          status: 429,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
+export const getSubmitAbuseReportMockHandler500 = (
+  overrideResponse?:
+    | Problem
+    | ((
+        info: Parameters<
+          HttpResponseResolver<{ space: string }, AbuseReportRequest>
+        >[0],
+      ) => Promise<Problem> | Problem),
+  options?: RequestHandlerOptions,
+) => {
+  return http.post<{ space: string }, AbuseReportRequest>(
+    "*/spaces/:space/abuse-reports",
+    async (
+      info: Parameters<
+        HttpResponseResolver<{ space: string }, AbuseReportRequest>
+      >[0],
+    ) => {
+      return HttpResponse.json(
+        overrideResponse !== undefined
+          ? typeof overrideResponse === "function"
+            ? await overrideResponse(info)
+            : overrideResponse
+          : getSubmitAbuseReportResponseMock500(),
+        {
+          status: 500,
+          headers: { "Content-Type": "application/problem+json" },
+        },
+      );
+    },
+    options,
+  );
+};
+
 export const getGetWaitingAcceptancesMockHandler = (
   overrideResponse?:
     | WaitingAcceptances
@@ -14565,6 +15292,8 @@ export const getSkaldAPIMock = () => [
   getEndSessionMockHandler(),
   getGetSpacesMockHandler(),
   getCreateSpaceMockHandler(),
+  getGetAbuseReportingMockHandler(),
+  getSubmitAbuseReportMockHandler(),
   getGetWaitingAcceptancesMockHandler(),
   getCreateChannelMockHandler(),
   getGetGroupInfoMockHandler(),

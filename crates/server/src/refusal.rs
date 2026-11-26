@@ -29,6 +29,12 @@ pub(crate) enum Refusal {
     UsernameTaken,
     /// No such space, or the session's account does not get it.
     NoSpace,
+    AbuseReportingOff,
+    NoAbuseReportTarget,
+    AbuseReportConflict,
+    AbuseReportStaleSelection,
+    AbuseReportTooLarge,
+    AbuseReportLimit,
     /// No such device of the session's account.
     NoDevice,
     /// No such session of the session's account, or an ended one.
@@ -61,8 +67,10 @@ pub(crate) enum Refusal {
     OwnedSpacesLimit(u32),
     /// The account has as many devices with a certificate as it may: the number it holds.
     DevicesLimit(u32),
+    /// A roster revision would give the space more members than it may: the limit.
+    MembersLimit(u64),
     /// A roster revision would give the space more service agents than it may: the number it holds.
-    ServiceAgentsLimit(u32),
+    ServiceAgentsLimit(u64),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
     /// A link message the server does not relay there, for the reason it holds.
@@ -153,6 +161,42 @@ impl IntoResponse for Refusal {
                 "No such space",
                 "No such space, or the session's account does not get it.",
             ),
+            Refusal::AbuseReportingOff => problem(
+                StatusCode::NOT_FOUND,
+                "abuse-reporting-unavailable",
+                "Reporting unavailable",
+                "This server has reporting turned off.",
+            ),
+            Refusal::NoAbuseReportTarget => problem(
+                StatusCode::NOT_FOUND,
+                "no-report-target",
+                "Member unavailable",
+                "Choose another current member of this space.",
+            ),
+            Refusal::AbuseReportConflict => problem(
+                conflict,
+                "report-key-taken",
+                "Report key already used",
+                "Use a new idempotency key for a different report.",
+            ),
+            Refusal::AbuseReportStaleSelection => problem(
+                conflict,
+                "report-selection-stale",
+                "Member list changed",
+                "Refresh the member list and choose again.",
+            ),
+            Refusal::AbuseReportTooLarge => problem(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too-large",
+                "Request too large",
+                "The report body is over 1024 bytes.",
+            ),
+            Refusal::AbuseReportLimit => problem(
+                StatusCode::TOO_MANY_REQUESTS,
+                "report-limit",
+                "Report limit reached",
+                "Try again later.",
+            ),
             Refusal::NoDevice => problem(
                 StatusCode::NOT_FOUND,
                 "no-device",
@@ -230,6 +274,12 @@ impl IntoResponse for Refusal {
                 "devices-limit",
                 "Device limit reached",
                 &format!("The account has as many devices with a certificate as it may: {limit}."),
+            ),
+            Refusal::MembersLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "members-limit",
+                "Member limit reached",
+                &format!("The space may have up to {limit} members."),
             ),
             Refusal::ServiceAgentsLimit(limit) => problem(
                 StatusCode::FORBIDDEN,

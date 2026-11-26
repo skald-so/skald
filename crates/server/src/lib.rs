@@ -16,7 +16,9 @@ use sqlx::migrate::Migrator;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{Connection, PgConnection, PgPool};
 
+pub mod a2a;
 mod abuse;
+mod abuse_reports;
 mod accounts;
 mod anchors;
 mod attachments;
@@ -63,6 +65,7 @@ mod unread_bodies;
 mod usage;
 mod user_agent;
 
+pub use abuse_reports::AbuseReportingSettings;
 pub use attachments::{AttachmentStorage, BucketEndpoint, BucketSettings};
 pub use error_reports::{SentryDsn, report_errors_to};
 pub use events::SSE_KEEP_ALIVE;
@@ -125,10 +128,11 @@ pub struct Settings {
     /// The privacy policy that the answer on sign-in and the server's pages that start one link;
     /// none without it.
     pub privacy_policy_url: Option<PrivacyPolicyUrl>,
-    /// Show effective cloud plans and their limits in space usage.
+    /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
     pub space_plans: bool,
-    /// The number of spaces an account may own (`docs/dev/architecture.md`, "Cloud limits"); no
-    /// limit without it.
+    /// Structured member reports; off without these settings.
+    pub abuse_reporting: Option<AbuseReportingSettings>,
+    /// With plans off, the number of spaces an account may own. No limit when unset.
     pub owned_spaces_limit: Option<u32>,
     /// The server's name in agent addresses; without it, the host of sign-in's public address, if
     /// that is a valid server name.
@@ -157,8 +161,7 @@ pub struct Settings {
     /// The number of devices with a certificate an account may have, `service` and revoked devices
     /// aside (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
     pub devices_limit: Option<u32>,
-    /// The number of service agent entries a space's latest revision may list
-    /// (`docs/dev/architecture.md`, "Cloud limits"); no limit without it.
+    /// With plans off, the limit on service agent entries in a space's roster. No limit when unset.
     pub service_agents_limit: Option<u32>,
     /// The longest wait of a long-poll (`docs/protocol/delivery.md`, "Mailbox");
     /// [`LONG_POLL_MAX_WAIT`] without it.
@@ -182,6 +185,7 @@ struct AppState {
     sign_up: Arc<SignUp>,
     privacy_policy_url: Option<Arc<PrivacyPolicyUrl>>,
     space_plans: bool,
+    abuse_reporting: Option<Arc<AbuseReportingSettings>>,
     owned_spaces_limit: Option<u32>,
     server_name: Option<ServerName>,
     mailbox_retention: Option<Duration>,
@@ -231,6 +235,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
     tokio::spawn(invites::sweep(db.clone()));
     tokio::spawn(claims::run(db.clone(), settings.history_retention));
     tokio::spawn(erasure::run(db.clone()));
+    tokio::spawn(abuse_reports::run(db.clone()));
     if let Some(retention) = settings.history_retention {
         tokio::spawn(history_retention::run(db.clone(), retention));
     }
@@ -467,6 +472,18 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
                 .layer(checked(Statement::Header)),
         )
         .route(
+            "/spaces/{space}/abuse-reporting",
+            get(abuse_reports::capability)
+                .layer(checked(Statement::Header))
+                .layer(middleware::from_fn(abuse_reports::no_store)),
+        )
+        .route(
+            "/spaces/{space}/abuse-reports",
+            post(abuse_reports::submit)
+                .layer(checked(Statement::Header))
+                .layer(middleware::from_fn(abuse_reports::no_store)),
+        )
+        .route(
             "/spaces/{space}/acceptances",
             get(invites::waiting).layer(checked(Statement::Header)),
         )
@@ -606,6 +623,7 @@ pub fn app(db: PgPool, settings: Settings) -> Router {
             db,
             versions,
             space_plans: settings.space_plans,
+            abuse_reporting: settings.abuse_reporting.map(Arc::new),
             owned_spaces_limit: settings.owned_spaces_limit,
             server_name,
             mailbox_retention: settings.mailbox_retention,

@@ -103,6 +103,17 @@
   }
 }
 
+/* After the account's deletion, above the providers. */
+.deleted {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+  font-size: 14px;
+  text-align: center;
+}
+
 .code {
   display: flex;
   gap: 8px;

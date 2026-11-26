@@ -1,4 +1,4 @@
-//! The web app's Access section and account menu, as a person uses them in the browser. The
+//! Browser helpers for the web app's cabinet, including Access and the account menu. The
 //! client's tests include this file too, beside `common/browser.rs` and `common/spa.rs`.
 //!
 //! The web app, as these tests use it, beside `common/spa.rs`:
@@ -16,7 +16,7 @@
 use serde_json::{Value, json};
 
 use super::browser::Page;
-use super::spa::wait_until;
+use super::spa::{Spa, wait_for_cabinet, wait_until};
 
 /// What the row of the page's own session says.
 pub const THIS_SESSION: &str = "this session";
@@ -75,6 +75,13 @@ pub fn rows_holding(page: &Page, part: &str) -> Vec<String> {
     let mut found = rows(page);
     found.retain(|row| row.to_lowercase().contains(&part.to_lowercase()));
     found
+}
+
+/// Reloads the cabinet for `username` in `page` and opens Members from the side menu.
+pub fn open_members(page: &Page, spa: &Spa, username: &str) {
+    page.goto(&spa.at("/"));
+    wait_for_cabinet(page, username);
+    press(page, None, "a, [role=link]", r"^members\b");
 }
 
 /// Opens the Access section from the side menu of the cabinet in `page`, and waits for the row of

@@ -1,5 +1,6 @@
 import { MemoryRouter } from "react-router";
 import {
+  getGetAccountDeletionResponseMock,
   getGetAccountUsageResponseMock,
   getGetSessionResponseMock,
   getGetSignInProvidersResponseMock,
@@ -381,20 +382,36 @@ export function KitAccess({ asking = false }: { asking?: boolean }) {
 }
 
 /**
- * The Account page in the cabinet, with both providers' links; `asking` opens the question of
- * Remove of the method this session signed in with.
+ * The Account page in the cabinet, with both providers' links and the account's deletion: `view`
+ * `confirm` opens the question of Remove of the method this session signed in with, `blocked` has
+ * team-a block the deletion, and `delete` opens the question of Delete.
  */
-export function KitAccountPage({ asking = false }: { asking?: boolean }) {
+export function KitAccountPage({
+  view,
+}: {
+  view?: "confirm" | "blocked" | "delete";
+}) {
+  const blocked = view === "blocked";
   return (
     <MemoryRouter initialEntries={[accountPath]}>
-      <Cabinet session={session} spaces={[personal]} onSignedOut={() => {}}>
+      <Cabinet
+        session={session}
+        spaces={blocked ? [personal, team] : [personal]}
+        onSignedOut={() => {}}
+      >
         <AccountScreen
           session={session}
           methods={methods}
           providers={["github", "google"]}
           now={now}
           onRemove={async () => {}}
-          defaultAsking={asking ? methods[0] : undefined}
+          defaultAsking={view === "confirm" ? methods[0] : undefined}
+          deletion={getGetAccountDeletionResponseMock({
+            deletes: [{ space: personal.space, name: personal.name }],
+            blocks: blocked ? [{ space: team.space, name: team.name }] : [],
+          })}
+          onDelete={async () => {}}
+          defaultDeleting={view === "delete"}
         />
       </Cabinet>
     </MemoryRouter>
