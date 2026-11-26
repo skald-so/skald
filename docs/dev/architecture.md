@@ -226,10 +226,10 @@ The public cloud applies these limits; a self-hosted server does not.
 
 | Limit | Value |
 |---|---|
-| Spaces an account owns: the ones it created, its personal space included | 2: the server setting `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
-| Members per space | No limit |
+| Spaces an account owns | Two Free spaces with plans on. With plans off, `--owned-spaces-limit` (`SKALD_OWNED_SPACES_LIMIT`); unset, no limit |
+| Members per space | Three in Free with plans on. Team and plans-off servers have no member limit |
 | Devices per member | 50: the server setting `--devices-limit` (`SKALD_DEVICES_LIMIT`), devices with a certificate per account, `service` and revoked devices aside; unset, no limit |
-| Service agents per space | 10: the server setting `--service-agents-limit` (`SKALD_SERVICE_AGENTS_LIMIT`), service agent entries in the space's latest revision; a revision that adds entries beyond it is refused, one that keeps or lowers their number is taken; unset, no limit |
+| Service agents per space | Three in Free and ten in Team with plans on. With plans off, `--service-agents-limit` (`SKALD_SERVICE_AGENTS_LIMIT`); unset, no limit |
 | Messages per space | About 10M per month: the server setting `--monthly-messages-limit` (`SKALD_MONTHLY_MESSAGES_LIMIT`), per calendar month in UTC, each message counted once whatever its envelopes, a handshake message ([Mailbox](../protocol/delivery.md#mailbox)) not at all; unset, no limit |
 | Messages per device | 120 per minute: the server setting `--send-rate-limit` (`SKALD_SEND_RATE_LIMIT`), messages one device stores within a sliding window of `--send-rate-window` (`SKALD_SEND_RATE_WINDOW`) seconds, a minute unset, counted as the messages per space, across the server's instances; unset, no limit |
 | Message text | 64 KB: the server setting `--message-size-limit` (`SKALD_MESSAGE_SIZE_LIMIT`), an envelope's payload or a task's `ct` in bytes; unset, no limit |
@@ -239,4 +239,4 @@ The public cloud applies these limits; a self-hosted server does not.
 
 The web app's Usage section shows the owned spaces, devices, monthly messages and service agents with their limits, and the message text, undelivered messages and history limits, each limit while it is set: `getAccountUsage` and `getSpaceUsage` in the [OpenAPI spec](../../api/openapi.json). The server counts them also without the settings.
 
-`--space-plans` (`SKALD_SPACE_PLANS=true`) opts in to showing a space's plan and allowances in `getSpaceUsage`. Spaces without an entitlement default to Free. The server continues to enforce the settings above.
+`--space-plans` (`SKALD_SPACE_PLANS=true`) enables Free ownership limits and plan limits on signed roster revisions. Spaces without an entitlement default to Free. The account's personal space counts even before creation. Paid spaces appear in the owned list without using a Free slot. Roster edits and reductions can leave a count above its limit. The remaining plan allowances in `getSpaceUsage` are informational.

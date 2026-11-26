@@ -28,6 +28,8 @@ pub(crate) struct PlanLimits {
 
 const SECONDS_PER_DAY: u64 = 86_400;
 
+pub(crate) const FREE_OWNED_SPACES_LIMIT: u32 = 2;
+
 const FREE: PlanLimits = PlanLimits {
     members: Some(3),
     devices_per_member: 10,
@@ -49,6 +51,10 @@ const TEAM: PlanLimits = PlanLimits {
 };
 
 impl SpacePlan {
+    pub(crate) fn counts_towards_ownership(self) -> bool {
+        matches!(self, Self::Free)
+    }
+
     pub(crate) fn limits(self) -> &'static PlanLimits {
         match self {
             Self::Free => &FREE,
