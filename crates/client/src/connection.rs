@@ -5,6 +5,7 @@
 //! on a WebSocket in its first frame, and in each HTTPS request of its mailbox in a header
 //! (`docs/protocol/delivery.md`, "Connecting").
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
@@ -52,18 +53,71 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 /// The problem of a request without a session, or with one the server does not hold.
 const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
 
-/// Whether a request of the process got [`NOT_SIGNED_IN`] since [`forget_refused`].
+/// Whether a CLI request got [`NOT_SIGNED_IN`] since [`forget_refused`].
 static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
 
-/// Whether a request of the process got the server's refusal of its session since
-/// [`forget_refused`].
-pub fn session_refused() -> bool {
-    SESSION_REFUSED.load(Ordering::SeqCst)
+#[derive(Clone, Copy, Default)]
+struct SdkRefusals {
+    session: bool,
+    account_deleted: bool,
 }
 
-/// Forgets the refusals [`session_refused`] gives.
+thread_local! {
+    /// Refusals observed on the calling thread during an SDK operation.
+    static SCOPED_REFUSALS: Cell<Option<SdkRefusals>> = const { Cell::new(None) };
+}
+
+/// Whether a request of the current SDK operation or CLI run got a session refusal.
+pub fn session_refused() -> bool {
+    SCOPED_REFUSALS.get().map_or_else(
+        || SESSION_REFUSED.load(Ordering::SeqCst),
+        |refusals| refusals.session,
+    )
+}
+
+/// Forgets the CLI's refusals.
 pub fn forget_refused() {
     SESSION_REFUSED.store(false, Ordering::SeqCst);
+}
+
+/// Tracks HTTP and mailbox refusals separately for an SDK operation and its caller.
+pub fn track_refusals() -> Refusals {
+    Refusals(SCOPED_REFUSALS.replace(Some(SdkRefusals::default())))
+}
+
+pub struct Refusals(Option<SdkRefusals>);
+
+impl Drop for Refusals {
+    fn drop(&mut self) {
+        SCOPED_REFUSALS.set(self.0);
+    }
+}
+
+/// Whether the server closed this SDK operation's mailbox because the account was deleted.
+pub fn sdk_account_deleted() -> bool {
+    SCOPED_REFUSALS
+        .get()
+        .is_some_and(|refusals| refusals.account_deleted)
+}
+
+/// Records a server confirmation of account deletion if an SDK operation is active.
+pub fn note_sdk_account_deleted() -> bool {
+    note_sdk_refusal(|refusals| refusals.account_deleted = true)
+}
+
+fn note_sdk_refusal(note: impl FnOnce(&mut SdkRefusals)) -> bool {
+    let Some(mut refusals) = SCOPED_REFUSALS.get() else {
+        return false;
+    };
+    note(&mut refusals);
+    SCOPED_REFUSALS.set(Some(refusals));
+    true
+}
+
+fn note_refused() {
+    if !note_sdk_refusal(|refusals| refusals.session = true) {
+        SESSION_REFUSED.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Why a request to the server failed.
@@ -1312,7 +1366,7 @@ impl Connection {
             }
             if kind != VersionProblem::TooNew.type_uri() {
                 if status == 401 && kind == NOT_SIGNED_IN {
-                    SESSION_REFUSED.store(true, Ordering::SeqCst);
+                    note_refused();
                 }
                 return Err(Error::Refused {
                     status,
@@ -1396,6 +1450,20 @@ pub(crate) mod tests {
     use super::*;
 
     const SECOND: Duration = Duration::from_secs(1);
+
+    /// A local address nothing listens on, its port below the ephemeral ranges of Linux, macOS and
+    /// Windows. A connection there gets another port as its own, so it cannot connect to itself as
+    /// it can to a closed ephemeral port.
+    pub(crate) fn closed_port() -> SocketAddr {
+        let start = 20_000 + std::process::id() % 10_000;
+        (start..30_000)
+            .chain(20_000..start)
+            .find_map(|port| {
+                let listener = TcpListener::bind(("127.0.0.1", u16::try_from(port).ok()?)).ok()?;
+                listener.local_addr().ok()
+            })
+            .expect("a free local port below the ephemeral range")
+    }
 
     /// A resolver that answers `at` for every host, as one that sends `localhost` off the machine.
     #[derive(Debug)]
@@ -1594,11 +1662,8 @@ pub(crate) mod tests {
 
     #[test]
     fn closed_port_is_unreachable() {
-        let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let uri: Uri = format!("ws://{}/ws", closed.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        drop(closed);
+        let at = closed_port();
+        let uri: Uri = format!("ws://{at}/ws").parse().unwrap();
 
         // Windows refuses a connection to a closed port only after retrying it for about 2 s.
         let error = connect(
@@ -2203,9 +2268,8 @@ pub(crate) mod tests {
             )
         );
 
-        let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let address = closed.local_addr().unwrap().to_string();
-        drop(closed);
+        let at = closed_port();
+        let address = at.to_string();
         let error = through(Proxy::parse(&format!("http://{address}")).expect("a proxy URL"));
         assert!(
             matches!(&error, Error::Proxy { proxy, .. } if *proxy == address),
