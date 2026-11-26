@@ -44,6 +44,7 @@ mod codex_app_server;
 mod codex_confirm;
 mod connection;
 mod copies;
+mod deletion;
 mod delivery;
 mod device;
 mod devices;
@@ -59,6 +60,7 @@ mod heartbeat;
 mod held;
 mod helper;
 mod history;
+mod history_export;
 mod history_reading;
 mod hook;
 mod inbound;
@@ -100,6 +102,7 @@ mod service;
 mod service_agents;
 mod session_file;
 mod set_username;
+mod setup;
 mod sign_in;
 mod sign_out;
 mod spaces;
@@ -118,6 +121,7 @@ mod uploads;
 mod wait;
 mod wraps;
 
+use std::ffi::OsString;
 use std::io::IsTerminal as _;
 use std::io::Write as _;
 use std::num::NonZeroU64;
@@ -393,6 +397,15 @@ enum Command {
     /// session token. The device's keys and certificate stay, so the next sign-in to the same
     /// account resumes the same device.
     SignOut,
+    /// Deletes the account this machine signed in to, on the server of its session, only as its
+    /// person at a terminal. It shows the spaces the deletion deletes, those only the account is in,
+    /// and stops while the account is the only admin of a space with other members, naming the
+    /// command that hands over its admin rights. Otherwise it says what goes at once and what 30
+    /// days later, and deletes once you type the account's username. With a sign-in older than the
+    /// server allows, it first signs in again in the browser, as skald sign-in does. Once deleted,
+    /// it deletes this machine's secrets, the device's keys among them, and its local state. Nothing
+    /// undoes a deletion.
+    DeleteAccount,
     /// Sets the username of the account this machine signed in to, on the server of its session.
     /// The server refuses a username that is invalid, reserved or another account's, and the
     /// account keeps its old one.
@@ -1037,6 +1050,24 @@ enum Command {
         #[arg(value_name = "TEXT", allow_hyphen_values = true)]
         text: Option<String>,
     },
+    /// Saves verified history this device can read to a local file, oldest first. As an agent,
+    /// exports only from the space of the agent's folder.
+    /// Reports entries it could not read or verify.
+    #[command(group(clap::ArgGroup::new("export_scope").args(["space", "channel"]).required(true)))]
+    Export {
+        /// The name of the space to export.
+        #[arg(long, value_name = "SPACE")]
+        space: Option<String>,
+        /// The ID of a single channel to export, as skald channels shows it.
+        #[arg(long, value_name = "CHANNEL")]
+        channel: Option<String>,
+        /// The file format.
+        #[arg(long)]
+        format: history_export::Format,
+        /// The local file to save. Replaces an existing file after the export is complete.
+        #[arg(long, value_name = "FILE")]
+        output: OsString,
+    },
     /// Lists the agents of the working directory's space, or of the space named, from the presence
     /// values its devices keep in its channels: each agent once per device, with its state, since
     /// when, runtime and note, and its device's name and trust level; one that two devices of an
@@ -1190,6 +1221,23 @@ enum Command {
     /// to npm. A token in GITHUB_TOKEN, or else GH_TOKEN, goes to GitHub's API only, for its higher
     /// rate limit.
     Update,
+    /// Sets Skald up in an agent CLI's config. For Codex, in the config home it uses, CODEX_HOME
+    /// or ~/.codex, in config.toml: this skald as the MCP server skald, run as skald mcp, whose
+    /// tools Codex calls without asking and which gets Skald's settings, such as SKALD_STATE_DIR
+    /// and SKALD_KEY_STORAGE; and skald hook codex as its SessionStart, PostToolUse,
+    /// UserPromptSubmit, Stop and PermissionRequest hooks, after the other hooks of each. Every
+    /// other entry and comment
+    /// stays; run again, it changes nothing; it replaces Skald's entries that differ, as an older
+    /// skald wrote them. Codex then asks to trust the new hooks: /hooks in the terminal, Review
+    /// hooks in the app and VS Code. A config it cannot read stays as it is, and the run says why.
+    Setup {
+        /// The agent CLI.
+        #[arg(value_name = "CLI")]
+        cli: setup::Cli,
+        /// Removes Skald's entries, and only them.
+        #[arg(long)]
+        remove: bool,
+    },
     /// Serves MCP on standard input and output for an agent session, as an agent CLI starts it from
     /// its config; the session's folder is the working directory. Once the client initializes or
     /// discovers the server, the session registers as its agent in the folder's space: the messages
@@ -1305,6 +1353,7 @@ impl Command {
             Command::ClearDomain { .. } => Some("clear-domain"),
             Command::MakeAdmin { .. } => Some("make-admin"),
             Command::HandOverAdmin { .. } => Some("hand-over-admin"),
+            Command::DeleteAccount => Some("delete-account"),
             Command::AddRule { .. } => Some("add-rule"),
             Command::Rules => Some("rules"),
             Command::RemoveRule { .. } => Some("remove-rule"),
@@ -1319,6 +1368,7 @@ impl Command {
             Command::FingerprintStep { .. } => Some("fingerprint"),
             Command::KeyChanges | Command::KeyChangesStep { .. } => Some("key-changes"),
             Command::Link { browser: false } | Command::LinkStep { .. } => Some("link"),
+            Command::Setup { .. } => Some("setup"),
             _ => None,
         }
     }
@@ -1375,6 +1425,7 @@ impl Command {
                     | Command::RevokeDevice { .. }
                     | Command::SetUsername { .. }
                     | Command::History { .. }
+                    | Command::Export { .. }
                     | Command::FingerprintStep {
                         step: fingerprints::Step::Sync { .. }
                     }
@@ -1399,6 +1450,19 @@ impl Command {
                 self,
                 Command::Mcp { call: Some(call), .. }
                     if !matches!(call, mcp::Call::Register | mcp::Call::Beat)
+            )
+    }
+
+    /// Whether it reaches the server of the machine's session: one that says which devices wait for
+    /// linking, signs in, links or deletes the account.
+    fn reaches_server(&self) -> bool {
+        self.prompts()
+            || matches!(
+                self,
+                Command::SignIn { .. }
+                    | Command::Link { .. }
+                    | Command::LinkStep { .. }
+                    | Command::DeleteAccount
             )
     }
 
@@ -1474,9 +1538,12 @@ impl Command {
             | Command::DeliveryModes { .. }
             | Command::Folder { .. }
             | Command::Update
+            | Command::Setup { .. }
             | Command::Helper { .. } => None,
             // It takes the lock once its server's URL passes: a refused one leaves no file.
             Command::SignIn { .. } => None,
+            // It stops the helper and takes the lock itself, then deletes the state with it.
+            Command::DeleteAccount => None,
             // It takes its person's answers here and its steps lock ([`link`], [`held`],
             // [`key_changes`]).
             Command::Link { .. } | Command::Held | Command::KeyChanges => None,
@@ -1611,6 +1678,18 @@ fn main() -> ExitCode {
     if matches!(operation.command, Command::Invite { .. }) && !std::io::stdout().is_terminal() {
         return exit(Err(invites::NOT_AT_TERMINAL.to_owned()));
     }
+    // The username is typed only at a terminal, checked before anything is sent.
+    if matches!(operation.command, Command::DeleteAccount) && !link_code::at_terminal() {
+        return exit(Err(deletion::NOT_AT_TERMINAL.to_owned()));
+    }
+    // A device of a deleted account sends nothing; skald delete-account deletes its state.
+    if operation.command.reaches_server()
+        && !matches!(operation.command, Command::DeleteAccount)
+        && let Ok(dir) = state::dir(operation.state_dir.clone())
+        && deletion::reported(&dir)
+    {
+        return exit(Err(deletion::said(&dir)));
+    }
     if let Command::Mcp {
         relayed,
         call: None,
@@ -1739,12 +1818,43 @@ fn as_service(operation: Operation) -> ExitCode {
 /// Runs `operation`, a command that waits, in this process with `lock`, the lock of the state
 /// directory `dir` ([`wait::here`]), then closes the connection it kept.
 fn waits_here(dir: &Path, operation: &Operation, lock: Option<lock::Lock>) -> ExitCode {
+    connection::forget_refused();
     let waited = wait::here(dir, operation, lock);
     mailbox::close_kept();
     match waited {
         Ok(Some(code)) => code,
         Ok(None) => ExitCode::SUCCESS,
-        Err(err) => exit(Err(err)),
+        Err(err) => exit(Err(Asks::of(operation).told(err))),
+    }
+}
+
+/// Where a run whose session the server refuses asks whether the account is deleted: the state
+/// directory of a run that reaches the server, with its settings.
+struct Asks(Option<(PathBuf, claude_socket::Settings)>);
+
+impl Asks {
+    /// Where a run of `operation` asks.
+    fn of(operation: &Operation) -> Self {
+        let command = &operation.command;
+        let asks = !service::stateless()
+            && command.reaches_server()
+            && !matches!(command, Command::DeleteAccount | Command::Hook { .. });
+        let settings = (operation.key_storage, operation.speaks, operation.timeout);
+        Asks(
+            (asks.then(|| state::dir(operation.state_dir.clone()).ok()))
+                .flatten()
+                .map(|dir| (dir, settings)),
+        )
+    }
+
+    /// `err`, of the run, or, once the server refused its session and says that the account is
+    /// deleted, what the run says of it ([`deletion::learned`]).
+    fn told(self, err: String) -> String {
+        let learned = (connection::session_refused())
+            .then_some(self.0)
+            .flatten()
+            .and_then(|(dir, settings)| deletion::learned(&dir, settings));
+        learned.unwrap_or(err)
     }
 }
 
@@ -2237,7 +2347,9 @@ fn performed(operation: Operation) -> Result<(), String> {
     if tool_call && let Some(says) = &says {
         say(says);
     }
-    let ran = command_performed(operation, agent);
+    let asks = Asks::of(&operation);
+    connection::forget_refused();
+    let ran = command_performed(operation, agent).map_err(|err| asks.told(err));
     if !tool_call && let Some(says) = &says {
         say(says);
     }
@@ -2371,6 +2483,9 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
             .and_then(|dir| revocations::run(&dir, key_storage, speaks, timeout, &device, &keep)),
         Command::SignOut => {
             state::dir(state_dir).and_then(|dir| sign_out::run(&dir, key_storage, speaks, timeout))
+        }
+        Command::DeleteAccount => {
+            state::dir(state_dir).and_then(|dir| deletion::run(&dir, key_storage, speaks, timeout))
         }
         Command::SetUsername { username } => state::dir(state_dir)
             .and_then(|dir| set_username::run(&dir, key_storage, speaks, timeout, &username)),
@@ -2771,6 +2886,21 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 agent.is_some(),
             )
         }),
+        Command::Export {
+            space,
+            channel,
+            format,
+            output,
+        } => state::dir(state_dir).and_then(|dir| {
+            history_export::run(
+                &dir,
+                key_storage,
+                (speaks, timeout),
+                (space.as_deref(), channel.as_deref()),
+                (format, Path::new(&output)),
+                agent.is_some(),
+            )
+        }),
         Command::Agents { space, json } => state::dir(state_dir).and_then(|dir| {
             presence::run(
                 &dir,
@@ -2831,6 +2961,7 @@ fn command_performed(operation: Operation, agent: Option<Name>) -> Result<(), St
                 })
             }),
         Command::Update => update::run(&github_api, timeout),
+        Command::Setup { cli, remove } => setup::run(cli, remove),
         Command::Mcp { call, .. } => state::dir(state_dir).and_then(|dir| {
             mcp::perform(call, &dir, key_storage, (speaks, timeout), agent.as_ref())
         }),
@@ -3006,6 +3137,21 @@ fn status(server: &str, speaks: VersionRange, timeout: Duration) -> Result<(), S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `skald setup` changes the person's agent CLI config, so an agent cannot run it, and it needs
+    /// no state: it takes no lock and starts no helper.
+    #[test]
+    fn setup_is_the_persons_and_needs_no_state() {
+        for remove in [false, true] {
+            let command = Command::Setup {
+                cli: setup::Cli::Codex,
+                remove,
+            };
+            assert_eq!(command.person_only(), Some("setup"));
+            assert_eq!(command.locks(), None);
+            assert!(!command.starts_helper() && !command.connects());
+        }
+    }
 
     /// An invite expires in whole days from 1 to 30; anything else is refused.
     #[test]

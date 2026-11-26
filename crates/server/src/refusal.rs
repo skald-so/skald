@@ -61,8 +61,10 @@ pub(crate) enum Refusal {
     OwnedSpacesLimit(u32),
     /// The account has as many devices with a certificate as it may: the number it holds.
     DevicesLimit(u32),
+    /// A roster revision would give the space more members than it may: the limit.
+    MembersLimit(u64),
     /// A roster revision would give the space more service agents than it may: the number it holds.
-    ServiceAgentsLimit(u32),
+    ServiceAgentsLimit(u64),
     /// A roster revision out of order or with a taken number, for the reason it holds.
     RevisionConflict(String),
     /// A link message the server does not relay there, for the reason it holds.
@@ -86,6 +88,8 @@ pub(crate) enum Refusal {
     SignatureRefused,
     /// A revoked device.
     DeviceRevoked,
+    /// A device that proved it holds the key in its server-held certificate on a deleted account.
+    AccountDeleted,
     /// A grant the server does not take, for the reason it holds.
     Grant(String),
     /// No such service token of the space.
@@ -229,6 +233,12 @@ impl IntoResponse for Refusal {
                 "Device limit reached",
                 &format!("The account has as many devices with a certificate as it may: {limit}."),
             ),
+            Refusal::MembersLimit(limit) => problem(
+                StatusCode::FORBIDDEN,
+                "members-limit",
+                "Member limit reached",
+                &format!("The space may have up to {limit} members."),
+            ),
             Refusal::ServiceAgentsLimit(limit) => problem(
                 StatusCode::FORBIDDEN,
                 "service-agents-limit",
@@ -299,6 +309,12 @@ impl IntoResponse for Refusal {
                 "device-revoked",
                 "Device revoked",
                 "The device is revoked.",
+            ),
+            Refusal::AccountDeleted => problem(
+                StatusCode::FORBIDDEN,
+                "account-deleted",
+                "Account deleted",
+                "The device's account is deleted.",
             ),
             Refusal::Grant(detail) => problem(bad, "invalid-grant", "Invalid grant", &detail),
             Refusal::NoServiceToken => problem(

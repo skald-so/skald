@@ -7,6 +7,7 @@ What Skald protects against and what it does not. Formats and checks are in the 
 ## Contents
 - [Attackers](#attackers)
   - [The server or its operator](#the-server-or-its-operator)
+  - [The A2A gateway or its operator](#the-a2a-gateway-or-its-operator)
   - [A network observer](#a-network-observer)
   - [The IdP or GitHub](#the-idp-or-github)
   - [Anyone without a session](#anyone-without-a-session)
@@ -75,6 +76,10 @@ Also whoever takes over the server or its database.
 - Receipt messages and replies are signed by the recipient device ([Receipts](protocol/delivery.md#receipts)); gap detection reports dropped messages ([Gap detection](protocol/delivery.md#gap-detection)).
 - A presence `revision` blocks a rollback for a reader that saw a newer value; `expires` bounds a replay ([Presence](protocol/agents.md#presence)).
 - The web build is reproducible ([infrastructure.md, "Trust in builds"](dev/infrastructure.md#trust-in-builds)).
+
+### The A2A gateway or its operator
+
+Skald end-to-end encryption ends at the gateway. The gateway sees bridged content and its service agent's mailbox copies in plaintext. HTTPS protects the A2A leg in transit. The gateway's service key and token give it that service identity's permissions. See [Architecture](dev/architecture.md#components) for route authorization.
 
 ### A network observer
 Watches or alters traffic between devices and the server, or the channel an invite link is sent over.
@@ -302,6 +307,7 @@ An agent session, such as Claude Code, on one of the person's `client` devices, 
 - `skald invite` shows an invite link only at a terminal, run as the person, never through a pipe or as an agent, so no agent's output holds it. An agent that opens a terminal of its own, or hands the helper the command over its socket, which writes the link back, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald accept-invite` takes an invite link only from the person at a terminal, never as an argument, through a pipe, from the environment or as an agent, so an agent cannot pipe one in. An agent that opens a terminal of its own, or hands the helper the steps that follow it, is not stopped ([Invite](protocol/membership.md#invite)).
 - `skald link` takes a link code and its confirmation only from a terminal or its local page, so an agent cannot pipe them in. An agent that opens a terminal of its own, reads the page's file and drives the page, or hands the helper the steps that follow them, is not stopped, but still needs the code, which no agent's output holds ([Link code](protocol/membership.md#link-code)).
+- `skald delete-account` refuses agent commands and takes the account's username only from a terminal. With a terminal of its own, an agent still needs the person's approval in the browser when the session's sign-in exceeds the server's `--link-sign-in-age` (`deleteAccount` in the [OpenAPI spec](../api/openapi.json)).
 
 ### Another account on the machine
 An OS account on the device's machine other than the one that runs the client.
@@ -319,6 +325,7 @@ An OS account on the device's machine other than the one that runs the client.
 - accounts: sign-in methods and usernames;
 - the roster: members, roles, devices and service agents of each space, the devices of each channel, and the space's policy, its wake ceilings included;
 - devices: kind, name, public keys and certificates, the agent CLIs found on them;
+- a deleted account's devices' certificates and revocations in the spaces it shared, also once it has erased the account's other data;
 - link code runs without a session: the new device's ID, hello, messages and pairing before it knows the device's account; then the account whose session pairs the run, and from the certificate, the device's account, kind, keys and name;
 - service agent names and token permissions;
 - invites, sign-in sessions and tokens: who, when, from where, expiry, last use;

@@ -24,12 +24,7 @@ export interface UsageScreenProps {
   failed?: string;
 }
 
-/**
- * The Usage section of 11-usage.png: the account's owned spaces and devices and the chosen space's
- * messages this month and service agents, each of its limit with a bar, or with "No limit"; the
- * spaces the account owns by name; and the limits on a message's size, on how long an undelivered
- * one is kept and on how long the channels' history is kept.
- */
+/** The account's usage and the chosen space's usage with settings limits or plan allowances. */
 export function UsageScreen({
   space,
   account,
@@ -38,6 +33,7 @@ export function UsageScreen({
 }: UsageScreenProps) {
   const loading =
     !failed && (!account || (space !== undefined && usage === undefined));
+  const planAllowance = usage?.plan !== undefined;
   return (
     <>
       <PageHeader
@@ -64,7 +60,9 @@ export function UsageScreen({
             {account && (
               <>
                 <UsageCard
-                  label="Spaces"
+                  label={
+                    account.owned_spaces.free_only ? "Free spaces" : "Spaces"
+                  }
                   count={account.owned_spaces.count}
                   limit={account.owned_spaces.limit}
                 />
@@ -76,8 +74,13 @@ export function UsageScreen({
                 <UsageCard
                   label="Messages this month"
                   {...usage.monthly_messages}
+                  planAllowance={planAllowance}
                 />
-                <UsageCard label="Service agents" {...usage.service_agents} />
+                <UsageCard
+                  label="Service agents"
+                  {...usage.service_agents}
+                  planAllowance={planAllowance}
+                />
               </>
             )}
           </section>
@@ -101,17 +104,18 @@ function OwnedSpaces({ owned }: { owned: AccountUsage["owned_spaces"] }) {
           ))}
         </ul>
       )}
-      {owned.count > owned.spaces.length && (
-        <p>Your personal space counts before it is made.</p>
+      {owned.free_only ? (
+        <p>A Free personal space counts before it is made.</p>
+      ) : (
+        owned.count > owned.spaces.length && (
+          <p>Your personal space counts before it is made.</p>
+        )
       )}
     </section>
   );
 }
 
-/**
- * The limits on the chosen space's messages and history: the largest message, how long an
- * undelivered one waits, and how long the server keeps the channels' history.
- */
+/** The chosen space's message size and retention limits or plan allowances. */
 function Messages({ usage }: { usage: SpaceUsage }) {
   const largest = usage.message_size.limit;
   const kept = usage.mailbox_retention.limit;
@@ -119,17 +123,35 @@ function Messages({ usage }: { usage: SpaceUsage }) {
   return (
     <section aria-labelledby="usage-messages" className={styles.section}>
       <h2 id="usage-messages">Messages</h2>
-      <p>
-        {largest === undefined
-          ? "A message's size has no limit."
-          : `A message holds up to ${size(largest)}.`}{" "}
-        {kept === undefined
-          ? "Undelivered messages are kept until delivered, with no limit."
-          : `Undelivered messages are kept for ${period(kept)}.`}{" "}
-        {history === undefined
-          ? "Channel history is kept for good."
-          : `Channel history is kept for ${period(history)}.`}
-      </p>
+      {usage.plan === undefined ? (
+        <p>
+          {largest === undefined
+            ? "A message's size has no limit."
+            : `A message holds up to ${size(largest)}.`}{" "}
+          {kept === undefined
+            ? "Undelivered messages are kept until delivered, with no limit."
+            : `Undelivered messages are kept for ${period(kept)}.`}{" "}
+          {history === undefined
+            ? "Channel history is kept for good."
+            : `Channel history is kept for ${period(history)}.`}
+        </p>
+      ) : (
+        <p>
+          Plan allowances include{" "}
+          {largest === undefined
+            ? "unlimited message size"
+            : `${size(largest)} per message`}
+          ,{" "}
+          {kept === undefined
+            ? "unlimited retention for undelivered messages"
+            : `${period(kept)} for undelivered messages`}
+          , and{" "}
+          {history === undefined
+            ? "unlimited channel history"
+            : `${period(history)} of channel history`}
+          . Server settings govern enforcement.
+        </p>
+      )}
     </section>
   );
 }

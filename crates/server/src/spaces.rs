@@ -20,6 +20,7 @@ use crate::accounts::GITHUB;
 use crate::devices::{Devices, base64, bytes, taken};
 use crate::instances::Event;
 use crate::refusal::{Answer, Caller, Refusal, SignedIn, parse};
+use crate::space_plans::{self, FREE_OWNED_SPACES_LIMIT, SpacePlan};
 use crate::{AppState, history, invites, mailboxes, queues, revocations, sessions};
 
 /// `SpaceRequest` in the spec.
@@ -34,6 +35,56 @@ struct SpaceRequest {
 pub(crate) struct Space {
     pub(crate) space: String,
     pub(crate) name: String,
+}
+
+/// `OwnedSpaces` in the spec.
+#[derive(Serialize)]
+pub(crate) struct OwnedSpaces {
+    count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u32>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    free_only: bool,
+    spaces: Vec<Space>,
+}
+
+fn owned_limit(state: &AppState) -> Option<u32> {
+    if state.space_plans {
+        Some(FREE_OWNED_SPACES_LIMIT)
+    } else {
+        state.owned_spaces_limit
+    }
+}
+
+/// Lists all the account's own spaces and counts the ones that use its allowance.
+pub(crate) async fn owned(
+    db: impl sqlx::PgExecutor<'_>,
+    state: &AppState,
+    account: &str,
+) -> Result<OwnedSpaces, sqlx::Error> {
+    let created: Vec<(String, String, bool, Option<SpacePlan>)> = sqlx::query_as(
+        "SELECT s.id::text, s.name, s.personal, e.plan
+         FROM spaces s LEFT JOIN space_entitlements e ON $2 AND e.space_id = s.id
+         WHERE s.creator_id = $1::uuid ORDER BY s.created_at, s.id",
+    )
+    .bind(account)
+    .bind(state.space_plans)
+    .fetch_all(db)
+    .await?;
+    let counted = created
+        .iter()
+        .filter(|(_, _, _, plan)| plan.unwrap_or_default().counts_towards_ownership())
+        .count() as u64;
+    let personal_pending = !created.iter().any(|(_, _, personal, _)| *personal);
+    Ok(OwnedSpaces {
+        count: counted + u64::from(personal_pending),
+        limit: owned_limit(state),
+        free_only: state.space_plans,
+        spaces: created
+            .into_iter()
+            .map(|(space, name, _, _)| Space { space, name })
+            .collect(),
+    })
 }
 
 /// `ListedSpace` in the spec.
@@ -101,7 +152,8 @@ struct NewChannel {
 pub(crate) struct Found {
     pub(crate) id: SpaceId,
     name: Name,
-    creator: String,
+    /// None once the server erased the creator's account.
+    creator: Option<String>,
     /// The ID of the account that finds it.
     account: String,
     /// Whether the account gets the space.
@@ -117,7 +169,7 @@ pub(crate) async fn find(
     account: &str,
 ) -> Result<Found, Refusal> {
     let id: SpaceId = space.parse().map_err(|_| Refusal::NoSpace)?;
-    let found: Option<(String, String, bool, bool)> = sqlx::query_as(
+    let found: Option<(String, Option<String>, bool, bool)> = sqlx::query_as(
         "SELECT s.name, s.creator_id::text, a.account_id IS NOT NULL, COALESCE(a.admin, false)
          FROM spaces s LEFT JOIN space_access a ON a.space_id = s.id AND a.account_id = $1::uuid
          WHERE s.id = $2::uuid",
@@ -217,7 +269,7 @@ pub(crate) async fn create(
         name: name.to_string(),
     };
     let mut tx = state.db.begin().await.map_err(failed)?;
-    if let Some(limit) = state.owned_spaces_limit {
+    if let Some(limit) = owned_limit(&state) {
         // The account's lock makes its creations wait for each other, so none passes the limit.
         // It lets a request for the personal space insert it meanwhile, which changes no count.
         sqlx::query("SELECT 1 FROM accounts WHERE id = $1::uuid FOR NO KEY UPDATE")
@@ -228,15 +280,8 @@ pub(crate) async fn create(
         if let Some(id) = unrevised(&mut tx, &name, &account).await? {
             return taken(false, space(id));
         }
-        // The personal space counts whether or not it is created yet.
-        let (team,): (i64,) = sqlx::query_as(
-            "SELECT count(*) FROM spaces WHERE creator_id = $1::uuid AND NOT personal",
-        )
-        .bind(&account)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(failed)?;
-        if team + 1 >= i64::from(limit) {
+        let owned = owned(&mut *tx, &state, &account).await.map_err(failed)?;
+        if owned.count >= u64::from(limit) {
             return Err(Refusal::OwnedSpacesLimit(limit));
         }
     }
@@ -562,7 +607,7 @@ pub(crate) async fn store(
     };
     let id: AccountId = account.parse().expect("a stored account ID");
     let allowed = match &previous {
-        None => found.creator == account,
+        None => found.creator.as_deref() == Some(account.as_str()),
         Some(previous) => admin(previous, id),
     };
     if !allowed {
@@ -578,24 +623,41 @@ pub(crate) async fn store(
         return again(found.id, number, &sent, &stored).map_err(hide);
     }
     check(db, &found, &roster, previous.as_ref(), id).await?;
-    within_agents_limit(&state, &roster, previous.as_ref())?;
     insert(&state, found.id, &roster, previous.as_ref(), &sent).await
 }
 
-/// Refuses `roster` if it lists more service agent entries than the server's limit and than
-/// `previous`, the revision it follows, if any: a space over a lowered limit still removes agents
-/// and changes the rest (`docs/dev/architecture.md`, "Cloud limits").
-fn within_agents_limit(
+/// Refuses growth past either roster limit. A space over a lowered limit can still make edits
+/// and reductions.
+async fn within_roster_limits(
+    tx: &mut sqlx::PgConnection,
     state: &AppState,
     roster: &Roster,
     previous: Option<&Roster>,
 ) -> Result<(), Refusal> {
-    let Some(limit) = state.service_agents_limit else {
-        return Ok(());
+    let body = roster.body();
+    let limits = space_plans::resolve(tx, body.space, state.space_plans)
+        .await
+        .map_err(|err| Refusal::Database("read the space's plan", err))?
+        .map(SpacePlan::limits);
+    let before = previous.map(Roster::body);
+    let grows_past = |count: usize, before: usize, limit: Option<u64>| {
+        limit.filter(|&limit| count > before && count as u64 > limit)
     };
-    let agents = roster.body().service_agents.len();
-    let before = previous.map_or(0, |previous| previous.body().service_agents.len());
-    if agents > before && agents > limit as usize {
+    if let Some(limit) = grows_past(
+        body.members.len(),
+        before.map_or(0, |body| body.members.len()),
+        limits.and_then(|limits| limits.members),
+    ) {
+        return Err(Refusal::MembersLimit(limit));
+    }
+    let agents_limit = limits
+        .map(|limits| limits.service_agents)
+        .or_else(|| state.service_agents_limit.map(u64::from));
+    if let Some(limit) = grows_past(
+        body.service_agents.len(),
+        before.map_or(0, |body| body.service_agents.len()),
+        agents_limit,
+    ) {
         return Err(Refusal::ServiceAgentsLimit(limit));
     }
     Ok(())
@@ -810,8 +872,7 @@ async fn insert(
         .begin()
         .await
         .map_err(|err| Refusal::Database("store a revision", err))?;
-    // A service token's creation waits for the revision, and the revision for the creation
-    // (`service_tokens::create`).
+    // A space's revisions, token creations and invite changes take the same lock.
     sqlx::query("SELECT 1 FROM spaces WHERE id = $1::uuid FOR NO KEY UPDATE")
         .bind(space.to_string())
         .execute(&mut *tx)
@@ -835,6 +896,8 @@ async fn insert(
         let stored = stored(db, space, number).await?.unwrap_or_default();
         return again(space, number, sent, &stored);
     }
+    // This number is new, so its predecessor is still the latest committed roster.
+    within_roster_limits(&mut tx, state, roster, previous).await?;
     invites::admitted(&mut tx, space, roster, previous).await?;
     let (accounts, admins): (Vec<String>, Vec<bool>) = body
         .members

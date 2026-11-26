@@ -18,7 +18,8 @@ use crate::deletion::{Lock, deleted};
 use crate::devices::bytes;
 use crate::refusal::{Answer, Refusal, parse};
 use crate::sign_in::{
-    self, Session, digest, escape, flows, off, param, random_token, sign_in_links, web_session,
+    self, ProviderKind, Session, SignInSettings, digest, escape, flows, off, param, random_token,
+    sign_in_links, web_session,
 };
 use crate::{AppState, SignUp, database_failed, invites};
 
@@ -145,9 +146,23 @@ struct DeviceAuthorization {
     interval: u64,
 }
 
+/// The corporate browser flow does not enable device authorization.
+fn settings(state: &AppState) -> Option<&SignInSettings> {
+    sign_in::settings(state)
+        .filter(|settings| settings.github.is_some() || settings.google.is_some())
+}
+
+async fn device_session(db: &PgPool, headers: &HeaderMap) -> Result<Option<Session>, sqlx::Error> {
+    Ok(web_session(db, headers).await?.filter(|session| {
+        session
+            .sign_in_method
+            .is_some_and(ProviderKind::allows_device_sign_in)
+    }))
+}
+
 /// `POST /auth/device`: device authorization (RFC 8628, §3.1).
 pub(crate) async fn authorize(State(state): State<AppState>, body: Bytes) -> Response {
-    let Some(settings) = sign_in::settings(&state) else {
+    let Some(settings) = settings(&state) else {
         return off();
     };
     if let Err(refusal) = machine_form(&body) {
@@ -216,7 +231,7 @@ struct DeviceInviteRequest {
 /// evidence and the code only by its hash. A well-formed request gets the same response regardless
 /// of whether the proof attached.
 pub(crate) async fn attach_invite(State(state): State<AppState>, body: Bytes) -> Answer {
-    if sign_in::settings(&state).is_none() {
+    if settings(&state).is_none() {
         return Ok(off());
     }
     let DeviceInviteRequest {
@@ -270,7 +285,7 @@ struct DeviceToken {
 
 /// `POST /auth/token`: the token endpoint (RFC 8628, §3.4).
 pub(crate) async fn token(State(state): State<AppState>, body: Bytes) -> Response {
-    if sign_in::settings(&state).is_none() {
+    if settings(&state).is_none() {
         return off();
     }
     let device_code = match device_code(&body) {
@@ -477,7 +492,9 @@ fn sign_in_here(state: &AppState, user_code: &str) -> String {
             .finish();
         to = format!("{to}?{query}");
     }
-    sign_in_links(&flows(state), "", &to)
+    let mut flows = flows(state);
+    flows.retain(|flow| ProviderKind::from_key(flow.provider).allows_device_sign_in());
+    sign_in_links(&flows, "", &to)
 }
 
 /// `GET /device`: the verification page.
@@ -486,11 +503,11 @@ pub(crate) async fn page(
     headers: HeaderMap,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if sign_in::settings(&state).is_none() {
+    if settings(&state).is_none() {
         return off();
     }
     let user_code = param(query.as_deref(), "user_code").unwrap_or_default();
-    match web_session(&state.db, &headers).await {
+    match device_session(&state.db, &headers).await {
         Ok(Some(session)) => ask(&session, &user_code, &sign_in::privacy_policy_link(&state)),
         Ok(None) => page_of(
             StatusCode::OK,
@@ -562,7 +579,7 @@ pub(crate) async fn decide(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let Some(settings) = sign_in::settings(&state) else {
+    let Some(settings) = settings(&state) else {
         return off();
     };
     let again = format!("<a href=\"{VERIFICATION_PATH}\">Try again</a>");
@@ -581,7 +598,7 @@ pub(crate) async fn decide(
             &format!("<p>Not signed in. {}</p>", sign_in_here(&state, "")),
         )
     };
-    let session = match web_session(&state.db, &headers).await {
+    let session = match device_session(&state.db, &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return signed_out(),
         Err(err) => return failed("read a session", err),

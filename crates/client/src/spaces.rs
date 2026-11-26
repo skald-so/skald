@@ -1526,13 +1526,26 @@ pub fn synced(
     name: &str,
     scope: Scope,
 ) -> Result<Synced, String> {
+    let mut synced = of_name(dir, storage, speaks, timeout, name, scope)?;
+    groups::align_accepted(&mut synced.follower);
+    Ok(synced)
+}
+
+/// As [`synced`], without bringing the channel groups in line.
+pub fn of_name(
+    dir: &Path,
+    storage: secrets::Storage,
+    speaks: VersionRange,
+    timeout: Duration,
+    name: &str,
+    scope: Scope,
+) -> Result<Synced, String> {
     let mut follower = following(dir, storage, speaks, timeout, scope)?;
     let space = follower.space(name)?;
     if scope.excludes(space.id) {
         return Err(OUT_OF_SCOPE.to_owned());
     }
     let (roster, devices) = follower.sync(&space)?;
-    groups::align_accepted(&mut follower);
     Ok(Synced {
         follower,
         space,

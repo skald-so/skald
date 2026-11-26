@@ -57,45 +57,29 @@ mod taken;
 mod history_common;
 use history_common::*;
 
-// From other test targets, by name: Ada's agents of the tests of handing messages over; the claims
-// of the tests of claiming tasks; the MCP client of the tests of the MCP server; Ada's second
-// machine of the tests of the history on new devices; the messages of the tests of gap detection;
-// what an agent reads, of the tests of compact output; the member service agent of the tests of
-// service members; the presence helpers of the tests of presence uploads; the queue commands and
-// requests of the tests of queues; the helpers of the tests of reading the history; the `read`
-// statuses of the tests of read receipts; the machine of the tests of stateless agents; the
-// senders of the tests of trust levels; the commands and secrets of the tests of service agents;
-// the task states and reads of the tests of task states; the presence values of the tests of the
-// agent directory.
-#[path = "../agent_handover/agents.rs"]
-mod agents;
-#[path = "../task_claims/claiming.rs"]
-mod claiming;
+// The modules the tests of tasks after their claim share (`task_common/mod.rs`): Ada's agents,
+// what an agent reads, the senders, the queue commands, the task states, the claims, Ada's second
+// machine and the helpers of reading the history.
+#[path = "../task_common/mod.rs"]
+mod task_common;
+use task_common::*;
+
+// From other test targets, by name: the MCP client of the tests of the MCP server; the member
+// service agent of the tests of service members; the presence helpers of the tests of presence
+// uploads; the `read` statuses of the tests of read receipts; the machine of the tests of stateless
+// agents; the commands and secrets of the tests of service agents; the presence values of the tests
+// of the agent directory.
 #[path = "../mcp_inbox/client.rs"]
 mod client;
-#[path = "../history_devices/devices.rs"]
-mod devices;
-#[path = "../gap_detection/gaps.rs"]
-mod gaps;
-#[path = "../compact_output/lines.rs"]
-mod lines;
 #[path = "../service_members/member.rs"]
 mod member;
 #[path = "../presence_uploads/presence.rs"]
 mod presence;
-#[path = "../queues/queuing.rs"]
-mod queuing;
-#[path = "../history_reading/reading.rs"]
-mod reading;
 #[path = "../read_receipts/receipts.rs"]
 mod receipts;
 #[path = "../stateless_agents/scene.rs"]
 mod scene;
-#[path = "../trust_levels/senders.rs"]
-mod senders;
 #[path = "../service_agents/kit.rs"]
 mod service_kit;
-#[path = "../task_states/states.rs"]
-mod states;
 #[path = "../presence_directory/values.rs"]
 mod values;

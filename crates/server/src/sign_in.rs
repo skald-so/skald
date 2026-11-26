@@ -1,7 +1,7 @@
 //! Sign-in in the browser and the web session it ends in, the parts every provider shares, links of
 //! a sign-in method among them; and GitHub sign-in: OAuth 2.0's authorization code flow (RFC 6749,
-//! §4.1) with a GitHub OAuth App and PKCE (RFC 7636), asking for no scope. Google sign-in is in
-//! `google`; starting a link and the account's sign-in methods in `links`.
+//! §4.1) with a GitHub OAuth App and PKCE (RFC 7636), asking for no scope. OIDC sign-in is in
+//! `oidc_browser`; starting a link and the account's sign-in methods in `links`.
 
 use std::str::FromStr;
 use std::time::Duration;
@@ -20,8 +20,8 @@ use url::{Host, Url};
 use crate::accounts::{self, GITHUB, Method};
 use crate::error_reports::{self, Cause as _};
 use crate::github::{GitHubApp, Refusal, http_url};
-use crate::google::Google;
 use crate::oidc::OidcSettings;
+use crate::oidc_browser::{Corporate, Google, OidcSignIn};
 use crate::sign_up::SignUp;
 use crate::{AppState, database_failed, device_flow, links, problem, sessions};
 
@@ -42,7 +42,7 @@ pub struct PublicUrl(Url);
 
 impl PublicUrl {
     /// Whether browsers reach the server over HTTPS, so that its cookies are `Secure`.
-    fn secure(&self) -> bool {
+    pub(crate) fn secure(&self) -> bool {
         self.0.scheme() == "https"
     }
 
@@ -129,6 +129,8 @@ pub struct SignInSettings {
     pub github: Option<GitHubApp>,
     /// Google sign-in, with the OIDC provider at Google's issuer; off without it.
     pub google: Option<OidcSettings>,
+    /// Corporate sign-in with the operator's OIDC issuer; off without it.
+    pub corporate: Option<OidcSettings>,
     /// How long a sign-in's `state` works.
     pub state_lifetime: Duration,
     /// How recent a session's sign-in has to be to start a link or remove a sign-in method, as a web
@@ -183,22 +185,21 @@ impl SignInSettings {
 pub(crate) struct Flow<'a> {
     /// The provider's name for people, such as `GitHub`.
     pub name: &'static str,
-    /// The provider of its sign-in methods: [`GITHUB`] or an OIDC provider's issuer.
+    /// The storage key of its sign-in methods.
     pub provider: &'a str,
     /// The sign-in start's path under the web address.
     pub start: &'static str,
     /// The callback's path under the web address.
     pub callback: &'static str,
     /// The link start's path under the web address.
-    pub link: &'static str,
+    pub link: Option<&'static str>,
 }
 
 /// The sign-in settings, while the server has the settings of any provider.
 pub(crate) fn settings(state: &AppState) -> Option<&SignInSettings> {
-    state
-        .sign_in
-        .as_deref()
-        .filter(|settings| settings.github.is_some() || settings.google.is_some())
+    state.sign_in.as_deref().filter(|settings| {
+        settings.github.is_some() || settings.google.is_some() || settings.corporate.is_some()
+    })
 }
 
 /// The flows of the providers the server has settings for.
@@ -207,26 +208,62 @@ pub(crate) fn flows(state: &AppState) -> Vec<Flow<'_>> {
     if let Some((_, github)) = GitHubApp::of(state) {
         flows.push(github.flow());
     }
-    if let Some((_, google)) = Google::of(state) {
+    if let Some((_, google)) = OidcSignIn::<Google>::of(state) {
         flows.push(google.flow());
+    }
+    if let Some((_, corporate)) = OidcSignIn::<Corporate>::of(state) {
+        flows.push(corporate.flow());
     }
     flows
 }
 
-/// The name of `provider`, a sign-in method's, in the spec: `github` or, for the server's one OIDC
-/// provider, `google`.
-fn provider_name(provider: &str) -> &'static str {
-    if provider == GITHUB {
-        "github"
-    } else {
-        "google"
+/// The API provider name. Stored corporate keys include the issuer so that an issuer change
+/// keeps older methods identifiable. Existing Google keys are the unprefixed issuers.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ProviderKind {
+    GitHub,
+    Google,
+    Corporate,
+}
+
+impl ProviderKind {
+    const CORPORATE_PREFIX: &str = "corporate:";
+
+    pub(crate) fn from_key(provider: &str) -> Self {
+        if provider == GITHUB {
+            Self::GitHub
+        } else if provider.starts_with(Self::CORPORATE_PREFIX) {
+            Self::Corporate
+        } else {
+            Self::Google
+        }
+    }
+
+    pub(crate) fn issuer_key(self, issuer: &str) -> String {
+        match self {
+            Self::Corporate => format!("{}{issuer}", Self::CORPORATE_PREFIX),
+            _ => issuer.to_owned(),
+        }
+    }
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::GitHub => "GitHub",
+            Self::Google => "Google",
+            Self::Corporate => "Corporate",
+        }
+    }
+
+    pub(crate) fn allows_device_sign_in(self) -> bool {
+        self != Self::Corporate
     }
 }
 
 /// `SignInProviders` in the spec.
 #[derive(Serialize)]
 struct Providers<'a> {
-    providers: Vec<&'static str>,
+    providers: Vec<ProviderKind>,
     sign_up: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     privacy_policy_url: Option<&'a str>,
@@ -237,7 +274,7 @@ struct Providers<'a> {
 pub(crate) async fn providers(State(state): State<AppState>) -> Response {
     let providers = flows(&state)
         .iter()
-        .map(|flow| provider_name(flow.provider))
+        .map(|flow| ProviderKind::from_key(flow.provider))
         .collect();
     let sign_up = match *state.sign_up {
         SignUp::Open => "open",
@@ -352,7 +389,7 @@ pub(crate) async fn blocking<T: Send + 'static>(
         .map_err(|err| Failure::Provider(format!("the request to {name} failed: {err}")))
 }
 
-/// `GET /auth/github` and `GET /auth/google`: sends the browser to the provider with a new `state`,
+/// Starts browser sign-in with a new `state`,
 /// bound to it by a cookie, a PKCE challenge and an OIDC sign-in's `nonce`.
 pub(crate) async fn start<P: Provider>(
     State(state): State<AppState>,
@@ -514,8 +551,8 @@ async fn hop(
     Some(page(StatusCode::OK, "Linking", &body))
 }
 
-/// `GET /auth/github/callback` and `GET /auth/google/callback`, the provider's callback: checks
-/// `state`, then signs the person it brings back in, finding or creating their account, or links
+/// The provider's callback checks `state`, then signs the person it brings back in,
+/// finding or creating their account, or links
 /// their method to the account of the link's session.
 pub(crate) async fn callback<P: Provider>(
     State(state): State<AppState>,
@@ -527,7 +564,9 @@ pub(crate) async fn callback<P: Provider>(
     };
     let (db, query) = (&state.db, query.as_deref());
     let flow = provider.flow();
-    if let Some(hop) = hop(db, settings, &flow, &headers, query).await {
+    if flow.link.is_some()
+        && let Some(hop) = hop(db, settings, &flow, &headers, query).await
+    {
         return hop;
     }
     let taken = match take(db, &flow, &headers, query).await {
@@ -574,6 +613,9 @@ async fn finish<P: Provider>(
     let identity = provider.identify(settings, code, secrets).await?;
     let may_sign_up = state.sign_up.admits(&identity);
     let db = &state.db;
+    let device_return = ProviderKind::from_key(flow.provider)
+        .allows_device_sign_in()
+        .then_some(return_to.as_str());
     let method = Method {
         provider: flow.provider,
         subject: identity.subject,
@@ -594,15 +636,17 @@ async fn finish<P: Provider>(
                 &method,
                 &identity.source,
                 may_sign_up,
-                &return_to,
+                device_return,
                 agent,
             )
             .await
             .map_err(Failure::Database)?;
             let Some(session) = session else {
-                device_flow::refuse_sign_up(db, &return_to)
-                    .await
-                    .map_err(Failure::Database)?;
+                if let Some(to) = device_return {
+                    device_flow::refuse_sign_up(db, to)
+                        .await
+                        .map_err(Failure::Database)?;
+                }
                 return Err(Failure::SignUpClosed);
             };
             Ok(signed_in_page(settings, flow, &session, &return_to))
@@ -720,7 +764,7 @@ impl Provider for GitHubApp {
             provider: GITHUB,
             start: START_PATH,
             callback: CALLBACK_PATH,
-            link: links::GITHUB_PATH,
+            link: Some(links::GITHUB_PATH),
         }
     }
 
@@ -932,9 +976,9 @@ pub(crate) struct Session {
     /// The login of the account's GitHub method, while it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_login: Option<String>,
-    /// The provider a web session signed in with, `github` or `google`; `None` for a device session.
+    /// The provider a web session signed in with.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub sign_in_method: Option<&'static str>,
+    pub(crate) sign_in_method: Option<ProviderKind>,
     /// The server's web address ([`web_origin`]); only in the answer to `GET /session`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web: Option<String>,
@@ -985,7 +1029,7 @@ async fn find(
             account,
             username,
             github_login,
-            sign_in_method: method.as_deref().map(provider_name),
+            sign_in_method: method.as_deref().map(ProviderKind::from_key),
             web: None,
             token_hash,
         },

@@ -34,6 +34,7 @@ import { commitAll, runJobs } from './lib/run-jobs.mjs';
 import {
   allNeeds,
   commands,
+  condition,
   event,
   isUnknown,
   open,
@@ -43,6 +44,8 @@ import {
   readWorkflows,
   template,
   toText,
+  truth,
+  unknown,
   unpublishedEvents,
   usesStatus,
   writes,
@@ -104,14 +107,27 @@ if (checker) {
   const needs = allNeeds(jobs, key);
   if (!needs.has(checker)) fail(`job ${key} does not need the release check, job ${checker}`);
   // The jobs between the release check and the deploy, and the deploy: when the check fails, each is
-  // skipped if a job it needs failed or was skipped and its condition calls no status function.
+  // skipped by the implicit success check or by its explicit condition.
+  const stable = jobsFor(release, event('push', 'refs/tags/v1.2.3'));
   const outcome = { [checker]: 'failure' };
   const visit = (k) => {
     if (k in outcome) return outcome[k];
-    const direct = needsOf(jobs[k]);
-    const results = direct.map(visit);
-    outcome[k] = !usesStatus(jobs[k].if) && results.some((r) => r === 'failure' || r === 'skipped') ? 'skipped' : 'may run';
-    return outcome[k];
+    const base = stable[k].scope;
+    const needs = Object.fromEntries(needsOf(jobs[k]).map((n) => [
+      n, { ...base.contexts.needs[n], result: visit(n) },
+    ]));
+    const blocked = Object.values(needs).some(({ result }) => result === 'failure' || result === 'skipped');
+    const scope = {
+      contexts: { ...base.contexts, needs },
+      status: {
+        ...base.status, success: blocked ? false : unknown(), cancelled: false,
+        failure: allNeeds(jobs, k).has(checker) ? true : unknown(),
+      },
+    };
+    const test = jobs[k].if;
+    const skipped = stable[k].skipped || (!usesStatus(test) && blocked) ||
+      (test !== undefined && truth(condition(test, scope)) === false);
+    return (outcome[k] = skipped ? 'skipped' : unknown());
   };
   if (needs.has(checker) && visit(key) !== 'skipped') fail(`job ${key} may run when the release check, job ${checker}, fails`);
 }

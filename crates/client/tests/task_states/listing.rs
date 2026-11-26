@@ -2,11 +2,10 @@
 //! last extend, `started`, then `awaiting-approval`, then `done`; with `--json`, every field.
 
 use serde_json::json;
-use skald_proto::MessageId;
 
 use crate::agents::CLAUDE;
 use crate::lines::{JSON_FLAG, holds_text, refers_to};
-use crate::queuing::{DEFAULT, enqueued, refers_to_task, the_one_task};
+use crate::queuing::{DEFAULT, as_message, enqueued, refers_to_task, the_one_task};
 use crate::states::{
     AWAITING_APPROVAL, CLAIMED, DONE, QUEUED, STARTED, Scene, assert_listed, claims, extends,
     line_of, listed, object_of, read, taken,
@@ -73,7 +72,7 @@ fn person_sees_a_task_queued_then_claimed_with_its_holder_s_progress_then_done()
     let object = object_of(&json, task);
     let short = object["ref"].as_str().unwrap_or_default();
     let short = short.strip_prefix('#').unwrap_or(short);
-    let as_message = MessageId::from_bytes(*task.as_bytes());
+    let as_message = as_message(task);
     assert!(
         refers_to(short, as_message),
         "a ref not of {task}: {object}"

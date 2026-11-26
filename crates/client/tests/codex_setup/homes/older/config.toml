@@ -1,0 +1,9 @@
+model = "gpt-5.5"
+
+[mcp_servers.skald]
+command = "/opt/skald-0.1/bin/skald"
+args = ["mcp"]
+
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "@example/docs-mcp"]
