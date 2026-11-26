@@ -5,6 +5,7 @@
 //! on a WebSocket in its first frame, and in each HTTPS request of its mailbox in a header
 //! (`docs/protocol/delivery.md`, "Connecting").
 
+use std::cell::Cell;
 use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::net::{Ipv4Addr, Ipv6Addr, TcpStream};
@@ -52,18 +53,71 @@ pub type WebSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
 /// The problem of a request without a session, or with one the server does not hold.
 const NOT_SIGNED_IN: &str = "https://skald.so/problems/not-signed-in";
 
-/// Whether a request of the process got [`NOT_SIGNED_IN`] since [`forget_refused`].
+/// Whether a CLI request got [`NOT_SIGNED_IN`] since [`forget_refused`].
 static SESSION_REFUSED: AtomicBool = AtomicBool::new(false);
 
-/// Whether a request of the process got the server's refusal of its session since
-/// [`forget_refused`].
-pub fn session_refused() -> bool {
-    SESSION_REFUSED.load(Ordering::SeqCst)
+#[derive(Clone, Copy, Default)]
+struct SdkRefusals {
+    session: bool,
+    account_deleted: bool,
 }
 
-/// Forgets the refusals [`session_refused`] gives.
+thread_local! {
+    /// Refusals observed on the calling thread during an SDK operation.
+    static SCOPED_REFUSALS: Cell<Option<SdkRefusals>> = const { Cell::new(None) };
+}
+
+/// Whether a request of the current SDK operation or CLI run got a session refusal.
+pub fn session_refused() -> bool {
+    SCOPED_REFUSALS.get().map_or_else(
+        || SESSION_REFUSED.load(Ordering::SeqCst),
+        |refusals| refusals.session,
+    )
+}
+
+/// Forgets the CLI's refusals.
 pub fn forget_refused() {
     SESSION_REFUSED.store(false, Ordering::SeqCst);
+}
+
+/// Tracks HTTP and mailbox refusals separately for an SDK operation and its caller.
+pub fn track_refusals() -> Refusals {
+    Refusals(SCOPED_REFUSALS.replace(Some(SdkRefusals::default())))
+}
+
+pub struct Refusals(Option<SdkRefusals>);
+
+impl Drop for Refusals {
+    fn drop(&mut self) {
+        SCOPED_REFUSALS.set(self.0);
+    }
+}
+
+/// Whether the server closed this SDK operation's mailbox because the account was deleted.
+pub fn sdk_account_deleted() -> bool {
+    SCOPED_REFUSALS
+        .get()
+        .is_some_and(|refusals| refusals.account_deleted)
+}
+
+/// Records a server confirmation of account deletion if an SDK operation is active.
+pub fn note_sdk_account_deleted() -> bool {
+    note_sdk_refusal(|refusals| refusals.account_deleted = true)
+}
+
+fn note_sdk_refusal(note: impl FnOnce(&mut SdkRefusals)) -> bool {
+    let Some(mut refusals) = SCOPED_REFUSALS.get() else {
+        return false;
+    };
+    note(&mut refusals);
+    SCOPED_REFUSALS.set(Some(refusals));
+    true
+}
+
+fn note_refused() {
+    if !note_sdk_refusal(|refusals| refusals.session = true) {
+        SESSION_REFUSED.store(true, Ordering::SeqCst);
+    }
 }
 
 /// Why a request to the server failed.
@@ -1312,7 +1366,7 @@ impl Connection {
             }
             if kind != VersionProblem::TooNew.type_uri() {
                 if status == 401 && kind == NOT_SIGNED_IN {
-                    SESSION_REFUSED.store(true, Ordering::SeqCst);
+                    note_refused();
                 }
                 return Err(Error::Refused {
                     status,
