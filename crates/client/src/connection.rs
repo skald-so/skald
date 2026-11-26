@@ -1448,22 +1448,9 @@ pub(crate) mod tests {
     use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 
     use super::*;
+    use crate::closed_port::closed_port;
 
     const SECOND: Duration = Duration::from_secs(1);
-
-    /// A local address nothing listens on, its port below the ephemeral ranges of Linux, macOS and
-    /// Windows. A connection there gets another port as its own, so it cannot connect to itself as
-    /// it can to a closed ephemeral port.
-    pub(crate) fn closed_port() -> SocketAddr {
-        let start = 20_000 + std::process::id() % 10_000;
-        (start..30_000)
-            .chain(20_000..start)
-            .find_map(|port| {
-                let listener = TcpListener::bind(("127.0.0.1", u16::try_from(port).ok()?)).ok()?;
-                listener.local_addr().ok()
-            })
-            .expect("a free local port below the ephemeral range")
-    }
 
     /// A resolver that answers `at` for every host, as one that sends `localhost` off the machine.
     #[derive(Debug)]

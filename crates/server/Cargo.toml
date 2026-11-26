@@ -39,6 +39,8 @@ mls-rs-crypto-rustcrypto = "0.23"
 serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
+# A port tried without listening on it: a server that is down.
+socket2 = "0.6"
 tungstenite = "0.30"
 
 [target.'cfg(unix)'.dev-dependencies]
