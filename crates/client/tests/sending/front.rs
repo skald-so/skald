@@ -30,7 +30,7 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
-use super::relay::{answered_in_full, reset};
+use super::relay::{answered_in_full, reach, reset};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -502,7 +502,7 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let Ok(server) = TcpStream::connect(&target) else {
+    let Ok(server) = reach(&format!("front: connection {connection}"), &target) else {
         eprintln!("front: connection {connection}: cannot reach {target}");
         return;
     };

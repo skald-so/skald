@@ -174,7 +174,7 @@ impl Drop for Server {
 /// How many times a connection is tried while PostgreSQL resets it, and the wait before the first
 /// retry, doubled before each next one: 1.5 s in all.
 pub const SETUP_ATTEMPTS: u32 = 5;
-const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
+pub const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
 /// WSAENOBUFS: Windows had no buffer space or port for a new socket.
 pub const NO_BUFFER_SPACE: i32 = 10055;
@@ -190,8 +190,12 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
-    let samples = env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into);
-    retried_into(what, samples, &mut io::stderr(), step).await
+    retried_into(what, port_samples(), &mut io::stderr(), step).await
+}
+
+/// The file where CI's sampler of the ports in use writes its state, if it runs.
+pub fn port_samples() -> Option<std::path::PathBuf> {
+    env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into)
 }
 
 /// What [`retried_on_reset`] gives, each retry a line written to `sink`: its error and wait, and for

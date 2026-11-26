@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use socket2::SockRef;
 
+use super::common::{NO_BUFFER_SPACE, SETUP_ATTEMPTS, SETUP_RETRY_WAIT, last_sample, port_samples};
+
 /// One read off a connection: when, which connection, which way, and the bytes.
 struct Chunk {
     at: Instant,
@@ -28,6 +30,44 @@ struct Chunk {
 pub struct Sent {
     pub at: Instant,
     pub head: String,
+}
+
+/// A connection to `target`, such as `127.0.0.1:41234`, for the stand-in `who`, tried again while
+/// Windows has no buffer space for it, as the tests' database connects are
+/// ([`super::common::retried_on_reset`]); each retry a line on stderr.
+pub fn reach(who: &str, target: &str) -> io::Result<TcpStream> {
+    reached(who, target, port_samples(), &mut io::stderr(), || {
+        TcpStream::connect(target)
+    })
+}
+
+/// What [`reach`] gives with `connect` for the connect: up to [`SETUP_ATTEMPTS`] tries while it fails
+/// with WSAENOBUFS, waiting [`SETUP_RETRY_WAIT`] before the first retry, doubled before each next
+/// one; each retry a line written to `sink` with its error, its wait and the last of the ports in
+/// use that `samples` holds. Any other error is given at once.
+pub fn reached<T>(
+    who: &str,
+    target: &str,
+    samples: Option<std::path::PathBuf>,
+    sink: &mut impl Write,
+    mut connect: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut wait = SETUP_RETRY_WAIT;
+    for _ in 1..SETUP_ATTEMPTS {
+        match connect() {
+            Err(err) if err.raw_os_error() == Some(NO_BUFFER_SPACE) => {
+                let ports = last_sample(samples.clone());
+                let _ = writeln!(
+                    sink,
+                    "{who}: cannot reach {target}: {err}; again in {wait:?}; ports: {ports}"
+                );
+                thread::sleep(wait);
+                wait *= 2;
+            }
+            result => return result,
+        }
+    }
+    connect()
 }
 
 /// How many of `sent` have a line that starts with `request`, whatever its case.
@@ -248,7 +288,8 @@ impl Relay {
                         continue;
                     }
                 };
-                let server = match TcpStream::connect(&target) {
+                let who = format!("relay: connection {connection}");
+                let server = match reach(&who, &target) {
                     Ok(server) => server,
                     Err(err) => {
                         eprintln!("relay: connection {connection}: cannot reach {target}: {err}");

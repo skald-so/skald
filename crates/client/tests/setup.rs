@@ -1,11 +1,15 @@
 //! The helpers' connections and databases (`common`): a step PostgreSQL fails by resetting the
 //! connection, or by opening none in time, or that Windows fails with WSAENOBUFS, is tried again, a
 //! few times, each retry a line with its error, for WSAENOBUFS with the sampled ports in use; any
-//! other error is not;
+//! other error is not; a stand-in's connect, such as the relay's to the server, is tried again
+//! the same way while Windows fails it with WSAENOBUFS;
 //! a server that fails to start drops the database it made, as one that stops does.
 
 #[allow(dead_code)]
 mod common;
+#[allow(dead_code)]
+#[path = "sign_in/relay.rs"]
+mod relay;
 
 use std::cell::{Cell, RefCell};
 use std::future::{Ready, ready};
@@ -124,16 +128,22 @@ fn retry_lines(error: fn() -> io::Error, samples: Option<std::path::PathBuf>) ->
         .collect()
 }
 
-#[test]
-fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_the_ports() {
-    let dir = std::env::temp_dir().join(format!("skald-client-samples-{}", std::process::id()));
+/// A new directory of this process named for `name`, removed by the test, and its samples file
+/// holding `text`, as CI's sampler of the ports in use writes it.
+fn sampled(name: &str, text: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("skald-client-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("make a directory");
     let samples = dir.join("ports.txt");
-    std::fs::write(
-        &samples,
+    std::fs::write(&samples, text).expect("write the samples");
+    (dir, samples)
+}
+
+#[test]
+fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_the_ports() {
+    let (dir, samples) = sampled(
+        "samples",
         "10:00:00: 900 ports in use\n10:00:10: 950 ports in use\n\n",
-    )
-    .expect("write the samples");
+    );
     let no_buffer_space = || io::Error::from_raw_os_error(NO_BUFFER_SPACE);
     let sampled = retry_lines(no_buffer_space, Some(samples.clone()));
     let gone = retry_lines(no_buffer_space, Some(dir.join("none.txt")));
@@ -164,6 +174,63 @@ fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_t
             "a step: no connection to PostgreSQL: {reset_error}; again in {ms}ms"
         ))
     );
+}
+
+#[test]
+fn a_stand_ins_connect_is_tried_again_only_while_windows_has_no_buffer_space() {
+    let (dir, samples) = sampled("reach", "10:00:10: 950 ports in use\n");
+    // Calls of a connect failing with `error` until its call `succeeds`, and the retries' lines.
+    let reach = |error: fn() -> io::Error, succeeds: u32| {
+        let mut sink = Vec::new();
+        let calls = Cell::new(0);
+        let started = Instant::now();
+        let result = relay::reached(
+            "a relay",
+            "127.0.0.1:1",
+            Some(samples.clone()),
+            &mut sink,
+            || {
+                calls.set(calls.get() + 1);
+                if calls.get() < succeeds {
+                    Err(error())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        let lines = String::from_utf8(sink).expect("lines in UTF-8");
+        (result, calls.get(), started.elapsed(), lines)
+    };
+    let no_buffer_space = || io::Error::from_raw_os_error(NO_BUFFER_SPACE);
+    let refused = || io::Error::from(io::ErrorKind::ConnectionRefused);
+    let (recovered, recovered_calls, recovered_in, recovered_lines) = reach(no_buffer_space, 3);
+    let (failed, failed_calls, failed_in, _) = reach(no_buffer_space, u32::MAX);
+    let (other, other_calls, _, other_lines) = reach(refused, u32::MAX);
+    std::fs::remove_dir_all(&dir).expect("remove the directory");
+
+    let error = no_buffer_space().to_string();
+    assert!(recovered.is_ok(), "{recovered:?}");
+    assert_eq!(recovered_calls, 3);
+    assert!(
+        recovered_in >= Duration::from_millis(300),
+        "{recovered_in:?}"
+    );
+    assert_eq!(
+        recovered_lines.lines().collect::<Vec<_>>(),
+        [100, 200].map(|ms| format!(
+            "a relay: cannot reach 127.0.0.1:1: {error}; again in {ms}ms; \
+             ports: 10:00:10: 950 ports in use"
+        ))
+    );
+    assert!(
+        failed.as_ref().is_err_and(|err| err.to_string() == error),
+        "{failed:?}"
+    );
+    assert_eq!(failed_calls, SETUP_ATTEMPTS);
+    assert!(failed_in >= Duration::from_millis(1500), "{failed_in:?}");
+    assert!(other.is_err_and(|err| err.kind() == io::ErrorKind::ConnectionRefused));
+    assert_eq!(other_calls, 1);
+    assert_eq!(other_lines, "");
 }
 
 /// The only test of this binary that makes databases: no other test's are listed.
