@@ -1451,6 +1451,20 @@ pub(crate) mod tests {
 
     const SECOND: Duration = Duration::from_secs(1);
 
+    /// A local address nothing listens on, its port below the ephemeral ranges of Linux, macOS and
+    /// Windows. A connection there gets another port as its own, so it cannot connect to itself as
+    /// it can to a closed ephemeral port.
+    pub(crate) fn closed_port() -> SocketAddr {
+        let start = 20_000 + std::process::id() % 10_000;
+        (start..30_000)
+            .chain(20_000..start)
+            .find_map(|port| {
+                let listener = TcpListener::bind(("127.0.0.1", u16::try_from(port).ok()?)).ok()?;
+                listener.local_addr().ok()
+            })
+            .expect("a free local port below the ephemeral range")
+    }
+
     /// A resolver that answers `at` for every host, as one that sends `localhost` off the machine.
     #[derive(Debug)]
     struct Elsewhere(SocketAddr);
@@ -1648,11 +1662,8 @@ pub(crate) mod tests {
 
     #[test]
     fn closed_port_is_unreachable() {
-        let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let uri: Uri = format!("ws://{}/ws", closed.local_addr().unwrap())
-            .parse()
-            .unwrap();
-        drop(closed);
+        let at = closed_port();
+        let uri: Uri = format!("ws://{at}/ws").parse().unwrap();
 
         // Windows refuses a connection to a closed port only after retrying it for about 2 s.
         let error = connect(
@@ -2257,9 +2268,8 @@ pub(crate) mod tests {
             )
         );
 
-        let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-        let address = closed.local_addr().unwrap().to_string();
-        drop(closed);
+        let at = closed_port();
+        let address = at.to_string();
         let error = through(Proxy::parse(&format!("http://{address}")).expect("a proxy URL"));
         assert!(
             matches!(&error, Error::Proxy { proxy, .. } if *proxy == address),
