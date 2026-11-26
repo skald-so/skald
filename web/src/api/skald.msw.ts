@@ -1573,9 +1573,13 @@ export const getGetAccountUsageResponseMock = (
   overrideResponse: Partial<Extract<AccountUsage, object>> = {},
 ): AccountUsage => ({
   owned_spaces: {
-    count: faker.number.int({ min: 1 }),
+    count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    free_only: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
       undefined,
     ]),
     spaces: Array.from(
@@ -1602,9 +1606,13 @@ export const getGetAccountUsageResponseMock200 = (
   overrideResponse: Partial<Extract<AccountUsage, object>> = {},
 ): AccountUsage => ({
   owned_spaces: {
-    count: faker.number.int({ min: 1 }),
+    count: faker.number.int({ min: 0 }),
     limit: faker.helpers.arrayElement([
       faker.number.int({ min: 1 }),
+      undefined,
+    ]),
+    free_only: faker.helpers.arrayElement([
+      faker.datatype.boolean(),
       undefined,
     ]),
     spaces: Array.from(

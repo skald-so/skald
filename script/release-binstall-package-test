@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Package the CLI to test cargo-binstall target mappings against the local registry.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+tag=v$("$root/script/release-version")
+"$root/script/release-cargo" "$tag" "$out"
+"$root/script/release-binstall-test" "$out/skald-so-${tag#v}.crate" "$tag"

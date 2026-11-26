@@ -22,6 +22,8 @@ const GOOGLE_SECRET_ENV: &str = "SKALD_GOOGLE_CLIENT_SECRET";
 const CORPORATE_SECRET_ENV: &str = "SKALD_CORPORATE_CLIENT_SECRET";
 /// The environment variable that holds the attachment bucket's secret key.
 const BUCKET_SECRET_ENV: &str = "SKALD_ATTACHMENTS_BUCKET_SECRET_KEY";
+/// The environment variable that points to a private abuse rules file.
+const ABUSE_RULES_ENV: &str = "SKALD_ABUSE_RULES_FILE";
 /// The least time between two reads of an OIDC provider's keys.
 const OIDC_KEY_REFRESH: Duration = Duration::from_secs(60);
 /// The longest `--long-poll-max-wait`, in seconds: a day.
@@ -207,12 +209,12 @@ struct Cli {
     #[arg(long, env = "SKALD_PRIVACY_POLICY_URL", value_name = "URL")]
     privacy_policy_url: Option<PrivacyPolicyUrl>,
 
-    /// Show effective cloud plans and their limits in space usage.
+    /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
     #[arg(long, env = "SKALD_SPACE_PLANS")]
     space_plans: bool,
 
-    /// The number of spaces an account may own: the ones it created, its personal space included,
-    /// which counts also before it is created [default: no limit].
+    /// With plans off, the number of spaces an account may own, including its personal space
+    /// before creation [default: no limit].
     #[arg(
         long,
         env = "SKALD_OWNED_SPACES_LIMIT",
@@ -291,7 +293,7 @@ struct Cli {
     )]
     devices_limit: Option<u32>,
 
-    /// The number of service agent entries a space's latest revision may list; a revision that
+    /// With plans off, the number of service agent entries a space's roster may list. A revision that
     /// lists more than the setting and than the revision before it is not stored [default: no
     /// limit].
     #[arg(
@@ -602,6 +604,7 @@ impl Cli {
             monthly_messages_limit: self.monthly_messages_limit,
             send_rate_limit: self.send_rate_limit,
             send_rate_window: self.send_rate_window.map(Duration::from_secs),
+            abuse_rules_file: env::var_os(ABUSE_RULES_ENV).map(PathBuf::from),
             devices_limit: self.devices_limit,
             service_agents_limit: self.service_agents_limit,
             long_poll_max_wait: self.long_poll_max_wait.map(Duration::from_secs),
