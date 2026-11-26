@@ -1,6 +1,6 @@
 //! A run's output: standard output and standard error, unless a helper runs the operation for a
 //! command ([`crate::helper`]); then each write goes to that command, which shows it. The crate's
-//! `print!`, `println!` and `eprintln!` write here (`main.rs`). A run as an agent holds its
+//! `print!`, `println!` and `eprintln!` write here. A run as an agent holds its
 //! warnings back for the person ([`holding_warnings`]).
 
 use std::cell::{Cell, RefCell};
@@ -73,15 +73,14 @@ pub fn into<R>(
     sink: impl FnMut(Stream, &[u8]) -> io::Result<()> + 'static,
     run: impl FnOnce() -> R,
 ) -> R {
-    /// Takes the sink away when the run ends, a panic included.
-    struct Reset;
+    /// Restores the previous sink when the run ends, a panic included.
+    struct Reset(Option<Box<Sink<'static>>>);
     impl Drop for Reset {
         fn drop(&mut self) {
-            SINK.with(|sink| sink.borrow_mut().take());
+            SINK.with(|sink| *sink.borrow_mut() = self.0.take());
         }
     }
-    SINK.with(|current| *current.borrow_mut() = Some(Box::new(sink)));
-    let _reset = Reset;
+    let _reset = Reset(SINK.with(|current| current.borrow_mut().replace(Box::new(sink))));
     run()
 }
 
