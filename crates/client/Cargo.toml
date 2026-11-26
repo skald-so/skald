@@ -101,6 +101,8 @@ mls-rs-crypto-rustcrypto = "0.23"
 portable-pty = "0.9"
 # `trace` lets a state test run another connection in the middle of a read.
 rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
+# The recovery key's derivation at a test build's cost: `test-cost` of skald-crypto.
+skald-crypto = { path = "../crypto", features = ["test-cost"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 skald-server = { path = "../server" }
