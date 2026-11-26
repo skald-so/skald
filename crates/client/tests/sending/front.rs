@@ -90,6 +90,12 @@ pub struct QueueKeyUpload {
     pub forwarded: bool,
 }
 
+#[derive(Default)]
+struct Delivery {
+    sequences: Vec<NonZeroU64>,
+    ack: Option<NonZeroU64>,
+}
+
 /// What came through so far, and the rules.
 struct State {
     sent: Vec<Sent>,
@@ -107,6 +113,7 @@ struct State {
     answered: Vec<Frame>,
     answers: Answers,
     history_answers: Answers,
+    lose_next_stored: bool,
     /// The channel and the MLS epoch from which on it loses the `stored` answers to the channel's
     /// `mls` envelopes, whatever `answers` says.
     lose_from: Option<(ChannelId, u64)>,
@@ -120,6 +127,7 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
+    watched_delivery: Option<(DeviceId, MessageId, Delivery)>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
     hold_messages: bool,
     /// How many `message` pushes it held back.
@@ -197,6 +205,15 @@ impl Link {
 }
 
 impl State {
+    fn saw_delivery(&mut self, link: &Link, seq: NonZeroU64, envelope: &RawEnvelope) {
+        if let Some((device, message, delivery)) = self.watched_delivery.as_mut()
+            && link.device() == Some(*device)
+            && envelope.envelope().header.msg_id == *message
+        {
+            delivery.sequences.push(seq);
+        }
+    }
+
     /// Whether it loses the `stored` answer to the envelope `msg_id`: one of the channel, at or
     /// after the epoch, that [`Front::lose_stored_from`] names.
     fn loses(&self, msg_id: MessageId) -> bool {
@@ -251,6 +268,7 @@ impl Front {
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 history_answers: Answers::Forward,
+                lose_next_stored: false,
                 lose_from: None,
                 lost: 0,
                 swallow: false,
@@ -258,6 +276,7 @@ impl Front {
                 refused: 0,
                 acks: Acks::Forward,
                 acked: 0,
+                watched_delivery: None,
                 hold_messages: false,
                 held_messages: 0,
                 hold_end: false,
@@ -340,6 +359,11 @@ impl Front {
         self.shared.state().answers = answers;
     }
 
+    /// Drops the next `stored` frame only.
+    pub fn lose_next_stored(&self) {
+        self.shared.state().lose_next_stored = true;
+    }
+
     /// From now on, loses the server's `stored` answers to the `mls` envelopes of `channel` of the
     /// MLS epoch `epoch` and later ones, as a network would, and does with the others as
     /// [`Front::answer`] says; with `None`, loses none of them so.
@@ -385,6 +409,22 @@ impl Front {
     /// How many acks the machines sent so far, forwarded or not.
     pub fn acked(&self) -> usize {
         self.shared.state().acked
+    }
+
+    /// Records pushes of `message` to `device` and acknowledgements from that device.
+    pub fn watch_delivery(&self, device: DeviceId, message: MessageId) {
+        self.shared.state().watched_delivery = Some((device, message, Delivery::default()));
+    }
+
+    /// The observed sequence numbers for the watched message and whether the device acked them.
+    pub fn delivery(&self) -> (Vec<NonZeroU64>, bool) {
+        let state = self.shared.state();
+        let (_, _, delivery) = state.watched_delivery.as_ref().expect("watch a delivery");
+        let acked = delivery
+            .sequences
+            .iter()
+            .any(|seq| Some(*seq) <= delivery.ack);
+        (delivery.sequences.clone(), acked)
     }
 
     /// From now on, holds back the server's `message` pushes and the `batch` that ends catch-up if
@@ -624,6 +664,11 @@ fn to_server(
                 }
                 Some(Frame::Ack { seq }) => {
                     link.saw(seq.get());
+                    if let Some((device, _, delivery)) = shared.state().watched_delivery.as_mut()
+                        && link.device() == Some(*device)
+                    {
+                        delivery.ack = Some(seq).max(delivery.ack);
+                    }
                     true
                 }
                 _ => false,
@@ -721,7 +766,8 @@ fn forward_answers(
             Some(Frame::Stored(stored)) => {
                 let mut state = shared.state();
                 state.answered.push(Frame::Stored(stored.clone()));
-                let answers = if state.loses(stored.send_key.msg_id) {
+                let lose_next = std::mem::take(&mut state.lose_next_stored);
+                let answers = if lose_next || state.loses(stored.send_key.msg_id) {
                     Answers::Lose
                 } else {
                     state.answers.clone()
@@ -752,13 +798,14 @@ fn forward_answers(
                     &Frame::HistoryRefused { upload, problem }.to_cbor(),
                 )),
             },
-            Some(Frame::Push(Push::Message { seq, .. })) => {
+            Some(Frame::Push(Push::Message { seq, envelope })) => {
                 link.saw(seq.get());
                 let mut state = shared.state();
                 if state.hold_messages {
                     state.held_messages += 1;
                     None
                 } else {
+                    state.saw_delivery(link, seq, &envelope);
                     Some(raw)
                 }
             }
@@ -771,6 +818,13 @@ fn forward_answers(
                 Some(noticed(&[space], raw, shared, link))
             }
             Some(Frame::Batch(entries)) => {
+                let mut state = shared.state();
+                for entry in &entries {
+                    if let Push::Message { seq, envelope } = entry {
+                        state.saw_delivery(link, *seq, envelope);
+                    }
+                }
+                drop(state);
                 let spaces: Vec<SpaceId> = entries
                     .iter()
                     .filter_map(|entry| match entry {

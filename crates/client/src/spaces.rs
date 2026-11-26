@@ -1495,7 +1495,9 @@ fn follower(
     timeout: Duration,
     scope: Scope,
 ) -> Result<Option<Follower>, String> {
-    if let Some(agent) = service::from_env()? {
+    if service::running()
+        && let Some(agent) = service::from_env()?
+    {
         return Follower::service(dir, &agent, speaks, timeout).map(Some);
     }
     match scope {
