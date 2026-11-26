@@ -6,7 +6,7 @@
 # /var/lib/skald/attachments, which a volume mounted there keeps, unless a bucket replaces it.
 # script/image-test tests the image; .github/workflows/edge.yml publishes it.
 
-FROM rust:1.99.1-slim-trixie@sha256:f6c4a35d21dbb3c89d7a8d056c193e94fc09037f2b58dd858b09c39a47dd02d7 AS chef
+FROM rust:1.100.0-slim-trixie@sha256:3b199fd6db7d709274df56565b8f4003f9e30d7bfcff9d53148c86053b7855e2 AS chef
 # The cache keeps downloaded crates between builds.
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo install cargo-chef --version 0.1.78 --locked
@@ -41,7 +41,7 @@ ARG REVISION
 RUN test -n "$REVISION" || { echo "set the commit: --build-arg REVISION=<sha>" >&2; exit 1; }
 
 # glibc and libgcc only: the binary links nothing else.
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cc66d222f0a7ec996b78a99fe76a969bc80b539a5016ad866c14d1949bc6d0ab
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2
 ARG REVISION
 LABEL org.opencontainers.image.title=skald-server \
       org.opencontainers.image.source=https://github.com/skald-so/skald \
