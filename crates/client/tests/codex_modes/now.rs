@@ -5,7 +5,7 @@ use crate::codex::{Codex, Event, assert_bare};
 use crate::delivery::{api_sends_in, assert_wakes, other_channel, wakes};
 use crate::modes::{assert_shown_wakes, quiet_turn};
 use crate::queued::assert_inbox_gives;
-use crate::standin::{assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, assert_soon, web_in_app};
 
 /// What api says to web; none is anywhere else.
 const BUSY_HERE: &str = "codex modes test: api asks web, busy, to fix the build";
@@ -39,9 +39,8 @@ pub fn with_no_setting_each_message_wakes_the_session_at_once_and_counts_a_wake_
     process.silent(&codex, &web, Event::Stop, "the turn's end");
 
     let idle_here = codex.web.own(IDLE_HERE);
-    let came = now();
     let ran = app.await_runs(1);
-    assert_soon(&ran[0], came);
+    assert_soon(&ran[0], &codex, idle_here);
     assert_queued(&ran[0], (&web, &app), &[IDLE_HERE], &[idle_here], &[]);
     assert_wakes(&codex.web.solo, default, 2);
     assert_eq!(wakes(&codex.web.solo, other), 1, "the other channel woke");
@@ -53,9 +52,8 @@ pub fn with_no_setting_each_message_wakes_the_session_at_once_and_counts_a_wake_
     );
 
     let idle_there = api_sends_in(&codex.web.solo, other, IDLE_THERE);
-    let came = now();
     let ran = app.await_runs(2);
-    assert_soon(&ran[1], came);
+    assert_soon(&ran[1], &codex, idle_there);
     assert_queued(&ran[1], (&web, &app), &[IDLE_THERE], &[idle_there], &[]);
     assert_wakes(&codex.web.solo, other, 2);
     quiet_turn(

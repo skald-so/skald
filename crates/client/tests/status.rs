@@ -1,14 +1,16 @@
 //! `skald status`: each row of "Server answers" in `docs/protocol/README.md` against a `skald-server`
 //! whose range is set to versions 2–3, and the answers the protocol does not define, from a stub.
 
+#[path = "../src/closed_port.rs"]
+mod closed_port;
 #[allow(dead_code)]
 mod common;
 
-use std::net::TcpListener;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use closed_port::closed_port;
 use common::{Output, Server, Stub, cleartext, elsewhere, response, skald, skald_with_timeout};
 use skald_proto::PROTOCOL_VERSION;
 
@@ -271,9 +273,7 @@ fn too_new_listing_the_stated_version_says_the_server_is_older() {
 
 #[test]
 fn closed_port_is_unreachable() {
-    let closed = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    let url = format!("http://{}", closed.local_addr().unwrap());
-    drop(closed);
+    let url = format!("http://{}", closed_port());
 
     let output = status(&url, Some("3"));
 

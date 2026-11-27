@@ -20,6 +20,9 @@
 //! requests the server sends it.
 
 mod common;
+// A bucket's server that is down.
+#[path = "../../client/src/closed_port.rs"]
+mod closed_port;
 // The client's test CA and its TLS endpoint before a plain HTTP server.
 #[allow(dead_code)]
 #[path = "../../client/tests/https/front.rs"]
@@ -36,6 +39,7 @@ use std::sync::{Arc, Mutex, atomic};
 use std::time::{Duration, Instant};
 use std::{env, fs, process, thread};
 
+use closed_port::closed_port;
 use common::{SERVER, TestDb, collect, get_url};
 use front::Front;
 use tls::Ca;
@@ -241,7 +245,7 @@ fn a_missing_bucket_stops_the_server() {
 fn a_stopped_bucket_server_stops_the_server() {
     let s3 = S3::from_env();
     let bucket = s3.bucket();
-    let closed = format!("http://127.0.0.1:{}", closed_port());
+    let closed = format!("http://{}", closed_port());
     let settings = s3.settings(&bucket.name, &closed);
     let (args, envs) = settings.split(false);
 
@@ -418,12 +422,6 @@ fn entries(dir: &Path) -> Vec<String> {
         .collect();
     names.sort();
     names
-}
-
-/// A loopback port nothing listens on.
-fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    listener.local_addr().expect("local address").port()
 }
 
 /// A new directory under the system's temporary directory; removed on drop.

@@ -8,6 +8,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
+use super::common::reach;
+
 pub struct Gate {
     port: u16,
     open: Arc<AtomicBool>,
@@ -51,7 +53,7 @@ impl Gate {
 
 /// Forwards what `client` and `target` send each other until either closes.
 fn forward(mut client: TcpStream, target: &str) {
-    let Ok(mut upstream) = TcpStream::connect(target) else {
+    let Ok(mut upstream) = reach("gate", target) else {
         return;
     };
     let (Ok(mut from_client), Ok(mut to_upstream)) = (client.try_clone(), upstream.try_clone())

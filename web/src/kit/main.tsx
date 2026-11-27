@@ -16,13 +16,14 @@ import "../theme/index.ts";
 
 // ?theme=light or ?theme=dark forces a theme; otherwise it follows the system setting.
 // ?screen=cabinet shows the cabinet around Machines; ?screen=cabinet-menu opens its side menu at
-// phone width; ?screen=sign-in shows the web app's sign-in page, ?screen=account the cabinet of an
-// account with no space, its side menu open at phone width, ?screen=machines the Machines section,
-// ?screen=members the Members section, ?screen=access the Access section,
+// phone width; ?screen=sign-in shows the sign-in page, ?screen=invite the invite link page,
+// ?screen=account the cabinet of an account with no space, its side menu open at phone width,
+// ?screen=machines the Machines section, ?screen=members the Members section, ?screen=access the Access section,
 // ?screen=access-confirm its question before "Sign out everywhere else", ?screen=account-page the
 // Account page, ?screen=account-page-confirm its question before removing this session's sign-in
-// method, ?screen=invite the invite link page and ?screen=usage the Usage section.
-// Without it, the kit page.
+// method, ?screen=account-page-blocked the Account page with a space blocking the deletion,
+// ?screen=account-page-delete its question before deleting the account and ?screen=usage the Usage
+// section. Without it, the kit page.
 const params = new URLSearchParams(location.search);
 const param = params.get("theme");
 const theme: Theme | undefined =
@@ -46,8 +47,14 @@ createRoot(document.getElementById("root")!).render(
       <KitMembers />
     ) : screen === "access" || screen === "access-confirm" ? (
       <KitAccess asking={screen === "access-confirm"} />
-    ) : screen === "account-page" || screen === "account-page-confirm" ? (
-      <KitAccountPage asking={screen === "account-page-confirm"} />
+    ) : screen === "account-page" ? (
+      <KitAccountPage />
+    ) : screen === "account-page-confirm" ? (
+      <KitAccountPage view="confirm" />
+    ) : screen === "account-page-blocked" ? (
+      <KitAccountPage view="blocked" />
+    ) : screen === "account-page-delete" ? (
+      <KitAccountPage view="delete" />
     ) : screen === "usage" ? (
       <KitUsage />
     ) : (

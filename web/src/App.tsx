@@ -44,9 +44,7 @@ type View =
       machineSignIn: MachineSignInState;
     };
 
-/**
- * Invite links open outside the cabinet, before sign-in or any API calls.
- */
+/** Invite links open outside the cabinet, before sign-in or any API calls. */
 export function App() {
   if (/^\/invite\/[^/]+\/?$/.test(window.location.pathname))
     return <InvitePage />;
@@ -57,6 +55,7 @@ export function App() {
 function SessionApp() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [deleted, setDeleted] = useState(false);
   /** Loads the web app again, as when it starts. */
   const reload = useCallback(() => {
     setView({ kind: "loading" });
@@ -64,6 +63,11 @@ function SessionApp() {
   }, []);
   /** Loads the session again behind the page shown: the sign-in page once it has ended. */
   const refresh = useCallback(() => setAttempt((attempt) => attempt + 1), []);
+  /** Shows the sign-in page, saying the account was deleted. */
+  const onDeleted = useCallback(() => {
+    setDeleted(true);
+    reload();
+  }, [reload]);
 
   useEffect(() => {
     const request = new AbortController();
@@ -86,6 +90,7 @@ function SessionApp() {
       return (
         <SignInPage
           providers={view.providers}
+          deleted={deleted}
           returnTo={
             window.location.pathname +
             window.location.search +
@@ -127,6 +132,7 @@ function SessionApp() {
                     <Account
                       session={view.session}
                       onChanged={refresh}
+                      onDeleted={onDeleted}
                       onSignedOut={reload}
                     />
                   }
