@@ -11,10 +11,10 @@
 use serde_json::Value;
 use skald_proto::Role;
 
-use crate::access::press;
+use crate::access::open_members;
 use crate::browser::{Browser, Page};
 use crate::cloud::Cloud;
-use crate::spa::{Spa, wait_for_cabinet, wait_until};
+use crate::spa::{Spa, wait_until};
 use crate::world::{ACME, ADMIN, MEMBER, World, create, next_by, run, store};
 use crate::{CODE_LIFETIME, HOST, choose, wait_for_members};
 
@@ -44,10 +44,8 @@ fn warns(page: &Page) -> bool {
 }
 
 /// Opens Members of the space `name` in `page`, the web app of `username`.
-fn open_members(page: &Page, spa: &Spa, username: &str, name: &str) {
-    page.goto(&spa.at("/"));
-    wait_for_cabinet(page, username);
-    press(page, None, "a, [role=link]", "^members\\b");
+fn open_space_members(page: &Page, spa: &Spa, username: &str, name: &str) {
+    open_members(page, spa, username);
     choose(page, name);
 }
 
@@ -111,19 +109,19 @@ fn members_warns_the_only_admin_until_a_second_admin_is_made() {
     store(cloud, &ida.token, &third);
     let before = [(ida_handle.as_str(), ADMIN), (bob_handle.as_str(), MEMBER)];
 
-    open_members(&ida_page, &spa, &ida_handle, ACME);
+    open_space_members(&ida_page, &spa, &ida_handle, ACME);
     wait_for_members(&ida_page, ACME, &before, &[]);
     let what = "Ida's Members of acme warning that she is its only admin";
     wait_until(&ida_page, what, warns);
 
-    open_members(&bob_page, &spa, &bob_handle, ACME);
+    open_space_members(&bob_page, &spa, &bob_handle, ACME);
     wait_for_members(&bob_page, ACME, &before, &[]);
     assert_no_warning(&bob_page, "Bob, a member");
 
     let made = run(&ida.machine, &[MAKE_ADMIN, ACME, &bob_handle]);
     assert!(made.success, "{MAKE_ADMIN} {ACME} {bob_handle}: {made:?}");
 
-    open_members(&ida_page, &spa, &ida_handle, ACME);
+    open_space_members(&ida_page, &spa, &ida_handle, ACME);
     let after = [(ida_handle.as_str(), ADMIN), (bob_handle.as_str(), ADMIN)];
     wait_for_members(&ida_page, ACME, &after, &[]);
     assert_no_warning(&ida_page, "Ida, with Bob a second admin");

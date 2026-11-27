@@ -6,7 +6,8 @@
 // the first line is `{"ready": true}` once the browser runs. A session is one test's: `close` closes
 // its pages and servers.
 // Exits once stdin closes or its parent, the test binary, is gone, however that ends; its exit kills
-// the browser. A browser whose driver is killed dies too: a watchdog kills it.
+// the browser. A browser whose driver is killed dies too: a watchdog kills it, and on Windows the
+// job browser.rs runs the driver in, which also kills the driver, as the test binary ends.
 // The browser resolves every *.test host to 127.0.0.1, so a test reaches a local server under a name
 // of its choice: another name is another site, and a name other than localhost is not a secure
 // context over plain HTTP.
@@ -90,7 +91,7 @@ async function browserProcesses() {
 // A browser whose pipe to the driver closes exits by itself, but under load only seconds later, and
 // a stuck one never. Once the driver is gone, however it ends, and its pipe to this watchdog closes,
 // the watchdog kills the process group that playwright-core starts the browser in. Not on Windows,
-// where the browser has no process group: there it only exits by itself.
+// where the browser has no process group: there the job of browser.rs kills it with the test binary.
 const [browserPid] = await browserProcesses();
 if (process.platform !== "win32") {
   const watchdog = spawn(
@@ -121,8 +122,11 @@ function opened(id) {
   return sessions.get(id);
 }
 
-/** The program a process of this machine runs. */
+/** The program a process of this machine runs; on Windows, the one the browser was started from. */
 function program(pid) {
+  if (process.platform === "win32") {
+    return process.env.SKALD_CHROME ?? chromium.executablePath();
+  }
   return process.platform === "linux"
     ? readlinkSync(`/proc/${pid}/exe`)
     : execFileSync("ps", ["-o", "comm=", "-p", String(pid)], {

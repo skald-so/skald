@@ -8,7 +8,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+};
 use skald_crypto::SealedState;
 use skald_proto::{
     AccountId, ChannelId, DeviceId, InviteId, MessageId, QueueId, ReceiptStatus, Scheme, SpaceId,
@@ -378,6 +380,14 @@ pub struct Pending {
     pub signalled: bool,
 }
 
+/// The exact pending handover a Claude Code Stop may confirm after the hook returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaudeStopDelivery {
+    pub seq: u64,
+    pub msg_id: MessageId,
+    pub due: i64,
+}
+
 /// A Claude Code session a `SessionStart` hook registered ([`crate::claude_socket`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClaudeSession {
@@ -738,6 +748,17 @@ impl std::fmt::Display for Error {
     }
 }
 
+impl Error {
+    /// Whether a deferred Stop can retry this failure after another SQLite connection finishes.
+    pub fn busy(&self) -> bool {
+        matches!(
+            self,
+            Self::Sqlite(rusqlite::Error::SqliteFailure(err, _))
+                if matches!(err.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+        )
+    }
+}
+
 impl From<rusqlite::Error> for Error {
     fn from(err: rusqlite::Error) -> Self {
         Error::Sqlite(err)
@@ -763,6 +784,20 @@ impl State {
             )));
         }
         migrate(&mut db)?;
+        Ok(State { db })
+    }
+
+    /// Opens an already-initialized state for a deferred Stop without waiting for other writers.
+    pub fn open_deferred_stop(dir: &Path) -> Result<Self, Error> {
+        let db = Connection::open_with_flags(file(dir), OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        db.busy_timeout(std::time::Duration::ZERO)?;
+        let version = db.query_row("PRAGMA user_version", [], |row| row.get::<_, u32>(0))?;
+        if usize::try_from(version) != Ok(MIGRATIONS.len()) {
+            return Err(Error::Malformed(
+                "the state schema changed during Stop".to_owned(),
+            ));
+        }
+        db.pragma_update(None, "secure_delete", true)?;
         Ok(State { db })
     }
 
@@ -3167,6 +3202,41 @@ impl State {
             .collect())
     }
 
+    /// Whether the pending row still describes the delivery the helper wrote.
+    pub fn awaits_claude_stop(
+        &self,
+        scope: (SpaceId, &str, &str),
+        path: &str,
+        delivery: &ClaudeStopDelivery,
+        shown: i64,
+    ) -> Result<bool, Error> {
+        awaits_claude_stop(&self.db, scope, path, delivery, shown)
+    }
+
+    /// Hands only this delivery over, if its pending row still matches within the Stop's grace.
+    pub fn confirmed_claude_stop(
+        &self,
+        scope: (SpaceId, &str, &str),
+        path: &str,
+        delivery: &ClaudeStopDelivery,
+        shown: i64,
+        until: std::time::Instant,
+    ) -> Result<bool, Error> {
+        if std::time::Instant::now() >= until {
+            return Ok(false);
+        }
+        let tx = self.write()?;
+        if std::time::Instant::now() >= until
+            || !awaits_claude_stop(&tx, scope, path, delivery, shown)?
+            || std::time::Instant::now() >= until
+        {
+            return Ok(false);
+        }
+        handed_over(&tx, sql_seq(delivery.seq)?, scope.1)?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     /// Whether a path took a kept message that waits for the agent `agent`.
     pub fn taken_by_paths(&self, agent: &str) -> Result<bool, Error> {
         Ok(self.db.query_row(
@@ -3237,23 +3307,7 @@ impl State {
     pub fn handed_over(&self, seq: u64, agent: &str) -> Result<(), Error> {
         let seq = sql_seq(seq)?;
         let tx = self.write()?;
-        if add_target(&tx, seq)? {
-            tx.execute(
-                "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
-                params![seq, agent],
-            )?;
-        }
-        tx.execute(
-            "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
-            params![seq, agent],
-        )?;
-        count_hops(&tx, seq, agent)?;
-        tx.execute(
-            "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
-            params![seq, agent],
-        )?;
-        read_own(&tx, seq, agent, None)?;
-        drop_done(&tx)?;
+        handed_over(&tx, seq, agent)?;
         tx.commit()?;
         Ok(())
     }
@@ -4851,6 +4905,69 @@ fn add_kept(tx: &Transaction, seq: i64, kept: &Kept) -> Result<(), Error> {
             ],
         )?;
     }
+    Ok(())
+}
+
+/// Whether this exact handover is still due on its original path and attempt.
+fn awaits_claude_stop(
+    db: &Connection,
+    (space, agent, session): (SpaceId, &str, &str),
+    path: &str,
+    delivery: &ClaudeStopDelivery,
+    shown: i64,
+) -> Result<bool, Error> {
+    Ok(db.query_row(
+        "SELECT EXISTS (
+           SELECT 1 FROM kept JOIN handover ON kept.seq = handover.seq
+           WHERE kept.space = ?1 AND handover.agent = ?2 AND handover.path = ?3
+             AND kept.seq = ?4 AND kept.msg_id = ?5 AND handover.due = ?6
+             AND kept.level = 'own' AND handover.signalled = 0 AND handover.failed = 0
+             AND handover.confirming = 0 AND handover.given <= ?7
+             AND handover.due > ?8 AND kept.expires > ?9
+             AND (handover.written IS NULL OR handover.written = ?10)
+             AND NOT EXISTS (SELECT 1 FROM held_message WHERE seq = kept.seq AND agent = ?2)
+             AND NOT EXISTS (
+                 SELECT 1 FROM read_receipt AS receipt
+                 LEFT JOIN device_status AS sender ON sender.device = receipt.sender
+                 WHERE receipt.seq = kept.seq AND receipt.agent = ?2
+                   AND (receipt.refused = 1 OR sender.revoked = 1)
+             )
+         )",
+        params![
+            space.to_string(),
+            agent,
+            path,
+            sql_seq(delivery.seq)?,
+            delivery.msg_id.to_string(),
+            delivery.due,
+            shown,
+            unix_ms(),
+            sql_u64(unix_now())?,
+            session
+        ],
+        |row| row.get(0),
+    )?)
+}
+
+/// Records that the kept message was handed over inside an existing write transaction.
+fn handed_over(tx: &Transaction, seq: i64, agent: &str) -> Result<(), Error> {
+    if add_target(tx, seq)? {
+        tx.execute(
+            "INSERT INTO reply_agent (seq, agent) VALUES (?1, ?2) ON CONFLICT DO NOTHING",
+            params![seq, agent],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM handover WHERE seq = ?1 AND agent = ?2",
+        params![seq, agent],
+    )?;
+    count_hops(tx, seq, agent)?;
+    tx.execute(
+        "UPDATE read_receipt SET due = 1 WHERE seq = ?1 AND agent = ?2",
+        params![seq, agent],
+    )?;
+    read_own(tx, seq, agent, None)?;
+    drop_done(tx)?;
     Ok(())
 }
 
@@ -7029,6 +7146,88 @@ pub(crate) mod tests {
         assert_eq!(got, levels);
         assert!(waiting.values().all(|it| it.came > 0));
         assert!(state.kept_waiting(SpaceId::generate()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deferred_claude_stop_retries_contention_without_confirming_an_expired_or_changed_attempt() {
+        use std::time::{Duration, Instant};
+
+        let dir = TestDir::new("deferred-claude-stop-lock");
+        let writer = State::open(&dir).unwrap();
+        writer
+            .add_device(DeviceId::from_signing_key(&[1; 32]), "laptop", "0190")
+            .unwrap();
+        let space = space_of_kept();
+        writer.add_agent(space, "claude").unwrap();
+        writer.write_entries(&[(1, vec![1])]).unwrap();
+        let mut message = kept(&["claude"]);
+        message.level = TrustLevel::Own;
+        writer
+            .keep(
+                1,
+                (DeviceId::from_signing_key(&[2; 32]), MessageId::generate()),
+                &message,
+            )
+            .unwrap();
+        let path = "channel";
+        let mut delivery = ClaudeStopDelivery {
+            seq: 1,
+            msg_id: message.msg_id,
+            due: unix_ms() + 30_000,
+        };
+        writer
+            .pushed((&[1], &[]), "claude", (path, Some(delivery.due)))
+            .unwrap();
+        let shown = unix_ms();
+        let scope = (space, "claude", "session");
+        let tx = writer.write().unwrap();
+        let deferred = State::open_deferred_stop(&dir).unwrap();
+        assert_eq!(
+            deferred
+                .db
+                .query_row("PRAGMA busy_timeout", [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        let until = Instant::now() + Duration::from_secs(5);
+        assert!(
+            deferred
+                .confirmed_claude_stop(scope, path, &delivery, shown, until)
+                .unwrap_err()
+                .busy()
+        );
+        drop(tx);
+
+        assert!(
+            !deferred
+                .confirmed_claude_stop(scope, path, &delivery, shown, Instant::now())
+                .unwrap()
+        );
+        assert!(
+            deferred
+                .awaits_claude_stop(scope, path, &delivery, shown)
+                .unwrap()
+        );
+        let next_due = delivery.due + 1;
+        writer
+            .pushed((&[1], &[]), "claude", (path, Some(next_due)))
+            .unwrap();
+        assert!(
+            !deferred
+                .confirmed_claude_stop(scope, path, &delivery, shown, until)
+                .unwrap()
+        );
+        delivery.due = next_due;
+        assert!(
+            deferred
+                .confirmed_claude_stop(scope, path, &delivery, shown, until)
+                .unwrap()
+        );
+        assert!(
+            !deferred
+                .confirmed_claude_stop(scope, path, &delivery, shown, until)
+                .unwrap()
+        );
     }
 
     /// An agent the device has run as in a space gets each entry written after that, there only.

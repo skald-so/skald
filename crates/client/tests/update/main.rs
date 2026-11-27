@@ -13,6 +13,9 @@
 //! A `skald` installed from npm has a file `installed-by-npm` in its directory; the `skald-so`
 //! package's launcher writes it beside the `skald` it unpacks.
 
+#[allow(dead_code)]
+#[path = "../common/mod.rs"]
+mod common;
 mod release;
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]

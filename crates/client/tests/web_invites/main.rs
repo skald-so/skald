@@ -12,12 +12,16 @@ mod cloud;
 mod common;
 #[path = "../web_service_tokens/stage.rs"]
 mod harness;
+#[path = "../invite_fixtures/terminal.rs"]
+mod invite_terminal;
 #[path = "../device_keys/keys.rs"]
 mod keys;
 #[path = "../service_agents/kit.rs"]
 mod kit;
 #[path = "../sign_in/machine.rs"]
 mod machine;
+#[path = "../invite_fixtures/members.rs"]
+mod members;
 mod regressions;
 #[path = "../sign_in/relay.rs"]
 mod relay;
@@ -35,32 +39,20 @@ use jiff::{Timestamp, tz::TimeZone};
 use kit::sign_up_on;
 use skald_crypto::InviteLink;
 use spa::{Spa, wait_until};
-use terminal::Terminal;
 use world::{ACME, Person, create, create_with_member, now, words};
+use zeroize::Zeroizing;
 
 const DEVICE: &str = "ada-invite-laptop";
 const PHONE: u32 = 360;
 const DIALOG: &str = "[role=dialog], [role=alertdialog]";
 const LIFETIME_DAYS: u64 = 12;
 
-fn create_invite(ada: &Person, spa: &Spa) -> String {
-    let shown = Terminal::start(
+fn create_invite(ada: &Person, spa: &Spa) -> (Zeroizing<String>, InviteLink) {
+    invite_terminal::create_link(
         &ada.machine,
         &["invite", ACME, "--days", &LIFETIME_DAYS.to_string()],
+        Some(&spa.url),
     )
-    .finish();
-    assert!(shown.success, "skald invite failed: {}", shown.text);
-    let prefix = spa.at("/invite/");
-    let link = shown
-        .text
-        .split_whitespace()
-        .find(|word| word.starts_with(&prefix))
-        .expect("skald invite shows a link at the web address");
-    assert!(
-        InviteLink::parse(link).is_ok(),
-        "the CLI gave an invalid invite link"
-    );
-    link.to_owned()
 }
 
 fn main_text(page: &Page<'_>) -> String {
@@ -83,14 +75,7 @@ fn fits_phone(page: &Page<'_>) {
 
 fn open_members(page: &Page<'_>, spa: &Spa, phone: bool) {
     page.goto(&spa.at("/members"));
-    if phone {
-        press(page, None, "button", "^menu$");
-    }
-    press(page, None, "button", "^space\\b");
-    press(page, None, "[role=option]", "^acme\\b");
-    if phone {
-        press(page, None, "button", "^menu$");
-    }
+    members::select_acme(page, phone);
 }
 
 fn date_forms(seconds: u64) -> Vec<String> {
@@ -181,7 +166,7 @@ fn an_admin_lists_and_revokes_a_cli_invite_and_a_member_sees_none() {
     );
     create_with_member(&world.cloud, &ada, ACME, &bob);
     let created = now();
-    let link = create_invite(&ada, &spa);
+    let (link, _) = create_invite(&ada, &spa);
     let phone = world.browser.page_of_width(PHONE);
     phone.add_cookies(&admin.cookies());
 
@@ -225,20 +210,18 @@ fn an_admin_lists_and_revokes_a_cli_invite_and_a_member_sees_none() {
         rows_holding(page, ACME).is_empty()
     });
 
-    let mut cli = Terminal::start(&bob.machine, &["accept-invite"]);
-    let asked = cli.wait_for("a prompt for the link", |shown| {
-        shown.to_lowercase().contains("link")
-    });
+    let mut cli = invite_terminal::start_accepting(&bob.machine, &[]);
+    let asked = invite_terminal::asked_for_link(&mut cli);
     cli.type_line(&link);
     let refused = cli.finish();
     let answer = refused
         .text
         .strip_prefix(&asked)
         .unwrap_or(&refused.text)
-        .replace(&link, "");
+        .replace(link.as_str(), "");
     assert!(
         !refused.success && words(&answer.to_lowercase()).contains(&"ended"),
-        "{answer}"
+        "the CLI reports the revoked invite has ended"
     );
 }
 
@@ -253,11 +236,10 @@ fn a_link_explains_acceptance_and_keeps_the_fragment_local_with_or_without_a_ses
         DEVICE,
     );
     create(&world.cloud, &ada, ACME);
-    let link = create_invite(&ada, &spa);
+    let (link, decoded) = create_invite(&ada, &spa);
     let (address, fragment) = link
         .split_once('#')
         .expect("an invite link with a fragment");
-    let decoded = InviteLink::parse(&link).expect("a valid invite link");
     let secret = decoded.secret.to_bytes();
     let invite = decoded.invite.to_string();
     let signed_out = world.browser.page_of_width(PHONE);
@@ -273,7 +255,7 @@ fn a_link_explains_acceptance_and_keeps_the_fragment_local_with_or_without_a_ses
     for (session, page) in [("signed in", &signed_in), ("signed out", &signed_out)] {
         page.record_requests();
         let visit = page.goto(&link);
-        assert_eq!(visit.status, Some(200), "{session}: {:?}", visit.error);
+        assert_eq!(visit.status, Some(200), "{session}: the invite page opens");
         let requests = page.requests();
         assert!(
             requests
@@ -305,7 +287,7 @@ fn a_link_explains_acceptance_and_keeps_the_fragment_local_with_or_without_a_ses
         for instruction in ["skald accept-invite", "paste", "terminal"] {
             assert!(
                 text.to_lowercase().contains(instruction),
-                "{session}: missing {instruction:?}: {text}"
+                "{session}: missing {instruction:?}"
             );
         }
         for value in [&invite, fragment, ACME, DEVICE] {

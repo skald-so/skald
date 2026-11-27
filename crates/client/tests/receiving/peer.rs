@@ -18,6 +18,7 @@ use tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL;
 use tungstenite::{Message, WebSocket};
 
 use super::cloud::{Cloud, unb64};
+use super::common::reach;
 use super::world::{Person, post_as};
 
 /// How long the peer waits for a frame from the server.
@@ -55,7 +56,7 @@ impl Peer {
         let offer = HeaderValue::from_str(&skald_proto::subprotocol(PROTOCOL_VERSION))
             .expect("a subprotocol header");
         request.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, offer);
-        let stream = TcpStream::connect(address).expect("reach the relay");
+        let stream = reach("peer", address).expect("reach the relay");
         stream.set_read_timeout(Some(READ)).expect("a read timeout");
         let (socket, _) = tungstenite::client(request, stream)
             .unwrap_or_else(|err| panic!("open a WebSocket: {err}"));

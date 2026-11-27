@@ -445,6 +445,8 @@ struct Settings {
     one_shot: bool,
     /// Where the server's binary is installed, which runs each call once it is a newer `skald`.
     installed: Option<PathBuf>,
+    /// Whether the `skald` installed there is newer, as it last said.
+    newer: Arc<helper::Newer>,
 }
 
 impl Settings {
@@ -461,6 +463,7 @@ impl Settings {
             dns_resolver: operation.dns_resolver.clone(),
             one_shot,
             installed,
+            newer: Arc::default(),
         }
     }
 
@@ -493,7 +496,7 @@ impl Settings {
     {
         let operation = self.operation(call, agent);
         let succeeded = |code| code == ExitCode::SUCCESS;
-        if let Some(exe) = (self.installed.as_deref()).filter(|exe| helper::newer_at(exe)) {
+        if let Some(exe) = (self.installed.as_deref()).filter(|exe| self.newer.at(exe)) {
             return helper::relay(exe, &operation, self.one_shot, &mut sink()).map(succeeded);
         }
         let dir = state::dir(operation.state_dir.clone())?;
@@ -1220,6 +1223,7 @@ mod tests {
                 dns_resolver: String::new(),
                 one_shot: true,
                 installed: None,
+                newer: Arc::default(),
             },
             dir: PathBuf::new(),
             agent: Mutex::new(None),

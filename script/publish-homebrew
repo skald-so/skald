@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Writes the verified stable formula to the tap in one fast-forward commit.
+# Usage: script/publish-homebrew <vX.Y.Z> <formula>
+set -euo pipefail
+
+fail() { echo "publish-homebrew: $*" >&2; exit 1; }
+stable_tag='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+
+[[ $# == 2 && $1 =~ $stable_tag ]] || fail 'expected a stable tag and its verified formula'
+tag=$1
+formula=$2
+grep -Fxq "  version \"${tag#v}\"" "$formula" || fail "$formula does not name $tag"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+tap=$tmp/tap
+git clone --quiet --depth 1 --branch main git@github.com:skald-so/homebrew-tap.git "$tap"
+destination=$tap/Formula/skald.rb
+[[ ! -L $tap/Formula && ! -L $destination ]] || fail 'the tap formula path is a symlink'
+if [[ -f $destination ]]; then
+  current=v$(sed -n 's/^  version "\([^"]*\)"$/\1/p' "$destination")
+  [[ $current =~ $stable_tag ]] || fail 'the tap formula has no stable version'
+  if [[ $current == "$tag" ]]; then
+    cmp -s "$formula" "$destination" || fail "the tap already has a different formula for $tag"
+    echo "publish-homebrew: $tag is already in the tap"
+    exit 0
+  fi
+  if [[ $(printf '%s\n' "$current" "$tag" | LC_ALL=C sort -V | tail -n 1) == "$current" ]]; then
+    echo "publish-homebrew: the tap already has $current; skipping $tag"
+    exit 0
+  fi
+fi
+
+mkdir -p "$tap/Formula"
+cp "$formula" "$destination"
+git -C "$tap" add -- Formula/skald.rb
+git -C "$tap" -c user.name=skald-release -c user.email=release@skald.so commit --quiet -m "Update skald to $tag"
+git -C "$tap" push --quiet origin HEAD:refs/heads/main
+echo "publish-homebrew: tap updated to $tag"

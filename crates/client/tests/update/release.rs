@@ -29,6 +29,7 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::common::reach;
 use super::tls::Ca;
 
 /// The repository of the releases.
@@ -645,7 +646,7 @@ fn tunnel(mut client: TcpStream, authority: &str, to: SocketAddr, recorded: &Mut
     let line = head.split("\r\n").next().unwrap_or_default().to_owned();
     recorded.lock().unwrap().push(line.clone());
     let upstream = (line == format!("CONNECT {authority} HTTP/1.1"))
-        .then(|| TcpStream::connect(to).ok())
+        .then(|| reach("release proxy", &to.to_string()).ok())
         .flatten();
     let Some(mut upstream) = upstream else {
         let _ = client

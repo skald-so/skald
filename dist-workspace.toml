@@ -1,7 +1,7 @@
 # dist: builds the release archives of skald and a checksum of each, run by
 # .github/workflows/release.yml. Docs: https://axodotdev.github.io/cargo-dist/book/reference/config.html
-# The workflow is this repository's own, not one dist generates, so dist manages no CI and no
-# installers: installers/ holds install.sh and install.ps1.
+# The workflow is this repository's own. dist generates the Homebrew formula.
+# installers/ holds install.sh and install.ps1.
 
 [workspace]
 members = ["cargo:."]
@@ -24,5 +24,6 @@ targets = [
 # gzip, not xz: every tar unpacks it.
 unix-archive = ".tar.gz"
 checksum = "sha256"
-installers = []
+hosting = ["github"]
+installers = ["homebrew"]
 source-tarball = false

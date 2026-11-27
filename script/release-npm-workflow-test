@@ -316,7 +316,7 @@ function run(tag) {
     }
     return { records, problems };
   } finally {
-    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });
   }
 }
 
