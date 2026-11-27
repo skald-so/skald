@@ -36,6 +36,9 @@ use super::relay::{answered_in_full, reset};
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
 
+/// An ack in an HTTPS request, as its line starts: a run off a WebSocket acks so.
+const HTTPS_ACK: &str = "POST /mailbox/ack ";
+
 /// The WebSocket opcode of a binary message.
 const BINARY: u8 = 2;
 
@@ -51,7 +54,9 @@ pub enum Answers {
     Refuse(String),
 }
 
-/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first.
+/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first,
+/// on a WebSocket, or an ack in an HTTPS request, whose connection it closes both ways unless it
+/// forwards it, as it cannot answer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acks {
     /// Forwards them.
@@ -559,6 +564,18 @@ fn to_server(
                 let _ = machine.shutdown(Shutdown::Both);
                 let _ = server.shutdown(Shutdown::Both);
                 return;
+            }
+            if text.starts_with(HTTPS_ACK) {
+                let acks = {
+                    let mut state = shared.state();
+                    state.acked += 1;
+                    state.acks
+                };
+                if acks != Acks::Forward {
+                    let _ = machine.shutdown(Shutdown::Both);
+                    let _ = server.shutdown(Shutdown::Both);
+                    return;
+                }
             }
             if text.starts_with(DELIVERY[1])
                 && let Some(end) = text.find("\r\n\r\n")
