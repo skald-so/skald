@@ -50,7 +50,7 @@ struct Driver {
     next_session: AtomicU64,
     /// The job the driver and its browser run in, closed as this test binary ends.
     #[cfg(windows)]
-    _job: std::os::windows::io::OwnedHandle,
+    job: std::os::windows::io::OwnedHandle,
 }
 
 /// Where to send the answer to each call, by its ID; the thread that reads the driver's stdout takes
@@ -116,18 +116,19 @@ pub mod contained {
     use std::path::PathBuf;
     use std::process::{self, Child, Command};
 
-    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, STILL_ACTIVE};
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, WAIT_TIMEOUT};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
     };
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectBasicProcessIdList, JobObjectExtendedLimitInformation, QueryInformationJobObject,
         SetInformationJobObject,
     };
     use windows_sys::Win32::System::Threading::{
-        CREATE_SUSPENDED, GetExitCodeProcess, OpenProcess, OpenThread,
-        PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
+        CREATE_SUSPENDED, OpenProcess, OpenThread, PROCESS_SYNCHRONIZE, ResumeThread,
+        SuspendThread, THREAD_SUSPEND_RESUME, WaitForSingleObject,
     };
 
     /// The start of the name of a driver's temporary directory.
@@ -187,6 +188,38 @@ pub mod contained {
         Ok(job)
     }
 
+    /// The processes in `job`: the driver, the browser and every process they started.
+    pub fn members(job: &OwnedHandle) -> io::Result<Vec<u32>> {
+        /// Room for more processes than a driver starts.
+        const ROOM: usize = 1024;
+        // The list's two counts take the first entry, as they take one `usize` of the struct.
+        let mut list = vec![0usize; 1 + ROOM];
+        let size =
+            u32::try_from(std::mem::size_of_val(list.as_slice())).map_err(io::Error::other)?;
+        let header = list.as_mut_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>();
+        // SAFETY: `list` is `size` bytes, aligned for the struct, which it starts as; the handle is
+        // open.
+        let queried = unsafe {
+            QueryInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectBasicProcessIdList,
+                header.cast(),
+                size,
+                std::ptr::null_mut(),
+            )
+        };
+        if queried == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the call filled the counts in.
+        let listed = unsafe { (*header).NumberOfProcessIdsInList } as usize;
+        list.drain(..1);
+        list.truncate(listed);
+        list.into_iter()
+            .map(|pid| u32::try_from(pid).map_err(io::Error::other))
+            .collect()
+    }
+
     /// Suspends every thread of the process `pid`, so that it cannot exit by itself.
     pub fn suspend(pid: u32) -> io::Result<()> {
         each_thread(pid, |thread| {
@@ -237,19 +270,19 @@ pub mod contained {
         }
     }
 
-    /// Whether the process `pid` runs.
+    /// Whether the process `pid` runs, or still ends: Windows gives a process its exit code before
+    /// it closes its files, and signals it once it has.
     pub fn runs(pid: u32) -> bool {
         // SAFETY: it takes no pointer; the handle is owned from here on.
-        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        let process = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
         if process.is_null() {
             return false;
         }
         // SAFETY: a new handle that nothing else owns.
         let process = unsafe { OwnedHandle::from_raw_handle(process) };
-        let mut code = 0;
-        // SAFETY: an open handle with the right to query it; `code` is written only.
-        let queried = unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } != 0;
-        queried && u32::try_from(STILL_ACTIVE).ok() == Some(code)
+        // SAFETY: an open handle with the right to wait for it.
+        let waited = unsafe { WaitForSingleObject(process.as_raw_handle(), 0) };
+        waited == WAIT_TIMEOUT
     }
 
     /// Removes the drivers' directories of the test binaries no longer running.
@@ -263,8 +296,10 @@ pub mod contained {
                 .to_str()
                 .and_then(|name| name.strip_prefix(PREFIX))
                 .and_then(|pid| pid.parse::<u32>().ok());
-            if pid.is_some_and(|pid| pid != process::id() && !runs(pid)) {
-                let _ = fs::remove_dir_all(entry.path());
+            if pid.is_some_and(|pid| pid != process::id() && !runs(pid))
+                && let Err(err) = fs::remove_dir_all(entry.path())
+            {
+                eprintln!("remove {}: {err}", entry.path().display());
             }
         }
     }
@@ -318,7 +353,7 @@ impl Driver {
                 next_call: AtomicU64::new(READY + 1),
                 next_session: AtomicU64::new(1),
                 #[cfg(windows)]
-                _job: job,
+                job,
             }),
             Ok(line) => Err(format!("the browser driver started with {line:?}")),
             Err(err) => Err(format!(
@@ -456,6 +491,13 @@ impl Browser {
         args["op"] = json!(op);
         args["session"] = json!(self.session);
         self.driver.call(args)
+    }
+
+    /// The processes in the job of this binary's driver: the driver, the browser and every process
+    /// they started.
+    #[cfg(windows)]
+    pub fn contained(&self) -> Vec<u32> {
+        contained::members(&self.driver.job).expect("the processes in the driver's job")
     }
 
     /// The processes of the browser.

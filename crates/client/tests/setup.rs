@@ -325,19 +325,22 @@ fn a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile() 
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
 
-    use browser::{Browser, Processes, contained};
+    use browser::{Browser, contained};
 
     const TEST: &str = "a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile";
     /// Set in the environment of that run.
     const PLAY: &str = "SKALD_TEST_BROWSER_PLAY";
-    /// What starts the line where that run prints its browser's processes.
+    /// What starts the line where that run prints the processes in its driver's job.
     const PROCESSES: &str = "browser processes: ";
     if std::env::var_os(PLAY).is_some() {
-        let processes = Browser::launch().processes();
+        let browser = Browser::launch();
+        let driver = browser.processes().driver;
+        let contained = browser.contained();
+        assert!(contained.contains(&driver), "{driver} not in {contained:?}");
         // Its driver no longer sees its stdin close, nor closes the browser.
-        contained::suspend(processes.driver).expect("suspend the driver");
-        let processes = serde_json::to_string(&processes).expect("processes");
-        println!("{PROCESSES}{processes}");
+        contained::suspend(driver).expect("suspend the driver");
+        let contained = serde_json::to_string(&contained).expect("processes");
+        println!("{PROCESSES}{contained}");
         std::process::exit(0);
     }
     let mut run = Command::new(std::env::current_exe().expect("this test binary"))
@@ -354,8 +357,7 @@ fn a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile() 
         .find_map(|line| line.strip_prefix(PROCESSES).map(str::to_owned));
     let status = run.wait().expect("the run");
     let printed = printed.unwrap_or_else(|| panic!("the run, {status}, printed no processes"));
-    let processes: Processes = serde_json::from_str(&printed).expect("processes");
-    let pids = [&[processes.driver][..], &processes.browser].concat();
+    let pids: Vec<u32> = serde_json::from_str(&printed).expect("processes");
     let deadline = Instant::now() + Duration::from_secs(30);
     let running = loop {
         let running: Vec<u32> = pids
