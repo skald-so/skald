@@ -5,9 +5,15 @@
 //! through each tunnel.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// Its answers that refuse a tunnel: forbidden, credentials asked for by Basic, and an upstream it
 /// cannot reach.
@@ -67,7 +73,7 @@ impl Proxy {
     }
 
     fn start(refusal: Option<&'static str>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the proxy's address").port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);

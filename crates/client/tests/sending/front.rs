@@ -18,7 +18,7 @@
 //! answers to `mls` envelopes of a channel from an MLS epoch on.
 
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +32,12 @@ use skald_proto::{
 
 use super::common::reach;
 use super::relay::{answered_in_full, reset};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -260,7 +266,7 @@ pub struct Front {
 impl Front {
     /// Listens on a free local port; connections wait until [`Front::forward_to`] names a target.
     pub fn bind() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the front's address").port();
         let shared = Arc::new(Shared {
             target: OnceLock::new(),
