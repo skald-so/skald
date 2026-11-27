@@ -1,7 +1,8 @@
 //! Admitting newcomers on an admin's device (`docs/protocol/membership.md`, "Invite"). A run of
 //! `skald recv`, one-shot, waiting or through the helper, takes the waiting acceptances of each
 //! space it syncs, on connecting and on a `space-notice`, in which this device is an admin's at its
-//! last accepted revision: as an agent, of every space, its folder's or not. It admits a newcomer
+//! last accepted revision: as an agent, of every space, its folder's or not. A service agent's run
+//! takes none. It admits a newcomer
 //! only after checks 1 to 4 of "Invite" ([`judge`]): it then signs the next revision with the
 //! member, its account, handle, the invite's role, the acceptance's `master` and the invite, and
 //! the newcomer in the default channel, the first one, with `history` true and in the invite's
@@ -65,13 +66,18 @@ enum Verdict {
 /// as an admin's device, its last accepted revision and devices taken from `synced` if it holds
 /// them: with a space for which `apart` holds, outside what the run shows, they are followed apart
 /// and what it tells is kept for the person's run. A space it admits a newcomer to and does not
-/// keep apart is synced again into `synced`. Warns of what fails.
+/// keep apart is synced again into `synced`. Warns of what fails. A service agent's run admits
+/// none: only a `client` or `browser` device admits, and its token is no session to ask for the
+/// waiting acceptances with.
 pub fn admit(
     follower: &mut Follower,
     due: &BTreeSet<SpaceId>,
     synced: &mut Rosters,
     apart: impl Fn(SpaceId) -> bool,
 ) {
+    if follower.service.is_some() {
+        return;
+    }
     let spaces = match follower.state.spaces() {
         Ok(spaces) => spaces,
         Err(err) => {

@@ -10,6 +10,8 @@ mod at_terminal;
 mod grants;
 #[path = "../history_common/mod.rs"]
 mod history_common;
+#[path = "../invite_fixtures/terminal.rs"]
+mod invite_terminal;
 #[path = "../link_codes/linking.rs"]
 mod linking;
 #[path = "../recovery_key/terminal.rs"]
@@ -33,33 +35,20 @@ const CAROL: &str = "carol-already-signed-in";
 const BOB_HOST: &str = "bob-fresh-machine";
 
 fn make_invite(ada: &Person) -> InviteLink {
-    let issued = Terminal::start(&ada.machine, &["invite", ACME]).finish();
-    assert!(issued.success, "{}", issued.text);
-    issued
-        .text
-        .split_whitespace()
-        .find_map(|word| InviteLink::parse(word).ok())
-        .expect("skald invite shows a link")
+    invite_terminal::create_link(&ada.machine, &["invite", ACME], None).1
 }
 
 fn open_invite(machine: &Machine, link: &InviteLink) -> Terminal {
-    let mut run = Terminal::start(machine, &["accept-invite"]);
-    run.wait_for("a prompt for the invite link", |shown| {
-        shown.to_lowercase().contains("link")
-    });
+    let mut run = invite_terminal::start_accepting(machine, &[]);
+    invite_terminal::asked_for_link(&mut run);
     run.type_line(&link.shown());
     run
 }
 
 fn confirm_invite(run: &mut Terminal) {
-    let summary = run.wait_for("a question to accept the invite", |shown| {
-        shown.to_lowercase().contains("accept the invite?")
+    invite_terminal::confirm(run, |summary| {
+        summary.split_whitespace().any(|word| word == ACME)
     });
-    assert!(
-        summary.split_whitespace().any(|word| word == ACME),
-        "{summary}"
-    );
-    run.type_line("yes");
 }
 
 fn assert_accepted(
@@ -128,13 +117,16 @@ fn unlisted_person_signs_up_and_accepts(providers: Providers) {
     assert_eq!(approved.status, Some(200), "{}", page.text());
 
     let recovery = at_terminal::shown_key(&mut run);
-    run.wait_to_show("Press Enter");
+    run.wait_to_show("Press Enter once it is written down:");
     run.enter();
     confirm_invite(&mut run);
     let finished = run.finish();
     let shown = finished.text.replace(link.shown().as_str(), "");
-    assert!(finished.success, "{shown}");
-    assert_eq!(at_terminal::keys_in(&shown), [recovery]);
+    assert!(finished.success, "the new account accepts the invite");
+    assert!(
+        at_terminal::keys_in(&shown) == [recovery],
+        "one recovery key was shown"
+    );
     assert_eq!(cloud.grants().len(), grants + 1, "one device authorization");
     assert_eq!(cloud.tokens().len(), tokens + 1, "one device sign-in");
 
@@ -167,11 +159,7 @@ fn an_already_signed_in_device_accepts_without_signing_in_again() {
     let mut run = open_invite(&carol.machine, &link);
     confirm_invite(&mut run);
     let finished = run.finish();
-    assert!(
-        finished.success,
-        "{}",
-        finished.text.replace(link.shown().as_str(), "")
-    );
+    assert!(finished.success, "the signed-in device accepts the invite");
     assert_eq!(cloud.count_sent(since, "POST /auth/device "), 0);
     assert_eq!(cloud.count_sent(since, "PUT /auth/device/invite "), 0);
     assert_eq!(cloud.count_sent(since, "POST /auth/token "), 0);
@@ -210,14 +198,13 @@ fn a_fresh_device_discovers_the_public_api_from_the_invites_web_address() {
     grant.verification_uri = format!("{}?user_code={}", grant.verification_uri, grant.user_code);
     cloud.decide(&world.browser.page(), &bob, &grant, APPROVE);
     at_terminal::shown_key(&mut run);
-    run.wait_to_show("Press Enter");
+    run.wait_to_show("Press Enter once it is written down:");
     run.enter();
     confirm_invite(&mut run);
     let finished = run.finish();
     assert!(
         finished.success,
-        "{}",
-        finished.text.replace(link.shown().as_str(), "")
+        "the device accepts the invite at the web address"
     );
 
     let sent = cloud.relay.sent_since(since);
@@ -267,11 +254,7 @@ fn after_browser_denial_a_fresh_device_can_link_and_accept() {
 
     confirm_invite(&mut run);
     let accepted = run.finish();
-    assert!(
-        accepted.success,
-        "{}",
-        accepted.text.replace(link.shown().as_str(), "")
-    );
+    assert!(accepted.success, "the linked device accepts the invite");
     assert_eq!(
         cloud.tokens().len(),
         tokens,

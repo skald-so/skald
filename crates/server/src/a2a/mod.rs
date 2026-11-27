@@ -20,6 +20,7 @@ use ureq::tls::Certificate;
 use crate::PublicUrl;
 use crate::http_client::gateway_agent;
 use crate::sign_in::{bearer, digest};
+use crate::unread_bodies;
 
 #[doc(hidden)]
 pub use crate::http_client::tls_config;
@@ -136,7 +137,9 @@ impl Config {
                 .route(CARD_PATH, get(card))
                 .route("/a2a/{route}", post(call))
                 .with_state(gateway)
-                .layer(axum::middleware::map_response(no_store)),
+                .layer(axum::middleware::map_response(no_store))
+                // A request refused before its body is read leaves the connection to be closed.
+                .layer(axum::middleware::from_fn(unread_bodies::close_unread)),
         )
     }
 }
@@ -255,4 +258,71 @@ async fn call(State(gateway): State<Arc<Gateway>>, request: Request) -> Response
         }
     };
     error.answer(&request.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read as _, Write as _};
+
+    use skald_proto::Id;
+
+    use super::*;
+
+    /// A gateway with one route and no credentials, on a local port: its address.
+    async fn gateway() -> std::net::SocketAddr {
+        let binding = Binding {
+            skald_origin: "https://skald.test".parse().expect("an origin"),
+            space: Id::generate(),
+            channel: Id::generate(),
+            destination: Destination::Queue(Id::generate()),
+            secret: None,
+        };
+        let router = Config {
+            public_origin: "https://gateway.test".parse().expect("an origin"),
+            advertised_route: "primary".to_owned(),
+            routes: HashMap::from([("primary".to_owned(), binding)]),
+            credentials: Vec::new(),
+            tasks: HashMap::new(),
+        }
+        .router(Some(Vec::new()))
+        .expect("a gateway");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a local port");
+        let address = listener.local_addr().expect("its address");
+        tokio::spawn(async move { axum::serve(listener, router).await });
+        address
+    }
+
+    /// A request the gateway refuses before its body has come is answered with
+    /// `Connection: close`, so that the client sends its next request on another connection: the
+    /// server closes this one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refusal_before_the_body_closes_the_connection() {
+        let address = gateway().await;
+        let answer = tokio::task::spawn_blocking(move || {
+            let mut stream = std::net::TcpStream::connect(address).expect("reach the gateway");
+            write!(
+                stream,
+                "POST /a2a/primary HTTP/1.1\r\nhost: gateway.test\r\n\
+                 content-type: application/json\r\ncontent-length: 2\r\n\r\n"
+            )
+            .expect("send the head");
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .expect("a read timeout");
+            let mut answer = Vec::new();
+            let mut buffer = [0; 1024];
+            while !answer.windows(4).any(|four| four == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read the answer");
+                assert!(count > 0, "the connection closed before the answer");
+                answer.extend_from_slice(&buffer[..count]);
+            }
+            String::from_utf8_lossy(&answer).to_lowercase()
+        })
+        .await
+        .expect("the request");
+        assert!(answer.starts_with("http/1.1 401 "), "{answer}");
+        assert!(answer.contains("\r\nconnection: close\r\n"), "{answer}");
+    }
 }

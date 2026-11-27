@@ -16,14 +16,16 @@ const faces: Record<SignInProvider, { icon?: ReactNode; look?: string }> = {
  * The sign-in page of 03-sign-in.png: a button for each provider the server has, which signs in
  * and returns to `returnTo`, a page of the web app; the note on sign-up, with a link to the server's
  * privacy policy if it has one; and the terminal box, which opens the device flow's verification
- * page with the code typed in it.
+ * page with the code typed in it. `deleted`: it first says the account was deleted.
  */
 export function SignInPage({
   providers,
   returnTo,
+  deleted = false,
 }: {
   providers: SignInProviders;
   returnTo: string;
+  deleted?: boolean;
 }) {
   const heading = useId();
   const terminal = useId();
@@ -34,6 +36,11 @@ export function SignInPage({
     <CenteredPage>
       <section aria-labelledby={heading} className={styles.card}>
         <h1 id={heading}>Sign in</h1>
+        {deleted && (
+          <p role="status" className={styles.deleted}>
+            Your account was deleted.
+          </p>
+        )}
         {providers.providers.map((provider) => (
           <a
             key={provider}

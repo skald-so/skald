@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Prints the bin directory of the checksum-pinned dist from dist-workspace.toml.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+version=$(awk -F'"' '/^cargo-dist-version = / { print $2 }' "$root/dist-workspace.toml")
+case "$version $(uname -s) $(uname -m)" in
+  '0.34.0 Darwin arm64')
+    target=aarch64-apple-darwin
+    digest=d1eec30e63eed23e5a5bd48fe96eae314799811bffca254ec1d2264638ba1890 ;;
+  '0.34.0 Darwin x86_64')
+    target=x86_64-apple-darwin
+    digest=6aa89bb1e7c18f51ae8b148ce2fc6ab00ac46ed8173d4f2ed9afa12101218773 ;;
+  '0.34.0 Linux aarch64')
+    target=aarch64-unknown-linux-gnu
+    digest=58efb33edf01342875bfd0c3ce2befa9d73075579ca1b3e5dd75b98c88f92e83 ;;
+  '0.34.0 Linux x86_64')
+    target=x86_64-unknown-linux-gnu
+    digest=7fee44ff3ff71ed0064b32d4ec62fee6b58bd37c5887b12a86aedddc5af0c7b5 ;;
+  *)
+    echo "install-dist: no pinned dist $version for $(uname -s) $(uname -m)" >&2
+    exit 1 ;;
+esac
+
+bin=${CARGO_HOME:-$HOME/.cargo}/skald/dist-$version-$target/bin
+if [[ $("$bin/dist" --version 2>/dev/null) != "cargo-dist $version" ]]; then
+  mkdir -p "$bin"
+  tmp=$(mktemp -d "$bin/.install.XXXXXX")
+  trap 'rm -rf "$tmp"' EXIT
+  archive=cargo-dist-$target.tar.xz
+  curl -fsSL --proto '=https' --retry 3 \
+    "https://github.com/axodotdev/cargo-dist/releases/download/v$version/$archive" -o "$tmp/$archive"
+  actual=$(shasum -a 256 "$tmp/$archive")
+  if [[ ${actual%% *} != "$digest" ]]; then
+    echo "install-dist: $archive does not match its SHA-256" >&2
+    exit 1
+  fi
+  tar -xJf "$tmp/$archive" -C "$tmp" "cargo-dist-$target/dist"
+  mv "$tmp/cargo-dist-$target/dist" "$bin/dist"
+fi
+printf '%s\n' "$bin"

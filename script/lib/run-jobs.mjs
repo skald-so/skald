@@ -149,7 +149,7 @@ export function runJobs(workflow, keys, options) {
       always: true,
       cancelled: false,
     };
-    const jobContexts = { github, needs, inputs: eventName === 'workflow_dispatch' ? open({}) : {}, vars: open({}) };
+    const jobContexts = { github, needs, inputs: eventName === 'workflow_dispatch' ? open({}) : {}, vars: {} };
     let runs = usesStatus(job.if) ? true : jobStatus.success;
     if (job.if !== undefined && truth(condition(job.if, { contexts: jobContexts, status: jobStatus })) === false) runs = false;
     if (!runs) {

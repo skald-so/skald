@@ -41,6 +41,7 @@ async function asked(name: string): Promise<string> {
       providers={["github"]}
       now={now}
       onRemove={async () => {}}
+      onDelete={async () => {}}
     />,
   );
   await user.click(screen.getByRole("button", { name: `Remove ${name}` }));

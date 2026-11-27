@@ -97,6 +97,26 @@ fn a_members_messages_reach_the_next_run_once() {
     }
 }
 
+/// The agent's device is on Ada's account, an admin's. Ada says a line: the agent's run shows it
+/// and writes nothing to stderr, nor does the run after it, which shows nothing.
+#[test]
+fn a_run_of_an_admin_s_service_device_with_nothing_to_warn_of_writes_nothing_to_stderr() {
+    let scene = Scene::new(
+        [3_135_768_001, 3_135_768_002],
+        ["ada-stateless-quiet-standin", "bob-stateless-quiet-standin"],
+    );
+    let sent = send(&scene.ada().machine, scene.channel(), ADA_SAYS[0]);
+    assert!(sent.success, "Ada's send failed: {sent:?}");
+
+    let got = scene.agent.received();
+
+    scene.assert_agent_shows(&got, ADA_SAYS[0], scene.ada());
+    assert_eq!(got.stderr, "", "{got:?}");
+    let again = scene.agent.received();
+    assert_eq!(shown_with(&again, ADA_SAYS[0]), 0, "{again:?}");
+    assert_eq!(again.stderr, "", "{again:?}");
+}
+
 /// Ada says a line. The front swallows the ack the agent sends after showing it. The harness
 /// tries to kill the first run if it is still active. With acks forwarded, the next run shows
 /// the line once even if the first run already exited. The run after that shows it no more.

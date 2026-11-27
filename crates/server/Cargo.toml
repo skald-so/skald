@@ -39,8 +39,20 @@ mls-rs-crypto-rustcrypto = "0.23"
 serde_urlencoded = "0.7"
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
+# A port tried without listening on it: a server that is down.
+socket2 = "0.6"
 tungstenite = "0.30"
 
 [target.'cfg(unix)'.dev-dependencies]
 # The browser tests' driver inherits no descriptor of the test binary but its standard streams.
 libc = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+# The browser tests' driver runs in a job that ends with the test binary.
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }

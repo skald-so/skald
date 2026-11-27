@@ -10,7 +10,7 @@ use skald_proto::MessageId;
 
 use crate::codex::Codex;
 use crate::delivery::{INLINE, set_text};
-use crate::standin::{StandIn, assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{StandIn, assert_queued, assert_quiet, assert_soon, web_in_app};
 use crate::{
     devices::second_machine,
     fixtures::{SEND, TO},
@@ -127,10 +127,9 @@ pub fn an_idle_session_gets_one_codex_queue_with_only_the_signal_within_a_second
             }
             _ => (long.as_str(), codex.web.own(&long)),
         };
-        let came = now();
         let ran = app.await_runs(round + 2);
         let last = ran.last().expect("a run");
-        assert_soon(last, came);
+        assert_soon(last, &codex, msg_id);
         assert_queued(last, (&web, &app), &[text], &[msg_id], &names);
         process.turn(&codex, &web);
         sent.push((text, msg_id));
