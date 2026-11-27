@@ -1,7 +1,7 @@
 //! A `skald-server` with GitHub sign-in through the GitHub stand-in, Google sign-in through the
-//! OIDC stand-in, which plays Google, or both, on a fresh PostgreSQL database, behind a recording
-//! relay; and the person who approves or denies a machine's code on its verification page in
-//! headless Chrome, signing in there with GitHub or Google.
+//! OIDC stand-in, or corporate sign-in through a separate OIDC stand-in, on a fresh PostgreSQL
+//! database behind a recording relay. A person in headless Chrome approves or denies a machine's
+//! code on its verification page.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -16,10 +16,12 @@ use skald_github_stand_in::{App, GitHub, User};
 use skald_oidc_stand_in::{Client, Key, Person, Provider};
 use skald_proto::{AccountId, Cbor, Cert, DeviceId, Roster, SpaceId};
 use skald_server::{
-    CALLBACK_PATH, ClientSecret, GitHubApp, OidcSettings, Settings, SignInSettings,
+    CALLBACK_PATH, ClientSecret, GitHubApp, Listed, OidcSettings, Settings, SignInSettings, SignUp,
 };
 
-use super::browser::{APPROVE, CODE_FIELD, Page, SIGN_IN_GITHUB, SIGN_IN_GOOGLE, SUBMIT, Visit};
+use super::browser::{
+    APPROVE, CODE_FIELD, Page, SIGN_IN_CORPORATE, SIGN_IN_GITHUB, SIGN_IN_GOOGLE, SUBMIT, Visit,
+};
 use super::common::Server;
 use super::machine::{self, Finished, Machine, Run};
 use super::relay::{Relay, count_heads, strings_named};
@@ -40,6 +42,9 @@ const CLIENT_SECRET: &str = "standin-secret-cli-0b1c2d3e4f5a6b7c8d9e";
 const GOOGLE_CLIENT_ID: &str = "skald-stand-in-google-cli";
 const GOOGLE_CLIENT_SECRET: &str = "stand-in-google-secret-cli-4d2a9e7b1c3f";
 const GOOGLE_CALLBACK: &str = "/auth/google/callback";
+const CORPORATE_CLIENT_ID: &str = "skald-stand-in-corporate-cli";
+const CORPORATE_CLIENT_SECRET: &str = "stand-in-corporate-secret-cli-05ee7ee0";
+const CORPORATE_CALLBACK: &str = "/auth/corporate/callback";
 
 /// The providers the server has settings for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +52,27 @@ pub enum Providers {
     GitHub,
     Google,
     Both,
+    Corporate,
+    All,
+}
+
+fn oidc_settings(
+    provider: &Provider,
+    client_id: &str,
+    client_secret: &str,
+    redirect_uri: String,
+) -> OidcSettings {
+    provider.register(Client {
+        client_id: client_id.to_owned(),
+        client_secret: client_secret.to_owned(),
+        redirect_uri,
+    });
+    OidcSettings {
+        issuer: provider.issuer().to_owned(),
+        client_id: client_id.to_owned(),
+        client_secret: ClientSecret::new(client_secret.to_owned()).expect("a client secret"),
+        key_refresh: Duration::from_secs(60),
+    }
 }
 
 /// The requests that register a device and give and ask for the account's master key, as their
@@ -178,6 +204,8 @@ pub struct Cloud {
     pub github: GitHub,
     /// The OIDC stand-in, when the server has Google's settings.
     pub google: Option<Provider>,
+    /// The operator's OIDC stand-in, when the server has corporate sign-in.
+    corporate: Option<Provider>,
     /// The server's public address, e.g. `http://skald.test:41234`.
     pub public: String,
     server: Server,
@@ -197,6 +225,16 @@ impl Cloud {
     pub fn with(providers: Providers, lifetime: u64, interval: u64) -> Self {
         // Chrome resolves every *.test host to the server.
         Self::serving(providers, "skald.test", lifetime, interval)
+    }
+
+    pub fn closed_corporate_only() -> Self {
+        Self::serving_at(
+            Providers::Corporate,
+            "http://skald.test",
+            None,
+            (120, 1),
+            |settings| settings.sign_up = SignUp::Closed(Listed::default()),
+        )
     }
 
     /// As [`Cloud::start`], the server's public address `http://<host>:<port>`, such as
@@ -221,11 +259,22 @@ impl Cloud {
         interval: u64,
         change: impl FnOnce(&mut Settings),
     ) -> Self {
+        Self::fronted_for(Providers::GitHub, host, front, (lifetime, interval), change)
+    }
+
+    /// As [`Cloud::fronted_with`], with the given providers.
+    pub fn fronted_for(
+        providers: Providers,
+        host: &str,
+        front: u16,
+        codes: (u64, u64),
+        change: impl FnOnce(&mut Settings),
+    ) -> Self {
         Self::serving_at(
-            Providers::GitHub,
+            providers,
             &format!("http://{host}"),
             Some(front),
-            (lifetime, interval),
+            codes,
             change,
         )
     }
@@ -272,7 +321,13 @@ impl Cloud {
         change: impl FnOnce(&mut Settings),
     ) -> Self {
         let share = Share::take();
-        let google = (providers != Providers::GitHub).then(|| Provider::start(&[Key::rsa()]));
+        let google = matches!(
+            providers,
+            Providers::Google | Providers::Both | Providers::All
+        )
+        .then(|| Provider::start(&[Key::rsa()]));
+        let corporate = matches!(providers, Providers::Corporate | Providers::All)
+            .then(|| Provider::start(&[Key::rsa()]));
         let mut github = None;
         let mut public_url = String::new();
         let server = Server::start_with(|addr| {
@@ -283,32 +338,36 @@ impl Cloud {
                 callback: Some(format!("{public}{CALLBACK_PATH}")),
             });
             let github_url = stand_in.url().parse().expect("the stand-in's address");
-            let oidc = google.as_ref().map(|provider| {
-                provider.register(Client {
-                    client_id: GOOGLE_CLIENT_ID.to_owned(),
-                    client_secret: GOOGLE_CLIENT_SECRET.to_owned(),
-                    redirect_uri: format!("{public}{GOOGLE_CALLBACK}"),
-                });
-                OidcSettings {
-                    issuer: provider.issuer().to_owned(),
-                    client_id: GOOGLE_CLIENT_ID.to_owned(),
-                    client_secret: ClientSecret::new(GOOGLE_CLIENT_SECRET.to_owned())
-                        .expect("a client secret"),
-                    key_refresh: Duration::from_secs(60),
-                }
-            });
             let sign_in = SignInSettings {
                 public_url: public.parse().expect("a public address"),
                 web_url: None,
-                github: (providers != Providers::Google).then(|| GitHubApp {
+                github: matches!(
+                    providers,
+                    Providers::GitHub | Providers::Both | Providers::All
+                )
+                .then(|| GitHubApp {
                     client_id: CLIENT_ID.to_owned(),
                     client_secret: ClientSecret::new(CLIENT_SECRET.to_owned())
                         .expect("a client secret"),
                     api_url: github_url,
                     url: stand_in.url().parse().expect("the stand-in's address"),
                 }),
-                google: oidc,
-                corporate: None,
+                google: google.as_ref().map(|provider| {
+                    oidc_settings(
+                        provider,
+                        GOOGLE_CLIENT_ID,
+                        GOOGLE_CLIENT_SECRET,
+                        format!("{public}{GOOGLE_CALLBACK}"),
+                    )
+                }),
+                corporate: corporate.as_ref().map(|provider| {
+                    oidc_settings(
+                        provider,
+                        CORPORATE_CLIENT_ID,
+                        CORPORATE_CLIENT_SECRET,
+                        format!("{public}{CORPORATE_CALLBACK}"),
+                    )
+                }),
                 state_lifetime: Duration::from_secs(600),
                 link_age: Duration::from_secs(300),
                 device_code_lifetime: Duration::from_secs(lifetime),
@@ -332,6 +391,7 @@ impl Cloud {
             relay,
             github: github.expect("the stand-in started with the server"),
             google,
+            corporate,
             public: public_url,
             server,
             _share: share,
@@ -573,6 +633,22 @@ impl Cloud {
     ) -> Finished {
         self.approved(machine, extra, |grant| {
             self.decide_with_google(page, person, grant, APPROVE);
+        })
+    }
+
+    /// As [`Cloud::signed_in`], the person approving as `person`, signed in with corporate OIDC.
+    pub fn signed_in_with_corporate(
+        &self,
+        page: &Page,
+        machine: &Machine,
+        person: &Person,
+    ) -> Finished {
+        let provider = self.corporate.as_ref().expect("the corporate stand-in");
+        provider.put_person(person.clone());
+        let visit = page.goto(&provider.sign_in_url(&person.subject));
+        assert_eq!(visit.status, Some(200), "stand-in sign-in: {visit:?}");
+        self.approved(machine, &[], |grant| {
+            self.decide_signing_in(page, SIGN_IN_CORPORATE, grant, APPROVE);
         })
     }
 

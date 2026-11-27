@@ -11,12 +11,18 @@
 //!   and records the header's name, never its value: [`Stub::foreign`] fails the test.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The only credential the session may send.
 pub const PLACEHOLDER: &str = "skald-e2e-placeholder-key";
@@ -97,7 +103,7 @@ impl Stub {
     /// Starts a stub on a free local port that plays `script`, holding the answers of step `hold`,
     /// if any, until released.
     pub fn start(script: Vec<Step>, hold: Option<usize>) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the model stub");
+        let listener = local_listener();
         let url = format!(
             "http://{}",
             listener.local_addr().expect("the stub's address")

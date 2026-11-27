@@ -17,21 +17,31 @@
 //! `history-stored` answers or turn them into `history-refused`. It can lose only the `stored`
 //! answers to `mls` envelopes of a channel from an MLS epoch on.
 
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
+    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, PROOF_HEADER, Push, RawEnvelope,
+    RequestProof, SpaceId,
 };
 
 use super::common::reach;
 use super::relay::{answered_in_full, reset};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -133,6 +143,8 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
+    /// Devices whose acks it swallowed, as `ack` frames or HTTPS requests.
+    swallowed_acks: BTreeSet<DeviceId>,
     watched_delivery: Option<(DeviceId, MessageId, Delivery)>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
     hold_messages: bool,
@@ -260,7 +272,7 @@ pub struct Front {
 impl Front {
     /// Listens on a free local port; connections wait until [`Front::forward_to`] names a target.
     pub fn bind() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the front's address").port();
         let shared = Arc::new(Shared {
             target: OnceLock::new(),
@@ -282,6 +294,7 @@ impl Front {
                 refused: 0,
                 acks: Acks::Forward,
                 acked: 0,
+                swallowed_acks: BTreeSet::new(),
                 watched_delivery: None,
                 hold_messages: false,
                 held_messages: 0,
@@ -417,6 +430,11 @@ impl Front {
         self.shared.state().acked
     }
 
+    /// Whether it swallowed an ack from `device`, as an `ack` frame or an HTTPS request.
+    pub fn swallowed_ack_from(&self, device: DeviceId) -> bool {
+        self.shared.state().swallowed_acks.contains(&device)
+    }
+
     /// Records pushes of `message` to `device` and acknowledgements from that device.
     pub fn watch_delivery(&self, device: DeviceId, message: MessageId) {
         self.shared.state().watched_delivery = Some((device, message, Delivery::default()));
@@ -531,6 +549,21 @@ fn clone(stream: &TcpStream) -> TcpStream {
     stream.try_clone().expect("clone a stream")
 }
 
+/// The device whose proof the head of the HTTPS request `text` carries, if any.
+fn proving(text: &str) -> Option<DeviceId> {
+    let head = text.split("\r\n\r\n").next()?;
+    let value = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(PROOF_HEADER)
+            .then(|| value.trim())
+    })?;
+    let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
+    RequestProof::from_cbor(&bytes)
+        .ok()
+        .map(|proof| proof.device)
+}
+
 /// Copies what the machine sends to the server: HTTP as it comes, then, once the request of a
 /// WebSocket is through, its frames one by one.
 fn to_server(
@@ -569,6 +602,9 @@ fn to_server(
                 let acks = {
                     let mut state = shared.state();
                     state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, proving(&text)) {
+                        state.swallowed_acks.insert(device);
+                    }
                     state.acks
                 };
                 if acks != Acks::Forward {
@@ -619,6 +655,10 @@ fn to_server(
                 }
                 continue;
             }
+            let ack_device = match &decoded {
+                Some(Frame::Ack { .. }) => link.device(),
+                _ => None,
+            };
             let ack = match decoded {
                 Some(Frame::Send { envelope, report }) => {
                     let mut state = shared.state();
@@ -698,6 +738,9 @@ fn to_server(
                 let acks = {
                     let mut state = shared.state();
                     state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, ack_device) {
+                        state.swallowed_acks.insert(device);
+                    }
                     state.acks
                 };
                 match acks {

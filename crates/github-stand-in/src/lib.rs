@@ -27,13 +27,18 @@
 //! - `GET /_stand-in/requests`: the [`Request`]s to GitHub's endpoints so far;
 //! - `GET /_stand-in/tokens`: the tokens issued so far.
 
+// The client's test helpers bind their listeners with it too.
+#[path = "../../client/tests/common/local_listener.rs"]
+mod local_listener;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::hash::{BuildHasher, Hasher, RandomState};
 use std::io;
-use std::net::TcpListener as StdListener;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
+
+use local_listener::local_listener;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -212,7 +217,7 @@ pub struct GitHub {
 impl GitHub {
     /// Starts a stand-in for `app` with no users and no faults.
     pub fn start(app: App) -> Self {
-        let listener = StdListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         listener
             .set_nonblocking(true)
             .expect("make the listener non-blocking");

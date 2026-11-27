@@ -5,6 +5,7 @@
 mod common;
 
 mod client_auth;
+mod closed;
 mod flow;
 mod settings;
 mod web;
@@ -52,6 +53,17 @@ impl Site {
         github: bool,
         web: Option<&str>,
     ) -> Self {
+        Self::launch(db, corporate, google, github, web, "open")
+    }
+
+    fn launch(
+        db: &TestDb,
+        corporate: &Provider,
+        google: Option<&Provider>,
+        github: bool,
+        web: Option<&str>,
+        sign_up: &str,
+    ) -> Self {
         on_free_port(Duration::from_secs(30), |port| {
             let web = web.map_or_else(|| format!("http://skald.test:{port}"), str::to_owned);
             corporate.register(Client {
@@ -76,7 +88,7 @@ impl Site {
                 "--web-url",
                 &web,
                 "--sign-up",
-                "open",
+                sign_up,
                 ISSUER_FLAG,
                 corporate.issuer(),
                 CLIENT_FLAG,

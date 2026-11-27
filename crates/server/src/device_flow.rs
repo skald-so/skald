@@ -18,8 +18,8 @@ use crate::deletion::{Lock, deleted};
 use crate::devices::bytes;
 use crate::refusal::{Answer, Refusal, parse};
 use crate::sign_in::{
-    self, ProviderKind, Session, SignInSettings, digest, escape, flows, off, param, random_token,
-    sign_in_links, web_session,
+    self, Session, digest, escape, flows, off, param, random_token, settings, sign_in_links,
+    web_session,
 };
 use crate::{AppState, SignUp, database_failed, invites};
 
@@ -144,20 +144,6 @@ struct DeviceAuthorization {
     verification_uri_complete: String,
     expires_in: u64,
     interval: u64,
-}
-
-/// The corporate browser flow does not enable device authorization.
-fn settings(state: &AppState) -> Option<&SignInSettings> {
-    sign_in::settings(state)
-        .filter(|settings| settings.github.is_some() || settings.google.is_some())
-}
-
-async fn device_session(db: &PgPool, headers: &HeaderMap) -> Result<Option<Session>, sqlx::Error> {
-    Ok(web_session(db, headers).await?.filter(|session| {
-        session
-            .sign_in_method
-            .is_some_and(ProviderKind::allows_device_sign_in)
-    }))
 }
 
 /// `POST /auth/device`: device authorization (RFC 8628, §3.1).
@@ -492,9 +478,7 @@ fn sign_in_here(state: &AppState, user_code: &str) -> String {
             .finish();
         to = format!("{to}?{query}");
     }
-    let mut flows = flows(state);
-    flows.retain(|flow| ProviderKind::from_key(flow.provider).allows_device_sign_in());
-    sign_in_links(&flows, "", &to)
+    sign_in_links(&flows(state), "", &to)
 }
 
 /// `GET /device`: the verification page.
@@ -507,7 +491,7 @@ pub(crate) async fn page(
         return off();
     }
     let user_code = param(query.as_deref(), "user_code").unwrap_or_default();
-    match device_session(&state.db, &headers).await {
+    match web_session(&state.db, &headers).await {
         Ok(Some(session)) => ask(&session, &user_code, &sign_in::privacy_policy_link(&state)),
         Ok(None) => page_of(
             StatusCode::OK,
@@ -598,7 +582,7 @@ pub(crate) async fn decide(
             &format!("<p>Not signed in. {}</p>", sign_in_here(&state, "")),
         )
     };
-    let session = match device_session(&state.db, &headers).await {
+    let session = match web_session(&state.db, &headers).await {
         Ok(Some(session)) => session,
         Ok(None) => return signed_out(),
         Err(err) => return failed("read a session", err),

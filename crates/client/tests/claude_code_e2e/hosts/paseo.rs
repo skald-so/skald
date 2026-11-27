@@ -1,5 +1,4 @@
 use std::fs::File;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
@@ -9,6 +8,12 @@ use super::{Hosted, PROMPT, WakePath, host_on_path, output, run, until};
 use crate::claude::claude_code;
 use crate::plugin::put_json;
 use crate::wake_fallbacks::MOD_DIR;
+
+// Other helpers of the same test binary load it too.
+#[path = "../../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 struct Daemon<'a> {
     host: &'a Path,
@@ -21,7 +26,7 @@ struct Daemon<'a> {
 impl<'a> Daemon<'a> {
     fn start(host: &'a Path, session: &'a Hosted) -> Self {
         let home = session.home.dir.join("paseo");
-        let free = TcpListener::bind(("127.0.0.1", 0)).expect("a local port for Paseo");
+        let free = local_listener();
         let endpoint = free.local_addr().expect("Paseo's address").to_string();
         put_json(
             &home.join("config.json"),

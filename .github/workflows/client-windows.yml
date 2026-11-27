@@ -147,6 +147,9 @@ jobs:
           $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
           $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
             Select-Object -Last 1
+          "the most ports the allocator saw held or named by loopback peers:"
+          $samples | Sort-Object { [int]([regex]::Match($_, '(\d+) with loopback peers').Groups[1].Value) } |
+            Select-Object -Last 1
           $samples | Select-Object -Last 1
       # What the tests left on the disks: the free space of C: and D:, and the size of the build and
       # of the temporary directory, with its largest entries, such as browsers' profiles.

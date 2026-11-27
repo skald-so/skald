@@ -2338,7 +2338,7 @@
       "post": {
         "operationId": "authorizeDevice",
         "summary": "Start a device flow sign-in",
-        "description": "Device authorization (RFC 8628, §3.1): a machine without a browser asks for a device code and a user code. Its person approves the user code on the verification page, `GET /device`, within `expires_in` seconds, the server setting `--device-code-lifetime`; the machine meanwhile polls `POST /auth/token` every `interval` seconds, the server setting `--device-poll-interval`.",
+        "description": "Device authorization (RFC 8628, §3.1): when at least one sign-in provider is configured, a machine without a browser asks for a device code and a user code. Its person approves the user code on the verification page, `GET /device`, within `expires_in` seconds, the server setting `--device-code-lifetime`; the machine meanwhile polls `POST /auth/token` every `interval` seconds, the server setting `--device-poll-interval`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -2430,7 +2430,7 @@
       "put": {
         "operationId": "attachDeviceInvite",
         "summary": "Attach an invite proof to a device sign-in",
-        "description": "The machine calls this before it opens the verification page. While sign-up is closed, a proof that verifies with the invite's key is attached to its pending device authorization. If the identity has no account and is on none of the server's lists, sign-in from that authorization creates an account only if the invite is still held, live and unused. The invite then belongs to that account. If sign-in is already allowed, it leaves the invite available.",
+        "description": "The machine calls this before it opens the verification page. While sign-up is closed, a proof that verifies with the invite's key is attached to its pending device authorization. If the server's sign-up policy would refuse the identity, sign-in from that authorization creates an account only if the invite is still held, live and unused. The invite then belongs to that account. If sign-in is already allowed, it leaves the invite available.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3212,7 +3212,7 @@
       "get": {
         "operationId": "finishCorporateSignIn",
         "summary": "The corporate sign-in callback",
-        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` with the PKCE verifier and client credentials, and validates the ID token and its `nonce`. With open sign-up the first sign-in creates an account bound to the validated issuer and subject. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The token request uses `client_secret_basic` by default or when advertised, and `client_secret_post` when the issuer advertises it without Basic. The server keeps no email or tokens from the issuer.",
+        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` with the PKCE verifier and client credentials, and validates the ID token and its `nonce`. The first verified sign-in creates an account bound to the configured issuer and validated subject, even while sign-up is closed. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The token request uses `client_secret_basic` by default or when advertised, and `client_secret_post` when the issuer advertises it without Basic. The server keeps no email or tokens from the issuer.",
         "parameters": [
           {
             "name": "code",
@@ -3267,21 +3267,6 @@
           },
           "400": {
             "description": "No one is signed in: the state is missing, wrong, from another browser, expired or used, or the issuer returned an error, no code, or an invalid token.",
-            "headers": {
-              "Cache-Control": {
-                "$ref": "#/components/headers/NoStore"
-              }
-            },
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Sign-up is closed and the issuer and subject have no existing account. The page names the problem type `https://skald.so/problems/sign-up-closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -3501,7 +3486,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`; unless `reopened` is given, it also opens this page with `user_code` and `reopened` again from this server, once, as a request from another site lacks the `SameSite=Strict` session cookie. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
+            "description": "The page that asks for the code; without a web session, a link to sign in with each configured provider (GitHub, Google or corporate), each returning to this page with `user_code`; unless `reopened` is given, it also opens this page with `user_code` and `reopened` again from this server, once, as a request from another site lacks the `SameSite=Strict` session cookie. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -11703,7 +11688,7 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "skald_session",
-        "description": "The web session that a sign-in in the browser gives, with GitHub or Google."
+        "description": "Cookie for a web session established in the browser through any configured sign-in provider."
       },
       "bearer": {
         "type": "http",
@@ -14047,7 +14032,7 @@
             }
           },
           "sign_up": {
-            "description": "`open`: a first sign-in creates an account. `closed`: only for the people the server lists.",
+            "description": "`open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite.",
             "type": "string",
             "enum": ["open", "closed"]
           },
