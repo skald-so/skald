@@ -142,7 +142,7 @@ fn a_run_killed_after_its_output_and_before_its_ack_shows_the_message_again() {
     while !swallowed() {
         assert!(
             Instant::now() < deadline,
-            "the front did not swallow the service device's WebSocket ack within {WAIT:?}: {killed:?}"
+            "the front did not swallow the service device's ack within {WAIT:?}: {killed:?}"
         );
         thread::sleep(Duration::from_millis(5));
     }
