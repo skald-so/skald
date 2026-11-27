@@ -6192,17 +6192,24 @@ pub(crate) mod tests {
         }
 
         let dir = TestDir::new("state-accepted-at-once");
-        let state = State::open(&dir).unwrap();
+        let mut state = State::open(&dir).unwrap();
         let acme = SpaceId::generate();
         state.add_space(acme, "acme", &[1]).unwrap();
         OTHER_RUN.with(|run| *run.borrow_mut() = Some((dir.to_path_buf(), acme)));
         state
             .db
-            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run));
+            .trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(other_run))
+            .unwrap();
 
         let read = state.accepted(acme).unwrap().expect("acme");
 
-        state.db.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        state
+            .db
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                None::<fn(TraceEvent<'_>)>,
+            )
+            .unwrap();
         let ran = RAN.with(|ran| ran.borrow().clone());
         assert!(ran.is_some(), "no other run");
         let before = Accepted {
