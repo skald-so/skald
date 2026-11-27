@@ -388,8 +388,9 @@ impl Session {
     pub fn prompt(&mut self, text: &str) {
         match &mut self.running {
             Running::Terminal { .. } => {
-                // Claude Code reads typing once the prompt box of its main screen shows; Enter
-                // that comes with the text is taken as part of a paste.
+                // Claude Code reads typing once the prompt box of its main screen shows. Enter that
+                // it reads with the text, as when it was busy while both were typed, is taken as
+                // part of a paste and may not submit it: Enter goes once the text shows.
                 let deadline = Instant::now() + TURN_LIMIT;
                 while !self.composer_shown() {
                     assert!(Instant::now() < deadline, "no prompt box: {}", self.shown());
@@ -399,8 +400,17 @@ impl Session {
                 let Running::Terminal { input, .. } = &self.running else {
                     unreachable!()
                 };
+                let before = self.output_len();
                 typed(input, text.as_bytes()).expect("type the prompt");
-                thread::sleep(Duration::from_secs(1));
+                while !self.shown_since(before, text) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the prompt box never showed {text:?}: {}",
+                        self.shown()
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                }
+                thread::sleep(Duration::from_millis(500));
                 typed(input, b"\r").expect("press Enter");
             }
             Running::App { input, .. } => {
@@ -484,6 +494,25 @@ impl Session {
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
             .filter(|value| value["type"] == "result")
             .count()
+    }
+
+    /// How many bytes the session printed so far.
+    fn output_len(&self) -> usize {
+        (self.output.lock())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    /// Whether what the session printed after its first `from` bytes shows `text`, white space
+    /// and box drawing aside: a long text wraps in the prompt box, maybe between its borders.
+    fn shown_since(&self, from: usize, text: &str) -> bool {
+        let unboxed = |text: &str| -> String {
+            (text.chars())
+                .filter(|char| !char.is_whitespace() && !('\u{2500}'..='\u{257f}').contains(char))
+                .collect()
+        };
+        let output = (self.output.lock()).unwrap_or_else(|poisoned| poisoned.into_inner());
+        unboxed(&screen_text(&output[from..])).contains(&unboxed(text))
     }
 
     /// Whether the terminal shows the prompt box of Claude Code's main screen: after its banner.
