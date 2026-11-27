@@ -418,6 +418,7 @@ mod tests {
     use skald_proto::{AccountId, CertBody, Unknown};
 
     use super::*;
+    use crate::closed_port::closed_port;
     use crate::test_dir::TestDir;
 
     const TIMEOUT: Duration = Duration::from_secs(5);
@@ -496,7 +497,7 @@ mod tests {
             cert(DeviceKind::Client, None),
             cert(DeviceKind::Browser, Some(5)),
         ];
-        let at = crate::connection::tests::closed_port();
+        let at = closed_port();
         let closed = format!("http://{at}");
         for api in [closed.as_str(), "http://github.example", "not a url"] {
             let certs = [&signed, &others[0], &others[1]];

@@ -16,6 +16,12 @@ use crate::machine::{Machine, RUN_LIMIT};
 /// How long a finished run's output may take to drain once its terminal closes.
 const DRAIN: Duration = Duration::from_secs(20);
 
+/// A piece of a run's output, by its length, or what the test wrote on its input, since its start.
+enum Event {
+    Output(Duration, usize),
+    Input(Duration, Vec<u8>),
+}
+
 /// A run of `skald` at a terminal.
 pub struct Terminal {
     child: Box<dyn Child + Send + Sync>,
@@ -23,6 +29,8 @@ pub struct Terminal {
     master: Option<Box<dyn MasterPty + Send>>,
     input: Arc<Mutex<Box<dyn Write + Send>>>,
     output: Arc<Mutex<Vec<u8>>>,
+    /// When each piece of its output came and each input went, for a failure to show.
+    events: Arc<Mutex<Vec<Event>>>,
     reader: Option<JoinHandle<()>>,
     started: Instant,
     private_output: bool,
@@ -98,8 +106,11 @@ impl Terminal {
             pair.master.take_writer().expect("write to the terminal"),
         ));
         let output = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let started = Instant::now();
         let reader = {
             let (output, input) = (Arc::clone(&output), Arc::clone(&input));
+            let events = Arc::clone(&events);
             thread::spawn(move || {
                 let mut buffer = [0; 4096];
                 let mut asked = 0;
@@ -109,13 +120,14 @@ impl Terminal {
                     }
                     let mut output = output.lock().expect("a run's output");
                     output.extend_from_slice(&buffer[..read]);
+                    let came = Event::Output(started.elapsed(), read);
+                    events.lock().expect("a run's events").push(came);
                     // A pseudo-console asks where the cursor is before it shows anything: it is at
                     // the start, as on a new terminal.
                     let queries = count(&output, b"\x1b[6n");
                     while asked < queries {
                         asked += 1;
-                        let mut input = input.lock().expect("the terminal's input");
-                        let _ = input.write_all(b"\x1b[1;1R").and_then(|()| input.flush());
+                        write_input(&input, &events, started, b"\x1b[1;1R");
                     }
                 }
             })
@@ -125,8 +137,9 @@ impl Terminal {
             master: Some(pair.master),
             input,
             output,
+            events,
             reader: Some(reader),
-            started: Instant::now(),
+            started,
             private_output: false,
         }
     }
@@ -141,10 +154,23 @@ impl Terminal {
 
     fn diagnostic(&self) -> String {
         if self.private_output {
-            "(terminal output withheld)".to_owned()
-        } else {
-            self.shown()
+            return "(terminal output withheld)".to_owned();
         }
+        let output = self.output.lock().expect("a run's output");
+        let tail = &output[output.len().saturating_sub(1 << 10)..];
+        let events = self.events.lock().expect("a run's events");
+        let timeline: Vec<String> = (events.iter().rev().take(40).rev())
+            .map(|event| match event {
+                Event::Output(at, length) => format!("{at:.3?} out {length} bytes"),
+                Event::Input(at, bytes) => format!("{at:.3?} in {}", escaped(bytes)),
+            })
+            .collect();
+        format!(
+            "{}\n--- its output's last bytes: {}\n--- the last output and input, since its start:\n{}",
+            plain(&output),
+            escaped(tail),
+            timeline.join("\n")
+        )
     }
 
     /// What it printed so far, as the person sees it.
@@ -169,11 +195,17 @@ impl Terminal {
             if seen(&shown) {
                 return shown;
             }
-            assert!(
-                !self.exited(),
-                "skald exited without showing {what}: {}",
-                self.diagnostic()
-            );
+            if self.exited() {
+                // What it printed before it exited may still be on its way through the terminal.
+                self.close();
+                let shown = self.shown();
+                assert!(
+                    seen(&shown),
+                    "skald exited without showing {what}: {}",
+                    self.diagnostic()
+                );
+                return shown;
+            }
             assert!(
                 self.started.elapsed() < RUN_LIMIT,
                 "skald did not show {what}: {}",
@@ -200,9 +232,10 @@ impl Terminal {
         self.send(format!("{text}\r").as_bytes());
     }
 
+    /// The person types `bytes` on the terminal; a run that no longer reads its terminal does not
+    /// see them.
     pub fn send(&self, bytes: &[u8]) {
-        let mut input = self.input.lock().expect("the terminal's input");
-        let _ = input.write_all(bytes).and_then(|()| input.flush());
+        write_input(&self.input, &self.events, self.started, bytes);
     }
 
     /// The person ends the terminal's input at the start of a line: Ctrl-D on Unix, Ctrl-Z and
@@ -211,8 +244,7 @@ impl Terminal {
     #[allow(dead_code)]
     pub fn end_input(&self) {
         let end: &[u8] = if cfg!(windows) { b"\x1a\r" } else { b"\x04" };
-        let mut input = self.input.lock().expect("the terminal's input");
-        let _ = input.write_all(end).and_then(|()| input.flush());
+        write_input(&self.input, &self.events, self.started, end);
     }
 
     /// Kills it at once, as the system does, without a signal it can handle; gives what it
@@ -286,6 +318,25 @@ impl Drop for Terminal {
         }
         self.close();
     }
+}
+
+/// Writes `bytes` on a run's terminal `input`, noting it in its `events`; a run that no longer
+/// reads its terminal does not see them.
+fn write_input(
+    input: &Mutex<Box<dyn Write + Send>>,
+    events: &Mutex<Vec<Event>>,
+    started: Instant,
+    bytes: &[u8],
+) {
+    let mut input = input.lock().expect("the terminal's input");
+    let _ = input.write_all(bytes).and_then(|()| input.flush());
+    let went = Event::Input(started.elapsed(), bytes.to_vec());
+    events.lock().expect("a run's events").push(went);
+}
+
+/// `bytes` with each control character escaped, as in a Rust string.
+fn escaped(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).escape_debug().to_string()
 }
 
 /// How many times `needle` is in `haystack`.

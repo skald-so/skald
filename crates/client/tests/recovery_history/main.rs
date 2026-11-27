@@ -107,10 +107,10 @@ pub fn talk_with_key(ids: &[u64], logins: &[&str], role: Role) -> (Talk, String)
 }
 
 /// The recovery HPKE key pair the recovery key `shown`, in its shown form, derives on `account`, as
-/// "Account" says.
+/// "Account" says at the cost of this test build.
 pub fn recovery_hpke(shown: &str, account: AccountId) -> HpkeKey {
     let digits = master_backup::digits(shown).expect("a recovery key in its shown form");
-    let (_, ikm) = master_backup::derive(&digits, account.as_bytes());
+    let (_, ikm) = master_backup::derive_as_built(&digits, account.as_bytes());
     HpkeKey::from_ikm(&ikm)
 }
 

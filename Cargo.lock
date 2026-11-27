@@ -3461,11 +3461,13 @@ dependencies = [
  "skald-github-stand-in",
  "skald-oidc-stand-in",
  "skald-proto",
+ "socket2",
  "sqlx",
  "tokio",
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

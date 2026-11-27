@@ -142,14 +142,16 @@ pub fn key_digits(shown: &str) -> [u8; 12] {
         .unwrap_or_else(|| panic!("{shown:?} is not a recovery key in its shown form"))
 }
 
-/// The recovery HPKE public key the recovery key of the characters `key` derives on `account`.
+/// The recovery HPKE public key the recovery key of the characters `key` derives on `account`, at
+/// the cost of this test build.
 pub fn recovery_public(key: &[u8; 12], account: AccountId) -> [u8; 32] {
-    let (_, ikm) = crate::master_backup::derive(key, account.as_bytes());
+    let (_, ikm) = crate::master_backup::derive_as_built(key, account.as_bytes());
     crate::master_backup::recovery_public(&ikm)
 }
 
 /// The master private key the backup `bytes` of `account` opens to with the recovery key of the
-/// characters `key`, as "Account" seals it; `None` if it does not open.
+/// characters `key`, as "Account" seals it at the cost of this test build; `None` if it does not
+/// open.
 pub fn open(bytes: &[u8], key: &[u8; 12], account: AccountId) -> Option<[u8; 32]> {
     let Some(Item::Array(parts)) = item(bytes) else {
         panic!("a master backup is a CBOR array: {bytes:?}");
@@ -158,7 +160,7 @@ pub fn open(bytes: &[u8], key: &[u8; 12], account: AccountId) -> Option<[u8; 32]
         panic!("a master backup is [nonce, ct]: {parts:?}");
     };
     let nonce: [u8; 12] = nonce.as_slice().try_into().expect("a 12-byte nonce");
-    let (aead, _) = crate::master_backup::derive(key, account.as_bytes());
+    let (aead, _) = crate::master_backup::derive_as_built(key, account.as_bytes());
     let opened = crate::master_backup::open(ct, &aead, &nonce, account.as_bytes())?;
     opened.try_into().ok()
 }

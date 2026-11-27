@@ -3,7 +3,7 @@
 //! account ID; the same derivation gives the recovery HPKE key pair the account record names. The
 //! recovery key unlocks it; the opened key must match `master`.
 
-use skald_crypto::{AccountError, SigningKey, new_recovery, open_recovery, sign_account};
+use skald_crypto::{AccountError, SigningKey, SpecCost, new_recovery, open_recovery, sign_account};
 use skald_proto::{AccountBody, AccountRecord, Cbor, MasterBackup};
 
 use crate::cbor::{Value, bytes, text};
@@ -32,6 +32,7 @@ fn refused(record: &AccountRecord, backup: &MasterBackup, shown: &str) -> Option
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_and_record_are_derived_and_sealed_as_the_spec_says() {
+    let _spec = SpecCost::enter();
     let (record, backup) = made();
     let (aead, recovery_public) = derived(RECOVERY, ACCOUNT);
 
@@ -66,6 +67,7 @@ fn a_backup_and_record_are_derived_and_sealed_as_the_spec_says() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn each_backup_takes_a_new_nonce() {
+    let _spec = SpecCost::enter();
     let recovery = recovery_key(RECOVERY);
     let (_, one) = new_recovery(&master(), &recovery, ACCOUNT);
     let (_, two) = new_recovery(&master(), &recovery, ACCOUNT);
@@ -77,6 +79,7 @@ fn each_backup_takes_a_new_nonce() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_opens_only_with_its_recovery_key_and_account() {
+    let _spec = SpecCost::enter();
     let (record, backup) = made();
 
     assert_eq!(
@@ -96,6 +99,7 @@ fn a_backup_opens_only_with_its_recovery_key_and_account() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_backup_that_opens_to_a_key_other_than_master_is_refused() {
+    let _spec = SpecCost::enter();
     let (record, _) = made();
     let (other_body, other) = new_recovery(
         &SigningKey::from_bytes(&OTHER_MASTER),
@@ -114,6 +118,7 @@ fn a_backup_that_opens_to_a_key_other_than_master_is_refused() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_record_that_names_another_recovery_key_is_refused() {
+    let _spec = SpecCost::enter();
     let (record, backup) = made();
     let mut body = record.body().clone();
     body.recovery[0] ^= 0x01;
@@ -127,6 +132,7 @@ fn a_record_that_names_another_recovery_key_is_refused() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn a_changed_backup_does_not_open() {
+    let _spec = SpecCost::enter();
     let (record, backup) = made();
     let mut changed = Vec::new();
     for at in [0, 16, backup.ct.len() - 1] {
@@ -149,6 +155,7 @@ fn a_changed_backup_does_not_open() {
 #[cfg_attr(not(target_arch = "wasm32"), test)]
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn malformed_and_truncated_backups_are_refused() {
+    let _spec = SpecCost::enter();
     let nonce = [0xe0; 12];
     let ct = [0xc0; 48];
     let valid = Value::Array(vec![bytes(&nonce), bytes(&ct)]).encode();

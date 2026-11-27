@@ -114,12 +114,6 @@ impl Proxy {
     }
 }
 
-/// A free local port that nothing listens on: a proxy that is down.
-pub fn closed_port() -> u16 {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
-    listener.local_addr().expect("a local address").port()
-}
-
 /// Takes one client's request: refuses it with `refusal` if given, otherwise tunnels a `CONNECT`
 /// and keeps what the client sends through it as it comes.
 fn serve(mut client: TcpStream, refusal: Option<&str>, requests: &Arc<Mutex<Vec<Request>>>) {
@@ -142,7 +136,7 @@ fn serve(mut client: TcpStream, refusal: Option<&str>, requests: &Arc<Mutex<Vec<
     };
     let upstream = port
         .filter(|_| refusal.is_none())
-        .and_then(|port| TcpStream::connect(format!("127.0.0.1:{port}")).ok());
+        .and_then(|port| super::common::reach("proxy", &format!("127.0.0.1:{port}")).ok());
     let Some(mut upstream) = upstream else {
         let _ = client.write_all(refusal.unwrap_or(BAD_GATEWAY).as_bytes());
         return;

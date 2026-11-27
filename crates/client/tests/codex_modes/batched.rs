@@ -16,15 +16,16 @@ use crate::machine::Machine;
 use crate::modes::{quiet_turn, review_sends, review_session};
 use crate::queued::{assert_inbox_gives, second_device};
 use crate::senders::PEER;
-use crate::standin::{assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, assert_soon, web_in_app};
 use crate::talk::BOB_HOST;
 
 /// The window of `batch`, as the CLI takes it and as a duration: long enough for the messages and
 /// the turns within it.
 const WINDOW: (&str, Duration) = ("30s", Duration::from_secs(30));
 
-/// How late after its window's end the batch's `codex queue` may start: the message's way to Ada's
-/// machine after its send returned, and the helper's own pace.
+/// How late after its window's end the batch's `codex queue` may start, counting the window from
+/// when the first message's send returned: that message's way to Ada's machine after it, which
+/// opens the window, and the helper's own pace.
 const LATE: Duration = Duration::from_secs(3);
 
 /// What the agent review of Ada's second machine says to web, at `own`, and what Bob's review says
@@ -76,17 +77,19 @@ pub fn in_batch_ten_peer_messages_within_a_window_wake_the_session_once_at_its_e
     let opened = SystemTime::now();
     let mut texts = Vec::new();
     let mut msg_ids = Vec::new();
+    let mut first_sent = None;
     for n in 1..=10 {
         let text = batched(n);
         msg_ids.push(review_sends(&codex, &mut review, &text));
+        first_sent.get_or_insert_with(SystemTime::now);
         texts.push(text);
     }
+    let first_sent = first_sent.expect("the first message was sent");
     assert_quiet(&[(&app, 0, "codex queue within the window")]);
 
     let from_laptop = laptop_sends(&codex, (&laptop.machine, &folder), FROM_LAPTOP);
-    let came = now();
     let ran = app.await_runs(1);
-    assert_soon(&ran[0], came);
+    assert_soon(&ran[0], &codex, from_laptop);
     assert_queued(&ran[0], (&web, &app), &[FROM_LAPTOP], &[from_laptop], &[]);
     quiet_turn(
         &mut process,
@@ -96,9 +99,8 @@ pub fn in_batch_ten_peer_messages_within_a_window_wake_the_session_once_at_its_e
     );
 
     let elsewhere = review_sends_in(&codex.web.solo, &bob, other, ELSEWHERE);
-    let came = now();
     let ran = app.await_runs(2);
-    assert_soon(&ran[1], came);
+    assert_soon(&ran[1], &codex, elsewhere);
     assert_queued(&ran[1], (&web, &app), &[ELSEWHERE], &[elsewhere], &names);
     quiet_turn(
         &mut process,
@@ -122,9 +124,10 @@ pub fn in_batch_ten_peer_messages_within_a_window_wake_the_session_once_at_its_e
         after >= WINDOW.1,
         "the batch woke the session {after:?} after its first message, within the window"
     );
+    let late = (at_end.started().duration_since(first_sent)).unwrap_or_default();
     assert!(
-        after <= WINDOW.1 + LATE,
-        "the batch woke the session {after:?} after its first message, past its end"
+        late <= WINDOW.1 + LATE,
+        "the batch woke the session {late:?} after its first message's send returned, past its end"
     );
     quiet_turn(&mut process, &codex, &web, "the turn the batch woke");
 
