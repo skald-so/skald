@@ -190,19 +190,109 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
-    retried_into(what, port_samples(), &mut io::stderr(), step).await
+    retried_into(what, &Samples::of_ci(), &mut io::stderr(), step).await
 }
 
-/// The file where CI's sampler of the ports in use writes its state, if it runs.
-pub fn port_samples() -> Option<std::path::PathBuf> {
-    env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into)
+/// What a retry on WSAENOBUFS notes: the last of the samples of the ports in use in `file`, where
+/// CI's sampler writes them, and the state of the machine at that moment, as `now` takes it.
+pub struct Samples {
+    pub file: Option<std::path::PathBuf>,
+    pub now: fn() -> String,
+}
+
+impl Samples {
+    /// CI's samples, if its sampler runs, and the machine's state as [`snapshot`] takes it.
+    pub fn of_ci() -> Self {
+        Samples {
+            file: env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into),
+            now: snapshot,
+        }
+    }
+
+    /// The end of a retry's line: `ports: <the last sample>; now: <the state now>`.
+    fn note(&self) -> String {
+        let ports = last_sample(self.file.clone());
+        format!("ports: {ports}; now: {}", (self.now)())
+    }
+}
+
+/// The state of this machine as a connect fails with WSAENOBUFS: on Windows its kernel's pools and
+/// counts of processes, threads and handles, and its TCP sockets by state, those of this process
+/// and the ephemeral ports they hold; elsewhere `not taken`.
+#[cfg(not(windows))]
+pub fn snapshot() -> String {
+    "not taken".to_owned()
+}
+
+/// The state of this machine as a connect fails with WSAENOBUFS: on Windows its kernel's pools and
+/// counts of processes, threads and handles, and its TCP sockets by state, those of this process
+/// and the ephemeral ports they hold; elsewhere `not taken`.
+#[cfg(windows)]
+pub fn snapshot() -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+    let mut info = PERFORMANCE_INFORMATION::default();
+    let size = u32::try_from(std::mem::size_of::<PERFORMANCE_INFORMATION>()).unwrap_or(0);
+    // SAFETY: `info` is writable and of that size.
+    let kernel = if unsafe { GetPerformanceInfo(&raw mut info, size) } == 0 {
+        format!("no performance information: {}", io::Error::last_os_error())
+    } else {
+        let mb = |pages: usize| (pages * info.PageSize) >> 20;
+        let mut own = 0;
+        // SAFETY: the pseudo handle of this process, which needs no closing; `own` is writable.
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut own) };
+        format!(
+            "non-paged pool {} MB, paged pool {} MB, {} processes, {} threads, {} handles, {own} of \
+             them this process's",
+            mb(info.KernelNonpaged),
+            mb(info.KernelPaged),
+            info.ProcessCount,
+            info.ThreadCount,
+            info.HandleCount,
+        )
+    };
+    let netstat = match Command::new("netstat").arg("-ano").output() {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Err(err) => return format!("{kernel}; no netstat: {err}"),
+    };
+    let pid = process::id().to_string();
+    let (mut states, mut ports, mut own) = (BTreeMap::<&str, usize>::new(), BTreeSet::new(), 0);
+    for line in netstat.lines() {
+        let [protocol, local, _, state, owner] = line.split_whitespace().collect::<Vec<_>>()[..]
+        else {
+            continue;
+        };
+        if protocol != "TCP" {
+            continue;
+        }
+        *states.entry(state).or_default() += 1;
+        own += usize::from(owner == pid);
+        let port = local
+            .rsplit(':')
+            .next()
+            .and_then(|port| port.parse::<u16>().ok());
+        if let Some(port) = port.filter(|&port| port >= 49152 && state != "LISTENING") {
+            ports.insert(port);
+        }
+    }
+    let states: Vec<String> = states
+        .iter()
+        .map(|(state, n)| format!("{state}={n}"))
+        .collect();
+    format!(
+        "{kernel}; TCP sockets {}, {own} of them this process's; {} ephemeral ports held",
+        states.join(" "),
+        ports.len()
+    )
 }
 
 /// What [`retried_on_reset`] gives, each retry a line written to `sink`: its error and wait, and for
-/// WSAENOBUFS the last of the ports in use that `samples` holds.
+/// WSAENOBUFS what `samples` notes.
 pub async fn retried_into<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
-    samples: Option<std::path::PathBuf>,
+    samples: &Samples,
     sink: &mut (impl Write + Send),
     mut step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
@@ -220,7 +310,7 @@ pub async fn retried_into<T, F: Future<Output = Result<T, sqlx::Error>>>(
                 let mut line =
                     format!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
                 if err.raw_os_error() == Some(NO_BUFFER_SPACE) {
-                    line += &format!("; ports: {}", last_sample(samples.clone()));
+                    line += &format!("; {}", samples.note());
                 }
                 let _ = writeln!(sink, "{line}");
                 tokio::time::sleep(wait).await;
@@ -249,19 +339,19 @@ pub fn last_sample(samples: Option<std::path::PathBuf>) -> String {
 /// Windows has no buffer space for it, as the tests' database connects are
 /// ([`retried_on_reset`]); each retry a line on stderr.
 pub fn reach(who: &str, target: &str) -> io::Result<TcpStream> {
-    reached(who, target, port_samples(), &mut io::stderr(), || {
+    reached(who, target, &Samples::of_ci(), &mut io::stderr(), || {
         TcpStream::connect(target)
     })
 }
 
 /// What [`reach`] gives with `connect` for the connect: up to [`SETUP_ATTEMPTS`] tries while it fails
 /// with WSAENOBUFS, waiting [`SETUP_RETRY_WAIT`] before the first retry, doubled before each next
-/// one; each retry a line written to `sink` with its error, its wait and the last of the ports in
-/// use that `samples` holds. Any other error is given at once.
+/// one; each retry a line written to `sink` with its error, its wait and what `samples` notes. Any
+/// other error is given at once.
 pub fn reached<T>(
     who: &str,
     target: &str,
-    samples: Option<std::path::PathBuf>,
+    samples: &Samples,
     sink: &mut impl Write,
     mut connect: impl FnMut() -> io::Result<T>,
 ) -> io::Result<T> {
@@ -269,10 +359,10 @@ pub fn reached<T>(
     for _ in 1..SETUP_ATTEMPTS {
         match connect() {
             Err(err) if err.raw_os_error() == Some(NO_BUFFER_SPACE) => {
-                let ports = last_sample(samples.clone());
+                let note = samples.note();
                 let _ = writeln!(
                     sink,
-                    "{who}: cannot reach {target}: {err}; again in {wait:?}; ports: {ports}"
+                    "{who}: cannot reach {target}: {err}; again in {wait:?}; {note}"
                 );
                 thread::sleep(wait);
                 wait *= 2;

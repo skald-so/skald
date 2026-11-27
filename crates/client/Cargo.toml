@@ -145,9 +145,11 @@ dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", 
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-# The tests list the processes of the copy of `skald` they run.
+# The tests list the processes of the copy of `skald` they run, and the state of the machine as a
+# connect fails for want of buffer space.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
 ] }

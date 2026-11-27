@@ -17,7 +17,7 @@ use skald_proto::DeviceId;
 use crate::at_terminal::{as_agent, keys_in};
 use crate::browser::{APPROVE, Browser, CODE_FIELD, Page};
 use crate::cloud::{Cloud, WAIT, ids};
-use crate::common::{port_samples, reached};
+use crate::common::{Samples, reached};
 use crate::linking::{LINK, OWN_DEVICE, codes_in, forms, says, typed, until_run_open};
 use crate::machine::{Finished, Machine, RUN_LIMIT, Run, SERVER, SIGN_IN};
 use crate::world::{Person, World};
@@ -657,7 +657,7 @@ pub fn request(
     let mut stream = reached(
         "link page",
         &address.to_string(),
-        port_samples(),
+        &Samples::of_ci(),
         &mut io::stderr(),
         || TcpStream::connect_timeout(&address, Duration::from_secs(5)),
     )
