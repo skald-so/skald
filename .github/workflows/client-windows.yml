@@ -1,0 +1,245 @@
+name: Client on Windows
+
+# The client's, the adapters' and the OIDC stand-in's tests on Windows. On a PR they run only once
+# it has the label ready-to-merge, on its every push from then on; the check Rust on Windows, which
+# dev requires, is reported only when they passed on the PR's last commit or its workspace part is
+# unchanged.
+on:
+  # Not on a draft: every job is skipped until the PR is ready for review.
+  pull_request:
+    branches: [dev]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  push:
+    branches: [dev]
+
+permissions:
+  contents: read
+
+# As in ci.yml: a PR's new push, or a new label, cancels the PR's older run; a push to dev cancels no
+# running run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Changed parts for Windows
+    if: github.event.pull_request.draft != true
+    runs-on: ubuntu-latest
+    outputs:
+      workspace: ${{ steps.parts.outputs.workspace }}
+    steps:
+      # The checkout is the PR merged into dev; its first parent is dev.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - id: parts
+        if: github.event_name == 'pull_request'
+        shell: bash # -o pipefail: a failure of changed-parts fails the step
+        run: script/changed-parts HEAD^1 | tee -a "$GITHUB_OUTPUT"
+
+  # The tests of the client and the adapters, the crates whose behavior depends on the OS, on
+  # Windows; script/test runs them on Linux. Outside script/test, with the workspace part: on a PR,
+  # only once it has the label ready-to-merge.
+  client-windows:
+    name: Client on Windows
+    needs: changes
+    if: >-
+      github.event_name == 'push' ||
+      (needs.changes.outputs.workspace == 'true' && contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      # Every build of the job takes .cargo/windows-tests.toml, also the server binary a test builds
+      # with cargo; its build is cached apart from the unoptimized one it replaced.
+      - name: Optimize the crates the tests spend their CPU in
+        run: Copy-Item -Path .cargo/windows-tests.toml -Destination .cargo/config.toml
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: windows-tests
+      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
+        with:
+          tool: cargo-nextest@0.9.151
+      - name: Build the client's tests
+        run: cargo nextest run -p skald-client -p skald-oidc-stand-in --locked --no-run
+      # The temporary directory of the next steps on D:, where the workspace is, not under the
+      # user's profile on C:: the tests keep their state, databases and browser profiles there.
+      - name: Move the temporary directory to D
+        shell: pwsh
+        run: |
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      # The sign-in tests drive Chrome Headless Shell, installed by the playwright-core of web/ on a
+      # cache miss.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/AppData/Local/ms-playwright
+          key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: ms-playwright-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install the packages of web/
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Install Chrome Headless Shell
+        working-directory: web
+        run: node node_modules/playwright-core/cli.js install chromium-headless-shell
+      # The image's PostgreSQL, stopped and disabled until started, set as script/lib/postgres.sh
+      # sets the tests' one: it flushes nothing to the disk, which the client's state shares, and
+      # takes the tests' connections.
+      - name: Start PostgreSQL
+        shell: pwsh
+        run: |
+          Add-Content -Path "$env:PGDATA\postgresql.conf" -Value 'fsync = off', 'max_connections = 500'
+          $service = Get-Service -Name 'postgresql*'
+          Set-Service -InputObject $service -StartupType Manual
+          Start-Service -InputObject $service
+          & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+      # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
+      # unknown; once it logged that every ephemeral port was in use, though samples 10 s apart never
+      # showed 2,400 of its 16,384 in use. script/sample-ports.ps1, started here, samples every second
+      # the sockets on ephemeral ports and what holds them, the processes and the drives' free space;
+      # a retry of such a connect prints the last sample. The step waits for the first.
+      - name: Sample the ephemeral ports in use
+        shell: pwsh
+        run: |
+          $samples = Join-Path $env:RUNNER_TEMP 'ports.txt'
+          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', (Resolve-Path script/sample-ports.ps1), $samples
+          $deadline = (Get-Date).AddSeconds(60)
+          do {
+            Start-Sleep -Milliseconds 500
+            $first = @(Get-Content -Path $samples -ErrorAction SilentlyContinue) -match '^\d\d:' |
+              Select-Object -First 1
+          } until ($first -or (Get-Date) -gt $deadline)
+          Get-Content -Path $samples -ErrorAction SilentlyContinue
+          if ($first -notmatch 'ports in use') { exit 1 }
+      # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
+      # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
+      # tests of all the client's, the adapters' and the OIDC stand-in's test binaries at once, each
+      # in a process of its own.
+      - name: Test the client and the adapters
+        shell: pwsh
+        env:
+          SKALD_TEST_REAL_KEY_STORAGE: '1'
+        run: |
+          $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
+          $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
+          cargo nextest run -p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast --test-threads 8
+      - name: Show the most ephemeral ports in use
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $lines = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          $lines | Where-Object { $_ -notmatch '^\d\d:' }
+          $samples = @($lines | Where-Object { $_ -match '^\d\d:' })
+          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool, then the last:"
+          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
+          $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
+            Select-Object -Last 1
+          $samples | Select-Object -Last 1
+      # What the tests left on the disks: the free space of C: and D:, and the size of the build and
+      # of the temporary directory, with its largest entries, such as browsers' profiles.
+      - name: Show the disks' use
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem -Name C, D | ForEach-Object {
+            "$($_.Name): $([int]($_.Free / 1GB)) GB free of $([int](($_.Used + $_.Free) / 1GB)) GB"
+          }
+          # The bytes of the files at $path, a file or a directory and all under it.
+          function Bytes($path) {
+            [long](Get-ChildItem -Force -Recurse -File -Path $path -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+          }
+          "target: $([int]((Bytes target) / 1MB)) MB"
+          "${env:RUNNER_TEMP}: $([int]((Bytes $env:RUNNER_TEMP) / 1MB)) MB, the largest:"
+          Get-ChildItem -Force -Path $env:RUNNER_TEMP |
+            ForEach-Object { [pscustomobject]@{ Name = $_.Name; Bytes = Bytes $_.FullName } } |
+            Sort-Object Bytes -Descending | Select-Object -First 8 |
+            ForEach-Object { "  $($_.Name): $([int]($_.Bytes / 1MB)) MB" }
+      # What the TCP/IP stack logged while the tests ran, as a connect failing with WSAENOBUFS
+      # (10055) may come with its warning of the ports or memory it lacked; and whether Defender
+      # scanned in real time.
+      - name: Show the TCP/IP stack's warnings
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $events = @(Get-WinEvent -ErrorAction SilentlyContinue -FilterHashtable @{
+            LogName = 'System'; ProviderName = 'Tcpip', 'Microsoft-Windows-Tcpip', 'AFD'
+          })
+          "$($events.Count) events of TCP/IP and AFD in the system log"
+          $events | Group-Object ProviderName, Id | ForEach-Object {
+            $times = $_.Group.TimeCreated | Sort-Object
+            "$($_.Name): $($_.Count) times, $($times[0].ToString('HH:mm:ss'))-$($times[-1].ToString('HH:mm:ss'))"
+            ($_.Group | Select-Object -First 1).Message
+          }
+          # The samples of the seconds around each time the ephemeral ports ran out.
+          $lines = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          $events | Where-Object Id -in 4227, 4231 | Sort-Object TimeCreated | Select-Object -First 10 |
+            ForEach-Object {
+              $at = $_.TimeCreated
+              "samples around $($_.Id) at $($at.ToString('HH:mm:ss')):"
+              $seconds = -3..1 | ForEach-Object { $at.AddSeconds($_).ToString('HH:mm:ss') }
+              $lines | Where-Object { $_.Length -ge 8 -and $_.Substring(0, 8) -in $seconds }
+            }
+          $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          "Defender real-time protection: $($defender.RealTimeProtectionEnabled)"
+      # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
+      # test's database ends.
+      - name: Show PostgreSQL's failures
+        if: failure()
+        shell: pwsh
+        run: |
+          Get-ChildItem -File -Path "$env:PGDATA\log" | Sort-Object LastWriteTime | Get-Content |
+            Where-Object {
+              $_ -match 'FATAL|PANIC|WARNING|could not|server process' -and
+              $_ -notmatch 'terminating connection due to administrator command'
+            }
+      # The tests remove the directories they make in the temporary directory, also when one fails:
+      # any left, listed with what it holds, fails the job.
+      - name: Check that the tests left no directories
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $left = Get-ChildItem -Directory -Path ([IO.Path]::GetTempPath()) |
+            Where-Object { $_.Name -like 'skald-update-*' -or $_.Name -like 'skald-client-*' }
+          foreach ($dir in $left) {
+            "left: $($dir.FullName)"
+            Get-ChildItem -Recurse -Name -Path $dir.FullName
+          }
+          if ($left) { exit 1 }
+
+  # The check Rust on Windows that dev requires: it passes only when job changes succeeded and the
+  # client's tests passed, or were skipped as the workspace part is unchanged. While a PR that
+  # changes the part lacks the label, it is skipped under another name, so the required check is
+  # missing and the PR cannot be merged; a skipped check of the required name would pass.
+  rust-windows:
+    name: >-
+      ${{ (github.event_name != 'pull_request' || needs.changes.outputs.workspace != 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge')) &&
+      'Rust on Windows' || 'Rust on Windows: waits for the label ready-to-merge' }}
+    needs: [changes, client-windows]
+    if: >-
+      always() && github.event.pull_request.draft != true &&
+      (github.event_name != 'pull_request' || needs.changes.outputs.workspace != 'true' ||
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+    runs-on: ubuntu-latest
+    steps:
+      - shell: bash
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq --raw-output 'to_entries[] | "\(.key): \(.value.result)"' <<<"$NEEDS"
+          jq --exit-status '.changes.result == "success" and (.["client-windows"].result == "success"
+            or (.["client-windows"].result == "skipped" and .changes.outputs.workspace != "true"))' <<<"$NEEDS" >/dev/null

@@ -253,6 +253,31 @@ fn one_shot_call_with_no_newer_binary_installed_is_run_by_the_session() {
     );
 }
 
+/// How long a one-shot session is watched for processes beside it: over three of its beats.
+const WATCHED: Duration = Duration::from_millis(3_500);
+
+/// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
+/// with `--one-shot`, and no newer copy is installed. Its `inbox` gives one short line; for
+/// [`WATCHED`] after it, while the session beats, no process of the copy runs beside its server,
+/// not for a moment: the session asks the installed copy its version only once it changed.
+#[test]
+fn one_shot_session_with_no_newer_binary_runs_nothing_beside_it() {
+    let agents = Agents::new(
+        [4_627_047_001, 4_627_047_002],
+        ["ada-beats-alone", "bob-stays-quiet"],
+    );
+    let helped = Helped::new(&agents.talk.ada.machine);
+    let mut session = helped_session(&helped, &agents.folder, (&[], &[ONE_SHOT]));
+    assert_nothing_waiting(&session.inbox());
+
+    let until = Instant::now() + WATCHED;
+    while Instant::now() < until {
+        let beside = helpers_beside(&helped, &session);
+        assert!(beside.is_empty(), "runs beside the session: {beside:?}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
 /// A session of `claude-code` in `~/work/acme`, of Ada's machine's own copy of `skald`, runs
 /// through a helper of its own version. Its `inbox` with nothing waiting gives one short line, and
 /// no error.

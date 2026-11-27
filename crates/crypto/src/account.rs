@@ -30,6 +30,77 @@ const SALT_PREFIX: &[u8] = b"skald recovery";
 const ARGON2_MEMORY: u32 = 262_144;
 const ARGON2_PASSES: u32 = 8;
 const ARGON2_LANES: u32 = 1;
+/// Those of a test build with the feature `test-cost`: the least Argon2id takes, 8 KiB and 1 pass.
+#[cfg(feature = "test-cost")]
+const TEST_COST: (u32, u32, u32) = (8, 1, 1);
+
+#[cfg(all(feature = "test-cost", not(debug_assertions)))]
+compile_error!(
+    "skald-crypto's feature `test-cost` is for test builds only: a release build derives the \
+     recovery key at the spec's cost"
+);
+
+#[cfg(feature = "test-cost")]
+std::thread_local! {
+    /// Whether this thread of a test build with the feature `test-cost` derives at the spec's
+    /// cost: while a [`SpecCost`] of it lives.
+    static AT_SPEC_COST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread derives the recovery key at the spec's cost: always, but in a test build
+/// with the feature `test-cost` only while a [`SpecCost`] of this thread lives.
+pub fn derives_at_spec_cost() -> bool {
+    #[cfg(feature = "test-cost")]
+    return AT_SPEC_COST.with(std::cell::Cell::get);
+    #[cfg(not(feature = "test-cost"))]
+    true
+}
+
+/// While it lives, the thread that made it derives the recovery key at the spec's cost, in a test
+/// build with the feature `test-cost` too: for the tests of the derivation itself. Every other
+/// build always does. Only its own thread: a test that runs beside it in the same process, as
+/// `cargo test` and WASM run them, keeps its own cost.
+#[must_use = "the spec's cost lasts only while it lives"]
+pub struct SpecCost {
+    /// Whether the thread derived at the spec's cost before.
+    #[cfg(feature = "test-cost")]
+    before: bool,
+    /// Of its own thread only.
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl SpecCost {
+    /// The spec's cost on this thread until the value is dropped.
+    pub fn enter() -> Self {
+        Self {
+            #[cfg(feature = "test-cost")]
+            before: AT_SPEC_COST.with(|at| at.replace(true)),
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for SpecCost {
+    fn drop(&mut self) {
+        #[cfg(feature = "test-cost")]
+        AT_SPEC_COST.with(|at| at.set(self.before));
+    }
+}
+
+impl fmt::Debug for SpecCost {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SpecCost")
+    }
+}
+
+/// Argon2id's memory in KiB, passes and lanes for this thread: [`derives_at_spec_cost`].
+fn argon2_cost() -> (u32, u32, u32) {
+    #[cfg(feature = "test-cost")]
+    if !derives_at_spec_cost() {
+        return TEST_COST;
+    }
+    (ARGON2_MEMORY, ARGON2_PASSES, ARGON2_LANES)
+}
 
 /// An account's recovery key: 12 characters of Crockford's base32, zeroed on drop and never shown
 /// but by [`RecoveryKey::shown`].
@@ -105,10 +176,11 @@ impl RecoveryKey {
     }
 
     /// Argon2id of the key on `account`, as "Account" says: the AEAD key of the master backup and
-    /// the recovery HPKE key pair.
+    /// the recovery HPKE key pair; at a test build's cost unless [`derives_at_spec_cost`].
     fn derive(&self, account: AccountId) -> Derived {
-        let params = Params::new(ARGON2_MEMORY, ARGON2_PASSES, ARGON2_LANES, Some(64))
-            .expect("the spec's Argon2id parameters");
+        let (memory, passes, lanes) = argon2_cost();
+        let params =
+            Params::new(memory, passes, lanes, Some(64)).expect("valid Argon2id parameters");
         let mut salt = Vec::with_capacity(SALT_PREFIX.len() + 16);
         salt.extend_from_slice(SALT_PREFIX);
         salt.extend_from_slice(account.as_bytes());

@@ -15,6 +15,8 @@ mod cloud;
 mod common;
 #[path = "../recovery_key/grants.rs"]
 mod grants;
+#[path = "../invite_fixtures/terminal.rs"]
+mod invite_terminal;
 #[path = "../device_keys/keys.rs"]
 mod keys;
 #[path = "../compact_output/lines.rs"]
@@ -25,6 +27,8 @@ mod linking;
 mod machine;
 #[path = "../mcp_inbox/client.rs"]
 mod mcp;
+#[path = "../invite_fixtures/members.rs"]
+mod members;
 mod privacy;
 #[path = "../sign_in/relay.rs"]
 mod relay;
@@ -101,10 +105,12 @@ fn journey(secret_file: &Path) {
     assert_eq!(first, default);
     assert_ne!(other, default);
 
-    let issued =
-        Terminal::start(&ada1, &["invite", ACME, "--channel", &other.to_string()]).finish();
-    assert!(issued.success, "the admin creates the invite");
-    let invite = Invite::from_terminal(&issued.text, &spa, secret_file);
+    let shown = invite_terminal::create_link(
+        &ada1,
+        &["invite", ACME, "--channel", &other.to_string()],
+        Some(&spa.url),
+    );
+    let invite = Invite::from_terminal(shown, secret_file);
     open_members(&admin, &spa);
     wait_until(&admin, "the pending invite in Members", |page| {
         page.count("main >> role=button[name=/^revoke member invite link/i]") == 1
@@ -120,8 +126,8 @@ fn journey(secret_file: &Path) {
 
     let bob1 = Machine::new().with_host_name(HOSTS[2]);
     let before = cloud.grants().len();
-    let mut accept = Terminal::start(&bob1, &["accept-invite"]);
-    accept.wait_to_show("Paste the invite link:");
+    let mut accept = invite_terminal::start_accepting(&bob1, &[]);
+    invite_terminal::asked_for_link(&mut accept);
     accept.type_line(invite.link());
     let mut grant = grants::shown_grant(&cloud, &mut accept, before);
     // The link the terminal shows carries the authorization into GitHub sign-in.
@@ -130,14 +136,7 @@ fn journey(secret_file: &Path) {
     cloud.decide(&newcomer, &bob, &grant, APPROVE);
     accept.wait_to_show("Press Enter once it is written down:");
     accept.enter();
-    let confirmation = accept.wait_for("the invite confirmation", |text| {
-        text.to_lowercase().contains("accept the invite?")
-    });
-    assert!(
-        words(&confirmation).contains(&ACME),
-        "the confirmation names the team"
-    );
-    accept.type_line("yes");
+    invite_terminal::confirm(&mut accept, |summary| words(summary).contains(&ACME));
     assert!(
         accept.finish().success,
         "the new account accepts the invite"
@@ -273,10 +272,7 @@ fn has_both_groups(machine: &Machine, channels: [ChannelId; 2]) -> bool {
 fn open_members(page: &Page, spa: &Spa) {
     let visit = page.goto(&spa.at("/members"));
     assert_eq!(visit.status, Some(200), "Members opens");
-    access::press(page, None, "button", "^menu$");
-    access::press(page, None, "button", "^space\\b");
-    access::press(page, None, "[role=option]", "^acme\\b");
-    access::press(page, None, "button", "^menu$");
+    members::select_acme(page, true);
 }
 
 struct Agent<'a> {

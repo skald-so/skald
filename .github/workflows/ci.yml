@@ -67,9 +67,12 @@ jobs:
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
+      # Many tests wait, for a device flow's polls and the ends of leases, codes and challenges: 16
+      # at a time keep the runner's 4 CPUs busy.
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: workspace
+          NEXTEST_TEST_THREADS: 16
 
   rust-wasm:
     name: 'Rust: WASM'
@@ -208,141 +211,6 @@ jobs:
           jq --exit-status '.changes.result == "success"
             and all(.[]; .result == "success" or .result == "skipped")' <<<"$NEEDS" >/dev/null
 
-  # The tests of the client and the adapters, the crates whose behavior depends on the OS, on
-  # Windows; script/test runs them on Linux. Outside script/test, with the workspace part.
-  client-windows:
-    name: Client on Windows
-    needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.workspace == 'true'
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal
-          rustup default stable
-      # Every build of the job takes .cargo/windows-tests.toml, also the server binary a test builds
-      # with cargo; its build is cached apart from the unoptimized one it replaced.
-      - name: Optimize the crates the tests spend their CPU in
-        run: Copy-Item -Path .cargo/windows-tests.toml -Destination .cargo/config.toml
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: windows-tests
-      - uses: taiki-e/install-action@893d6ee8d714b6c7dfe2bcd94e5759e9a7958a7e # v2.90.10
-        with:
-          tool: cargo-nextest@0.9.151
-      - name: Build the client's tests
-        run: cargo nextest run -p skald-client --locked --no-run
-      # The temporary directory of the next steps on D:, where the workspace is, not under the
-      # user's profile on C:: the tests keep their state, databases and browser profiles there.
-      - name: Move the temporary directory to D
-        shell: pwsh
-        run: |
-          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
-          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
-      # The sign-in tests drive Chrome Headless Shell, installed by the playwright-core of web/ on a
-      # cache miss.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 26
-          cache: npm
-          cache-dependency-path: web/package-lock.json
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/AppData/Local/ms-playwright
-          key: ms-playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('web/package-lock.json') }}
-          restore-keys: ms-playwright-${{ runner.os }}-${{ runner.arch }}-
-      - name: Install the packages of web/
-        working-directory: web
-        run: npm ci --no-audit --no-fund
-      - name: Install Chrome Headless Shell
-        working-directory: web
-        run: node node_modules/playwright-core/cli.js install chromium-headless-shell
-      # The image's PostgreSQL, stopped and disabled until started, set as script/lib/postgres.sh
-      # sets the tests' one: it flushes nothing to the disk, which the client's state shares, and
-      # takes the tests' connections.
-      - name: Start PostgreSQL
-        shell: pwsh
-        run: |
-          Add-Content -Path "$env:PGDATA\postgresql.conf" -Value 'fsync = off', 'max_connections = 500'
-          $service = Get-Service -Name 'postgresql*'
-          Set-Service -InputObject $service -StartupType Manual
-          Start-Service -InputObject $service
-          & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
-          if ($LASTEXITCODE -ne 0) { exit 1 }
-      # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
-      # unknown. A process started here samples, about every 10 s, the ephemeral ports in use, by
-      # state and owner, and the non-paged pool; a retry of such a connect prints the last sample.
-      - name: Sample the ephemeral ports in use
-        shell: pwsh
-        run: |
-          $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
-          Set-Content -Path $sampler -Value @'
-          $start = (Get-NetTCPSetting -SettingName Internet).DynamicPortRangeStartPort
-          while ($true) {
-            $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
-              Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
-            $ports = @($used | Sort-Object -Property LocalPort -Unique).Count
-            $pool = [int]((Get-Counter '\Memory\Pool Nonpaged Bytes').CounterSamples[0].CookedValue / 1MB)
-            $states = ($used | Group-Object State | Sort-Object Count -Descending |
-              ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
-            $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
-              Sort-Object Count -Descending | Select-Object -First 3 |
-              ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }) -join ' '
-            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners" |
-              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt')
-            Start-Sleep -Seconds 10
-          }
-          '@
-          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
-      # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
-      # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
-      # tests of all the client's and the adapters' test binaries at once, each in a process of its
-      # own.
-      - name: Test the client and the adapters
-        shell: pwsh
-        env:
-          SKALD_TEST_REAL_KEY_STORAGE: '1'
-        run: |
-          $env:SKALD_TEST_DATABASE_URL = "postgres://${env:PGUSER}:${env:PGPASSWORD}@127.0.0.1:5432"
-          $env:SKALD_TEST_PORT_SAMPLES = Join-Path $env:RUNNER_TEMP 'ports.txt'
-          cargo nextest run -p skald-client -p skald-adapters --locked --no-fail-fast --test-threads 8
-      - name: Show the most ephemeral ports in use
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $samples = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
-          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool:"
-          $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
-          $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
-            Select-Object -Last 1
-      # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
-      # test's database ends.
-      - name: Show PostgreSQL's failures
-        if: failure()
-        shell: pwsh
-        run: |
-          Get-ChildItem -File -Path "$env:PGDATA\log" | Sort-Object LastWriteTime | Get-Content |
-            Where-Object {
-              $_ -match 'FATAL|PANIC|WARNING|could not|server process' -and
-              $_ -notmatch 'terminating connection due to administrator command'
-            }
-      # The tests remove the directories they make in the temporary directory, also when one fails:
-      # any left, listed with what it holds, fails the job.
-      - name: Check that the tests left no directories
-        if: ${{ !cancelled() }}
-        shell: pwsh
-        run: |
-          $left = Get-ChildItem -Directory -Path ([IO.Path]::GetTempPath()) |
-            Where-Object { $_.Name -like 'skald-update-*' -or $_.Name -like 'skald-client-*' }
-          foreach ($dir in $left) {
-            "left: $($dir.FullName)"
-            Get-ChildItem -Recurse -Name -Path $dir.FullName
-          }
-          if ($left) { exit 1 }
-
   tooling:
     name: Tooling
     needs: changes
@@ -363,9 +231,12 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
+      - name: Add the runner's Homebrew to PATH
+        run: echo /home/linuxbrew/.linuxbrew/bin >>"$GITHUB_PATH"
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: tooling
+          SKALD_TEST_REQUIRE_HOMEBREW: '1'
 
   web:
     name: Web

@@ -2,7 +2,7 @@
 //! idle, and the next message is queued.
 
 use crate::codex::{Codex, Event, assert_bare};
-use crate::standin::{assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, assert_soon, web_in_app};
 
 /// What api says to web while its session is busy, and once its turn ended; neither is anywhere
 /// else.
@@ -26,9 +26,8 @@ pub fn a_busy_session_gets_the_signal_from_its_hooks_and_a_queue_once_its_turn_e
     process.silent(&codex, &web, Event::Stop, "the turn's end");
 
     let idle = codex.web.own(AFTER_TURN);
-    let came = now();
     let ran = app.await_runs(1);
-    assert_soon(&ran[0], came);
+    assert_soon(&ran[0], &codex, idle);
     let texts = [WHILE_BUSY, AFTER_TURN];
     let queued = assert_queued(&ran[0], (&web, &app), &texts, &[busy, idle], &[]);
     assert_eq!(

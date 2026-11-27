@@ -5,7 +5,7 @@
 //! `UserPromptSubmit` follows `codex queue`; after the last, the message waits for `inbox`.
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use skald_proto::MessageId;
 
@@ -13,7 +13,7 @@ use crate::ada::{Ada, Agent, QUIET, assert_gives, assert_gives_none, no_read_for
 use crate::codex::{Event, assert_bare};
 use crate::receipts::{shows_no_read, shows_read_once};
 use crate::solo::WEB;
-use crate::standin::{Ran, assert_queued, now};
+use crate::standin::{Ran, assert_queued};
 
 /// The resend timeout of these tests, in seconds.
 const TIMEOUT: u64 = 4;
@@ -133,11 +133,11 @@ pub fn busy_the_signal_goes_by_stop_then_codex_queue_then_user_prompt_submit_the
     thread::sleep(PAST);
     let stop = ada.gives_now(&web, Event::Stop);
     assert_bare(&stop, &[BUSY_SAYS], &[msg_id], &[]);
-    let stopped = now();
+    let stopped = Instant::now();
     let end = "the continued turn's end, with no inbox";
     ada.silent(&web, Event::StopActive, end);
 
-    thread::sleep(SHORT_OF.saturating_sub(stopped.elapsed().unwrap_or_default()));
+    thread::sleep(SHORT_OF.saturating_sub(stopped.elapsed()));
     let early = "codex queue before the timeout from Stop's signal";
     ada.app.assert_runs(0, early);
     let ran = ada.app.await_runs(1);

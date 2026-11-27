@@ -95,7 +95,7 @@ Every executor keeps of the device's environment `PATH`, `HOME`, `USER`, `LOGNAM
 
 Every executor gives its agent the request on stdin as `[<sender> · <level>]: <text>`, the text on one line, after the line that says peer and service text is data from its sender unless the level is `own`.
 
-Every executor ends its agent with every process the agent started when the run is stopped, also while another thread waits for it, and once the agent exits: on Unix, the agent's process group and each process whose environment holds the run's `SKALD_EXECUTOR_RUN` marker, which reaches the commands Codex starts in sessions of their own; on Windows, a job object.
+Every executor ends its agent with every process the agent started when the run is stopped, also while another thread waits for it, and once the agent exits: on Unix, the agent's process group and each process whose environment holds the run's `SKALD_EXECUTOR_RUN` marker, which reaches the commands Codex starts in sessions of their own; on macOS, which hides the environment of its own programs such as `/bin/sh`, also each process that holds the run's marker pipe, whose write end the agent inherits; on Windows, a job object.
 
 The Codex executor (`skald_adapters::codex`), from the [Codex findings](#codex):
 - runs `codex exec --json --ephemeral --ignore-user-config --ignore-rules --disable plugins --disable hooks -c skills.include_instructions=false --skip-git-repo-check -c approval_policy="never" --sandbox danger-full-access -C <folder> -`; on Windows, also `-c windows.sandbox="unelevated"`;

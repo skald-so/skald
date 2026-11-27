@@ -236,13 +236,13 @@ pub fn learned(dir: &Path, (storage, speaks, timeout): Settings) -> Option<Strin
     if by_key(&mut connection, &state, &stored) != Ok(Some(true)) {
         return None;
     }
-    mark(dir);
+    let _ = mark(dir);
     Some(said(dir))
 }
 
 /// Marks the state in `dir` as of an account the server reports deleted.
-fn mark(dir: &Path) {
-    let _ = fs::write(dir.join(REPORTED), b"");
+pub fn mark(dir: &Path) -> io::Result<()> {
+    fs::write(dir.join(REPORTED), b"")
 }
 
 /// The account of the session `token`, as the server of `connection` gives it.
@@ -449,7 +449,7 @@ impl Watch {
             deleted = watch(dir, settings);
         }
         if deleted {
-            mark(dir);
+            let _ = mark(dir);
             let line = format!("skald: {}\n", said(dir));
             let _ = output::direct(output::Stream::Err, line.as_bytes());
         }
