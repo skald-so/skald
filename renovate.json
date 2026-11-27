@@ -20,6 +20,14 @@
         "s3_image=(?<depName>[^:\\s]+):(?<currentValue>[^@\\s]+)@(?<currentDigest>sha256:[0-9a-f]+)"
       ],
       "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "The Codex CLI used by the E2E workflow",
+      "managerFilePatterns": ["/^\\.github/workflows/e2e\\.yml$/"],
+      "matchStrings": ["npm install [^\\n]*@openai/codex@(?<currentValue>[^\\s]+)"],
+      "depNameTemplate": "@openai/codex",
+      "datasourceTemplate": "npm"
     }
   ],
   "packageRules": [

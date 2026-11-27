@@ -31,7 +31,7 @@ hkdf = "0.13"
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
 # Delivery Service and the browser, `last_resort_key_package_ext` for the last-resort KeyPackage.
-mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_package_ext"] }
+mls-rs = { version = "0.58.0", features = ["external_client", "last_resort_key_package_ext"] }
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
 mls-rs-crypto-rustcrypto = "0.24"

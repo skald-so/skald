@@ -322,10 +322,11 @@ fn an_output_shows_no_buffer_space_once_its_new_bytes_end_the_error_also_split_a
 #[cfg(windows)]
 #[test]
 fn a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile() {
-    use std::io::{BufRead, BufReader};
+    use std::io::{BufRead, BufReader, Read};
     use std::process::{Command, Stdio};
 
     use browser::{Browser, contained};
+    use held::Held;
 
     const TEST: &str = "a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile";
     /// Set in the environment of that run.
@@ -339,47 +340,140 @@ fn a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile() 
         assert!(contained.contains(&driver), "{driver} not in {contained:?}");
         // Its driver no longer sees its stdin close, nor closes the browser.
         contained::suspend(driver).expect("suspend the driver");
-        let contained = serde_json::to_string(&contained).expect("processes");
-        println!("{PROCESSES}{contained}");
+        // With when each started, so that the test tells them from later processes of their IDs.
+        let started: Vec<(u32, Option<u64>)> = contained
+            .iter()
+            .filter_map(|&pid| Held::open(pid).map(|process| (pid, process.created())))
+            .collect();
+        let started = serde_json::to_string(&started).expect("processes");
+        println!("{PROCESSES}{started}");
+        // It ends once the test, having looked at its directory, closes its stdin: other tests'
+        // drivers remove the directory of a binary no longer running.
+        let _ = std::io::stdin().read_to_end(&mut Vec::new());
         std::process::exit(0);
     }
     let mut run = Command::new(std::env::current_exe().expect("this test binary"))
         .args([TEST, "--exact", "--nocapture"])
         .env(PLAY, "1")
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
         .expect("run this test binary");
+    let stdin = run.stdin.take().expect("stdin is piped");
     let stdout = BufReader::new(run.stdout.take().expect("stdout is piped"));
     let printed = stdout
         .lines()
         .map_while(Result::ok)
         .find_map(|line| line.strip_prefix(PROCESSES).map(str::to_owned));
+    let Some(printed) = printed else {
+        drop(stdin);
+        let status = run.wait().expect("the run");
+        panic!("the run, {status}, printed no processes");
+    };
+    let listed: Vec<(u32, Option<u64>)> = serde_json::from_str(&printed).expect("processes");
+    // Held open, a process keeps its ID; one gone, or whose ID went to a later one, has ended.
+    let held: Vec<(u32, Held)> = listed
+        .iter()
+        .filter_map(|&(pid, created)| {
+            Held::open(pid)
+                .filter(|process| process.created() == created)
+                .map(|process| (pid, process))
+        })
+        .collect();
+    // `run` holds its process open until it drops, so its ID, the name of its directory, stays its.
+    let dir = contained::dir_of(run.id());
+    let filled = std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some());
+    drop(stdin);
     let status = run.wait().expect("the run");
-    let printed = printed.unwrap_or_else(|| panic!("the run, {status}, printed no processes"));
-    let pids: Vec<u32> = serde_json::from_str(&printed).expect("processes");
     let deadline = Instant::now() + Duration::from_secs(30);
     let running = loop {
-        let running: Vec<u32> = pids
+        let running: Vec<u32> = held
             .iter()
-            .copied()
-            .filter(|&pid| contained::runs(pid))
+            .filter(|(_, process)| !process.ended())
+            .map(|&(pid, _)| pid)
             .collect();
         if running.is_empty() || Instant::now() >= deadline {
             break running;
         }
         std::thread::sleep(Duration::from_millis(100));
     };
-    // Nothing else would end them.
+    // Nothing else would end them; their IDs are still theirs.
     for pid in &running {
         let _ = Command::new("taskkill")
             .args(["/F", "/PID", &pid.to_string()])
             .output();
     }
-    assert!(running.is_empty(), "still running: {running:?} of {pids:?}");
-    let dir = contained::dir_of(run.id());
-    let filled = std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some());
+    assert!(
+        running.is_empty(),
+        "still running: {running:?} of {listed:?}"
+    );
+    assert!(status.success(), "the run: {status}");
     assert!(filled, "nothing in {}", dir.display());
     let _browser = Browser::launch();
+    // Another test's driver may be removing it at the same time.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while dir.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     assert!(!dir.exists(), "{} is left", dir.display());
+}
+
+/// A process held open, so that its ID goes to no other process while a test looks at it.
+#[cfg(windows)]
+mod held {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    use windows_sys::Win32::Foundation::{FILETIME, WAIT_TIMEOUT};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    };
+
+    pub struct Held(OwnedHandle);
+
+    impl Held {
+        /// The process `pid`, unless it has ended.
+        pub fn open(pid: u32) -> Option<Self> {
+            [
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_SYNCHRONIZE,
+            ]
+            .into_iter()
+            .find_map(|access| {
+                // SAFETY: it takes no pointer; the handle is owned from here on.
+                let process = unsafe { OpenProcess(access, 0, pid) };
+                // SAFETY: a new handle that nothing else owns.
+                (!process.is_null()).then(|| Held(unsafe { OwnedHandle::from_raw_handle(process) }))
+            })
+            .filter(|held| !held.ended())
+        }
+
+        /// When it started, in 100 ns since 1601, if the handle may read it.
+        pub fn created(&self) -> Option<u64> {
+            let zero = FILETIME {
+                dwLowDateTime: 0,
+                dwHighDateTime: 0,
+            };
+            let [mut created, mut exited, mut kernel, mut user] = [zero; 4];
+            // SAFETY: an open handle; each pointer is to a FILETIME.
+            let got = unsafe {
+                GetProcessTimes(
+                    self.0.as_raw_handle(),
+                    &mut created,
+                    &mut exited,
+                    &mut kernel,
+                    &mut user,
+                )
+            };
+            (got != 0).then(|| {
+                (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime)
+            })
+        }
+
+        /// Whether it has ended and closed its files.
+        pub fn ended(&self) -> bool {
+            // SAFETY: an open handle with the right to wait for it.
+            unsafe { WaitForSingleObject(self.0.as_raw_handle(), 0) != WAIT_TIMEOUT }
+        }
+    }
 }
