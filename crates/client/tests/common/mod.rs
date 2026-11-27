@@ -4,7 +4,7 @@
 use std::env;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +17,11 @@ use tokio::runtime::Runtime;
 
 #[path = "../../../server/tests/common/connections.rs"]
 mod connections;
+// Other helpers of the same test binary load it too.
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
 use connections::{Database, maintenance};
+use local_listener::local_listener;
 
 pub const CLIENT: &str = env!("CARGO_BIN_EXE_skald");
 
@@ -112,9 +116,11 @@ impl Server {
                 .run(&pool)
                 .await
                 .expect("apply migrations");
-            tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind a local port")
+            let listener = local_listener();
+            listener
+                .set_nonblocking(true)
+                .expect("make the listener non-blocking");
+            tokio::net::TcpListener::from_std(listener).expect("listen in the runtime")
         });
         let addr = listener.local_addr().expect("the server's address");
         let settings = settings(addr);
@@ -473,7 +479,7 @@ pub struct Stub {
 
 impl Stub {
     pub fn start(answer: fn(&str) -> String) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let addr: SocketAddr = listener.local_addr().expect("the stub's address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);

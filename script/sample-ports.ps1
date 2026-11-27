@@ -3,11 +3,16 @@
 # of ephemeral ports, the ranges excluded from it and the drives' free space. A test's connect that
 # Windows fails with WSAENOBUFS (10055) prints the last line.
 #
-# A line: the ephemeral ports in use and their sockets by state; the non-paged pool; the five
-# processes holding the most sockets, TimeWait aside, by name and ID; the five ports that the most
-# sockets in TimeWait, which no process holds, went to, with the process listening there; the
-# programs with the most processes; the free space of C: and D:. The table comes from
-# GetExtendedTcpTable, in milliseconds where Get-NetTCPConnection takes seconds.
+# A line: the ephemeral ports in use and their sockets by state; what the port allocator sees: the
+# dynamic range's ports held in any state, Listen and Bound included, those together with the ports
+# of loopback peers (this machine's own, which a TimeWait entry may still name, and which a bind to
+# port 0 then passes over), the sockets in the state Bound and the ports excluded from the range;
+# the five processes holding the most Bound sockets; the non-paged pool; the five processes holding
+# the most sockets, TimeWait aside, by name and ID; the five ports that the most sockets in TimeWait,
+# which no process holds, went to, with the process listening there; the programs with the most
+# processes; the free space of C: and D:. The table comes from GetExtendedTcpTable, in milliseconds
+# where Get-NetTCPConnection takes seconds; it leaves out the Bound sockets, which only
+# Get-NetTCPConnection, asked for those alone, lists.
 param([Parameter(Mandatory)] [string] $Samples)
 
 Add-Type -TypeDefinition @'
@@ -40,13 +45,24 @@ public static class PortSampler {
         "Established", "FinWait1", "FinWait2", "CloseWait", "Closing", "LastAck", "TimeWait",
         "DeleteTcb" };
 
-    struct Socket { public int State, LocalPort, RemotePort, Pid; }
+    struct Socket { public int State, LocalPort, RemotePort, Pid; public bool LoopbackPeer; }
 
     static int Port(int raw) { return ((raw & 0xff) << 8) | ((raw >> 8) & 0xff); }
 
+    // Whether the address at `at`, of `family`, is a loopback one: 127.0.0.0/8, ::1 or
+    // ::ffff:127.0.0.0/104.
+    static bool Loopback(int family, IntPtr at) {
+        if (family == 2) return Marshal.ReadByte(at) == 127;
+        for (int i = 0; i < 10; i++) if (Marshal.ReadByte(at + i) != 0) return false;
+        if (Marshal.ReadByte(at + 10) == 0xff && Marshal.ReadByte(at + 11) == 0xff)
+            return Marshal.ReadByte(at + 12) == 127;
+        for (int i = 10; i < 15; i++) if (Marshal.ReadByte(at + i) != 0) return false;
+        return Marshal.ReadByte(at + 15) == 1;
+    }
+
     // The sockets of `family`, AF_INET or AF_INET6, whose rows are `row` bytes long with the
     // fields at these offsets.
-    static IEnumerable<Socket> Table(int family, int row, int local, int remote, int state, int pid) {
+    static IEnumerable<Socket> Table(int family, int row, int local, int peer, int remote, int state, int pid) {
         int size = 0;
         GetExtendedTcpTable(IntPtr.Zero, ref size, false, family, TableOwnerPidAll, 0);
         for (int attempt = 0; attempt < 5; attempt++) {
@@ -63,6 +79,7 @@ public static class PortSampler {
                     sockets[i] = new Socket {
                         LocalPort = Port(Marshal.ReadInt32(at + local)),
                         RemotePort = Port(Marshal.ReadInt32(at + remote)),
+                        LoopbackPeer = Loopback(family, at + peer),
                         State = Marshal.ReadInt32(at + state),
                         Pid = Marshal.ReadInt32(at + pid),
                     };
@@ -75,9 +92,12 @@ public static class PortSampler {
         return new Socket[0];
     }
 
-    public static string Sample(int start) {
+    // A sample; `boundPorts` and `boundPids` hold the local port and the owner of each socket in
+    // the state Bound, which the table leaves out, and `excluded` counts the ports excluded from
+    // the dynamic range.
+    public static string Sample(int start, int[] boundPorts, int[] boundPids, int excluded) {
         // MIB_TCPROW_OWNER_PID and MIB_TCP6ROW_OWNER_PID.
-        var sockets = Table(2, 24, 8, 16, 0, 20).Concat(Table(23, 56, 20, 44, 48, 52)).ToList();
+        var sockets = Table(2, 24, 8, 12, 16, 0, 20).Concat(Table(23, 56, 20, 24, 44, 48, 52)).ToList();
         var names = new Dictionary<int, string>();
         var programs = new Dictionary<string, int>();
         foreach (var process in Process.GetProcesses()) {
@@ -95,6 +115,15 @@ public static class PortSampler {
         foreach (var socket in sockets.Where(s => s.State == Listen)) listeners[socket.LocalPort] = socket.Pid;
         var used = sockets.Where(s => s.LocalPort >= start && s.State != Listen).ToList();
         int ports = used.Select(s => s.LocalPort).Distinct().Count();
+        // What the allocator sees: the dynamic range's ports held locally in any state, Listen and
+        // Bound included; then with the ports of loopback peers, which are this machine's own
+        // ports that a TimeWait entry may still name.
+        var held = new HashSet<int>(sockets.Where(s => s.LocalPort >= start).Select(s => s.LocalPort));
+        held.UnionWith(boundPorts.Where(port => port >= start));
+        var named = new HashSet<int>(held);
+        named.UnionWith(sockets.Where(s => s.LoopbackPeer && s.RemotePort >= start).Select(s => s.RemotePort));
+        string bound = string.Join(" ", boundPids.GroupBy(pid => pid).OrderByDescending(g => g.Count())
+            .Take(5).Select(g => name(g.Key) + "=" + g.Count()));
         string states = string.Join(" ", used.GroupBy(s => s.State).OrderByDescending(g => g.Count())
             .Select(g => (g.Key < States.Length ? States[g.Key] : g.Key.ToString()) + "=" + g.Count()));
         string owners = string.Join(" ", used.Where(s => s.State != TimeWait).GroupBy(s => s.Pid)
@@ -115,6 +144,8 @@ public static class PortSampler {
             catch (Exception) { return drive + ": gone"; }
         }));
         return DateTime.Now.ToString("HH:mm:ss") + ": " + ports + " ports in use, " + states +
+            "; allocator: " + held.Count + " held, " + named.Count + " with loopback peers, " +
+            boundPorts.Length + " bound, " + excluded + " excluded; bound by: " + bound +
             "; non-paged pool " + pool + " MB; most: " + owners + "; TimeWait to: " + waits +
             "; processes: " + most + "; free: " + free;
     }
@@ -134,7 +165,16 @@ $excluded = (netsh interface ipv4 show excludedportrange protocol=tcp |
 while ($true) {
   $began = Get-Date
   try {
-    [PortSampler]::Sample($start) | Add-Content -Path $Samples
+    $bound = @(Get-NetTCPConnection -State Bound -ErrorAction SilentlyContinue)
+    $excluded = 0
+    netsh interface ipv4 show excludedportrange protocol=tcp | Select-String -Pattern '^\s*(\d+)\s+(\d+)' |
+      ForEach-Object {
+        $first = [int]$_.Matches[0].Groups[1].Value
+        $last = [int]$_.Matches[0].Groups[2].Value
+        if ($last -ge $start) { $excluded += $last - [Math]::Max($first, $start) + 1 }
+      }
+    [PortSampler]::Sample($start, [int[]]@($bound.LocalPort), [int[]]@($bound.OwningProcess), $excluded) |
+      Add-Content -Path $Samples
   } catch {
     "$(Get-Date -Format HH:mm:ss): no sample: $_" | Add-Content -Path $Samples
   }

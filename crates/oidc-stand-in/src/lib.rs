@@ -21,6 +21,10 @@
 //! set its faults and read the requests it got through [`Provider`], and sign ID tokens, valid and
 //! faulty, with [`Key`], [`signed`], [`hmac`] and [`unsigned`].
 
+// The client's test helpers bind their listeners with it too.
+#[path = "../../client/tests/common/local_listener.rs"]
+mod local_listener;
+
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::net::{SocketAddr, TcpListener};
@@ -30,6 +34,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use local_listener::local_listener;
 
 use axum::Router;
 use axum::body::Bytes;
@@ -637,7 +643,7 @@ impl Provider {
             path.is_empty() || (path.starts_with('/') && !path.ends_with('/')),
             "an issuer path such as /realms/acme, not {path:?}"
         );
-        let bound = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let bound = local_listener();
         let address = bound.local_addr().expect("the stand-in's address");
         let issuer = format!("http://{address}{path}");
         Provider::serving(bound, issuer, path, keys)

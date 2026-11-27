@@ -9,7 +9,6 @@
 //! - It refuses a request whose credential headers hold anything but [`PLACEHOLDER`] and records
 //!   the header's name, never its value: [`Model::assert_no_foreign_credential`] fails the test.
 
-use std::net::TcpListener;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
 use std::time::Instant;
@@ -23,6 +22,12 @@ use axum::routing::post;
 use serde_json::{Value, json};
 
 use crate::stub::{DONE, PLACEHOLDER, skald_tool};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// How long a test waits for the session to send a turn.
 const REACH: std::time::Duration = std::time::Duration::from_secs(120);
@@ -68,7 +73,7 @@ pub struct Model {
 impl Model {
     /// Starts a stub on a free local port that answers each turn as `answer` says.
     pub fn start(answer: impl Fn(&Value) -> Reply + Send + Sync + 'static) -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the model stub");
+        let listener = local_listener();
         listener
             .set_nonblocking(true)
             .expect("a non-blocking listener");

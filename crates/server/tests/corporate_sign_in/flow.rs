@@ -12,7 +12,7 @@ use super::{
 };
 
 #[track_caller]
-fn account(page: &Page, site: &Site, method: &str) -> Who {
+pub(super) fn account(page: &Page, site: &Site, method: &str) -> Who {
     let (status, body) = page_session(page, &site.web);
     assert_eq!(status, 200, "GET {SESSION}: {body}");
     assert_eq!(body["sign_in_method"], method, "{body}");
