@@ -503,9 +503,12 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let Ok(server) = reach(&format!("front: connection {connection}"), &target) else {
-        eprintln!("front: connection {connection}: cannot reach {target}");
-        return;
+    let server = match reach(&format!("front: connection {connection}"), &target) {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("front: connection {connection}: cannot reach {target}: {err}");
+            return;
+        }
     };
     let upgrading = Arc::new(AtomicBool::new(false));
     let link = Arc::new(Link::default());

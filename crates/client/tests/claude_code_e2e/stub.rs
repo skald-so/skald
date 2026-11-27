@@ -18,8 +18,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use super::common::reach;
-
 /// The only credential the session may send.
 pub const PLACEHOLDER: &str = "skald-e2e-placeholder-key";
 
@@ -169,7 +167,7 @@ impl Drop for Stub {
     fn drop(&mut self) {
         self.release();
         // Wakes the listener, which then sees the stub is gone.
-        let _ = reach("model stub", self.url.trim_start_matches("http://"));
+        let _ = TcpStream::connect(self.url.trim_start_matches("http://"));
     }
 }
 
@@ -425,8 +423,7 @@ pub fn output_of(body: &Value, step: usize) -> Option<String> {
 /// Sends `stub` a request of a turn with the header `name: value`; gives its status line.
 fn status_of(stub: &Stub, (name, value): (&str, &str)) -> String {
     let body = json!({ "model": "stub", "messages": [] }).to_string();
-    let mut stream =
-        reach("model stub", stub.url().trim_start_matches("http://")).expect("connect");
+    let mut stream = TcpStream::connect(stub.url().trim_start_matches("http://")).expect("connect");
     let head = format!(
         "POST /v1/messages HTTP/1.1\r\nHost: stub\r\n{name}: {value}\r\nContent-Length: {}\r\n\r\n",
         body.len()
@@ -480,8 +477,7 @@ fn stub_refuses_a_credential_other_than_its_placeholder() {
 /// Sends `stub` a Responses request with `body`; gives the item its answer streams.
 fn responded(stub: &Stub, body: &Value) -> Value {
     let body = body.to_string();
-    let mut stream =
-        reach("model stub", stub.url().trim_start_matches("http://")).expect("connect");
+    let mut stream = TcpStream::connect(stub.url().trim_start_matches("http://")).expect("connect");
     let head = format!(
         "POST /v1/responses HTTP/1.1\r\nHost: stub\r\nAuthorization: Bearer {PLACEHOLDER}\r\nContent-Length: {}\r\n\r\n",
         body.len()
