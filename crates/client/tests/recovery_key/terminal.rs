@@ -169,11 +169,17 @@ impl Terminal {
             if seen(&shown) {
                 return shown;
             }
-            assert!(
-                !self.exited(),
-                "skald exited without showing {what}: {}",
-                self.diagnostic()
-            );
+            if self.exited() {
+                // What it printed before it exited may still be on its way through the terminal.
+                self.close();
+                let shown = self.shown();
+                assert!(
+                    seen(&shown),
+                    "skald exited without showing {what}: {}",
+                    self.diagnostic()
+                );
+                return shown;
+            }
             assert!(
                 self.started.elapsed() < RUN_LIMIT,
                 "skald did not show {what}: {}",

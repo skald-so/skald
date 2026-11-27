@@ -379,6 +379,14 @@ impl Run {
                 return;
             }
             if let Some(status) = self.child.try_wait().expect("wait for skald") {
+                // What it printed before it exited may still be on its way through the pipes.
+                for reader in self.readers.drain(..) {
+                    reader.join().expect("read skald's output");
+                }
+                let shown = self.shown();
+                if parts.iter().all(|part| shown.contains(part)) {
+                    return;
+                }
                 panic!("skald exited ({status}) without showing {parts:?}: {shown}");
             }
             assert!(
