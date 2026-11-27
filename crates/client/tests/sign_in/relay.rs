@@ -250,16 +250,22 @@ impl Relay {
                         continue;
                     }
                 };
-                let who = format!("relay: connection {connection}");
-                let server = match reach(&who, &target) {
-                    Ok(server) => server,
-                    Err(err) => {
-                        eprintln!("relay: connection {connection}: cannot reach {target}: {err}");
-                        continue;
-                    }
-                };
-                pipe(&machine, &server, connection, true, &kept, &rules);
-                pipe(&server, &machine, connection, false, &kept, &rules);
+                // Reached on a thread of its own, so that the next connection is accepted
+                // meanwhile: on a loaded machine a connect, and a retry of it, takes long enough
+                // for waiting connections to fill the listener's queue, which refuses the next.
+                let (target, kept, rules) = (target.clone(), Arc::clone(&kept), Arc::clone(&rules));
+                thread::spawn(move || {
+                    let who = format!("relay: connection {connection}");
+                    let server = match reach(&who, &target) {
+                        Ok(server) => server,
+                        Err(err) => {
+                            eprintln!("{who}: cannot reach {target}: {err}");
+                            return;
+                        }
+                    };
+                    pipe(&machine, &server, connection, true, &kept, &rules);
+                    pipe(&server, &machine, connection, false, &kept, &rules);
+                });
             }
         });
         Relay { url, reads, shared }
