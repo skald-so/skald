@@ -7,7 +7,7 @@
 //!
 //! The server and the CLI, as these tests use them, beside the sign-in tests':
 //! - the verification page without a session offers sign-in with each provider the server has
-//!   settings for, as a link or button whose text names it, GitHub or Google;
+//!   settings for, as a link or button whose text names it, GitHub, Google or corporate;
 //! - an account made by a Google sign-in has the username made from the email's local part, and
 //!   `skald sign-in` names it;
 //! - `GET /account/sign-in-methods` gives a session's account's methods, and the page
@@ -29,6 +29,7 @@ mod browser;
 mod common;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use browser::{Browser, Page};
 use cloud::{Cloud, Device, GIVE_MASTER, Providers, REGISTER, ids};
@@ -106,6 +107,17 @@ fn first_with_google(
     let machine = Machine::new().with_host_name(host);
     let before = cloud.tokens().len();
     let finished = cloud.signed_in_with_google(&browser.page(), &machine, person, &[]);
+    assert_certifies_first(cloud, machine, finished, before, username, host)
+}
+
+fn assert_certifies_first(
+    cloud: &Cloud,
+    machine: Machine,
+    finished: Finished,
+    before: usize,
+    username: &str,
+    host: &str,
+) -> First {
     assert!(finished.success, "{finished:?}");
     assert!(finished.shown().contains(username), "{finished:?}");
     assert_says_created(&finished);
@@ -162,6 +174,10 @@ fn assert_resumes_with_google(
 ) {
     let mark = cloud.relay.mark();
     let again = cloud.signed_in_with_google(&browser.page(), &first.machine, person, &[]);
+    assert_resumed(cloud, first, username, &again, mark);
+}
+
+fn assert_resumed(cloud: &Cloud, first: &First, username: &str, again: &Finished, mark: Instant) {
     assert!(again.success, "{again:?}");
     assert!(again.shown().contains(username), "{again:?}");
     let token = &cloud.last_token();
@@ -296,4 +312,64 @@ fn approval_by_the_google_user_of_another_account_is_refused_and_ends_that_sessi
     assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
 
     assert_resumes_with_google(&cloud, &browser, &first, &ada, "ada-keeps");
+}
+
+fn first_with_corporate(
+    cloud: &Cloud,
+    browser: &Browser,
+    username: &str,
+    host: &str,
+) -> (Person, First) {
+    let email = format!("{username}@example.test");
+    let person = Person::new(username, &email);
+    let machine = Machine::new().with_host_name(host);
+    let before = cloud.tokens().len();
+    let finished = cloud.signed_in_with_corporate(&browser.page(), &machine, &person);
+    let first = assert_certifies_first(cloud, machine, finished, before, username, host);
+    assert_eq!(providers_of(cloud, &first.token), ["corporate"]);
+    (person, first)
+}
+
+#[test]
+fn corporate_only_closed_sign_up_approves_and_certifies_the_first_machine() {
+    let cloud = Cloud::closed_corporate_only();
+    let (status, providers) = cloud.get_as("/auth/providers", "");
+    assert_eq!(status, 200, "{providers}");
+    assert_eq!(providers["sign_up"], "closed", "{providers}");
+    assert_eq!(providers["providers"], serde_json::json!(["corporate"]));
+
+    let browser = Browser::launch();
+    let (_, first) = first_with_corporate(&cloud, &browser, "ada-employee", "ada-workstation");
+    assert_finds_its_session(&cloud, &first, "ada-employee");
+}
+
+#[test]
+fn a_corporate_device_resumes_only_when_its_own_account_approves() {
+    let cloud = Cloud::closed_corporate_only();
+    let browser = Browser::launch();
+    let (ada, first) = first_with_corporate(&cloud, &browser, "ada-employee", "ada-workstation");
+    let (carol, other) = first_with_corporate(&cloud, &browser, "carol-employee", "carol-laptop");
+    assert_ne!(first.account, other.account);
+    sign_out(&first.machine);
+
+    let tokens = cloud.tokens().len();
+    let mark = cloud.relay.mark();
+    let refused = cloud.signed_in_with_corporate(&browser.page(), &first.machine, &carol);
+    assert!(!refused.success, "{refused:?}");
+    assert!(refused.shown().contains("carol-employee"), "{refused:?}");
+    let given = cloud.tokens();
+    assert_eq!(given.len(), tokens + 1, "the session the machine got");
+    let (status, body) = cloud.session_of(&given[tokens]);
+    assert_eq!(status, 401, "the refused session still works: {body}");
+    assert_eq!(
+        cloud.count_sent(mark, REGISTER),
+        0,
+        "registered on Carol's account"
+    );
+    assert_eq!(cloud.count_sent(mark, GIVE_MASTER), 0, "a master key sent");
+    assert_eq!(cloud.devices(&other.token), other.devices);
+
+    let mark = cloud.relay.mark();
+    let resumed = cloud.signed_in_with_corporate(&browser.page(), &first.machine, &ada);
+    assert_resumed(&cloud, &first, "ada-employee", &resumed, mark);
 }

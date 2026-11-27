@@ -254,10 +254,6 @@ impl ProviderKind {
             Self::Corporate => "Corporate",
         }
     }
-
-    pub(crate) fn allows_device_sign_in(self) -> bool {
-        self != Self::Corporate
-    }
 }
 
 /// `SignInProviders` in the spec.
@@ -351,8 +347,10 @@ pub(crate) struct Identity {
 
 /// A provider people sign in with in the browser.
 pub(crate) trait Provider: Sized {
+    const KIND: ProviderKind;
+
     /// The provider's name for people, such as `GitHub`.
-    const NAME: &'static str;
+    const NAME: &'static str = Self::KIND.label();
 
     /// The sign-in settings and the provider, while the server has the provider's settings.
     fn of(state: &AppState) -> Option<(&SignInSettings, &Self)>;
@@ -611,11 +609,8 @@ async fn finish<P: Provider>(
         .filter(|code| !code.is_empty())
         .ok_or(Failure::ProviderRefused("gave no code."))?;
     let identity = provider.identify(settings, code, secrets).await?;
-    let may_sign_up = state.sign_up.admits(&identity);
+    let may_sign_up = state.sign_up.admits(P::KIND, &identity);
     let db = &state.db;
-    let device_return = ProviderKind::from_key(flow.provider)
-        .allows_device_sign_in()
-        .then_some(return_to.as_str());
     let method = Method {
         provider: flow.provider,
         subject: identity.subject,
@@ -636,17 +631,15 @@ async fn finish<P: Provider>(
                 &method,
                 &identity.source,
                 may_sign_up,
-                device_return,
+                &return_to,
                 agent,
             )
             .await
             .map_err(Failure::Database)?;
             let Some(session) = session else {
-                if let Some(to) = device_return {
-                    device_flow::refuse_sign_up(db, to)
-                        .await
-                        .map_err(Failure::Database)?;
-                }
+                device_flow::refuse_sign_up(db, &return_to)
+                    .await
+                    .map_err(Failure::Database)?;
                 return Err(Failure::SignUpClosed);
             };
             Ok(signed_in_page(settings, flow, &session, &return_to))
@@ -751,7 +744,7 @@ pub(crate) fn off() -> Response {
 }
 
 impl Provider for GitHubApp {
-    const NAME: &'static str = "GitHub";
+    const KIND: ProviderKind = ProviderKind::GitHub;
 
     fn of(state: &AppState) -> Option<(&SignInSettings, &Self)> {
         let settings = state.sign_in.as_deref()?;
