@@ -5,7 +5,7 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -16,6 +16,12 @@ use skald_adapters::claude_code::Executor;
 use skald_adapters::executor::{Mode, Outcome};
 
 use crate::stub::PLACEHOLDER;
+
+// Other helpers of the same test binary load it too.
+#[path = "../../../client/tests/common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The Claude Code version the live checks of `read-only` ran on (`docs/dev/agent-delivery.md`,
 /// "Checks before implementation").
@@ -269,7 +275,7 @@ pub struct Witness {
 
 impl Witness {
     pub fn start() -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind the witness");
+        let listener = local_listener();
         let url = format!("http://{}", listener.local_addr().expect("its address"));
         let paths = Arc::new(Mutex::new(Vec::new()));
         let stopped = Arc::new(AtomicBool::new(false));

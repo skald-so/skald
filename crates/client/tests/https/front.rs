@@ -4,12 +4,18 @@
 //! inside TLS.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 
 use rustls::{ServerConfig, ServerConnection};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// What crossed the endpoint so far.
 #[derive(Default)]
@@ -42,7 +48,7 @@ impl Front {
     /// server behind it can learn its port first; until then it forwards nothing.
     pub fn bind(tls: Vec<Arc<ServerConfig>>) -> Self {
         assert!(!tls.is_empty(), "a certificate to present");
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener
             .local_addr()
             .expect("the endpoint's address")

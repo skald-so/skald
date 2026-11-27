@@ -12,20 +12,20 @@ use crate::SETUP;
 use crate::client::{INBOX, Session};
 use crate::codex::{CODEX, CODEX_HOME, Codex, Event, Thread, assert_bare, codex_client, gives_by};
 use crate::config_home::Read;
-use crate::hooks::{Hooked, api_sends, run_hook};
-use crate::kit::RECV;
+use crate::hooks::{Bob, Hooked, run_hook};
+use crate::kit::{RECV, received};
 use crate::lines::JSON_FLAG;
 use crate::lines::reference;
-use crate::talk::ADA_HOST;
+use crate::talk::{ADA_HOST, delivered, received_until};
 use crate::world::run;
 
 /// The length of a device's reference in a default agent name.
 const DEVICE_REFERENCE: usize = 6;
 
-/// What api says to the session's agent; each is nowhere else.
-const BY_POST_TOOL_USE: &str = "codex setup test: api asks the session for the test log";
-const BY_STOP: &str = "codex setup test: api asks the session for the coverage report";
-const BY_PROMPT: &str = "codex setup test: api asks the session for the release notes";
+/// What Bob says to the session's agent; each is nowhere else.
+const BY_POST_TOOL_USE: &str = "codex setup test: ask the session for the test log";
+const BY_STOP: &str = "codex setup test: ask the session for the coverage report";
+const BY_PROMPT: &str = "codex setup test: ask the session for the release notes";
 
 /// The variables Codex 0.162.1 gives every MCP server it starts, those it has of them
 /// (`codex-rs/rmcp-client/src/utils.rs`, `DEFAULT_ENV_VARS`), besides those the server's entry
@@ -127,21 +127,68 @@ fn shell(template: &Command, line: &str) -> Command {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
         let root = std::env::var_os("SystemRoot").expect("SystemRoot is set");
-        let cmd = std::path::Path::new(&root).join("System32").join("cmd.exe");
-        let mut command = like(template, cmd);
-        command.raw_arg(format!("/d /s /c \"{line}\""));
+        let powershell =
+            std::path::Path::new(&root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let mut command = like(template, powershell);
+        // The fixture clears the environment. PowerShell needs PATHEXT to run the native hook.
+        command
+            .env("PATHEXT", ".EXE")
+            .args(["-NoProfile", "-Command", line]);
         command
     }
 }
 
-/// Ada's machine alone in `clienta`, as the tests of Codex's hooks have it. A Codex session in
+#[cfg(windows)]
+#[test]
+fn the_windows_hook_runs_from_a_path_with_spaces_and_an_apostrophe() {
+    use std::fs;
+
+    use crate::common::CLIENT;
+    use crate::machine::{TestDir, bare_skald};
+
+    let scratch = TestDir::new("codex-setup-powershell");
+    let bin = scratch.join("Skald's O’Brien tools");
+    fs::create_dir(&bin).expect("local installation directory");
+    let exe = bin.join("skald.exe");
+    fs::copy(CLIENT, &exe).expect("local Skald executable");
+
+    let home = scratch.join("config");
+    let mut template = bare_skald();
+    template
+        .env(CODEX_HOME, &home)
+        .env("SKALD_STATE_DIR", scratch.join("state"));
+    let set_up = like(&template, exe)
+        .args([SETUP, CODEX])
+        .output()
+        .expect("set up local Codex");
+    assert!(set_up.status.success(), "{set_up:?}");
+
+    let line = Read::home(&home).hook_command("SessionStart");
+    let input = json!({
+        "hook_event_name": "SessionStart", "session_id": "fixture", "cwd": scratch.to_string_lossy()
+    });
+    run_hook(&mut shell(&template, &line), &input.to_string())
+        .assert_silent("PowerShell SessionStart");
+
+    let malformed = run_hook(&mut shell(&template, &line), "not JSON");
+    assert_eq!(
+        malformed.code,
+        Some(1),
+        "Skald did not reject malformed hook input: {malformed:?}"
+    );
+    assert!(
+        malformed.stdout.is_empty() && malformed.stderr.is_empty(),
+        "Skald printed output for malformed hook input: {malformed:?}"
+    );
+}
+
+/// Ada's machine in `clienta`, as the tests of Codex's hooks have it. A Codex session in
 /// `~/work/clientA/session` has its config home in `CODEX_HOME`, `~/.codex`, where the setup sets
 /// Skald up. The server it wrote starts there as `skald mcp`, with only the variables Codex gives
 /// it, initialized with the client name Codex gives; it lists `inbox`, which answers for the
 /// machine's device. The hooks it wrote run on Codex's recorded inputs: `SessionStart` and
-/// `UserPromptSubmit` print nothing. api sends the session's agent, the default one of
+/// `UserPromptSubmit` print nothing. Bob sends the session's agent, the default one of
 /// `skald mcp`, a message: its `PostToolUse` gives the signal; another: its `Stop` gives it; a third:
 /// its `UserPromptSubmit` gives it. No signal holds a message's text or reference. The session
 /// stops on a permission prompt: its `PermissionRequest` prints nothing, and the person's
@@ -150,6 +197,7 @@ fn shell(template: &Command, line: &str) -> Command {
 fn the_server_and_hooks_it_writes_run_skald_in_a_codex_session() {
     let codex = Codex::new(5_209_001_001, "ada-codex-setup");
     let solo = &codex.web.solo;
+    let bob = Bob::join(solo, 5_209_001_002, "bob-codex-setup");
     let dir = solo.dir("session");
     let session = Thread::new(codex.machine(), &dir, None);
     let home = session.home.to_string_lossy().into_owned();
@@ -187,16 +235,18 @@ fn the_server_and_hooks_it_writes_run_skald_in_a_codex_session() {
     hook(Event::UserPromptSubmit).assert_silent("the turn's start");
 
     let device = reference(MessageId::from_bytes(*solo.talk.ada.device.as_bytes()));
-    let agent = solo.short(&format!(
-        "{client}-{ADA_HOST}-{}",
-        &device[..DEVICE_REFERENCE]
-    ));
+    let agent = format!("{client}-{ADA_HOST}-{}", &device[..DEVICE_REFERENCE]);
     for (text, event) in [
         (BY_POST_TOOL_USE, Event::PostToolUse),
         (BY_STOP, Event::Stop),
         (BY_PROMPT, Event::UserPromptSubmit),
     ] {
-        let msg_id = api_sends(solo, &agent, text);
+        let msg_id = bob.sends(solo, &agent, text);
+        // These hooks replay recorded input. Confirm the separate device took in the message.
+        received(codex.machine());
+        received_until(&bob.person.machine, |shown| {
+            delivered(shown, msg_id, solo.talk.ada.device) > 0
+        });
         let signal = gives_by(event, || hook(event));
         assert_bare(&signal, &[text], &[msg_id], &[]);
     }

@@ -94,8 +94,8 @@ axum = "0.8.9"
 curve25519-dalek = "5"
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "x25519"] }
 # A device the members do not admit, which joins a channel's group by an external Commit.
-mls-rs = "0.57.1"
-mls-rs-crypto-rustcrypto = "0.23"
+mls-rs = "0.58.0"
+mls-rs-crypto-rustcrypto = "0.24"
 # Runs `skald` in a pseudo-terminal on Unix and a pseudo-console (ConPTY) on Windows, as a person at
 # a terminal does.
 portable-pty = "0.9"
