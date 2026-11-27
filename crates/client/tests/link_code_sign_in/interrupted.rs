@@ -2,6 +2,8 @@
 //! has its session, or refused its certificate over the devices limit. A later run of `skald
 //! sign-in` on the machine stores the certificate and gets the session, with no sign-in.
 
+use std::time::Instant;
+
 use skald_proto::DeviceId;
 use skald_server::Settings;
 
@@ -51,6 +53,40 @@ fn certified(cloud: &Cloud, first: &Person, name: &str) -> bool {
             .as_ref()
             .is_some_and(|cert| cert.body().name.as_str() == name)
     })
+}
+
+/// For a failure: each request the relay passed from `since` on, its line and when it came, and
+/// each device challenge the server holds, its device, expiry and whether a request used it,
+/// beside the time now.
+fn seen_since(cloud: &Cloud, since: Instant) -> String {
+    let requests: Vec<String> = (cloud.relay.sent_since(since).iter())
+        .map(|sent| {
+            let line = sent.head.lines().next().unwrap_or_default();
+            format!("  {:?} {line}", sent.at.duration_since(since))
+        })
+        .collect();
+    let value = |row: &str, tag: &str| {
+        let open = format!("<{tag}>");
+        row.find(&open).map_or_else(String::new, |at| {
+            let rest = &row[at + open.len()..];
+            rest[..rest.find('<').unwrap_or(rest.len())].to_owned()
+        })
+    };
+    let challenges: Vec<String> = (cloud.rows().iter())
+        .filter(|table| table.contains("<challenge_hash>"))
+        .flat_map(|table| table.split("<row>").skip(1).map(str::to_owned))
+        .map(|row| {
+            let used = !row.contains("<request xsi:nil");
+            let (device, expires) = (value(&row, "device_id"), value(&row, "expires_at"));
+            format!("  {device} expires {expires}, used: {used}")
+        })
+        .collect();
+    format!(
+        "requests:\n{}\ndevice challenges at {:?}:\n{}",
+        requests.join("\n"),
+        jiff::Timestamp::now(),
+        challenges.join("\n")
+    )
 }
 
 /// `skald sign-in --server <cloud>` on `fresh`'s machine again, at a terminal, with nobody
@@ -103,7 +139,14 @@ fn killed_after_the_grant_the_next_run_stores_the_certificate_and_gets_the_sessi
 
     cloud.relay.stop_refusing();
     let later = signs_in_again(cloud, &fresh);
-    assert!(later.success, "the next run failed: {}", later.text);
+    if !later.success {
+        let seen = seen_since(cloud, fresh.started);
+        let again = signs_in_again(cloud, &fresh);
+        panic!(
+            "the next run failed: {}\n{seen}\nthe run after it: success {}: {}",
+            later.text, again.success, again.text
+        );
+    }
     assert_linked(cloud, &ada, &fresh);
 }
 

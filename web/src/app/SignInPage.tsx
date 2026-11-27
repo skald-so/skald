@@ -4,7 +4,6 @@ import a11y from "../ui/a11y.module.css";
 import { Button } from "../ui/Button.tsx";
 import { GitHubIcon, GoogleIcon, LogoIcon } from "../ui/icons.tsx";
 import styles from "./SignInPage.module.css";
-import { machineSignIn } from "./machine-sign-in.ts";
 import { providerNames, signInPaths } from "./names.ts";
 
 const faces: Record<SignInProvider, { icon?: ReactNode; look?: string }> = {
@@ -17,14 +16,16 @@ const faces: Record<SignInProvider, { icon?: ReactNode; look?: string }> = {
  * The sign-in page of 03-sign-in.png: a button for each provider the server has, which signs in
  * and returns to `returnTo`, a page of the web app; the note on sign-up, with a link to the server's
  * privacy policy if it has one; and the terminal box, which opens the device flow's verification
- * page with the code typed in it.
+ * page with the code typed in it. `deleted`: it first says the account was deleted.
  */
 export function SignInPage({
   providers,
   returnTo,
+  deleted = false,
 }: {
   providers: SignInProviders;
   returnTo: string;
+  deleted?: boolean;
 }) {
   const heading = useId();
   const terminal = useId();
@@ -35,6 +36,11 @@ export function SignInPage({
     <CenteredPage>
       <section aria-labelledby={heading} className={styles.card}>
         <h1 id={heading}>Sign in</h1>
+        {deleted && (
+          <p role="status" className={styles.deleted}>
+            Your account was deleted.
+          </p>
+        )}
         {providers.providers.map((provider) => (
           <a
             key={provider}
@@ -53,7 +59,9 @@ export function SignInPage({
             ? "This server has no sign-in set up."
             : providers.sign_up === "open"
               ? "New here? Signing in creates an account."
-              : "New here? Signing in creates an account only for the people this server lists."}
+              : providers.providers.includes("corporate")
+                ? "Sign-up is restricted."
+                : "New here? Signing in creates an account only for the people this server lists."}
           {providers.privacy_policy_url && (
             <>
               <br />
@@ -62,7 +70,7 @@ export function SignInPage({
           )}
         </p>
       </section>
-      {machineSignIn(providers.providers) !== "off" && (
+      {providers.providers.length > 0 && (
         <section aria-labelledby={terminal} className={styles.card}>
           <h2 id={terminal}>Signing in from a terminal?</h2>
           <p className={styles.hint}>

@@ -1,6 +1,8 @@
 [package]
 name = "skald-client"
 description = "Skald client: CLI, MCP server and local helper."
+homepage = "https://skald.so"
+repository = "https://github.com/skald-so/skald"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +10,7 @@ license.workspace = true
 # dist builds and releases this package only: dist-workspace.toml.
 [package.metadata.dist]
 dist = true
+formula = "skald"
 
 # The skald-so crate installs the same dist archives as the other CLI installers.
 [package.metadata.binstall]
@@ -19,6 +22,10 @@ bin-dir = "skald-client-{ target }/{ bin }"
 pkg-url = "{ repo }/releases/download/v{ version }/skald-client-{ target }.zip"
 pkg-fmt = "zip"
 bin-dir = "{ bin }{ binary-ext }"
+
+# Keep the Rust crate name when the release renames the package.
+[lib]
+name = "skald_client"
 
 [[bin]]
 name = "skald"
@@ -52,7 +59,7 @@ getrandom = "0.4"
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 keyring-core = "1"
 rmcp = { version = "3.11", default-features = false, features = ["server", "transport-io"] }
-rusqlite = { version = "0.39", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = "0.8"
 semver = "1"
@@ -87,13 +94,15 @@ axum = "0.8.9"
 curve25519-dalek = "5"
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "x25519"] }
 # A device the members do not admit, which joins a channel's group by an external Commit.
-mls-rs = "0.57.1"
-mls-rs-crypto-rustcrypto = "0.23"
+mls-rs = "0.58.0"
+mls-rs-crypto-rustcrypto = "0.24"
 # Runs `skald` in a pseudo-terminal on Unix and a pseudo-console (ConPTY) on Windows, as a person at
 # a terminal does.
 portable-pty = "0.9"
 # `trace` lets a state test run another connection in the middle of a read.
-rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
+rusqlite = { version = "0.43", default-features = false, features = ["bundled", "trace"] }
+# The recovery key's derivation at a test build's cost: `test-cost` of skald-crypto.
+skald-crypto = { path = "../crypto", features = ["test-cost"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 skald-server = { path = "../server" }
@@ -136,9 +145,14 @@ dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", 
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-# The tests list the processes of the copy of `skald` they run.
+# The tests list the processes of the copy of `skald` they run, and the state of the machine as a
+# connect fails for want of buffer space; the browser tests' driver runs in a job that ends with the
+# test binary.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Security",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
 ] }

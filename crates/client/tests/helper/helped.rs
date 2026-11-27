@@ -439,14 +439,16 @@ fn running(tail: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// The path of the executable of the process `pid`, if it runs and this one may ask.
+/// The path of the executable of the process `pid`, if it runs and this one may ask. A process
+/// that has exited stays listed, its image named, while any handle to it is open, such as the
+/// antivirus's.
 #[cfg(windows)]
 fn image_of(pid: u32) -> Option<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
 
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        GetExitCodeProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
         QueryFullProcessImageNameW,
     };
 
@@ -455,12 +457,17 @@ fn image_of(pid: u32) -> Option<PathBuf> {
     if process.is_null() {
         return None;
     }
+    let mut code = 0;
+    // SAFETY: `code` is a place for the exit code of the handle opened above.
+    let exited = unsafe { GetExitCodeProcess(process, &mut code) } == 0
+        || code != STILL_ACTIVE.cast_unsigned();
     let mut path = vec![0_u16; 32 << 10];
     let mut length = u32::try_from(path.len()).expect("a path's room");
     // SAFETY: `path` holds `length` characters, and `length` is the room it gives.
-    let named = unsafe {
-        QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut length)
-    } != 0;
+    let named = !exited
+        && unsafe {
+            QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, path.as_mut_ptr(), &mut length)
+        } != 0;
     // SAFETY: the handle opened above, closed once.
     unsafe { CloseHandle(process) };
     if !named {

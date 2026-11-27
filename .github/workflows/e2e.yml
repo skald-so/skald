@@ -1,16 +1,15 @@
 name: E2E
 
-# E2E tests against the latest Claude Code on Linux, macOS and Windows, including a Linux job for
-# Paseo and Herdr. They use the model stub and need no secret. Outside script/test: daily, on demand,
-# and when a PR changes the adapter, the Claude Code plugin, its tests or this file.
+# E2E tests run daily, on demand and on relevant PRs once they have the label ready-to-merge, using
+# the model stub.
 on:
   schedule:
     - cron: '30 4 * * *'
   workflow_dispatch:
   pull_request:
     branches: [dev]
-    types: [opened, synchronize, reopened, ready_for_review]
-    # The adapter, the plugin, its tests and every module they take by #[path] or include!
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    # The adapters, the plugin, their tests and every module they take by #[path] or include!
     # (script/e2e-workflow-test), and this file.
     paths:
       - .claude-plugin/**
@@ -18,18 +17,28 @@ on:
       - crates/adapters/**
       - crates/client/src/claude_relay.rs
       - crates/client/src/claude_socket.rs
+      - crates/client/src/codex.rs
+      - crates/client/src/codex_app_server.rs
+      - crates/client/src/codex_confirm.rs
       - crates/client/src/helper.rs
       - crates/client/src/hook.rs
       - crates/client/src/main.rs
       - crates/client/src/mcp.rs
       - crates/client/src/permission_prompts.rs
+      - crates/client/src/powershell.rs
       - crates/client/src/recv.rs
       - crates/client/src/resend.rs
+      - crates/client/src/setup.rs
       - crates/client/src/state.rs
       - crates/client/src/wait.rs
       - crates/client/claude-mod/**
+      - crates/client/migrations/*codex*.sql
       - crates/client/tests/claude_code_e2e/**
       - crates/client/tests/claude_code_hooks/**
+      - crates/client/tests/codex_e2e/**
+      - crates/client/tests/codex_hooks/codex.rs
+      - crates/client/tests/codex_hosts/app_server.rs
+      - crates/client/tests/codex_hosts/host.rs
       - crates/client/src/test_dir.rs
       - crates/client/tests/agent_handover/agents.rs
       - crates/client/tests/channel_groups/kit.rs
@@ -37,6 +46,7 @@ on:
       - crates/client/tests/channel_joins/joins.rs
       - crates/client/tests/channel_messages/talk.rs
       - crates/client/tests/claude_code_permission/prompt_lines.rs
+      - crates/client/tests/common/local_listener.rs
       - crates/client/tests/common/mod.rs
       - crates/client/tests/compact_output/lines.rs
       - crates/client/tests/device_keys/keys.rs
@@ -78,30 +88,37 @@ concurrency:
 jobs:
   claude-code:
     name: Claude Code on ${{ matrix.os }}
-    if: github.event.pull_request.draft != true
+    if: >-
+      github.event_name != 'pull_request' || (github.event.pull_request.draft != true &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-2025]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - &checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust
+      - &rust
+        name: Install Rust
         shell: bash
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - &rust-cache
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The tests sign machines in with Chrome Headless Shell, which the playwright-core of web/
       # installs.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - &node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 26
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Install Chrome Headless Shell
+      - &chrome
+        name: Install Chrome Headless Shell
         shell: bash
         working-directory: web
         run: |
@@ -113,7 +130,8 @@ jobs:
           npm install --global @anthropic-ai/claude-code@latest
           claude --version
       # A PostgreSQL of the runner's own, set as script/lib/postgres.sh sets the tests' one.
-      - name: Start PostgreSQL
+      - &postgres-unix
+        name: Start PostgreSQL
         if: runner.os != 'Windows'
         shell: bash
         run: |
@@ -127,7 +145,8 @@ jobs:
           "$bin/pg_ctl" --pgdata "$RUNNER_TEMP/pg" --log "$RUNNER_TEMP/pg.log" --wait start \
             --options "-c fsync=off -c max_connections=500 -c listen_addresses=127.0.0.1 -k $RUNNER_TEMP"
           echo "SKALD_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:5432" >>"$GITHUB_ENV"
-      - name: Start PostgreSQL
+      - &postgres-windows
+        name: Start PostgreSQL
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
@@ -150,9 +169,52 @@ jobs:
           SKALD_E2E_REQUIRED: '1'
         run: cargo test -p skald-adapters --locked --test claude_code_executor -- --ignored
 
+  codex:
+    name: Codex on ${{ matrix.os }}
+    if: >-
+      github.event_name != 'pull_request' || (github.event.pull_request.draft != true &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - *checkout
+      - *rust
+      - *rust-cache
+      - *node
+      - *chrome
+      - name: Install pinned Codex
+        shell: bash
+        run: |
+          npm install --prefix "$RUNNER_TEMP/skald-codex" --no-audit --no-fund --ignore-scripts @openai/codex@0.162.1
+          # Give the PTY and child processes the native binary, including codex.exe on Windows.
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { appendFileSync, globSync } from 'node:fs';
+          import { dirname, join } from 'node:path';
+          const scope = join(process.env.RUNNER_TEMP, 'skald-codex', 'node_modules', '@openai');
+          const exe = process.platform === 'win32' ? 'codex.exe' : 'codex';
+          const files = globSync(`codex-${process.platform}-${process.arch}/vendor/*/bin/${exe}`, { cwd: scope });
+          if (files.length !== 1) throw new Error(`Expected one native ${exe} in ${scope}`);
+          const binary = join(scope, files[0]);
+          execFileSync(binary, ['--version'], { stdio: 'inherit' });
+          appendFileSync(process.env.GITHUB_PATH, `${dirname(binary)}\n`);
+          JS
+      - *postgres-unix
+      - *postgres-windows
+      - name: E2E tests of Codex
+        shell: bash
+        env:
+          SKALD_E2E_REQUIRED: '1'
+        run: cargo test -p skald-client --locked --test codex_e2e
+
   claude-code-hosts:
     name: Claude Code in Paseo and Herdr
-    if: github.event.pull_request.draft != true
+    if: >-
+      github.event_name != 'pull_request' || (github.event.pull_request.draft != true &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:

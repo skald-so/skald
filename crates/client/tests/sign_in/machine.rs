@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use super::common::CLIENT;
+use super::common::{CLIENT, note_no_buffer_space, shows_no_buffer_space};
 pub(crate) use test_dir::TestDir;
 
 /// The setting of the directory of the local state and of the secrets file.
@@ -269,17 +269,24 @@ fn files(dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// A thread that reads `from` into `into` to its end; once what it read shows WSAENOBUFS, it notes
+/// the state of the machine at that moment on this test's stderr.
 fn collect(mut from: impl Read + Send + 'static, into: &Arc<Mutex<Vec<u8>>>) -> JoinHandle<()> {
     let into = Arc::clone(into);
     thread::spawn(move || {
         let mut buffer = [0; 4096];
+        let mut noted = false;
         while let Ok(count) = from.read(&mut buffer) {
             if count == 0 {
                 break;
             }
-            into.lock()
-                .expect("a run's output")
-                .extend_from_slice(&buffer[..count]);
+            let mut output = into.lock().expect("a run's output");
+            output.extend_from_slice(&buffer[..count]);
+            if !noted && shows_no_buffer_space(&output, count) {
+                noted = true;
+                drop(output);
+                note_no_buffer_space("skald");
+            }
         }
     })
 }
@@ -379,6 +386,14 @@ impl Run {
                 return;
             }
             if let Some(status) = self.child.try_wait().expect("wait for skald") {
+                // What it printed before it exited may still be on its way through the pipes.
+                for reader in self.readers.drain(..) {
+                    reader.join().expect("read skald's output");
+                }
+                let shown = self.shown();
+                if parts.iter().all(|part| shown.contains(part)) {
+                    return;
+                }
                 panic!("skald exited ({status}) without showing {parts:?}: {shown}");
             }
             assert!(

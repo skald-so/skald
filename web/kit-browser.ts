@@ -15,9 +15,10 @@ export const widths = [1440, 360];
 
 /**
  * The screens of the kit page: the kit itself, the cabinet, the cabinet with the phone side menu
- * open, and the web app's sign-in page, cabinet of an account with no space, Machines section,
- * Members section, Access section and its question before "Sign out everywhere else", Account page
- * and its question before removing this session's sign-in method, and Usage section.
+ * open, and the web app's sign-in and invite link pages, cabinet of an account with no space,
+ * Machines section, Members section, Access section and its question before "Sign out everywhere
+ * else", Account page and its removal confirmation, the page with a space blocking deletion,
+ * the deletion confirmation, and Usage section.
  */
 export type Screen =
   | "kit"
@@ -32,6 +33,8 @@ export type Screen =
   | "access-confirm"
   | "account-page"
   | "account-page-confirm"
+  | "account-page-blocked"
+  | "account-page-delete"
   | "usage";
 
 export interface KitView {
@@ -62,7 +65,7 @@ export interface Kit {
  * references hold on macOS and in CI. Its version is the playwright-core version in package.json.
  */
 export const pinnedChrome =
-  "mcr.microsoft.com/playwright:v1.65.0-noble@sha256:bc4fbb329a25287ed23e9216c97063646abdd1bf2da669a9895fa3e2078b2302";
+  "mcr.microsoft.com/playwright:v1.65.1-noble@sha256:1507cbfc550a63a6b7396791ca4f00df17beb56342d2447b3f106c306f525579";
 
 /**
  * Flags of the pinned Chrome. Without partial raster a repaint redraws whole tiles, so the pixels

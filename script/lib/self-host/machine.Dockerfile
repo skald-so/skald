@@ -6,18 +6,18 @@
 # Its other stages are Caddy's image and the person's browser's, which the test loads into the
 # machine's Docker.
 FROM ghcr.io/letsencrypt/pebble:2.10.3@sha256:0c81f05db371f436c97fb894bd6d2ab8fc9c8e2ce40f8bef8a8e15941bcd75ef AS pebble
-FROM ghcr.io/jqlang/jq:1.8.1@sha256:4f34c6d23f4b1372ac789752cc955dc67c2ae177eb1b5860b75cdc5091ce6f91 AS jq
+FROM ghcr.io/jqlang/jq:1.8.2@sha256:b9c68867e5766576263a222e91db3de422d802069c7af70440e667a95344e486 AS jq
 
 # Let's Encrypt's stand-in in front of Pebble, and the proxies of the proxy variant.
 FROM caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0 AS caddy
 
 # The person's browser: Debian's Chrome Headless Shell and Node.js, for script/lib/self-host/person.mjs.
-FROM node:26.13.0-trixie-slim@sha256:5adad64f9a1fca2d51972caa65983634c8a774eb300d72b20f7f2a0f60368072 AS browser
+FROM node:26.13.1-trixie-slim@sha256:abe7e5a82b61a8ef67b315b85497c9e65173387ccf2f4a029248184b8e020be5 AS browser
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends chromium-headless-shell && \
     rm -rf /var/lib/apt/lists/*
 
-FROM debian:13.4-slim@sha256:109e2c65005bf160609e4ba6acf7783752f8502ad218e298253428690b9eaa4b AS machine
+FROM debian:13.8-slim@sha256:8aa5a7bf5a1955bddbe7d74fcdd0b91ab30e74362a8b73af672b0481b35b44a0 AS machine
 RUN apt-get update && \
     apt-get install --yes --no-install-recommends ca-certificates curl gnupg iptables procps && \
     install -m 0755 -d /etc/apt/keyrings && \

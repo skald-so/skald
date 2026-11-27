@@ -9,15 +9,15 @@ publish.workspace = true
 [dependencies]
 mls-scenario = { path = "../scenario" }
 # The `last_resort` KeyPackage extension and the party outside a group, both off by default.
-mls-rs = { version = "0.57", features = ["external_client", "last_resort_key_package_ext"] }
+mls-rs = { version = "0.58", features = ["external_client", "last_resort_key_package_ext"] }
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
-mls-rs-crypto-rustcrypto = "0.23"
+mls-rs-crypto-rustcrypto = "0.24"
 zeroize = "1"
 
 # The browser's random number generator on WASM; mls-rs itself takes the browser's clock there.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-mls-rs-crypto-rustcrypto = { version = "0.23", features = ["browser"] }
+mls-rs-crypto-rustcrypto = { version = "0.24", features = ["browser"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

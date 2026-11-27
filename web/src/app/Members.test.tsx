@@ -115,3 +115,36 @@ test.each(["team-a", "ops"])(
     );
   },
 );
+
+test("a deleted peer alone does not trigger the only-admin warning", () => {
+  render(
+    <MembersScreen
+      space={team.name}
+      members={[
+        { ...member("ana"), role: "admin", you: true },
+        { ...member("lee"), deleted: true },
+      ]}
+      now={0}
+    />,
+  );
+
+  expect(screen.queryByText("You are the only admin.")).toBeNull();
+  expect(screen.getByRole("row", { name: /lee.*deleted/i })).toBeTruthy();
+});
+
+test("a deleted admin does not suppress the warning when another member remains", () => {
+  render(
+    <MembersScreen
+      space={team.name}
+      members={[
+        { ...member("ana"), role: "admin", you: true },
+        { ...member("lee"), role: "admin", deleted: true },
+        member("sam"),
+      ]}
+      now={0}
+    />,
+  );
+
+  expect(screen.getByText("You are the only admin.")).toBeTruthy();
+  expect(screen.getByRole("row", { name: /lee.*deleted/i })).toBeTruthy();
+});

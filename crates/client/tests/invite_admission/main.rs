@@ -70,6 +70,8 @@ mod history_common;
 use history_common::*;
 #[path = "../helper/helped.rs"]
 mod helped;
+#[path = "../invite_fixtures/signed.rs"]
+mod signed_invite;
 
 use std::collections::BTreeSet;
 
@@ -88,13 +90,10 @@ use kit::{Space, b64, create_space, received, rosters, with_channel};
 use machine::Finished;
 use played::Played;
 use talk::{ADA_HOST, BOB_HOST, CAROL_HOST};
-use world::{Person, World, now, plain_lines, space_certs, warnings, words};
+use world::{Person, World, plain_lines, space_certs, warnings, words};
 
 /// The host name of Dan's machine, its certificate's `name`.
 pub const DAN_HOST: &str = "dan-desktop";
-
-/// Seconds in a day.
-pub const DAY: u64 = 86_400;
 
 /// Ada, whose machine runs the CLI and created the space; Carol, a second admin, and Dan, if the
 /// scene has him, a member who is no admin, both in the default channel and in a second channel
@@ -185,22 +184,15 @@ impl Scene {
     pub fn invite_with(&self, change: impl FnOnce(&mut InviteBody)) -> Made {
         let (cloud, ada) = (self.cloud(), &self.ada);
         let secret = InviteSecret::generate();
-        let mut body = InviteBody {
-            invite: issue_invite(cloud, &ada.token, self.space.id),
-            space: self.space.id,
-            key: secret.invite_key().public_key(),
-            role: Role::Member,
-            channels: vec![(self.space.default, true), (self.channel, false)],
-            signer: ada.device,
-            expires: now() + 7 * DAY,
-            unknown: Unknown::default(),
-        };
-        change(&mut body);
-        let invite = sign_invite(&body, &ada.key).expect("an invite");
-        let request = json!({ "invite": b64(&invite.to_cbor()) });
-        let path = format!("/spaces/{}/invites/{}", body.space, body.invite);
-        let (status, answer) = put_json(cloud, &ada.token, &path, &request);
-        assert_eq!(status, 201, "the invite is not stored: {answer}");
+        let id = signed_invite::issue(cloud, &ada.token, self.space.id);
+        let invite = signed_invite::sign_and_store(
+            cloud,
+            ada,
+            (self.space.id, id),
+            &secret,
+            vec![(self.space.default, true), (self.channel, false)],
+            change,
+        );
         Made { invite, secret }
     }
 
@@ -287,8 +279,8 @@ impl Made {
         let acceptance = self.acceptance(person, handle, &self.secret.invite_key());
         let request = json!({ "acceptance": b64(&acceptance.to_cbor()) });
         let path = format!("/invites/{}/acceptance", self.id());
-        let (status, answer) = put_json(cloud, &person.token, &path, &request);
-        assert_eq!(status, 201, "the acceptance is not stored: {answer}");
+        let (status, _) = world::put_as(cloud, &person.token, &path, &request);
+        assert_eq!(status, 201, "the acceptance is not stored");
     }
 
     /// The server's database holds, in place of the invite, the one `change` makes of its body,
@@ -379,39 +371,6 @@ pub fn admitting(previous: &Roster, signer: &Person, made: &Made, newcomer: &New
 /// Whether `roster` lists `person`'s account as a member.
 pub fn lists(roster: &Roster, person: &Person) -> bool {
     roster.body().member(person.account).is_some()
-}
-
-/// An invite ID the server issues for `space` to the session `token`, through the API.
-#[track_caller]
-pub fn issue_invite(cloud: &Cloud, token: &str, space: SpaceId) -> InviteId {
-    let path = format!("/spaces/{space}/invites");
-    let (status, answer) = world::post_as(cloud, token, &path, None);
-    let id = answer["invite"].as_str().and_then(|id| id.parse().ok());
-    match (status, id) {
-        (201, Some(id)) => id,
-        _ => panic!("no invite ID for {space}: {status} {answer}"),
-    }
-}
-
-/// `PUT <path>` of the JSON `request` as the session `token`, through the relay: the status and
-/// the body.
-pub fn put_json(cloud: &Cloud, token: &str, path: &str, request: &Value) -> (u16, Value) {
-    let url = format!("{}{path}", cloud.url);
-    let sent = cloud::agent()
-        .put(&url)
-        .header("authorization", format!("Bearer {token}"))
-        .header("content-type", "application/json")
-        .header(
-            skald_proto::VERSION_HEADER,
-            skald_proto::PROTOCOL_VERSION.to_string(),
-        )
-        .send(request.to_string().as_bytes());
-    let mut answer = sent.unwrap_or_else(|err| panic!("PUT {url}: {err}"));
-    let text = answer.body_mut().read_to_string().unwrap_or_default();
-    (
-        answer.status().as_u16(),
-        serde_json::from_str(&text).unwrap_or(Value::Null),
-    )
 }
 
 /// The request for `space`'s waiting acceptances, as its line starts.

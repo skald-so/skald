@@ -17,23 +17,37 @@
 //! `history-stored` answers or turn them into `history-refused`. It can lose only the `stored`
 //! answers to `mls` envelopes of a channel from an MLS epoch on.
 
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
+    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, PROOF_HEADER, Push, RawEnvelope,
+    RequestProof, SpaceId,
 };
 
+use super::common::reach;
 use super::relay::{answered_in_full, reset};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
+
+/// An ack in an HTTPS request, as its line starts: a run off a WebSocket acks so.
+const HTTPS_ACK: &str = "POST /mailbox/ack ";
 
 /// The WebSocket opcode of a binary message.
 const BINARY: u8 = 2;
@@ -50,7 +64,9 @@ pub enum Answers {
     Refuse(String),
 }
 
-/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first.
+/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first,
+/// on a WebSocket, or an ack in an HTTPS request, whose connection it closes both ways unless it
+/// forwards it, as it cannot answer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acks {
     /// Forwards them.
@@ -90,6 +106,12 @@ pub struct QueueKeyUpload {
     pub forwarded: bool,
 }
 
+#[derive(Default)]
+struct Delivery {
+    sequences: Vec<NonZeroU64>,
+    ack: Option<NonZeroU64>,
+}
+
 /// What came through so far, and the rules.
 struct State {
     sent: Vec<Sent>,
@@ -107,6 +129,7 @@ struct State {
     answered: Vec<Frame>,
     answers: Answers,
     history_answers: Answers,
+    lose_next_stored: bool,
     /// The channel and the MLS epoch from which on it loses the `stored` answers to the channel's
     /// `mls` envelopes, whatever `answers` says.
     lose_from: Option<(ChannelId, u64)>,
@@ -120,6 +143,9 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
+    /// Devices whose acks it swallowed, as `ack` frames or HTTPS requests.
+    swallowed_acks: BTreeSet<DeviceId>,
+    watched_delivery: Option<(DeviceId, MessageId, Delivery)>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
     hold_messages: bool,
     /// How many `message` pushes it held back.
@@ -197,6 +223,15 @@ impl Link {
 }
 
 impl State {
+    fn saw_delivery(&mut self, link: &Link, seq: NonZeroU64, envelope: &RawEnvelope) {
+        if let Some((device, message, delivery)) = self.watched_delivery.as_mut()
+            && link.device() == Some(*device)
+            && envelope.envelope().header.msg_id == *message
+        {
+            delivery.sequences.push(seq);
+        }
+    }
+
     /// Whether it loses the `stored` answer to the envelope `msg_id`: one of the channel, at or
     /// after the epoch, that [`Front::lose_stored_from`] names.
     fn loses(&self, msg_id: MessageId) -> bool {
@@ -237,7 +272,7 @@ pub struct Front {
 impl Front {
     /// Listens on a free local port; connections wait until [`Front::forward_to`] names a target.
     pub fn bind() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the front's address").port();
         let shared = Arc::new(Shared {
             target: OnceLock::new(),
@@ -251,6 +286,7 @@ impl Front {
                 answered: Vec::new(),
                 answers: Answers::Forward,
                 history_answers: Answers::Forward,
+                lose_next_stored: false,
                 lose_from: None,
                 lost: 0,
                 swallow: false,
@@ -258,6 +294,8 @@ impl Front {
                 refused: 0,
                 acks: Acks::Forward,
                 acked: 0,
+                swallowed_acks: BTreeSet::new(),
+                watched_delivery: None,
                 hold_messages: false,
                 held_messages: 0,
                 hold_end: false,
@@ -340,6 +378,11 @@ impl Front {
         self.shared.state().answers = answers;
     }
 
+    /// Drops the next `stored` frame only.
+    pub fn lose_next_stored(&self) {
+        self.shared.state().lose_next_stored = true;
+    }
+
     /// From now on, loses the server's `stored` answers to the `mls` envelopes of `channel` of the
     /// MLS epoch `epoch` and later ones, as a network would, and does with the others as
     /// [`Front::answer`] says; with `None`, loses none of them so.
@@ -385,6 +428,27 @@ impl Front {
     /// How many acks the machines sent so far, forwarded or not.
     pub fn acked(&self) -> usize {
         self.shared.state().acked
+    }
+
+    /// Whether it swallowed an ack from `device`, as an `ack` frame or an HTTPS request.
+    pub fn swallowed_ack_from(&self, device: DeviceId) -> bool {
+        self.shared.state().swallowed_acks.contains(&device)
+    }
+
+    /// Records pushes of `message` to `device` and acknowledgements from that device.
+    pub fn watch_delivery(&self, device: DeviceId, message: MessageId) {
+        self.shared.state().watched_delivery = Some((device, message, Delivery::default()));
+    }
+
+    /// The observed sequence numbers for the watched message and whether the device acked them.
+    pub fn delivery(&self) -> (Vec<NonZeroU64>, bool) {
+        let state = self.shared.state();
+        let (_, _, delivery) = state.watched_delivery.as_ref().expect("watch a delivery");
+        let acked = delivery
+            .sequences
+            .iter()
+            .any(|seq| Some(*seq) <= delivery.ack);
+        (delivery.sequences.clone(), acked)
     }
 
     /// From now on, holds back the server's `message` pushes and the `batch` that ends catch-up if
@@ -462,9 +526,12 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let Ok(server) = TcpStream::connect(&target) else {
-        eprintln!("front: connection {connection}: cannot reach {target}");
-        return;
+    let server = match reach(&format!("front: connection {connection}"), &target) {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("front: connection {connection}: cannot reach {target}: {err}");
+            return;
+        }
     };
     let upgrading = Arc::new(AtomicBool::new(false));
     let link = Arc::new(Link::default());
@@ -480,6 +547,21 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
 
 fn clone(stream: &TcpStream) -> TcpStream {
     stream.try_clone().expect("clone a stream")
+}
+
+/// The device whose proof the head of the HTTPS request `text` carries, if any.
+fn proving(text: &str) -> Option<DeviceId> {
+    let head = text.split("\r\n\r\n").next()?;
+    let value = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(PROOF_HEADER)
+            .then(|| value.trim())
+    })?;
+    let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
+    RequestProof::from_cbor(&bytes)
+        .ok()
+        .map(|proof| proof.device)
 }
 
 /// Copies what the machine sends to the server: HTTP as it comes, then, once the request of a
@@ -515,6 +597,21 @@ fn to_server(
                 let _ = machine.shutdown(Shutdown::Both);
                 let _ = server.shutdown(Shutdown::Both);
                 return;
+            }
+            if text.starts_with(HTTPS_ACK) {
+                let acks = {
+                    let mut state = shared.state();
+                    state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, proving(&text)) {
+                        state.swallowed_acks.insert(device);
+                    }
+                    state.acks
+                };
+                if acks != Acks::Forward {
+                    let _ = machine.shutdown(Shutdown::Both);
+                    let _ = server.shutdown(Shutdown::Both);
+                    return;
+                }
             }
             if text.starts_with(DELIVERY[1])
                 && let Some(end) = text.find("\r\n\r\n")
@@ -558,6 +655,10 @@ fn to_server(
                 }
                 continue;
             }
+            let ack_device = match &decoded {
+                Some(Frame::Ack { .. }) => link.device(),
+                _ => None,
+            };
             let ack = match decoded {
                 Some(Frame::Send { envelope, report }) => {
                     let mut state = shared.state();
@@ -624,6 +725,11 @@ fn to_server(
                 }
                 Some(Frame::Ack { seq }) => {
                     link.saw(seq.get());
+                    if let Some((device, _, delivery)) = shared.state().watched_delivery.as_mut()
+                        && link.device() == Some(*device)
+                    {
+                        delivery.ack = Some(seq).max(delivery.ack);
+                    }
                     true
                 }
                 _ => false,
@@ -632,6 +738,9 @@ fn to_server(
                 let acks = {
                     let mut state = shared.state();
                     state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, ack_device) {
+                        state.swallowed_acks.insert(device);
+                    }
                     state.acks
                 };
                 match acks {
@@ -721,7 +830,8 @@ fn forward_answers(
             Some(Frame::Stored(stored)) => {
                 let mut state = shared.state();
                 state.answered.push(Frame::Stored(stored.clone()));
-                let answers = if state.loses(stored.send_key.msg_id) {
+                let lose_next = std::mem::take(&mut state.lose_next_stored);
+                let answers = if lose_next || state.loses(stored.send_key.msg_id) {
                     Answers::Lose
                 } else {
                     state.answers.clone()
@@ -752,13 +862,14 @@ fn forward_answers(
                     &Frame::HistoryRefused { upload, problem }.to_cbor(),
                 )),
             },
-            Some(Frame::Push(Push::Message { seq, .. })) => {
+            Some(Frame::Push(Push::Message { seq, envelope })) => {
                 link.saw(seq.get());
                 let mut state = shared.state();
                 if state.hold_messages {
                     state.held_messages += 1;
                     None
                 } else {
+                    state.saw_delivery(link, seq, &envelope);
                     Some(raw)
                 }
             }
@@ -771,6 +882,13 @@ fn forward_answers(
                 Some(noticed(&[space], raw, shared, link))
             }
             Some(Frame::Batch(entries)) => {
+                let mut state = shared.state();
+                for entry in &entries {
+                    if let Push::Message { seq, envelope } = entry {
+                        state.saw_delivery(link, *seq, envelope);
+                    }
+                }
+                drop(state);
                 let spaces: Vec<SpaceId> = entries
                     .iter()
                     .filter_map(|entry| match entry {

@@ -18,7 +18,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::net::{Shutdown, SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -29,7 +29,14 @@ use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::common::reach;
 use super::tls::Ca;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The repository of the releases.
 const REPO: &str = "skald-so/skald";
@@ -324,7 +331,7 @@ impl StandIn {
         releases: Vec<Release>,
         api: Option<Vec<u8>>,
     ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let addr = listener.local_addr().expect("the stand-in's address");
         let url = format!("https://{host}:{}", addr.port());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -614,7 +621,7 @@ pub struct Proxy {
 
 impl Proxy {
     pub fn start(authority: String, to: SocketAddr) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let url = format!(
             "http://{}",
             listener.local_addr().expect("the proxy's address")
@@ -645,7 +652,7 @@ fn tunnel(mut client: TcpStream, authority: &str, to: SocketAddr, recorded: &Mut
     let line = head.split("\r\n").next().unwrap_or_default().to_owned();
     recorded.lock().unwrap().push(line.clone());
     let upstream = (line == format!("CONNECT {authority} HTTP/1.1"))
-        .then(|| TcpStream::connect(to).ok())
+        .then(|| reach("release proxy", &to.to_string()).ok())
         .flatten();
     let Some(mut upstream) = upstream else {
         let _ = client

@@ -26,8 +26,8 @@
 //!
 //! The runs on fixtures take a machine of their own each, as the tests of signing in have them. The
 //! runs in a Codex session take Ada's machine alone in `clienta`, as the tests of Codex's hooks
-//! have it (`codex_hooks/main.rs`), and run each hook's command through `sh -c`, or `cmd /c` on
-//! Windows.
+//! have it (`codex_hooks/main.rs`), and run each hook's command through `sh -c` or PowerShell's
+//! `-NoProfile -Command` on Windows.
 
 // Each test target uses a part of the shared modules.
 #![allow(dead_code)]

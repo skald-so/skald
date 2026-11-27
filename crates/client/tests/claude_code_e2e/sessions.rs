@@ -9,7 +9,7 @@ use skald_proto::MessageId;
 
 use crate::claude::{Claude, Ended, claude_code};
 use crate::client::{TEXT_FIELD, TO_FIELD};
-use crate::hooks::{Bob, INBOX_WORD, api_sends};
+use crate::hooks::{Bob, INBOX_WORD, api_sends, api_sends_web};
 use crate::lines::{AgentLine, agent_line, agent_line_of, refers_to};
 use crate::senders::{DATA, OWN, PEER, holds_word};
 use crate::solo::{API, Solo, WEB};
@@ -123,7 +123,7 @@ fn busy_session_gets_own_text_after_its_tool_and_a_peer_s_only_as_the_signal() {
     stub_a.wait_held();
     stub_b.wait_held();
 
-    let own = solo.api_sends_web(OWN_SAYS);
+    let own = api_sends_web(&solo, OWN_SAYS);
     let peer = bob.sends(&solo, WEB, PEER_SAYS);
     stub_b.release();
     let ended_b = session_b.finish();
@@ -192,7 +192,7 @@ fn message_sent_as_the_turn_ends_reaches_it_by_stop_and_the_turn_goes_on() {
     let session = Claude::start(&claude, solo.machine(), &solo.dir(WEB), Some(WEB), &stub);
     stub.wait_held();
 
-    let msg_id = solo.api_sends_web(AT_THE_END);
+    let msg_id = api_sends_web(&solo, AT_THE_END);
     stub.release();
     let ended = session.finish();
 
