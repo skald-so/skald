@@ -106,14 +106,23 @@ jobs:
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
-      # unknown. A process started here samples, about every 10 s, the ephemeral ports in use, by
-      # state and owner, and the non-paged pool; a retry of such a connect prints the last sample.
+      # unknown. A process started here notes the range of ephemeral ports and the ranges excluded
+      # from it, then samples, about every 10 s, the ephemeral ports in use, by state and owner, an
+      # owner that is gone by its ID, the non-paged pool and the programs with the most processes,
+      # such as browsers a test's driver left; a retry of such a connect prints the last sample.
       - name: Sample the ephemeral ports in use
         shell: pwsh
         run: |
           $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
           Set-Content -Path $sampler -Value @'
-          $start = (Get-NetTCPSetting -SettingName Internet).DynamicPortRangeStartPort
+          $samples = Join-Path $env:RUNNER_TEMP 'ports.txt'
+          $range = Get-NetTCPSetting -SettingName Internet
+          $start = $range.DynamicPortRangeStartPort
+          $excluded = (netsh interface ipv4 show excludedportrange protocol=tcp |
+            Select-String -Pattern '^\s*(\d+)\s+(\d+)' |
+            ForEach-Object { "$($_.Matches[0].Groups[1].Value)-$($_.Matches[0].Groups[2].Value)" }) -join ' '
+          "ephemeral ports $start-$($start + $range.DynamicPortRangeNumberOfPorts - 1); excluded: $excluded" |
+            Add-Content -Path $samples
           while ($true) {
             $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
               Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
@@ -123,9 +132,14 @@ jobs:
               ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
             $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
               Sort-Object Count -Descending | Select-Object -First 3 |
-              ForEach-Object { "$((Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName)=$($_.Count)" }) -join ' '
-            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners" |
-              Add-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt')
+              ForEach-Object {
+                $name = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
+                "$(if ($name) { $name } else { "gone $($_.Name)" })=$($_.Count)"
+              }) -join ' '
+            $programs = (Get-Process | Group-Object ProcessName | Sort-Object Count -Descending |
+              Select-Object -First 4 | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
+            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners; processes: $programs" |
+              Add-Content -Path $samples
             Start-Sleep -Seconds 10
           }
           '@
@@ -146,11 +160,14 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: |
-          $samples = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
-          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool:"
+          $lines = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          $lines | Where-Object { $_ -notmatch '^\d\d:' }
+          $samples = @($lines | Where-Object { $_ -match '^\d\d:' })
+          "$($samples.Count) samples; the most ports in use, then the largest non-paged pool, then the last:"
           $samples | Sort-Object { [int]($_ -split ' ')[1] } | Select-Object -Last 3
           $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
             Select-Object -Last 1
+          $samples | Select-Object -Last 1
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures
