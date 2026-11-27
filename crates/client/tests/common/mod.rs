@@ -4,7 +4,7 @@
 use std::env;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::pin::Pin;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -174,7 +174,7 @@ impl Drop for Server {
 /// How many times a connection is tried while PostgreSQL resets it, and the wait before the first
 /// retry, doubled before each next one: 1.5 s in all.
 pub const SETUP_ATTEMPTS: u32 = 5;
-const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
+pub const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
 /// WSAENOBUFS: Windows had no buffer space or port for a new socket.
 pub const NO_BUFFER_SPACE: i32 = 10055;
@@ -190,8 +190,12 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
-    let samples = env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into);
-    retried_into(what, samples, &mut io::stderr(), step).await
+    retried_into(what, port_samples(), &mut io::stderr(), step).await
+}
+
+/// The file where CI's sampler of the ports in use writes its state, if it runs.
+pub fn port_samples() -> Option<std::path::PathBuf> {
+    env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into)
 }
 
 /// What [`retried_on_reset`] gives, each retry a line written to `sink`: its error and wait, and for
@@ -239,6 +243,44 @@ pub fn last_sample(samples: Option<std::path::PathBuf>) -> String {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "not sampled".to_owned())
+}
+
+/// A connection to `target`, such as `127.0.0.1:41234`, for the stand-in `who`, tried again while
+/// Windows has no buffer space for it, as the tests' database connects are
+/// ([`retried_on_reset`]); each retry a line on stderr.
+pub fn reach(who: &str, target: &str) -> io::Result<TcpStream> {
+    reached(who, target, port_samples(), &mut io::stderr(), || {
+        TcpStream::connect(target)
+    })
+}
+
+/// What [`reach`] gives with `connect` for the connect: up to [`SETUP_ATTEMPTS`] tries while it fails
+/// with WSAENOBUFS, waiting [`SETUP_RETRY_WAIT`] before the first retry, doubled before each next
+/// one; each retry a line written to `sink` with its error, its wait and the last of the ports in
+/// use that `samples` holds. Any other error is given at once.
+pub fn reached<T>(
+    who: &str,
+    target: &str,
+    samples: Option<std::path::PathBuf>,
+    sink: &mut impl Write,
+    mut connect: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut wait = SETUP_RETRY_WAIT;
+    for _ in 1..SETUP_ATTEMPTS {
+        match connect() {
+            Err(err) if err.raw_os_error() == Some(NO_BUFFER_SPACE) => {
+                let ports = last_sample(samples.clone());
+                let _ = writeln!(
+                    sink,
+                    "{who}: cannot reach {target}: {err}; again in {wait:?}; ports: {ports}"
+                );
+                thread::sleep(wait);
+                wait *= 2;
+            }
+            result => return result,
+        }
+    }
+    connect()
 }
 
 /// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only

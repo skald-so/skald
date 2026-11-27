@@ -30,6 +30,7 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
+use super::common::reach;
 use super::relay::{answered_in_full, reset};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
@@ -502,9 +503,12 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let Ok(server) = TcpStream::connect(&target) else {
-        eprintln!("front: connection {connection}: cannot reach {target}");
-        return;
+    let server = match reach(&format!("front: connection {connection}"), &target) {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("front: connection {connection}: cannot reach {target}: {err}");
+            return;
+        }
     };
     let upgrading = Arc::new(AtomicBool::new(false));
     let link = Arc::new(Link::default());
