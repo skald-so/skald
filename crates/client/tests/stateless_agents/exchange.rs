@@ -2,10 +2,13 @@
 //! ciphertext on the server and nothing left on its machine's disk.
 
 use std::collections::BTreeSet;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use skald_proto::{DeviceId, Scheme};
 
 use crate::agents::{CLAUDE, run_as_in};
+use crate::cloud::WAIT;
 use crate::fixtures::send;
 use crate::front::Acks;
 use crate::kit::RECV;
@@ -114,9 +117,10 @@ fn a_run_of_an_admin_s_service_device_with_nothing_to_warn_of_writes_nothing_to_
     assert_eq!(again.stderr, "", "{again:?}");
 }
 
-/// Ada says a line. The front swallows the agent's acks, and the agent's run is killed once it
-/// has sent one: it showed the line before. The next run, its acks forwarded, shows the line again
-/// once; the one after shows it no more. None leaves anything on its machine's disk.
+/// Ada says a line. The front swallows the ack the agent sends after showing it. The harness
+/// tries to kill the first run if it is still active. With acks forwarded, the next run shows
+/// the line once even if the first run already exited. The run after that shows it no more.
+/// None leaves anything on the agent's machine's disk.
 #[test]
 fn a_run_killed_after_its_output_and_before_its_ack_shows_the_message_again() {
     let scene = Scene::new(
@@ -127,13 +131,22 @@ fn a_run_killed_after_its_output_and_before_its_ack_shows_the_message_again() {
     assert!(sent.success, "Ada's send failed: {sent:?}");
     let front = &scene.talk.front;
     front.acks(Acks::Swallow);
-    let acked = front.acked();
+    let swallowed = || front.swallowed_ack_from(scene.device);
+    let deadline = Instant::now() + WAIT;
 
-    let killed = killed_when(scene.agent.start(&[RECV, JSON]), || front.acked() > acked);
+    let killed = killed_when(scene.agent.start(&[RECV, JSON]), swallowed);
 
-    front.acks(Acks::Forward);
     scene.agent.assert_left_nothing(&killed);
     scene.assert_agent_shows(&killed, ADA_SAYS[0], scene.ada());
+    // The process may exit before the front reads its last frame.
+    while !swallowed() {
+        assert!(
+            Instant::now() < deadline,
+            "the front did not swallow the service device's WebSocket ack within {WAIT:?}: {killed:?}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+    front.acks(Acks::Forward);
     let again = scene.agent.received();
     scene.assert_agent_shows(&again, ADA_SAYS[0], scene.ada());
     let after = scene.agent.received();

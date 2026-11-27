@@ -17,11 +17,7 @@ import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
 import { InvitePage } from "./app/InvitePage.tsx";
 import { Machines } from "./app/Machines.tsx";
-import {
-  MachineSignIn,
-  machineSignIn,
-  type MachineSignInState,
-} from "./app/machine-sign-in.ts";
+import { MachineSignIn } from "./app/machine-sign-in.ts";
 import { Members } from "./app/Members.tsx";
 import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
@@ -41,7 +37,7 @@ type View =
       kind: "signed-in";
       session: Session;
       spaces: ListedSpace[];
-      machineSignIn: MachineSignInState;
+      machineSignIn: boolean;
     };
 
 /** Invite links open outside the cabinet, before sign-in or any API calls. */
@@ -163,10 +159,8 @@ async function load(signal: AbortSignal): Promise<View> {
       kind: "signed-in",
       session: session.data,
       spaces: spaces.data.spaces,
-      machineSignIn: machineSignIn(
-        providers?.status === 200 ? providers.data.providers : [],
-        session.data.sign_in_method,
-      ),
+      machineSignIn:
+        providers?.status === 200 && providers.data.providers.length > 0,
     };
   if (session.status !== 401 && spaces.status !== 401)
     throw new Error(`GET /session ${session.status}, /spaces ${spaces.status}`);

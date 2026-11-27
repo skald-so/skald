@@ -422,7 +422,7 @@ export interface UsernameRequest {
 }
 
 /**
- * `open`: a first sign-in creates an account. `closed`: only for the people the server lists.
+ * `open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite.
  */
 export type SignInProvidersSignUp =
   (typeof SignInProvidersSignUp)[keyof typeof SignInProvidersSignUp];
@@ -435,7 +435,7 @@ export const SignInProvidersSignUp = {
 export interface SignInProviders {
   /** The providers the server has settings for, each once. */
   providers: SignInProvider[];
-  /** `open`: a first sign-in creates an account. `closed`: only for the people the server lists. */
+  /** `open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite. */
   sign_up: SignInProvidersSignUp;
   /**
    * The address of the server's privacy policy, the server setting `--privacy-policy-url`, which its sign-in pages link. Absent without the setting.

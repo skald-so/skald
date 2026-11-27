@@ -17,8 +17,9 @@
 //! `history-stored` answers or turn them into `history-refused`. It can lose only the `stored`
 //! answers to `mls` envelopes of a channel from an MLS epoch on.
 
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -32,6 +33,12 @@ use skald_proto::{
 
 use super::common::reach;
 use super::relay::{answered_in_full, reset};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
@@ -133,6 +140,8 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
+    /// Devices whose WebSocket `ack` frames it swallowed.
+    swallowed_acks: BTreeSet<DeviceId>,
     watched_delivery: Option<(DeviceId, MessageId, Delivery)>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
     hold_messages: bool,
@@ -260,7 +269,7 @@ pub struct Front {
 impl Front {
     /// Listens on a free local port; connections wait until [`Front::forward_to`] names a target.
     pub fn bind() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the front's address").port();
         let shared = Arc::new(Shared {
             target: OnceLock::new(),
@@ -282,6 +291,7 @@ impl Front {
                 refused: 0,
                 acks: Acks::Forward,
                 acked: 0,
+                swallowed_acks: BTreeSet::new(),
                 watched_delivery: None,
                 hold_messages: false,
                 held_messages: 0,
@@ -415,6 +425,11 @@ impl Front {
     /// How many acks the machines sent so far, forwarded or not.
     pub fn acked(&self) -> usize {
         self.shared.state().acked
+    }
+
+    /// Whether it swallowed a WebSocket `ack` frame from `device`.
+    pub fn swallowed_ack_from(&self, device: DeviceId) -> bool {
+        self.shared.state().swallowed_acks.contains(&device)
     }
 
     /// Records pushes of `message` to `device` and acknowledgements from that device.
@@ -619,6 +634,10 @@ fn to_server(
                 }
                 continue;
             }
+            let ack_device = match &decoded {
+                Some(Frame::Ack { .. }) => link.device(),
+                _ => None,
+            };
             let ack = match decoded {
                 Some(Frame::Send { envelope, report }) => {
                     let mut state = shared.state();
@@ -698,6 +717,9 @@ fn to_server(
                 let acks = {
                     let mut state = shared.state();
                     state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, ack_device) {
+                        state.swallowed_acks.insert(device);
+                    }
                     state.acks
                 };
                 match acks {
