@@ -109,8 +109,9 @@ jobs:
       # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
       # unknown. A process started here notes the range of ephemeral ports and the ranges excluded
       # from it, then samples, about every 10 s, the ephemeral ports in use, by state and owner, an
-      # owner that is gone by its ID, the non-paged pool and the programs with the most processes,
-      # such as browsers a test's driver left; a retry of such a connect prints the last sample.
+      # owner that is gone by its ID, the non-paged pool, the programs with the most processes, such
+      # as browsers a test's driver left, and the free space of C: and D:, which holds the workspace
+      # and the temporary directory; a retry of such a connect prints the last sample.
       - name: Sample the ephemeral ports in use
         shell: pwsh
         run: |
@@ -124,6 +125,10 @@ jobs:
             ForEach-Object { "$($_.Matches[0].Groups[1].Value)-$($_.Matches[0].Groups[2].Value)" }) -join ' '
           "ephemeral ports $start-$($start + $range.DynamicPortRangeNumberOfPorts - 1); excluded: $excluded" |
             Add-Content -Path $samples
+          $drives = Get-PSDrive -PSProvider FileSystem -Name C, D
+          "drives: " + (($drives | ForEach-Object {
+            "$($_.Name): $([int]($_.Free / 1GB)) GB free of $([int](($_.Used + $_.Free) / 1GB)) GB"
+          }) -join ', ') | Add-Content -Path $samples
           while ($true) {
             $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
               Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
@@ -139,7 +144,10 @@ jobs:
               }) -join ' '
             $programs = (Get-Process | Group-Object ProcessName | Sort-Object Count -Descending |
               Select-Object -First 4 | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
-            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners; processes: $programs" |
+            $free = (Get-PSDrive -PSProvider FileSystem -Name C, D | ForEach-Object {
+              "$($_.Name): $([int]($_.Free / 1GB)) GB"
+            }) -join ' '
+            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners; processes: $programs; free: $free" |
               Add-Content -Path $samples
             Start-Sleep -Seconds 10
           }
@@ -169,6 +177,26 @@ jobs:
           $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
             Select-Object -Last 1
           $samples | Select-Object -Last 1
+      # What the tests left on the disks: the free space of C: and D:, and the size of the build and
+      # of the temporary directory, with its largest entries, such as browsers' profiles.
+      - name: Show the disks' use
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          Get-PSDrive -PSProvider FileSystem -Name C, D | ForEach-Object {
+            "$($_.Name): $([int]($_.Free / 1GB)) GB free of $([int](($_.Used + $_.Free) / 1GB)) GB"
+          }
+          # The bytes of the files at $path, a file or a directory and all under it.
+          function Bytes($path) {
+            [long](Get-ChildItem -Force -Recurse -File -Path $path -ErrorAction SilentlyContinue |
+              Measure-Object -Property Length -Sum).Sum
+          }
+          "target: $([int]((Bytes target) / 1MB)) MB"
+          "${env:RUNNER_TEMP}: $([int]((Bytes $env:RUNNER_TEMP) / 1MB)) MB, the largest:"
+          Get-ChildItem -Force -Path $env:RUNNER_TEMP |
+            ForEach-Object { [pscustomobject]@{ Name = $_.Name; Bytes = Bytes $_.FullName } } |
+            Sort-Object Bytes -Descending | Select-Object -First 8 |
+            ForEach-Object { "  $($_.Name): $([int]($_.Bytes / 1MB)) MB" }
       # What the TCP/IP stack logged while the tests ran, as a connect failing with WSAENOBUFS
       # (10055) may come with its warning of the ports or memory it lacked; and whether Defender
       # scanned in real time.
