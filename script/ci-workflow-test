@@ -17,13 +17,17 @@
 //     not a required check itself; it runs whatever their results, a cancelled run's too, and fails
 //     unless the job of script/changed-parts succeeded and each other one succeeded or was skipped;
 //   - the jobs Rust needs that run script/test set up the same tools: their steps differ only in the
-//     Cargo workspaces they cache and in SKALD_TEST_PARTS;
+//     Cargo workspaces they cache, in SKALD_TEST_PARTS and in NEXTEST_TEST_THREADS;
+//   - NEXTEST_TEST_THREADS of a step that runs script/test is a whole number of tests at once, and
+//     neither CI nor a job or step of it that runs script/test sets NEXTEST_PROFILE, NEXTEST_RETRIES,
+//     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: every test runs, once, as script/test
+//     builds it;
 //   - the jobs of the parts web and site upload the screenshots that differ from their references,
 //     web/kit-diff/ and site/references-diff/, after their tests fail;
 //   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
 //     checkout keeps no credentials, and a job's token reads contents at most.
-// And .github/workflows/client-windows.yml, with the job that runs the client's and the adapters'
-// tests on Windows, which no job of CI runs:
+// And .github/workflows/client-windows.yml, with the job that runs the client's, the adapters' and
+// the OIDC stand-in's tests on Windows, which no job of CI runs:
 //   - every PR into dev and every push to dev start it, whatever they change, a PR also when it gets
 //     a label; a PR's run cancels the PR's older run, a push's run cancels none, and no two PRs or a
 //     PR and dev share a concurrency group; its tokens read contents at most, its actions are
@@ -36,10 +40,11 @@
 //     end with, and passes only when job changes succeeded and the tests succeeded, or were skipped
 //     with the workspace output not true; on a PR without the label whose workspace output is
 //     true, the tests are skipped and no job is named Rust on Windows, so the check is missing;
-//   - one job of a PR with the label runs `cargo nextest run -p skald-client -p skald-adapters --locked
-//     --no-fail-fast`, with no other option but --test-threads, on a windows-2025 runner, in a step
-//     that may run and whose failure fails the job: every test of the client and the adapters, none
-//     left out (neither has doctests);
+//   - one job of a PR with the label runs `cargo nextest run -p skald-client -p skald-adapters -p
+//     skald-oidc-stand-in --locked --no-fail-fast`, with no other option but --test-threads, on a
+//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
+//     client, the adapters and the stand-in the client's tests sign in with, none left out (none has
+//     doctests);
 //   - the job writes .cargo/config.toml only by copying to it a Cargo config file of the repository
 //     that sets only optimization levels, and sets no NEXTEST_PROFILE, NEXTEST_RETRIES,
 //     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: debug assertions and overflow checks
@@ -341,13 +346,34 @@ const setUp = ({ job }) =>
     (job.steps ?? []).map((step) => {
       const copy = structuredClone(step);
       delete copy.with?.workspaces;
-      if (runsTest(copy)) delete copy.env?.SKALD_TEST_PARTS;
+      if (runsTest(copy)) {
+        delete copy.env?.SKALD_TEST_PARTS;
+        delete copy.env?.NEXTEST_TEST_THREADS;
+      }
       return copy;
     }),
   );
 for (const j of behind.slice(1)) {
   if (setUp(j) !== setUp(behind[0]) || j.job['runs-on'] !== behind[0].job['runs-on']) {
-    fail(`job ${j.key} sets up other tools than job ${behind[0].key}: their steps differ in more than the cached workspaces and SKALD_TEST_PARTS`);
+    fail(`job ${j.key} sets up other tools than job ${behind[0].key}: their steps differ in more than the cached workspaces, SKALD_TEST_PARTS and NEXTEST_TEST_THREADS`);
+  }
+}
+
+// What a run of script/test may change: how many tests run at once, not which or how they build.
+const overridesRun = /^(NEXTEST_PROFILE|NEXTEST_RETRIES|CARGO_PROFILE_\w+|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS)$/;
+for (const name of Object.keys(ci.env ?? {})) {
+  if (overridesRun.test(name)) fail(`${ciFile} sets ${name}, which changes how the tests of script/test are built or run`);
+}
+for (const { key, job } of testJobs) {
+  for (const name of Object.keys(job.env ?? {})) {
+    if (overridesRun.test(name)) fail(`job ${key} sets ${name}, which changes how the tests of script/test are built or run`);
+  }
+  const env = job.steps.find(runsTest).env ?? {};
+  for (const name of Object.keys(env)) {
+    if (overridesRun.test(name)) fail(`job ${key} runs script/test with ${name}, which changes how its tests are built or run`);
+  }
+  if ('NEXTEST_TEST_THREADS' in env && !/^[1-9][0-9]*$/.test(String(env.NEXTEST_TEST_THREADS))) {
+    fail(`job ${key} runs script/test with NEXTEST_TEST_THREADS=${env.NEXTEST_TEST_THREADS}, not a whole number of tests at once`);
   }
 }
 
@@ -564,8 +590,8 @@ const args = cargoTest(tests[0] ?? '') ?? [];
 // The options but --test-threads <n>, which changes only how many tests run at once.
 const threads = args.indexOf('--test-threads');
 const options = threads >= 0 && /^[1-9][0-9]*$/.test(args[threads + 1] ?? '') ? args.toSpliced(threads, 2) : args;
-if (options.join(' ') !== '-p skald-client -p skald-adapters --locked --no-fail-fast') {
-  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client -p skald-adapters --locked --no-fail-fast: every test of the client and the adapters, from the lockfile`);
+if (options.join(' ') !== '-p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast: every test of the client, the adapters and the OIDC stand-in, from the lockfile`);
 }
 const last = commands(testStep.run)
   .map((line) => line.trim())

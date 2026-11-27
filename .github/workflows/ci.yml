@@ -67,9 +67,12 @@ jobs:
       - uses: ./.github/actions/rust-tools
         with:
           workspaces: . -> target
+      # Many tests wait, for a device flow's polls and the ends of leases, codes and challenges: 16
+      # at a time keep the runner's 4 CPUs busy.
       - run: ./script/test
         env:
           SKALD_TEST_PARTS: workspace
+          NEXTEST_TEST_THREADS: 16
 
   rust-wasm:
     name: 'Rust: WASM'
