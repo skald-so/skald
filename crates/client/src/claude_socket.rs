@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::net::Shutdown;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -39,6 +39,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use serde::Deserialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use skald_proto::{Name, SpaceId, VersionRange};
 #[cfg(windows)]
 use uds_windows::{UnixListener, UnixStream};
@@ -46,7 +47,7 @@ use uds_windows::{UnixListener, UnixStream};
 use crate::devices::text;
 use crate::mailbox::Came;
 use crate::session_file::{Reader, opened};
-use crate::state::{ClaudeSession, State};
+use crate::state::{ClaudeSession, ClaudeStopDelivery, State};
 use crate::{hook, output, recv, resend, secrets};
 
 /// The statuses of the receipts that say a line did not reach the model.
@@ -60,6 +61,21 @@ const AFTER_FAILURE: Duration = Duration::from_secs(5);
 
 /// How often the helper checks that a registered session's socket takes a connection.
 const ALIVE_EVERY: Duration = Duration::from_secs(2);
+
+/// How long after Stop the helper looks for the assistant entry the hook missed.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+/// The most transcript bytes a deferred confirmation reads at a time.
+const STOP_TAIL: u64 = 64 << 10;
+/// The longest transcript line a deferred confirmation reads: a request blob Claude Code writes
+/// beside the conversation can carry all of it, several MiB.
+const STOP_LINE: u64 = 32 << 20;
+/// How many bookkeeping lines a deferred confirmation passes over between a delivery and its
+/// reply, on either side of Stop ([`StopHead::bookkeeping`]).
+const STOP_SKIPS: usize = 1024;
+/// How many Stops the helper can wait for together.
+const STOP_WATCHES: usize = 16;
+/// How many emitted own lines the helper can remember without retaining their text.
+const STOP_EMISSIONS: usize = 256;
 
 /// Registers the session of `agent` that `session` names, its folder the working directory, if
 /// the folder is in a space and Claude Code gave the session's ID, file and socket.
@@ -121,6 +137,445 @@ pub fn confirm(
         confirmed_references(state, agent.as_str(), &scan.references())?;
     }
     Ok(())
+}
+
+/// The single delivery whose final assistant entry may finish writing after Stop returns.
+pub struct DeferredStop {
+    space: SpaceId,
+    agent: String,
+    folder: PathBuf,
+    path: resend::Way,
+    reference: String,
+    digest: [u8; 32],
+    transcript: StopFile,
+    shown: i64,
+    started: Instant,
+}
+
+struct ConfirmingStop {
+    stop: DeferredStop,
+    delivery: ClaudeStopDelivery,
+    until: Instant,
+}
+
+struct Emission {
+    space: SpaceId,
+    agent: String,
+    path: resend::Way,
+    /// A rewake hook knows its session ID. A Channels holder identifies the agent and space.
+    session: Option<String>,
+    delivery: ClaudeStopDelivery,
+    reference: String,
+    digest: [u8; 32],
+    sent: i64,
+    until: Instant,
+    first_stop: Option<Instant>,
+}
+
+#[derive(Default)]
+struct Emissions {
+    records: Vec<Emission>,
+    /// When saturated, none of the attempts we could not keep may be selected.
+    unavailable_until: Option<Instant>,
+}
+
+impl Emissions {
+    fn record(&mut self, now: Instant, emission: Emission) {
+        self.records.retain(|record| record.until > now);
+        let unavailable = self.unavailable_until.filter(|until| *until > now);
+        if unavailable.is_some() || self.records.len() == STOP_EMISSIONS {
+            self.unavailable_until = self
+                .records
+                .drain(..)
+                .map(|record| record.until)
+                .chain(unavailable)
+                .chain([emission.until])
+                .max();
+            return;
+        }
+        self.records.push(emission);
+    }
+
+    fn bind(&mut self, session: &str, stop: DeferredStop, now: Instant) -> Option<ConfirmingStop> {
+        if self.unavailable_until.is_some_and(|until| until > now) {
+            return None;
+        }
+        self.records.retain(|record| record.until > now);
+        let mut emitted = self.records.iter_mut().filter(|record| {
+            record.space == stop.space
+                && record.agent == stop.agent
+                && record.path == stop.path
+                && record.reference == stop.reference
+                && record.sent <= stop.shown
+                && record.session.as_deref().is_none_or(|id| id == session)
+        });
+        let record = emitted.next()?;
+        if emitted.next().is_some() || record.digest != stop.digest {
+            return None;
+        }
+        let first_stop = *record.first_stop.get_or_insert(stop.started);
+        let until = record.until.min(first_stop + STOP_GRACE);
+        (now < until).then(|| ConfirmingStop {
+            stop,
+            delivery: record.delivery.clone(),
+            until,
+        })
+    }
+}
+
+impl ConfirmingStop {
+    /// None discards a watch, false means it still waits, and true confirms the exact handover.
+    fn poll(&self, state: &State, id: &str) -> Result<Option<bool>, crate::state::Error> {
+        let stop = &self.stop;
+        let scope = (stop.space, stop.agent.as_str(), id);
+        let path = stop.path.name();
+        if !state.awaits_claude_stop(scope, path, &self.delivery, stop.shown)? {
+            return Ok(None);
+        }
+        match stop.transcript.assistant(id) {
+            Some(true) => Ok(state
+                .confirmed_claude_stop(scope, path, &self.delivery, stop.shown, self.until)?
+                .then_some(true)),
+            waiting => Ok(waiting),
+        }
+    }
+}
+
+/// A delivery line, the bookkeeping lines after it, and the exact place the next line starts in
+/// this file.
+struct StopFile {
+    file: PathBuf,
+    identity: (u64, u64),
+    anchor: u64,
+    next: u64,
+    anchor_hash: [u8; 32],
+    parent: Option<String>,
+    turn: Option<String>,
+    prefix: Option<(usize, [u8; 32])>,
+    identified_reply: bool,
+}
+
+/// Watches only a complete delivery at the transcript tail and an identifiable continuation.
+pub fn defer_stop(
+    state: &State,
+    (space, agent): (SpaceId, &Name),
+    session: &hook::Session,
+    turn: Option<&str>,
+) -> Option<DeferredStop> {
+    let id = session.id.as_deref()?;
+    let registered = state.claude_sessions().ok()?;
+    let file = if let Some(registered) = registered.iter().find(|each| each.session == id) {
+        if registered.space != space || registered.agent != agent.as_str() {
+            return None;
+        }
+        &registered.file
+    } else {
+        session.file.as_ref()?
+    };
+    let started = Instant::now();
+    let file = std::path::absolute(file).ok()?;
+    let (mut transcript, entry) = StopFile::at_tail(&file)?;
+    let expected_turn = turn.or(entry.turn.as_deref());
+    if entry.kind != "user"
+        || !entry.in_session(id)
+        || !same_stop_turn(
+            expected_turn,
+            entry.turn.as_deref(),
+            transcript.identified_reply,
+        )
+    {
+        return None;
+    }
+    transcript.turn = expected_turn.map(str::to_owned);
+    let said = entry.message.filter(|said| said.role == "user")?;
+    let at = entry
+        .timestamp?
+        .parse::<jiff::Timestamp>()
+        .ok()?
+        .as_millisecond();
+    let (path, reference, digest) = stop_reference(&text_of(&said.content))?;
+    if at > crate::state::unix_ms() {
+        return None;
+    }
+    Some(DeferredStop {
+        space,
+        agent: agent.as_str().to_owned(),
+        folder: std::env::current_dir().ok()?,
+        path,
+        reference,
+        digest,
+        transcript,
+        shown: at,
+        started,
+    })
+}
+
+/// A single reference in the delivery itself, with the path that gave the line.
+fn stop_reference(text: &str) -> Option<(resend::Way, String, [u8; 32])> {
+    let text = text.trim();
+    let (path, body) = if let Some(event) = text.strip_prefix(CHANNEL_TAG) {
+        let (source, rest) = event.split_once('"')?;
+        if source != "skald" && !source.ends_with(":skald") {
+            return None;
+        }
+        let (_, body) = rest.split_once('>')?;
+        let body = body.strip_suffix(CHANNEL_END)?;
+        if body.contains(CHANNEL_TAG) || body.contains(CHANNEL_END) {
+            return None;
+        }
+        (resend::Way::Channel, body.trim())
+    } else {
+        let text = text
+            .strip_prefix("<task-notification>")
+            .and_then(|rest| rest.split_once("</task-notification>"))
+            .map_or(text, |(_, rest)| rest.trim_start());
+        let text = text
+            .strip_prefix("<system-reminder>")
+            .and_then(|body| body.strip_suffix("</system-reminder>"))
+            .unwrap_or(text);
+        (resend::Way::Rewake, rewake_output(text.trim())?)
+    };
+    let line = body.lines().next()?;
+    let (header, _) = line.strip_prefix('[')?.split_once("] #")?;
+    if !header.ends_with(" · own") {
+        return None;
+    }
+    let reference = own_reference(line)?;
+    (reference.len() == crate::forms::WHOLE_REFERENCE_LEN)
+        .then(|| (path, reference, Sha256::digest(body.as_bytes()).into()))
+}
+
+/// The output in `text`, an `asyncRewake` hook's blocking error as Claude Code words it:
+/// `<event> hook blocking error from command "<command>": <output>`.
+fn rewake_output(text: &str) -> Option<&str> {
+    let (event, rest) = text.split_once(REWAKE_OUTPUT)?;
+    if event.trim_end().contains(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let rest = match rest.strip_prefix('"') {
+        Some(quoted) => quoted.split_once("\":")?.1,
+        None => rest,
+    };
+    Some(
+        rest.trim_start_matches([':', ' ', '\r', '\n', '\t'])
+            .trim_end(),
+    )
+}
+
+/// Without an exact partial line, both entries have to name the same turn explicitly.
+fn same_stop_turn(expected: Option<&str>, found: Option<&str>, partial: bool) -> bool {
+    match (expected, found) {
+        (Some(expected), Some(found)) => expected == found,
+        _ => partial,
+    }
+}
+
+impl StopFile {
+    /// The delivery must be the last complete entry of the conversation when Stop reads this file:
+    /// only bookkeeping lines may follow it ([`StopHead::bookkeeping`]), up to [`STOP_SKIPS`].
+    fn at_tail(file: &Path) -> Option<(StopFile, StopEntry)> {
+        let mut opened = open_transcript(file)?;
+        let identity = file_identity(&opened).ok()?;
+        let length = opened.metadata().ok()?.len();
+        let next = line_start(&mut opened, length)?;
+        let incomplete = read_range(&mut opened, next, length)?;
+        let mut end = next;
+        let mut skipped = 0;
+        let (anchor, entry) = loop {
+            if end == 0 || skipped > STOP_SKIPS {
+                return None;
+            }
+            let start = line_start(&mut opened, end - 1)?;
+            let line = read_range(&mut opened, start, end)?;
+            if !serde_json::from_slice::<StopHead>(&line)
+                .ok()?
+                .bookkeeping()
+            {
+                break (start, serde_json::from_slice::<StopEntry>(&line).ok()?);
+            }
+            skipped += 1;
+            end = start;
+        };
+        let parent = entry.uuid.clone();
+        let prefix = (!incomplete.is_empty())
+            .then(|| (incomplete.len(), Sha256::digest(&incomplete).into()));
+        let identified_reply = partial_assistant(&incomplete, &entry);
+        if parent.is_none() && !identified_reply {
+            return None;
+        }
+        let found = StopFile {
+            file: file.to_path_buf(),
+            identity,
+            anchor,
+            next,
+            anchor_hash: hash_range(&mut opened, anchor, next)?,
+            parent,
+            turn: entry.turn.clone(),
+            prefix,
+            identified_reply,
+        };
+        Some((found, entry))
+    }
+
+    /// None means the file or its next entry no longer matches, false means it is still incomplete.
+    fn assistant(&self, session: &str) -> Option<bool> {
+        let mut opened = open_transcript(&self.file)?;
+        if file_identity(&opened).ok()? != self.identity {
+            return None;
+        }
+        let length = opened.metadata().ok()?.len();
+        let observed = self.next + self.prefix.map_or(0, |(len, _)| len as u64);
+        if length < observed {
+            return None;
+        }
+        if length == observed {
+            return Some(false);
+        }
+        if hash_range(&mut opened, self.anchor, self.next)? != self.anchor_hash {
+            return None;
+        }
+        opened.seek(SeekFrom::Start(self.next)).ok()?;
+        let mut after = BufReader::new(opened);
+        // The bookkeeping lines Claude Code writes before its reply are passed over.
+        for index in 0..=STOP_SKIPS {
+            let mut line = Vec::new();
+            (&mut after)
+                .take(STOP_LINE)
+                .read_until(b'\n', &mut line)
+                .ok()?;
+            if index == 0
+                && self.prefix.is_some_and(|(len, hash)| {
+                    line.get(..len)
+                        .is_none_or(|prefix| <[u8; 32]>::from(Sha256::digest(prefix)) != hash)
+                })
+            {
+                return None;
+            }
+            if !line.ends_with(b"\n") {
+                return (line.len() < STOP_LINE as usize).then_some(false);
+            }
+            if serde_json::from_slice::<StopHead>(&line)
+                .ok()?
+                .bookkeeping()
+            {
+                continue;
+            }
+            let entry: StopEntry = serde_json::from_slice(&line).ok()?;
+            return (entry.assistant_in(session)
+                && self.replies_in_turn(entry.turn.as_deref())
+                && self
+                    .parent
+                    .as_ref()
+                    .is_none_or(|parent| entry.parent.as_ref() == Some(parent)))
+            .then_some(true);
+        }
+        None
+    }
+
+    /// Whether a reply that names the turn `found`, or none, answers the delivery's turn. Claude
+    /// Code's reply names none: its parent, the delivery's own entry, ties it to the turn.
+    fn replies_in_turn(&self, found: Option<&str>) -> bool {
+        match (self.turn.as_deref(), found) {
+            (Some(expected), Some(found)) => expected == found,
+            (_, None) => self.parent.is_some() || self.identified_reply,
+            (None, Some(_)) => self.identified_reply,
+        }
+    }
+}
+
+/// An already identifiable reply can still lack the final object brace or newline.
+fn partial_assistant(prefix: &[u8], delivery: &StopEntry) -> bool {
+    let Some(session) = delivery.session.as_deref() else {
+        return false;
+    };
+    if prefix.is_empty() {
+        return false;
+    }
+    let entry = serde_json::from_slice::<StopEntry>(prefix).or_else(|_| {
+        let mut object = prefix.to_vec();
+        object.push(b'}');
+        serde_json::from_slice::<StopEntry>(&object)
+    });
+    entry.is_ok_and(|entry| {
+        entry.assistant_in(session)
+            && delivery
+                .uuid
+                .as_ref()
+                .is_none_or(|id| entry.parent.as_ref() == Some(id))
+            && same_stop_turn(delivery.turn.as_deref(), entry.turn.as_deref(), true)
+    })
+}
+
+/// Where the line that ends at `before` in `file` starts: just after the newline before it, or at
+/// the file's start; None if it is longer than [`STOP_LINE`].
+fn line_start(file: &mut fs::File, before: u64) -> Option<u64> {
+    let floor = before.saturating_sub(STOP_LINE);
+    let mut at = before;
+    let mut chunk = vec![0; usize::try_from(STOP_TAIL).ok()?];
+    while at > floor {
+        let from = at.saturating_sub(STOP_TAIL).max(floor);
+        let read = &mut chunk[..usize::try_from(at - from).ok()?];
+        file.seek(SeekFrom::Start(from)).ok()?;
+        file.read_exact(read).ok()?;
+        if let Some(newline) = read.iter().rposition(|&byte| byte == b'\n') {
+            return Some(from + newline as u64 + 1);
+        }
+        at = from;
+    }
+    (at == 0).then_some(0)
+}
+
+/// The bytes of `file` from `start` to `end`.
+fn read_range(file: &mut fs::File, start: u64, end: u64) -> Option<Vec<u8>> {
+    let mut bytes = vec![0; usize::try_from(end.checked_sub(start)?).ok()?];
+    file.seek(SeekFrom::Start(start)).ok()?;
+    file.read_exact(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+/// The digest of the bytes of `file` from `start` to `end`, read [`STOP_TAIL`] at a time.
+fn hash_range(file: &mut fs::File, start: u64, end: u64) -> Option<[u8; 32]> {
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut digest = Sha256::new();
+    let mut chunk = vec![0; usize::try_from(STOP_TAIL).ok()?];
+    let mut left = end.checked_sub(start)?;
+    while left > 0 {
+        let read = &mut chunk[..usize::try_from(left.min(STOP_TAIL)).ok()?];
+        file.read_exact(read).ok()?;
+        digest.update(&*read);
+        left -= read.len() as u64;
+    }
+    Some(digest.finalize().into())
+}
+
+fn open_transcript(file: &Path) -> Option<fs::File> {
+    if !fs::metadata(file).ok()?.is_file() {
+        return None;
+    }
+    fs::File::open(file).ok()
+}
+
+#[cfg(unix)]
+pub fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = file.metadata()?;
+    Ok((metadata.dev(), metadata.ino()))
+}
+
+#[cfg(windows)]
+pub fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
+    };
+    // The open file keeps this handle valid, and the call fills the information structure.
+    let mut found: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut found) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(found.nFileIndexHigh) << 32) | u64::from(found.nFileIndexLow);
+    Ok((u64::from(found.dwVolumeSerialNumber), index))
 }
 
 /// Writes `lines`, each a line's `msg_id` and its text, into the socket of `session`, after an
@@ -249,6 +704,73 @@ struct Entry {
     content: Option<serde_json::Value>,
     #[serde(default)]
     timestamp: Option<String>,
+}
+
+/// The entries next to Stop, including the session and parent information for a deferred check.
+#[derive(Deserialize)]
+struct StopEntry {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(rename = "isSidechain", default)]
+    sidechain: bool,
+    #[serde(rename = "isApiErrorMessage", default)]
+    api_error: bool,
+    #[serde(default)]
+    timestamp: Option<String>,
+    #[serde(default)]
+    message: Option<StopMessage>,
+    #[serde(rename = "sessionId", default)]
+    session: Option<String>,
+    #[serde(default)]
+    uuid: Option<String>,
+    #[serde(rename = "parentUuid", default)]
+    parent: Option<String>,
+    #[serde(rename = "promptId", default)]
+    turn: Option<String>,
+}
+
+/// What tells a bookkeeping line from an entry of the conversation, leaving the rest unread.
+#[derive(Deserialize)]
+struct StopHead {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    uuid: Option<serde::de::IgnoredAny>,
+}
+
+impl StopHead {
+    /// A line Claude Code writes beside the conversation, such as `api-request` or `last-prompt`:
+    /// no entry of the conversation's type, and no `uuid` to join its chain.
+    fn bookkeeping(&self) -> bool {
+        self.uuid.is_none()
+            && !matches!(
+                self.kind.as_str(),
+                "user" | "assistant" | "attachment" | "system"
+            )
+    }
+}
+
+impl StopEntry {
+    fn in_session(&self, session: &str) -> bool {
+        !self.sidechain && self.session.as_deref() == Some(session)
+    }
+
+    fn assistant_in(&self, session: &str) -> bool {
+        self.in_session(session)
+            && self.kind == "assistant"
+            && !self.api_error
+            && self
+                .message
+                .as_ref()
+                .is_some_and(|said| said.role == "assistant")
+    }
+}
+
+#[derive(Deserialize)]
+struct StopMessage {
+    role: String,
+    #[serde(default)]
+    content: serde_json::Value,
 }
 
 /// A queued line that went to the model during a turn, as the turn's attachment.
@@ -441,6 +963,8 @@ pub struct Served {
     /// Whether the registrations may have changed.
     reload: bool,
     live: BTreeMap<String, Live>,
+    deferred: BTreeMap<String, ConfirmingStop>,
+    emitted: Emissions,
     /// When the last run failed, if it did.
     failed: Option<Instant>,
     /// The paths the helper held at the last look.
@@ -566,6 +1090,8 @@ impl Served {
             due: true,
             reload: true,
             live: BTreeMap::new(),
+            deferred: BTreeMap::new(),
+            emitted: Emissions::default(),
             failed: None,
             held: Holders::new(),
             next: None,
@@ -578,9 +1104,53 @@ impl Served {
         self.due = true;
     }
 
+    /// Remembers the identity of a single own message the selected path just wrote.
+    pub fn emitted(
+        &mut self,
+        (space, agent): (SpaceId, &str),
+        (path, session, started): (resend::Way, Option<&str>, i64),
+        push: &resend::Push,
+    ) {
+        let Some(own) = &push.own else { return };
+        let now = Instant::now();
+        let remaining = own.due.saturating_sub(crate::state::unix_ms());
+        let Some(until) = u64::try_from(remaining)
+            .ok()
+            .and_then(|ms| now.checked_add(Duration::from_millis(ms)))
+        else {
+            return;
+        };
+        self.emitted.record(
+            now,
+            Emission {
+                space,
+                agent: agent.to_owned(),
+                path,
+                session: session.map(str::to_owned),
+                delivery: own.clone(),
+                reference: crate::forms::whole_reference(own.msg_id),
+                digest: Sha256::digest(push.content.trim().as_bytes()).into(),
+                sent: started,
+                until,
+                first_stop: None,
+            },
+        );
+    }
+
+    /// A hook ends any previous watch of its session, or replaces it after Stop.
+    pub fn stopped(&mut self, id: String, deferred: Option<DeferredStop>) {
+        self.deferred.remove(&id);
+        if self.deferred.len() < STOP_WATCHES
+            && let Some(watch) =
+                deferred.and_then(|stop| self.emitted.bind(&id, stop, Instant::now()))
+        {
+            self.deferred.insert(id, watch);
+        }
+    }
+
     /// Whether a session is registered, or the helper holds a path, as of the last look.
     pub fn serving(&self) -> bool {
-        !self.live.is_empty() || !self.held.is_empty()
+        !self.live.is_empty() || !self.held.is_empty() || !self.deferred.is_empty()
     }
 
     /// Whether the next look has anything to do: a session is registered, or may be, or a message
@@ -618,6 +1188,28 @@ impl Served {
         let retry = (self.failed).is_none_or(|failed| failed.elapsed() >= AFTER_FAILURE);
         let mut gone = Vec::new();
         let mut state = None;
+        if !self.deferred.is_empty() {
+            let stopped = State::open_deferred_stop(dir);
+            self.deferred.retain(|id, deferred| {
+                if Instant::now() >= deferred.until {
+                    return false;
+                }
+                let polled = match &stopped {
+                    Ok(state) => deferred.poll(state, id),
+                    Err(err) => return err.busy(),
+                };
+                match polled {
+                    Ok(Some(true)) => {
+                        let stop = &deferred.stop;
+                        runs.insert((stop.agent.clone(), stop.space), stop.folder.clone());
+                        false
+                    }
+                    Ok(Some(false)) => true,
+                    Err(err) => err.busy() && Instant::now() < deferred.until,
+                    Ok(None) => false,
+                }
+            });
+        }
         for (id, live) in &mut self.live {
             let key = (live.session.agent.clone(), live.session.space);
             if !live.runs() {
@@ -754,6 +1346,301 @@ pub fn run_as(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write_delivery_entry(dir: &Path) -> PathBuf {
+        let file = dir.join("session.jsonl");
+        let delivery = json!({
+            "type": "user", "sessionId": "session", "uuid": "delivery", "promptId": "turn",
+        });
+        fs::write(&file, format!("{delivery}\n")).unwrap();
+        file
+    }
+
+    /// Claude Code's reply names no turn: its parent, the delivery, ties it to the turn.
+    #[test]
+    fn a_deferred_stop_only_accepts_its_adjacent_assistant_entry() {
+        let reply = json!({
+            "type": "assistant", "sessionId": "session", "parentUuid": "delivery",
+            "promptId": "turn", "message": { "role": "assistant" },
+        });
+        let appends = [
+            (reply.clone(), Some(true)),
+            (json!({ "isApiErrorMessage": true }), None),
+            (json!({ "isSidechain": true }), None),
+            (json!({ "sessionId": "another" }), None),
+            (json!({ "parentUuid": "another" }), None),
+            (json!({ "promptId": "another" }), None),
+            (json!({ "promptId": null }), Some(true)),
+            (json!({ "promptId": null, "parentUuid": null }), None),
+            (json!({ "type": "user" }), None),
+        ];
+        for (index, (fields, expected)) in appends.into_iter().enumerate() {
+            let dir = crate::test_dir::TestDir::new(&format!("deferred-claude-stop-{index}"));
+            let file = write_delivery_entry(&dir);
+            let (watch, _) = StopFile::at_tail(&file).unwrap();
+            assert_eq!(watch.assistant("session"), Some(false));
+            let mut appended = reply.clone();
+            appended
+                .as_object_mut()
+                .unwrap()
+                .extend(fields.as_object().unwrap().clone());
+            let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            writeln!(output, "{appended}\n{reply}").unwrap();
+            assert_eq!(watch.assistant("session"), expected, "{appended}");
+        }
+    }
+
+    /// As Claude Code 2.1.332 writes them: bookkeeping lines without a `uuid` follow the delivery,
+    /// before and after Stop, and its reply follows them, naming no turn. A conversation entry
+    /// between them, or a delivery a conversation entry follows at Stop, confirms nothing.
+    #[test]
+    fn a_deferred_stop_passes_over_bookkeeping_lines() {
+        let line = |entry: serde_json::Value| format!("{entry}\n");
+        let blob = line(json!({ "type": "api-request-blob", "sessionId": "session" }));
+        let request = line(json!({ "type": "api-request", "sessionId": "session" }));
+        let reply = line(json!({
+            "type": "assistant", "sessionId": "session", "uuid": "reply",
+            "parentUuid": "delivery", "message": { "role": "assistant" },
+        }));
+        let attachment = line(json!({
+            "type": "attachment", "sessionId": "session", "uuid": "attached",
+            "parentUuid": "delivery",
+        }));
+        let unknown = line(json!({ "type": "new-kind", "sessionId": "session", "uuid": "new" }));
+        let cases = [
+            (vec![], Some(true)),
+            (vec![unknown.as_str()], None),
+            (vec![attachment.as_str()], None),
+        ];
+        for (index, (between, expected)) in cases.into_iter().enumerate() {
+            let dir =
+                crate::test_dir::TestDir::new(&format!("deferred-claude-bookkeeping-{index}"));
+            let file = write_delivery_entry(&dir);
+            let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+            output.write_all(blob.as_bytes()).unwrap();
+            let (watch, entry) = StopFile::at_tail(&file).unwrap();
+            assert_eq!(entry.uuid.as_deref(), Some("delivery"));
+            assert_eq!(watch.assistant("session"), Some(false));
+            output.write_all(request.as_bytes()).unwrap();
+            assert_eq!(watch.assistant("session"), Some(false));
+            for line in &between {
+                output.write_all(line.as_bytes()).unwrap();
+            }
+            output.write_all(reply.as_bytes()).unwrap();
+            assert_eq!(watch.assistant("session"), expected, "{between:?}");
+        }
+        let dir = crate::test_dir::TestDir::new("deferred-claude-bookkeeping-attached");
+        let file = write_delivery_entry(&dir);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(format!("{attachment}{blob}").as_bytes())
+            .unwrap();
+        let (_, entry) = StopFile::at_tail(&file).unwrap();
+        assert_eq!(entry.kind, "attachment");
+    }
+
+    /// Request blobs far longer than [`STOP_TAIL`], as Claude Code writes them with the whole
+    /// conversation, between the delivery and Stop and between Stop and the reply, are passed
+    /// over; more than [`STOP_SKIPS`] bookkeeping lines before Stop confirm nothing.
+    #[test]
+    fn a_deferred_stop_passes_over_bookkeeping_lines_longer_than_its_reads() {
+        let blob = |size: usize| {
+            let text = "x".repeat(size);
+            let message = json!({ "role": "user", "content": [{ "type": "text", "text": text }] });
+            let entry = json!({
+                "type": "api-request-blob", "sessionId": "session", "hash": "h", "message": message,
+            });
+            format!("{entry}\n")
+        };
+        let long = usize::try_from(3 * STOP_TAIL).unwrap();
+        let reply = format!(
+            "{}\n",
+            json!({
+                "type": "assistant", "sessionId": "session", "uuid": "reply",
+                "parentUuid": "delivery", "message": { "role": "assistant" },
+            })
+        );
+        let dir = crate::test_dir::TestDir::new("deferred-claude-long-bookkeeping");
+        let file = write_delivery_entry(&dir);
+        let mut output = fs::OpenOptions::new().append(true).open(&file).unwrap();
+        output.write_all(blob(long).as_bytes()).unwrap();
+        let (watch, entry) = StopFile::at_tail(&file).unwrap();
+        assert_eq!(entry.uuid.as_deref(), Some("delivery"));
+        let after = blob(long);
+        let (start, rest) = after.split_at(long / 2);
+        output.write_all(start.as_bytes()).unwrap();
+        assert_eq!(watch.assistant("session"), Some(false));
+        output
+            .write_all(format!("{rest}{reply}").as_bytes())
+            .unwrap();
+        assert_eq!(watch.assistant("session"), Some(true));
+
+        let dir = crate::test_dir::TestDir::new("deferred-claude-many-bookkeeping");
+        let file = write_delivery_entry(&dir);
+        let many = blob(1).repeat(STOP_SKIPS + 1);
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&file)
+            .unwrap()
+            .write_all(many.as_bytes())
+            .unwrap();
+        assert!(StopFile::at_tail(&file).is_none());
+    }
+
+    /// The deliveries of both paths, as Claude Code 2.1.332 puts them in the session file, name
+    /// their own line's whole reference.
+    #[test]
+    fn a_stop_names_the_reference_of_a_channel_event_and_of_a_rewake_hook_s_output() {
+        use crate::forms::whole_reference;
+        let reference = whole_reference(skald_proto::MessageId::generate());
+        let own = format!("[clienta/api · laptop · own] #{reference}: tag the release");
+        let channel = format!("<channel source=\"skald\">\n{own}\n</channel>");
+        let rewake = format!(
+            "<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>\n\
+             <system-reminder>\nStop hook blocking error from command \"SessionStart:startup\": \
+             {own}\n</system-reminder>"
+        );
+        let digest: [u8; 32] = Sha256::digest(own.as_bytes()).into();
+        for (text, path) in [
+            (channel, resend::Way::Channel),
+            (rewake, resend::Way::Rewake),
+        ] {
+            let named = stop_reference(&text);
+            assert_eq!(named, Some((path, reference.clone(), digest)), "{text}");
+        }
+        let typed = format!("please look at hook blocking error from command \"x\": {own}");
+        assert_eq!(stop_reference(&typed), None);
+    }
+
+    #[test]
+    fn deferred_stop_binds_only_to_one_emitted_identity_and_keeps_its_first_deadline() {
+        let dir = crate::test_dir::TestDir::new("claude-stop-emissions");
+        let file = write_delivery_entry(&dir);
+        let now = Instant::now();
+        let space = SpaceId::generate();
+        let stop = |started| DeferredStop {
+            space,
+            agent: "claude".to_owned(),
+            folder: dir.to_path_buf(),
+            path: resend::Way::Channel,
+            reference: "abcd".to_owned(),
+            digest: [1; 32],
+            transcript: StopFile::at_tail(&file).unwrap().0,
+            shown: 3,
+            started,
+        };
+        let record = |seq| Emission {
+            space,
+            agent: "claude".to_owned(),
+            path: resend::Way::Channel,
+            session: None,
+            delivery: ClaudeStopDelivery {
+                seq,
+                msg_id: skald_proto::MessageId::generate(),
+                due: 100,
+            },
+            reference: "abcd".to_owned(),
+            digest: [1; 32],
+            sent: 2,
+            until: now + 2 * STOP_GRACE,
+            first_stop: None,
+        };
+        let mut emitted = Emissions::default();
+        assert!(emitted.bind("session", stop(now), now).is_none());
+
+        let one = record(1);
+        let delivery = one.delivery.clone();
+        emitted.record(now, one);
+        let mut different = stop(now);
+        different.digest = [2; 32];
+        assert!(emitted.bind("session", different, now).is_none());
+        let first = emitted.bind("session", stop(now), now).unwrap();
+        assert_eq!(first.delivery, delivery);
+
+        let again = now + Duration::from_millis(100);
+        let second = emitted.bind("session", stop(again), again).unwrap();
+        assert_eq!(second.until, first.until);
+        assert!(
+            emitted
+                .bind("session", stop(first.until), first.until)
+                .is_none()
+        );
+
+        emitted.record(again, record(2));
+        assert!(emitted.bind("session", stop(again), again).is_none());
+    }
+
+    #[test]
+    fn a_short_reference_does_not_bind_a_later_delivery_with_the_same_prefix() {
+        use crate::forms::{SHORTEST, whole_reference};
+        use skald_proto::MessageId;
+
+        let older = MessageId::from_bytes(973_u128.to_be_bytes());
+        let newer = MessageId::from_bytes(1416_u128.to_be_bytes());
+        let older_ref = whole_reference(older);
+        let newer_ref = whole_reference(newer);
+        let prefix = &older_ref[..SHORTEST];
+        assert_eq!(prefix, &newer_ref[..SHORTEST]);
+        let content = |reference: &str| format!("[api · device · own] #{reference}: same body");
+        let event = |line: &str| format!("<channel source=\"skald\">\n{line}\n</channel>");
+        assert!(stop_reference(&event(&content(prefix))).is_none());
+
+        let dir = crate::test_dir::TestDir::new("claude-stop-reference-prefix");
+        let file = write_delivery_entry(&dir);
+        let now = Instant::now();
+        let later = now + STOP_GRACE;
+        let space = SpaceId::generate();
+        let mut emissions = Emissions::default();
+        for (seq, msg_id, reference, at) in [
+            (1, older, older_ref.as_str(), now),
+            (2, newer, newer_ref.as_str(), later),
+        ] {
+            emissions.record(
+                at,
+                Emission {
+                    space,
+                    agent: "claude".to_owned(),
+                    path: resend::Way::Channel,
+                    session: None,
+                    delivery: ClaudeStopDelivery {
+                        seq,
+                        msg_id,
+                        due: 100,
+                    },
+                    reference: reference.to_owned(),
+                    digest: Sha256::digest(content(reference)).into(),
+                    sent: 2,
+                    until: at + STOP_GRACE,
+                    first_stop: None,
+                },
+            );
+        }
+        let stopped = |reference: &str| {
+            let (path, reference, digest) = stop_reference(&event(&content(reference))).unwrap();
+            DeferredStop {
+                space,
+                agent: "claude".to_owned(),
+                folder: dir.to_path_buf(),
+                path,
+                reference,
+                digest,
+                transcript: StopFile::at_tail(&file).unwrap().0,
+                shown: 3,
+                started: later,
+            }
+        };
+        assert!(
+            emissions
+                .bind("session", stopped(&older_ref), later)
+                .is_none()
+        );
+        let got = emissions
+            .bind("session", stopped(&newer_ref), later)
+            .unwrap();
+        assert_eq!(got.delivery.msg_id, newer);
+    }
 
     /// Entries recorded from Claude Code 2.1.329 (`tests/claude_code_socket/recorded/`).
     const PEER_MESSAGE: &str =

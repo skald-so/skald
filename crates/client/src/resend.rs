@@ -117,9 +117,9 @@ pub struct Pushed {
     /// The space of the run's agent.
     pub space: Option<SpaceId>,
     /// The channel events, each one's text.
-    pub channel: Vec<String>,
+    pub channel: Vec<Push>,
     /// What the `asyncRewake` hook gives, if anything.
-    pub rewake: Option<String>,
+    pub rewake: Option<Push>,
     /// Whether the mod submits its prompt.
     pub prompt: bool,
     /// When, in Unix milliseconds, the next message a path took times out, if any does.
@@ -127,6 +127,13 @@ pub struct Pushed {
     /// When, in Unix milliseconds, the first window of `batch` that holds back a message no path
     /// took ends, if one does: a run then pushes it.
     pub batch: Option<u64>,
+}
+
+/// The output for one path, with the identity of a single own message if it carries one.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Push {
+    pub content: String,
+    pub own: Option<state::ClaudeStopDelivery>,
 }
 
 /// What resending does with a waiting message now.
@@ -186,6 +193,7 @@ struct Text {
     line: String,
     msg_id: MessageId,
     inline: bool,
+    whole: Option<String>,
 }
 
 impl Text {
@@ -195,7 +203,13 @@ impl Text {
             true => format!("{}\n{}", forms::DATA_WARNING, self.line),
             false => self.line.clone(),
         };
-        hook::fitted(&line, &references.of(self.msg_id))
+        hook::fitted(&line, &self.reference(references))
+    }
+
+    fn reference(&self, references: &References) -> String {
+        self.whole
+            .clone()
+            .unwrap_or_else(|| references.of(self.msg_id))
     }
 }
 
@@ -317,14 +331,27 @@ fn opened(
     };
     let fresh = recv::pushed(follower, space, sealed(fresh))?;
     let again = recv::pushed_again(follower, space, sealed(again))?;
+    let deferred: BTreeSet<_> = [Way::Channel, Way::Rewake]
+        .iter()
+        .filter_map(|way| ways.get(way))
+        .flatten()
+        .map(|pending| pending.seq)
+        .collect();
     let opened = (fresh.messages.into_iter().chain(again.messages))
         .map(|message| {
-            let (line, _) = recv::kept_line(&message.opened, Form::Short, references);
+            let whole = if message.goes == Goes::Own && deferred.contains(&message.seq) {
+                message.msg_id
+            } else {
+                None
+            };
+            let (line, _, whole) =
+                recv::kept_line_with_whole(&message.opened, Form::Short, references, whole);
             let own = match (message.goes, message.msg_id) {
                 (Goes::Own | Goes::Inline, Some(msg_id)) => Some(Text {
                     line,
                     msg_id,
                     inline: message.goes == Goes::Inline,
+                    whole,
                 }),
                 _ => None,
             };
@@ -363,6 +390,17 @@ struct To<'a> {
     agent: &'a str,
     references: &'a References,
     due: i64,
+}
+
+/// The delivery identity of an own line this path writes with its whole reference.
+fn own_push(to: &To, opened: &Opened) -> Option<state::ClaudeStopDelivery> {
+    let own = opened.own.as_ref()?;
+    own.whole.as_ref()?;
+    Some(state::ClaudeStopDelivery {
+        seq: opened.seq,
+        msg_id: own.msg_id,
+        due: to.due,
+    })
 }
 
 /// Writes `opened` into the socket of `session`, the agent's, with [`claude_socket::write`]: each
@@ -406,12 +444,19 @@ fn to_socket(to: &To, session: &state::ClaudeSession, opened: &[&Opened]) -> Res
 /// text as its line, the others as one signal. Gives whether it gave any.
 fn to_channel(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, String> {
     let (own, below) = split(opened);
-    let mut events: Vec<String> = (opened.iter())
-        .filter_map(|each| each.own.as_ref())
-        .map(|own| own.fitted(to.references))
+    let mut events: Vec<Push> = (opened.iter())
+        .filter_map(|each| {
+            Some(Push {
+                content: each.own.as_ref()?.fitted(to.references),
+                own: own_push(to, each),
+            })
+        })
         .collect();
     if !below.is_empty() {
-        events.push(hook::SIGNAL.to_owned());
+        events.push(Push {
+            content: hook::SIGNAL.to_owned(),
+            own: None,
+        });
     }
     if events.is_empty() {
         return Ok(false);
@@ -431,12 +476,12 @@ fn to_rewake(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, S
             Some(own) if own.inline => hook::Waiting::Inline {
                 seq: each.seq,
                 line: own.line.clone(),
-                reference: to.references.of(own.msg_id),
+                reference: own.reference(to.references),
             },
             Some(own) => hook::Waiting::Own {
                 seq: each.seq,
                 line: own.line.clone(),
-                reference: to.references.of(own.msg_id),
+                reference: own.reference(to.references),
             },
             None => hook::Waiting::Below {
                 seq: each.seq,
@@ -455,7 +500,17 @@ fn to_rewake(to: &To, opened: &[&Opened], pushed: &mut Pushed) -> Result<bool, S
         .filter(|each| given.handed.contains(&each.seq) || given.signalled.contains(&each.seq))
         .collect();
     (to.state.count_wakes(&channels(&woken))).map_err(text)?;
-    pushed.rewake = Some(given.output);
+    let own = match given.handed.as_slice() {
+        [seq] => woken
+            .iter()
+            .find(|each| each.seq == *seq)
+            .and_then(|each| own_push(to, each)),
+        _ => None,
+    };
+    pushed.rewake = Some(Push {
+        content: given.output,
+        own,
+    });
     Ok(true)
 }
 

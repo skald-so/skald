@@ -3,7 +3,7 @@
 //! one taking the link code's steps on their pages, and requests to a page made by hand.
 
 use std::fs;
-use std::io::{Read as _, Write as _};
+use std::io::{self, Read as _, Write as _};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -17,6 +17,7 @@ use skald_proto::DeviceId;
 use crate::at_terminal::{as_agent, keys_in};
 use crate::browser::{APPROVE, Browser, CODE_FIELD, Page};
 use crate::cloud::{Cloud, WAIT, ids};
+use crate::common::{Samples, reached};
 use crate::linking::{LINK, OWN_DEVICE, codes_in, forms, says, typed, until_run_open};
 use crate::machine::{Finished, Machine, RUN_LIMIT, Run, SERVER, SIGN_IN};
 use crate::world::{Person, World};
@@ -653,7 +654,14 @@ pub fn request(
     host: &str,
     origin: Option<&str>,
 ) -> Option<Reply> {
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(5)).ok()?;
+    let mut stream = reached(
+        "link page",
+        &address.to_string(),
+        &Samples::of_ci(),
+        &mut io::stderr(),
+        || TcpStream::connect_timeout(&address, Duration::from_secs(5)),
+    )
+    .ok()?;
     stream
         .set_read_timeout(Some(Duration::from_secs(20)))
         .ok()?;

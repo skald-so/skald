@@ -1776,8 +1776,22 @@ version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
 dependencies = [
- "jiff-core",
- "jiff-static",
+ "jiff-core 0.1.5",
+ "jiff-static 0.2.43",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5e77cbfb9fff4798e283c2d69dff39fc2c45e7da017e5ce95b654e46ea41236"
+dependencies = [
+ "jiff-core 1.0.1",
+ "jiff-static 1.0.2",
  "log",
  "portable-atomic",
  "portable-atomic-util",
@@ -1794,15 +1808,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "jiff-static"
 version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
 dependencies = [
- "jiff-core",
+ "jiff-core 0.1.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9067a0b23e5be3147d56b2dcf652b18e6b1364caca93fb157653b6fbcab23a9"
+dependencies = [
+ "jiff-core 1.0.1",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -2978,12 +3013,12 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-s3"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af5b74b316ee483ae486bd3cb206c8caa5dbb3cf0eab7269a868ae43aeece03"
+checksum = "7c091b4ca9c4d51c1a959fa746cc74f5a612a2242070a4ae7b14e22b04c71f8c"
 dependencies = [
  "hmac 0.13.0",
- "jiff",
+ "jiff 1.0.2",
  "percent-encoding",
  "sha2 0.11.1",
  "url",
@@ -3280,7 +3315,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skald-adapters"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -3290,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "skald-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
@@ -3304,7 +3339,7 @@ dependencies = [
  "gethostname",
  "getrandom 0.4.3",
  "hpke",
- "jiff",
+ "jiff 0.2.43",
  "keyring-core",
  "libc",
  "mls-rs",
@@ -3343,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "skald-crypto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3371,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "skald-github-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3386,7 +3421,7 @@ dependencies = [
 
 [[package]]
 name = "skald-load-delivery"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3407,11 +3442,11 @@ dependencies = [
 
 [[package]]
 name = "skald-mcp"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "skald-oidc-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3423,7 +3458,7 @@ dependencies = [
 
 [[package]]
 name = "skald-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ciborium-io",
  "ciborium-ll",
@@ -3436,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "skald-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3461,11 +3496,14 @@ dependencies = [
  "skald-github-stand-in",
  "skald-oidc-stand-in",
  "skald-proto",
+ "socket2",
  "sqlx",
  "tokio",
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

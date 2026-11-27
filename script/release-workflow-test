@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Tests the release workflow, .github/workflows/release.yml, which builds skald with dist and
 // publishes it to GitHub Releases, and the local workflows it calls:
-//   - it runs on pushes of tags, on PRs and on manual runs (workflow_dispatch), on nothing else; a
-//     push of vX.Y.Z or vX.Y.Z-beta.N starts it; a PR into dev that changes it or the release config
-//     starts its dry run;
+//   - it runs on pushes of tags, on PRs, nightly and on manual runs (workflow_dispatch), on nothing
+//     else; a push of vX.Y.Z or vX.Y.Z-beta.N starts it; a PR into dev that changes it or the
+//     release config starts its dry run, which runs no job until the PR has the label
+//     ready-to-merge, then on each of its pushes and when it gets that label;
 //   - only a push of a v* tag publishes: for any other push, a PR and a manual run, on a tag ref
 //     too, every job that can publish is skipped, whatever the run's inputs, variables and step
 //     outputs; a job can publish when its token writes anything, it reads a secret other than
@@ -13,7 +14,7 @@
 //     takes its notes from a file or a text, not from GitHub; it can mark a beta as a prerelease; on
 //     a push of a release tag it may run;
 //   - the dry run has jobs on a runner of each OS and architecture, macOS, Linux and Windows on
-//     x86_64 and arm64, for PRs and manual runs;
+//     x86_64 and arm64, for PRs, the nightly run and manual runs;
 //   - the rules of the release pipeline: every job's permissions are set; only the job that creates
 //     the release writes: contents, and the attestations of its files, with an OIDC token
 //     (id-token); one job that pushes the release image with docker/build-push-action:
@@ -78,10 +79,11 @@ const where = (s) => `${s.file} job ${s.key}${s.step ? ` step ${s.step.name ?? s
 // The triggers.
 const on = triggers(release);
 const events = Object.keys(on).sort();
-if (JSON.stringify(events) !== JSON.stringify(['pull_request', 'push', 'workflow_dispatch'])) {
-  fail(`it runs on pushes, PRs and manual runs and on nothing else, not on: ${events.join(', ') || 'nothing'}`);
+if (JSON.stringify(events) !== JSON.stringify(['pull_request', 'push', 'schedule', 'workflow_dispatch'])) {
+  fail(`it runs on pushes, PRs, a schedule and manual runs and on nothing else, not on: ${events.join(', ') || 'nothing'}`);
 }
 if (!('workflow_dispatch' in on)) fail('the dry run runs on demand: no workflow_dispatch');
+if (!(on.schedule ?? []).some((entry) => /^\S+ \S+ \* \* \*$/.test(String(entry?.cron ?? '')))) fail('the dry run does not run daily');
 for (const tag of ['v1.2.3', 'v1.2.3-beta.1']) {
   if (!runsFor(release, event('push', `refs/tags/${tag}`))) fail(`a push of the tag ${tag} does not start it`);
 }
@@ -96,6 +98,16 @@ if (pr) {
   for (const file of [releaseFile, config]) {
     if (!pathTriggers(pr, file)) fail(`a PR that changes ${file} does not start the dry run`);
   }
+  for (const type of ['synchronize', 'labeled']) {
+    if (![].concat(pr.types ?? []).includes(type)) fail(`a PR's ${type} event does not start the dry run`);
+  }
+  const ref = 'refs/pull/7/merge';
+  const running = (labels) => Object.entries(jobsFor(release, event('pull_request', ref, { labels }))).filter(([, state]) => !state.skipped).map(([key]) => key);
+  for (const labels of [[], ['bug']]) {
+    const early = running(labels);
+    if (early.length > 0) fail(`the dry run of a PR without the label ready-to-merge may run its jobs ${early.join(', ')}`);
+  }
+  if (running(['bug', 'ready-to-merge']).length === 0) fail('the dry run of a PR with the label ready-to-merge runs no job');
 }
 
 // Only a push of a v* tag publishes.

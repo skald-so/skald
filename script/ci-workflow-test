@@ -17,16 +17,34 @@
 //     not a required check itself; it runs whatever their results, a cancelled run's too, and fails
 //     unless the job of script/changed-parts succeeded and each other one succeeded or was skipped;
 //   - the jobs Rust needs that run script/test set up the same tools: their steps differ only in the
-//     Cargo workspaces they cache and in SKALD_TEST_PARTS;
+//     Cargo workspaces they cache, in SKALD_TEST_PARTS and in NEXTEST_TEST_THREADS;
+//   - NEXTEST_TEST_THREADS of a step that runs script/test is a whole number of tests at once, and
+//     neither CI nor a job or step of it that runs script/test sets NEXTEST_PROFILE, NEXTEST_RETRIES,
+//     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: every test runs, once, as script/test
+//     builds it;
 //   - the jobs of the parts web and site upload the screenshots that differ from their references,
 //     web/kit-diff/ and site/references-diff/, after their tests fail;
 //   - every action of the workflow, and of the local actions it runs, is pinned to a commit, a
 //     checkout keeps no credentials, and a job's token reads contents at most.
-// And the job that runs the client's and the adapters' tests on Windows:
-//   - one job of a PR into dev runs `cargo nextest run -p skald-client -p skald-adapters --locked
-//     --no-fail-fast`, with no other option but --test-threads, on a windows-2025 runner, in a step
-//     that may run and whose failure fails the job: every test of the client and the adapters, none
-//     left out (neither has doctests);
+// And .github/workflows/client-windows.yml, with the job that runs the client's, the adapters' and
+// the OIDC stand-in's tests on Windows, which no job of CI runs:
+//   - every PR into dev and every push to dev start it, whatever they change, a PR also when it gets
+//     a label; a PR's run cancels the PR's older run, a push's run cancels none, and no two PRs or a
+//     PR and dev share a concurrency group; its tokens read contents at most, its actions are
+//     pinned and its checkouts keep no credentials;
+//   - a job writes what script/changed-parts HEAD^1 prints to its outputs; the tests on Windows
+//     need only it and run on a PR exactly when its workspace output is true and the PR has the
+//     label ready-to-merge, whatever its other labels, and on a push to dev;
+//   - the check Rust on Windows, which dev requires: on a push to dev, or on a PR that has the
+//     label or whose workspace output is not true, one job of that name runs whatever the tests
+//     end with, and passes only when job changes succeeded and the tests succeeded, or were skipped
+//     with the workspace output not true; on a PR without the label whose workspace output is
+//     true, the tests are skipped and no job is named Rust on Windows, so the check is missing;
+//   - one job of a PR with the label runs `cargo nextest run -p skald-client -p skald-adapters -p
+//     skald-oidc-stand-in --locked --no-fail-fast`, with no other option but --test-threads, on a
+//     windows-2025 runner, in a step that may run and whose failure fails the job: every test of the
+//     client, the adapters and the stand-in the client's tests sign in with, none left out (none has
+//     doctests);
 //   - the job writes .cargo/config.toml only by copying to it a Cargo config file of the repository
 //     that sets only optimization levels, and sets no NEXTEST_PROFILE, NEXTEST_RETRIES,
 //     CARGO_PROFILE_*, RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS: debug assertions and overflow checks
@@ -39,9 +57,6 @@
 //     'num-test-threads': under nextest, alone() holds back no other test's process;
 //   - that command is the last of the step, in a standard shell: under pwsh a step's exit code is its
 //     last command's, so a command after it would hide a failing test;
-//   - it is gated like the job that runs script/test's workspace part: it needs the job of
-//     script/changed-parts and runs exactly when that job's workspace output is true, whatever the
-//     other outputs are, and on a push to dev;
 //   - before it starts PostgreSQL, it sets fsync = off and max_connections = 500 in
 //     $env:PGDATA\postgresql.conf, as script/lib/postgres.sh sets the tests' PostgreSQL;
 //   - before the tests, it starts the runner image's PostgreSQL service and waits for it, installs
@@ -74,6 +89,7 @@ import {
   runsFor,
   stepSkipped,
   template,
+  toText,
   triggers,
   truth,
   unknown,
@@ -330,13 +346,34 @@ const setUp = ({ job }) =>
     (job.steps ?? []).map((step) => {
       const copy = structuredClone(step);
       delete copy.with?.workspaces;
-      if (runsTest(copy)) delete copy.env?.SKALD_TEST_PARTS;
+      if (runsTest(copy)) {
+        delete copy.env?.SKALD_TEST_PARTS;
+        delete copy.env?.NEXTEST_TEST_THREADS;
+      }
       return copy;
     }),
   );
 for (const j of behind.slice(1)) {
   if (setUp(j) !== setUp(behind[0]) || j.job['runs-on'] !== behind[0].job['runs-on']) {
-    fail(`job ${j.key} sets up other tools than job ${behind[0].key}: their steps differ in more than the cached workspaces and SKALD_TEST_PARTS`);
+    fail(`job ${j.key} sets up other tools than job ${behind[0].key}: their steps differ in more than the cached workspaces, SKALD_TEST_PARTS and NEXTEST_TEST_THREADS`);
+  }
+}
+
+// What a run of script/test may change: how many tests run at once, not which or how they build.
+const overridesRun = /^(NEXTEST_PROFILE|NEXTEST_RETRIES|CARGO_PROFILE_\w+|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS)$/;
+for (const name of Object.keys(ci.env ?? {})) {
+  if (overridesRun.test(name)) fail(`${ciFile} sets ${name}, which changes how the tests of script/test are built or run`);
+}
+for (const { key, job } of testJobs) {
+  for (const name of Object.keys(job.env ?? {})) {
+    if (overridesRun.test(name)) fail(`job ${key} sets ${name}, which changes how the tests of script/test are built or run`);
+  }
+  const env = job.steps.find(runsTest).env ?? {};
+  for (const name of Object.keys(env)) {
+    if (overridesRun.test(name)) fail(`job ${key} runs script/test with ${name}, which changes how its tests are built or run`);
+  }
+  if ('NEXTEST_TEST_THREADS' in env && !/^[1-9][0-9]*$/.test(String(env.NEXTEST_TEST_THREADS))) {
+    fail(`job ${key} runs script/test with NEXTEST_TEST_THREADS=${env.NEXTEST_TEST_THREADS}, not a whole number of tests at once`);
   }
 }
 
@@ -388,8 +425,128 @@ for (const [key, job] of Object.entries(jobs)) {
   }
 }
 
+// The workflow of the client on Windows: its triggers, the label ready-to-merge and the check
+// Rust on Windows.
+const winFile = '.github/workflows/client-windows.yml';
+const win = readWorkflow(path.join(root, winFile));
+const winJobs = win.jobs ?? {};
+const label = 'ready-to-merge';
+const winPr = event('pull_request', 'refs/pull/7/merge', { labels: [label] });
+const onWin = triggers(win);
+if (!runsFor(win, pr)) fail(`a PR into dev does not start ${winFile}`);
+if (!runsFor(win, push)) fail(`a push to dev does not start ${winFile}`);
+for (const [name, config] of [
+  ['pull_request', onWin.pull_request ?? {}],
+  ['push', onWin.push ?? {}],
+]) {
+  if (config.paths !== undefined || config['paths-ignore'] !== undefined) fail(`a ${name} starts ${winFile} only for some paths: the check Rust on Windows would be missing`);
+}
+for (const type of ['opened', 'synchronize', 'reopened', 'ready_for_review', 'labeled']) {
+  if (![].concat(onWin.pull_request?.types ?? []).includes(type)) fail(`a PR's ${type} event does not start ${winFile}`);
+}
+{
+  const group = (ev, number) => {
+    const payload = number === undefined ? ev.github.event : open({ ...ev.github.event, number, pull_request: open({ ...ev.github.event.pull_request, number }) });
+    const scope = { contexts: { github: open({ ...ev.github, workflow: win.name, event: payload }), inputs: {} }, status: {} };
+    return { group: template(win.concurrency?.group, scope), cancels: truth(template(win.concurrency?.['cancel-in-progress'] ?? false, scope)) };
+  };
+  const [dev, seven, eight] = [group(push), group(pr, 7), group(pr, 8)];
+  if ([dev, seven, eight].some((run) => run.group === undefined || isUnknown(run.group))) fail(`the concurrency group of a run of ${winFile} cannot be told from its event`);
+  else if (new Set([dev.group, seven.group, eight.group]).size !== 3) fail(`two PRs, or a PR and dev, share a concurrency group of ${winFile}`);
+  if (dev.cancels !== false) fail(`a push to dev's run of ${winFile} cancels the older run of its group`);
+  if (seven.cancels !== true) fail(`a PR's run of ${winFile} does not cancel the PR's older run`);
+}
+const winParts = Object.keys(winJobs).find((k) => (winJobs[k].steps ?? []).some((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line))));
+const winTests = Object.keys(winJobs).find((k) => String(winJobs[k]['runs-on'] ?? '').startsWith('windows-'));
+const winGate = Object.keys(winJobs).find((k) => k !== winParts && k !== winTests);
+if (!winParts || !winTests || !winGate || Object.keys(winJobs).length !== 3) {
+  fail(`${winFile} does not have three jobs: script/changed-parts, the tests on Windows and the check Rust on Windows`);
+} else {
+  const partsStep = winJobs[winParts].steps.find((step) => commands(step.run).some((line) => /script\/changed-parts\b/.test(line)));
+  if (!commands(partsStep.run).some((line) => /script\/changed-parts HEAD\^1 \| tee -a "\$GITHUB_OUTPUT"/.test(line)) || partsStep.shell !== 'bash') {
+    fail(`job ${winParts} of ${winFile} does not write what script/changed-parts HEAD^1 prints to $GITHUB_OUTPUT, in bash`);
+  }
+  if (String(winJobs[winParts].outputs?.workspace ?? '').replace(/\s+/g, '') !== `\${{steps.${partsStep.id}.outputs.workspace}}`) {
+    fail(`job ${winParts} of ${winFile} does not output the part workspace that script/changed-parts prints`);
+  }
+  if (stepSkipped(partsStep, jobsFor(win, winPr)[winParts])) fail(`job ${winParts} of ${winFile} skips script/changed-parts on a PR`);
+  if (JSON.stringify(needsOf(winJobs[winTests])) !== JSON.stringify([winParts])) fail(`job ${winTests} of ${winFile} needs other jobs than ${winParts}`);
+  if (JSON.stringify([...needsOf(winJobs[winGate])].sort()) !== JSON.stringify([winParts, winTests].sort())) fail(`job ${winGate} of ${winFile} does not need jobs ${winParts} and ${winTests}`);
+  // The cases: the event, whether the PR has the label, the workspace output, and whether the tests
+  // run then and the check Rust on Windows decides.
+  const cases = [];
+  for (const workspace of ['true', 'false', '']) {
+    for (const labels of [[], ['bug'], ['bug', label]]) {
+      const labelled = labels.includes(label);
+      cases.push({ ev: event('pull_request', 'refs/pull/7/merge', { labels }), workspace, labelled, what: `a PR${labelled ? ' with the label' : ` without the label${labels.length ? ' but another' : ''}`} whose workspace output is '${workspace}'` });
+    }
+  }
+  cases.push({ ev: push, workspace: '', what: 'a push to dev' });
+  for (const c of cases) {
+    const onPr = c.ev.name === 'pull_request';
+    const tests = !onPr || (c.workspace === 'true' && c.labelled);
+    const decides = !onPr || c.workspace !== 'true' || c.labelled;
+    const testsScope = {
+      contexts: { github: c.ev.github, inputs: {}, needs: { [winParts]: { result: 'success', outputs: { workspace: c.workspace } } } },
+      status: { success: true, always: true, failure: false, cancelled: false },
+    };
+    if (truth(condition(winJobs[winTests].if ?? 'true', testsScope)) !== tests) fail(`job ${winTests} of ${winFile} ${tests ? 'may be skipped' : 'may run'} on ${c.what}`);
+    for (const [status, result] of [
+      [{ success: true, failure: false, cancelled: false }, 'success'],
+      [{ success: false, failure: true, cancelled: false }, 'failure'],
+      [{ success: false, failure: false, cancelled: true }, 'cancelled'],
+    ]) {
+      const needs = { [winParts]: { result: 'success', outputs: { workspace: c.workspace } }, [winTests]: { result, outputs: {} } };
+      const scope = { contexts: { github: c.ev.github, inputs: {}, needs }, status: { ...status, always: true } };
+      const named = template(winJobs[winGate].name, scope);
+      const runs = truth(condition(winJobs[winGate].if ?? 'success()', scope));
+      if (decides && (named !== 'Rust on Windows' || runs !== true)) fail(`on ${c.what}, job ${winGate} of ${winFile} is not the check Rust on Windows, run whatever job ${winTests} ends with (${result}): it is ${toText(named)}, ${runs ? 'run' : 'skipped'}`);
+      if (!decides && (isUnknown(named) || named === 'Rust on Windows')) fail(`on ${c.what}, the tests on Windows are skipped, and job ${winGate} of ${winFile} may report the check Rust on Windows`);
+    }
+  }
+  const gate = winJobs[winGate];
+  if (gate['continue-on-error'] || (gate.steps ?? []).some((step) => step['continue-on-error'] || step.if !== undefined)) fail(`job ${winGate} of ${winFile} may pass when a step of it fails or is skipped`);
+  const verdict = (gate.steps ?? []).find((step) => Object.values(step.env ?? {}).some((v) => String(v).replace(/\s+/g, '') === '${{toJSON(needs)}}'));
+  if (!verdict || verdict.shell !== 'bash') fail(`no step of job ${winGate} of ${winFile} reads the results of the jobs it needs, toJSON(needs), in bash`);
+  else {
+    const variable = Object.keys(verdict.env).find((name) => String(verdict.env[name]).replace(/\s+/g, '') === '${{toJSON(needs)}}');
+    const passes = (parts, workspace, tests) => {
+      const needs = { [winParts]: { result: parts, outputs: { workspace } }, [winTests]: { result: tests, outputs: {} } };
+      return spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', verdict.run], { env: { PATH: process.env.PATH, [variable]: JSON.stringify(needs) }, stdio: 'ignore' }).status === 0;
+    };
+    for (const [parts, workspace, tests, want] of [
+      ['success', 'true', 'success', true],
+      ['success', '', 'success', true],
+      ['success', 'false', 'skipped', true],
+      ['success', 'true', 'skipped', false],
+      ['success', 'true', 'failure', false],
+      ['success', 'true', 'cancelled', false],
+      ['success', 'false', 'failure', false],
+      ['failure', '', 'skipped', false],
+      ['cancelled', '', 'skipped', false],
+      ['skipped', '', 'skipped', false],
+    ]) {
+      if (passes(parts, workspace, tests) !== want) fail(`job ${winGate} of ${winFile} ${want ? 'fails' : 'passes'} when job ${winParts} ends ${parts} with workspace '${workspace}' and job ${winTests} ends ${tests}`);
+    }
+  }
+  for (const [key, job] of Object.entries(winJobs)) {
+    pinned(job.steps, `job ${key} of ${winFile}`);
+    for (const step of job.steps ?? []) {
+      if (String(step.uses ?? '').startsWith('actions/checkout@') && step.with?.['persist-credentials'] !== false) fail(`a checkout of job ${key} of ${winFile} keeps the credentials`);
+    }
+    const granted = permissions(win, job);
+    if (granted === null || Object.entries(granted).some(([scope, level]) => level !== 'none' && !(scope === 'contents' && level === 'read'))) {
+      fail(`the token of job ${key} of ${winFile} gets more than contents: read: ${JSON.stringify(granted)}`);
+    }
+  }
+}
+// No job of CI runs the client's tests on Windows: they wait for the label in their own workflow.
+for (const [key, job] of Object.entries(jobs)) {
+  if (String(job['runs-on'] ?? '').startsWith('windows-')) fail(`job ${key} of ${ciFile} runs on Windows: the client's tests on Windows run in ${winFile}`);
+}
+
 // The job of the client on Windows.
-const states = jobsFor(ci, pr);
+const states = jobsFor(win, winPr);
 // The cargo nextest run command of a line, as its words, or null.
 const cargoTest = (line) => {
   const w = words(line);
@@ -406,14 +563,14 @@ const testsClient = (args) => {
 };
 
 // The job.
-const found = Object.entries(jobs).filter(
+const found = Object.entries(winJobs).filter(
   ([key, job]) =>
     !states[key]?.skipped &&
     String(job['runs-on'] ?? '').startsWith('windows-') &&
     (job.steps ?? []).some((step) => commands(step.run).some((line) => testsClient(cargoTest(line) ?? []))),
 );
 if (found.length !== 1) {
-  fail(`not one job of a PR runs cargo nextest run -p skald-client on a Windows runner: ${found.map(([key]) => key).join(', ') || 'none'}`);
+  fail(`not one job of ${winFile} on a PR with the label ready-to-merge runs cargo nextest run -p skald-client on a Windows runner: ${found.map(([key]) => key).join(', ') || 'none'}`);
   done();
 }
 const [key, job] = found[0];
@@ -433,8 +590,8 @@ const args = cargoTest(tests[0] ?? '') ?? [];
 // The options but --test-threads <n>, which changes only how many tests run at once.
 const threads = args.indexOf('--test-threads');
 const options = threads >= 0 && /^[1-9][0-9]*$/.test(args[threads + 1] ?? '') ? args.toSpliced(threads, 2) : args;
-if (options.join(' ') !== '-p skald-client -p skald-adapters --locked --no-fail-fast') {
-  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client -p skald-adapters --locked --no-fail-fast: every test of the client and the adapters, from the lockfile`);
+if (options.join(' ') !== '-p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast') {
+  fail(`job ${key} runs cargo nextest run ${args.join(' ')}, not cargo nextest run -p skald-client -p skald-adapters -p skald-oidc-stand-in --locked --no-fail-fast: every test of the client, the adapters and the OIDC stand-in, from the lockfile`);
 }
 const last = commands(testStep.run)
   .map((line) => line.trim())
@@ -444,7 +601,7 @@ if (last !== tests[0]?.trim()) {
   fail(`the test step of job ${key} ends with ${last ?? 'nothing'}, not with cargo nextest run: its exit code is the step's last command's, so a failing test would not fail the step`);
 }
 // A custom shell, {0} for the script, decides the exit code itself.
-if (String(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell ?? '').includes('{0}')) {
+if (String(testStep.shell ?? job.defaults?.run?.shell ?? win.defaults?.run?.shell ?? '').includes('{0}')) {
   fail(`the test step of job ${key} runs in a custom shell, which may hide a failing test`);
 }
 // .cargo/config.toml: written only by a copy of a repository file that sets only opt-level.
@@ -462,7 +619,7 @@ for (const line of steps.flatMap((step) => commands(step.run)).filter((line) => 
 // Environment that changes the build's settings or nextest's profile and retries: in the
 // workflow's, the job's or a step's env, or set by a step's script.
 const overriding = /^(NEXTEST_PROFILE|NEXTEST_RETRIES|CARGO_PROFILE_\w+|RUSTFLAGS|CARGO_ENCODED_RUSTFLAGS)$/;
-for (const name of [ci.env, job.env, ...steps.map((step) => step.env)].flatMap((env) => Object.keys(env ?? {}))) {
+for (const name of [win.env, job.env, ...steps.map((step) => step.env)].flatMap((env) => Object.keys(env ?? {}))) {
   if (overriding.test(name)) fail(`job ${key} sets ${name}, which changes how its tests are built or run`);
 }
 for (const line of steps.flatMap((step) => commands(step.run))) {
@@ -527,8 +684,8 @@ for (const caller of callers) {
 const url = /^postgres(ql)?:\/\/[^@\s/]+@127\.0\.0\.1:5432$/;
 const lines = commands(testStep.run);
 const set = lines.findIndex((line) => url.test(line.match(/^\s*\$env:SKALD_TEST_DATABASE_URL\s*=\s*"([^"]*)"\s*$/)?.[1] ?? ''));
-const powershell = ['pwsh', 'powershell', undefined].includes(testStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell);
-const inEnv = [testStep.env, job.env, ci.env].some((env) => url.test(String(env?.SKALD_TEST_DATABASE_URL ?? '')));
+const powershell = ['pwsh', 'powershell', undefined].includes(testStep.shell ?? job.defaults?.run?.shell ?? win.defaults?.run?.shell);
+const inEnv = [testStep.env, job.env, win.env].some((env) => url.test(String(env?.SKALD_TEST_DATABASE_URL ?? '')));
 if (!inEnv && !(powershell && set >= 0 && set < lines.findIndex((line) => cargoTest(line)))) {
   fail(`the test step of job ${key} does not give the tests the PostgreSQL at 127.0.0.1:5432 through SKALD_TEST_DATABASE_URL`);
 }
@@ -590,7 +747,7 @@ const browserJobs = [
     .map(({ key: k, job: j }) => [k, j.steps.slice(0, j.steps.findIndex(runsTest))]),
 ];
 for (const [k, until] of browserJobs) {
-  const want = String(jobs[k]['runs-on']).startsWith('windows-') ? '~/AppData/Local/ms-playwright' : '~/.cache/ms-playwright';
+  const want = String((k === key ? job : jobs[k])['runs-on']).startsWith('windows-') ? '~/AppData/Local/ms-playwright' : '~/.cache/ms-playwright';
   if (!expanded(until).some((step) => String(step.uses ?? '').startsWith('actions/cache@') && step.with?.path === want)) {
     fail(`job ${k} does not restore ${want} from the Actions cache before its tests: they drive Chrome Headless Shell`);
   }
@@ -620,7 +777,7 @@ if (!logStep) {
   for (const level of ['FATAL', 'PANIC']) {
     if (!text.includes(level)) fail(`the step of job ${key} that prints PostgreSQL's log leaves out its ${level} lines`);
   }
-  if ((logStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell) !== 'pwsh') fail(`the step of job ${key} that prints PostgreSQL's log does not run in pwsh`);
+  if ((logStep.shell ?? job.defaults?.run?.shell ?? win.defaults?.run?.shell) !== 'pwsh') fail(`the step of job ${key} that prints PostgreSQL's log does not run in pwsh`);
   const scope = { ...states[key].scope, status: { success: false, always: true, failure: true, cancelled: false } };
   if (truth(condition(logStep.if ?? 'success()', scope)) !== true) fail(`the step of job ${key} that prints PostgreSQL's log does not run when the tests fail`);
 }
@@ -635,7 +792,7 @@ if (!checkStep) {
   if (!text.includes('[IO.Path]::GetTempPath()')) fail(`the check of job ${key} for directories left does not look in the temporary directory, [IO.Path]::GetTempPath()`);
   if (!/^\s*if \(\$left\) \{ exit 1 \}\s*$/m.test(text)) fail(`the check of job ${key} for directories left does not fail when there is one`);
   if (checkStep['continue-on-error']) fail(`a failure of the check of job ${key} for directories left does not fail the job: continue-on-error`);
-  if ((checkStep.shell ?? job.defaults?.run?.shell ?? ci.defaults?.run?.shell) !== 'pwsh') fail(`the check of job ${key} for directories left does not run in pwsh`);
+  if ((checkStep.shell ?? job.defaults?.run?.shell ?? win.defaults?.run?.shell) !== 'pwsh') fail(`the check of job ${key} for directories left does not run in pwsh`);
   // It runs whether the tests passed or failed.
   for (const failure of [false, true]) {
     const scope = { ...states[key].scope, status: { success: !failure, always: true, failure, cancelled: false } };
@@ -647,7 +804,6 @@ if (!checkStep) {
 
 // The gate: as the workspace part's job.
 if (!testJobs.some((j) => j.parts.includes('workspace'))) fail('no job runs script/test with the workspace part');
-gated(key, ['workspace']);
 
 // The system's own key storage: only this job's tests use it.
 const realKeys = 'SKALD_TEST_REAL_KEY_STORAGE';
@@ -655,10 +811,10 @@ if (String(testStep.env?.[realKeys]) !== '1') fail(`the test step of job ${key} 
 const workflowDir = path.join(root, '.github/workflows');
 for (const file of fs.readdirSync(workflowDir).filter((f) => /\.ya?ml$/.test(f))) {
   const workflow = readWorkflow(path.join(workflowDir, file));
-  const others = { ...workflow, jobs: Object.fromEntries(Object.entries(workflow.jobs ?? {}).filter(([k]) => `.github/workflows/${file}` !== ciFile || k !== key)) };
-  if (JSON.stringify(others).includes(realKeys)) fail(`.github/workflows/${file} sets ${realKeys} outside job ${key} of ${ciFile}`);
+  const others = { ...workflow, jobs: Object.fromEntries(Object.entries(workflow.jobs ?? {}).filter(([k]) => `.github/workflows/${file}` !== winFile || k !== key)) };
+  if (JSON.stringify(others).includes(realKeys)) fail(`.github/workflows/${file} sets ${realKeys} outside job ${key} of ${winFile}`);
 }
-if (JSON.stringify(jobs[key]).replace(JSON.stringify(testStep), '').includes(realKeys)) fail(`job ${key} sets ${realKeys} outside its test step`);
+if (JSON.stringify(winJobs[key]).replace(JSON.stringify(testStep), '').includes(realKeys)) fail(`job ${key} sets ${realKeys} outside its test step`);
 for (const file of fs.readdirSync(path.join(root, 'script'), { recursive: true })) {
   const full = path.join(root, 'script', file);
   if (file !== 'ci-workflow-test' && fs.statSync(full).isFile() && fs.readFileSync(full, 'utf8').includes(realKeys)) fail(`script/${file} sets ${realKeys}`);

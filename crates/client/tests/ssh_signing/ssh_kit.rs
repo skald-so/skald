@@ -5,7 +5,6 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -17,6 +16,12 @@ use crate::at_terminal::{self, approve, as_agent, shown_key};
 use crate::machine::{Finished, Machine};
 use crate::terminal::Terminal;
 use crate::world::{self, ACME, Person, World, create_with_member, words};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The hidden setting of the GitHub API's address.
 pub const GITHUB_API: &str = "SKALD_GITHUB_API_URL";
@@ -90,7 +95,7 @@ impl Api {
 
 /// An address on this machine where nothing answers: GitHub's API, unreachable.
 pub fn nowhere() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let listener = local_listener();
     let port = listener.local_addr().expect("the port's address").port();
     drop(listener);
     format!("http://127.0.0.1:{port}")

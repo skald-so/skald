@@ -24,8 +24,8 @@
 //!   deleted, as `GET /spaces/{space}/members` and `GET /spaces/{space}/devices` give it.
 //! - Every row of every table of the database, read as PostgreSQL's text form of the row: a row
 //!   that holds none of what a shared space keeps holds nothing of the account's data, but its ID,
-//!   either beside the ID of a space that keeps it, as the revisions' own records do, or in one row
-//!   at most, the mark that it was deleted. No row holds its username, its subject, its account
+//!   either in a roster member row for a space that keeps it, or in one row at most, the mark that
+//!   it was deleted. No row holds its username, its subject, its account
 //!   record, its anchors objects or a wrap to its recovery key; only a row holding a revision holds
 //!   its master public key.
 

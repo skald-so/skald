@@ -17,7 +17,7 @@ use crate::delivery::{
     bob_joins_other_channel, other_channel, review_sends_in, set_mode, set_text, shows_reads_once,
     wakes,
 };
-use crate::hooks::{Bob, INBOX_WORD, assert_signal};
+use crate::hooks::{Bob, INBOX_WORD, api_sends_web, assert_signal};
 use crate::receipts::shows_read_once;
 use crate::senders::{OWN, PEER};
 use crate::socket_claude::{Session, Surface};
@@ -93,7 +93,7 @@ fn with_no_setting_each_of_three_messages_wakes_an_idle_session_at_once() {
     };
 
     for (at, text) in THREE.into_iter().enumerate() {
-        let msg_id = solo.api_sends_web(text);
+        let msg_id = api_sends_web(&solo, text);
 
         let turn = model.wait_turn_holding(text, "api's message");
         assert!(
@@ -186,7 +186,10 @@ fn in_pull_no_message_reaches_the_model_until_inbox_returns_them_all() {
         return;
     };
     set_mode(&solo, default, OWN, PULL, None);
-    let pulled: Vec<MessageId> = PULLED.iter().map(|text| solo.api_sends_web(text)).collect();
+    let pulled: Vec<MessageId> = PULLED
+        .iter()
+        .map(|text| api_sends_web(&solo, text))
+        .collect();
 
     thread::sleep(QUIET);
     no_turn_holds(&model, &PULLED, "before inbox");
@@ -284,7 +287,7 @@ fn inline_peer_text_reaches_an_idle_session_over_the_socket_without_inbox() {
     shows_read_once(&bob.person.machine, asked);
     session.wait_turn_end(&model, INLINE_SAYS, 2);
 
-    let own = solo.api_sends_web(OWN_SAYS);
+    let own = api_sends_web(&solo, OWN_SAYS);
     let turn = model.wait_turn_holding(OWN_SAYS, "api's message");
     assert_own_in(&turn, OWN_SAYS, own, &solo.short(API));
     session.wait_turn_end(&model, OWN_SAYS, 3);
