@@ -107,52 +107,23 @@ jobs:
           & "$env:PGBIN\pg_isready" --host 127.0.0.1 --port 5432 --timeout 60
           if ($LASTEXITCODE -ne 0) { exit 1 }
       # Windows now and then fails a connect of the tests with WSAENOBUFS (10055), for a cause still
-      # unknown. A process started here notes the range of ephemeral ports and the ranges excluded
-      # from it, then samples, about every 10 s, the ephemeral ports in use, by state and owner, an
-      # owner that is gone by its ID, the non-paged pool, the programs with the most processes, such
-      # as browsers a test's driver left, and the free space of C: and D:, which holds the workspace
-      # and the temporary directory; a retry of such a connect prints the last sample.
+      # unknown; once it logged that every ephemeral port was in use, though samples 10 s apart never
+      # showed 2,400 of its 16,384 in use. script/sample-ports.ps1, started here, samples every second
+      # the sockets on ephemeral ports and what holds them, the processes and the drives' free space;
+      # a retry of such a connect prints the last sample. The step waits for the first.
       - name: Sample the ephemeral ports in use
         shell: pwsh
         run: |
-          $sampler = Join-Path $env:RUNNER_TEMP 'ports.ps1'
-          Set-Content -Path $sampler -Value @'
           $samples = Join-Path $env:RUNNER_TEMP 'ports.txt'
-          $range = Get-NetTCPSetting -SettingName Internet
-          $start = $range.DynamicPortRangeStartPort
-          $excluded = (netsh interface ipv4 show excludedportrange protocol=tcp |
-            Select-String -Pattern '^\s*(\d+)\s+(\d+)' |
-            ForEach-Object { "$($_.Matches[0].Groups[1].Value)-$($_.Matches[0].Groups[2].Value)" }) -join ' '
-          "ephemeral ports $start-$($start + $range.DynamicPortRangeNumberOfPorts - 1); excluded: $excluded" |
-            Add-Content -Path $samples
-          $drives = Get-PSDrive -PSProvider FileSystem -Name C, D
-          "drives: " + (($drives | ForEach-Object {
-            "$($_.Name): $([int]($_.Free / 1GB)) GB free of $([int](($_.Used + $_.Free) / 1GB)) GB"
-          }) -join ', ') | Add-Content -Path $samples
-          while ($true) {
-            $used = @(Get-NetTCPConnection -ErrorAction SilentlyContinue |
-              Where-Object { $_.LocalPort -ge $start -and $_.State -ne 'Listen' })
-            $ports = @($used | Sort-Object -Property LocalPort -Unique).Count
-            $pool = [int]((Get-Counter '\Memory\Pool Nonpaged Bytes').CounterSamples[0].CookedValue / 1MB)
-            $states = ($used | Group-Object State | Sort-Object Count -Descending |
-              ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
-            $owners = ($used | Where-Object State -ne 'TimeWait' | Group-Object OwningProcess |
-              Sort-Object Count -Descending | Select-Object -First 3 |
-              ForEach-Object {
-                $name = (Get-Process -Id $_.Name -ErrorAction SilentlyContinue).ProcessName
-                "$(if ($name) { $name } else { "gone $($_.Name)" })=$($_.Count)"
-              }) -join ' '
-            $programs = (Get-Process | Group-Object ProcessName | Sort-Object Count -Descending |
-              Select-Object -First 4 | ForEach-Object { "$($_.Name)=$($_.Count)" }) -join ' '
-            $free = (Get-PSDrive -PSProvider FileSystem -Name C, D | ForEach-Object {
-              "$($_.Name): $([int]($_.Free / 1GB)) GB"
-            }) -join ' '
-            "$(Get-Date -Format HH:mm:ss): $ports ports in use, $states; non-paged pool $pool MB; most: $owners; processes: $programs; free: $free" |
-              Add-Content -Path $samples
-            Start-Sleep -Seconds 10
-          }
-          '@
-          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', $sampler
+          Start-Process -FilePath pwsh -ArgumentList '-NoProfile', '-File', (Resolve-Path script/sample-ports.ps1), $samples
+          $deadline = (Get-Date).AddSeconds(60)
+          do {
+            Start-Sleep -Milliseconds 500
+            $first = @(Get-Content -Path $samples -ErrorAction SilentlyContinue) -match '^\d\d:' |
+              Select-Object -First 1
+          } until ($first -or (Get-Date) -gt $deadline)
+          Get-Content -Path $samples -ErrorAction SilentlyContinue
+          if ($first -notmatch 'ports in use') { exit 1 }
       # PGUSER and PGPASSWORD of the image name its superuser. Every failing test shows. A fresh
       # runner's Credential Manager is the one key storage a test may use. cargo-nextest runs the
       # tests of all the client's, the adapters' and the OIDC stand-in's test binaries at once, each
@@ -213,6 +184,15 @@ jobs:
             "$($_.Name): $($_.Count) times, $($times[0].ToString('HH:mm:ss'))-$($times[-1].ToString('HH:mm:ss'))"
             ($_.Group | Select-Object -First 1).Message
           }
+          # The samples of the seconds around each time the ephemeral ports ran out.
+          $lines = @(Get-Content -Path (Join-Path $env:RUNNER_TEMP 'ports.txt'))
+          $events | Where-Object Id -in 4227, 4231 | Sort-Object TimeCreated | Select-Object -First 10 |
+            ForEach-Object {
+              $at = $_.TimeCreated
+              "samples around $($_.Id) at $($at.ToString('HH:mm:ss')):"
+              $seconds = -3..1 | ForEach-Object { $at.AddSeconds($_).ToString('HH:mm:ss') }
+              $lines | Where-Object { $_.Length -ge 8 -and $_.Substring(0, 8) -in $seconds }
+            }
           $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
           "Defender real-time protection: $($defender.RealTimeProtectionEnabled)"
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
