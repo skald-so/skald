@@ -385,6 +385,7 @@ fn connect(
         .resolve(&lookup, config, within)
         .map_err(|err| unanswered(err, timeout))?;
     let mut last = io::Error::new(io::ErrorKind::NotFound, format!("no address for {host}"));
+    let mut tried = None;
     for addr in addrs.iter() {
         match TcpStream::connect_timeout(addr, timeout) {
             Ok(stream) => {
@@ -394,10 +395,22 @@ fn connect(
                     .map_err(|err| Error::Unreachable(err.to_string()))?;
                 return Ok(stream);
             }
-            Err(err) => last = err,
+            Err(err) => (last, tried) = (err, Some(addr)),
         }
     }
-    Err(io_error(last, timeout))
+    let error = io_error(last, timeout);
+    Err(match tried {
+        Some(addr) => during(&format!("connect to {addr}"), error),
+        None => error,
+    })
+}
+
+/// `error`, of `step`: if the server is unreachable, its cause after the name of the step.
+fn during(step: &str, error: Error) -> Error {
+    match error {
+        Error::Unreachable(cause) => Error::Unreachable(format!("{step}: {cause}")),
+        error => error,
+    }
 }
 
 /// The error of an I/O operation on the server connection.
@@ -1155,7 +1168,7 @@ impl Connection {
                     })
                 }
                 Err(HandshakeError::Failure(tungstenite::Error::Io(err))) => {
-                    Err(io_error(err, timeout))
+                    Err(during("opening the WebSocket", io_error(err, timeout)))
                 }
                 Err(HandshakeError::Failure(err)) => Err(Error::Unexpected(err.to_string())),
             }
@@ -1253,7 +1266,10 @@ impl Connection {
         socket
             .send(Message::Binary(auth.to_cbor().into()))
             .map_err(|err| match err {
-                tungstenite::Error::Io(err) => io_error(err, self.timeout),
+                tungstenite::Error::Io(err) => during(
+                    "sending the WebSocket's sign-in",
+                    io_error(err, self.timeout),
+                ),
                 err => Error::Unreachable(err.to_string()),
             })?;
         Ok(socket)
@@ -1286,7 +1302,7 @@ impl Connection {
             let mut events = Events::new(stream);
             events
                 .send(request.as_bytes(), timeout)
-                .map_err(|err| io_error(err, timeout))?;
+                .map_err(|err| during("asking for the event stream", io_error(err, timeout)))?;
             let (status, headers) = events.head(timeout)?;
             if status != 200 {
                 return Ok(Answer::Refused {
@@ -1648,7 +1664,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn closed_port_is_unreachable() {
+    fn closed_port_is_unreachable_and_its_address_is_named() {
         let at = closed_port();
         let uri: Uri = format!("ws://{at}/ws").parse().unwrap();
 
@@ -1661,7 +1677,10 @@ pub(crate) mod tests {
         )
         .expect_err("nothing listens");
 
-        assert!(matches!(error, Error::Unreachable(_)), "{error:?}");
+        let Error::Unreachable(cause) = &error else {
+            panic!("{error:?}");
+        };
+        assert!(cause.starts_with(&format!("connect to {at}: ")), "{cause}");
     }
 
     #[test]

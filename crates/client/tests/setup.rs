@@ -15,7 +15,8 @@ use std::panic::{self, AssertUnwindSafe};
 use std::time::{Duration, Instant};
 
 use common::{
-    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Server, close, connect, retried_into, server, test_databases,
+    NO_BUFFER_SPACE, SETUP_ATTEMPTS, Samples, Server, close, connect, retried_into, server,
+    shows_no_buffer_space, test_databases,
 };
 
 /// An I/O error of `kind`, as sqlx gives it.
@@ -28,7 +29,7 @@ fn io_error(kind: io::ErrorKind) -> sqlx::Error {
 fn retried<T>(step: impl FnMut() -> Ready<Result<T, sqlx::Error>>) -> Result<T, sqlx::Error> {
     tokio::runtime::Runtime::new()
         .expect("start a tokio runtime")
-        .block_on(retried_into("a step", None, &mut io::sink(), step))
+        .block_on(retried_into("a step", &noted(None), &mut io::sink(), step))
 }
 
 #[test]
@@ -92,7 +93,7 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
     let attempts = RefCell::new(Vec::new());
     let result: Result<(), _> = runtime.block_on(async {
         let started = tokio::time::Instant::now();
-        retried_into("a step", None, &mut io::sink(), || {
+        retried_into("a step", &noted(None), &mut io::sink(), || {
             attempts.borrow_mut().push(started.elapsed());
             ready(Err(io_error(io::ErrorKind::ConnectionReset)))
         })
@@ -105,11 +106,12 @@ fn a_reset_is_retried_after_waits_of_100_ms_doubled_1_5_s_in_all() {
 
 /// The lines of the retries of a step that fails twice with `error`, the ports sampled in `samples`.
 fn retry_lines(error: fn() -> io::Error, samples: Option<std::path::PathBuf>) -> Vec<String> {
+    let samples = noted(samples);
     let mut sink = Vec::new();
     let calls = Cell::new(0);
     let result = tokio::runtime::Runtime::new()
         .expect("start a tokio runtime")
-        .block_on(retried_into("a step", samples, &mut sink, || {
+        .block_on(retried_into("a step", &samples, &mut sink, || {
             calls.set(calls.get() + 1);
             ready(if calls.get() < 3 {
                 Err(sqlx::Error::Io(error()))
@@ -123,6 +125,14 @@ fn retry_lines(error: fn() -> io::Error, samples: Option<std::path::PathBuf>) ->
         .lines()
         .map(str::to_owned)
         .collect()
+}
+
+/// The samples in `file`, the machine's state now always `taken`.
+fn noted(file: Option<std::path::PathBuf>) -> Samples {
+    Samples {
+        file,
+        now: || "taken".to_owned(),
+    }
 }
 
 /// A new directory of this process named for `name`, removed by the test, and its samples file
@@ -155,13 +165,13 @@ fn a_retry_is_a_line_with_its_error_and_for_no_buffer_space_the_last_sample_of_t
         sampled,
         [100, 200].map(|ms| format!(
             "a step: no connection to PostgreSQL: {error}; again in {ms}ms; \
-             ports: 10:00:10: 950 ports in use"
+             ports: 10:00:10: 950 ports in use; now: taken"
         ))
     );
     assert_eq!(gone.len(), 2, "{gone:?}");
     assert!(
         gone.iter()
-            .all(|line| line.ends_with("; ports: not sampled")),
+            .all(|line| line.ends_with("; ports: not sampled; now: taken")),
         "{gone:?}"
     );
     let reset_error = io::Error::from(io::ErrorKind::ConnectionReset).to_string();
@@ -184,7 +194,7 @@ fn a_stand_ins_connect_is_tried_again_only_while_windows_has_no_buffer_space() {
         let result = common::reached(
             "a relay",
             "127.0.0.1:1",
-            Some(samples.clone()),
+            &noted(Some(samples.clone())),
             &mut sink,
             || {
                 calls.set(calls.get() + 1);
@@ -216,7 +226,7 @@ fn a_stand_ins_connect_is_tried_again_only_while_windows_has_no_buffer_space() {
         recovered_lines.lines().collect::<Vec<_>>(),
         [100, 200].map(|ms| format!(
             "a relay: cannot reach 127.0.0.1:1: {error}; again in {ms}ms; \
-             ports: 10:00:10: 950 ports in use"
+             ports: 10:00:10: 950 ports in use; now: taken"
         ))
     );
     assert!(
@@ -286,4 +296,17 @@ fn a_connection_whose_session_ended_closes() {
         close(ended).await;
         close(other).await;
     });
+}
+
+#[test]
+fn an_output_shows_no_buffer_space_once_its_new_bytes_end_the_error_also_split_across_reads() {
+    let line = b"skald: cannot reach the server: lacked buffer space (os error 10055)\n";
+    let split = line.len() - 8;
+    assert!(!shows_no_buffer_space(&line[..split], split));
+    assert!(shows_no_buffer_space(line, line.len() - split));
+    assert!(shows_no_buffer_space(line, line.len()));
+    let earlier = [&line[..], b"and then more"].concat();
+    assert!(!shows_no_buffer_space(&earlier, 13));
+    assert!(!shows_no_buffer_space(b"os error 10054\n", 16));
+    assert!(!shows_no_buffer_space(b"", 0));
 }
