@@ -216,6 +216,23 @@ impl Samples {
     }
 }
 
+/// Whether `output`, of a program under test, shows WSAENOBUFS in its last `new` bytes or across
+/// their start: the text of the error first printed there.
+pub fn shows_no_buffer_space(output: &[u8], new: usize) -> bool {
+    let shown = format!("os error {NO_BUFFER_SPACE}");
+    let start = output.len().saturating_sub(new + shown.len() - 1);
+    output[start..]
+        .windows(shown.len())
+        .any(|window| window == shown.as_bytes())
+}
+
+/// For `who`, a program under test whose output [`shows_no_buffer_space`] just now, a line to this
+/// test's stderr with what CI's samples note at that moment.
+pub fn note_no_buffer_space(who: &str) {
+    let note = Samples::of_ci().note();
+    eprintln!("{who} printed os error {NO_BUFFER_SPACE}; {note}");
+}
+
 /// The state of this machine as a connect fails with WSAENOBUFS: on Windows its kernel's pools and
 /// counts of processes, threads and handles, and its TCP sockets by state, those of this process
 /// and the ephemeral ports they hold; elsewhere `not taken`.

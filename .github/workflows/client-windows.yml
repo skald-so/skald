@@ -169,6 +169,24 @@ jobs:
           $samples | Sort-Object { [int]([regex]::Match($_, 'pool (\d+) MB').Groups[1].Value) } |
             Select-Object -Last 1
           $samples | Select-Object -Last 1
+      # What the TCP/IP stack logged while the tests ran, as a connect failing with WSAENOBUFS
+      # (10055) may come with its warning of the ports or memory it lacked; and whether Defender
+      # scanned in real time.
+      - name: Show the TCP/IP stack's warnings
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          $events = @(Get-WinEvent -ErrorAction SilentlyContinue -FilterHashtable @{
+            LogName = 'System'; ProviderName = 'Tcpip', 'Microsoft-Windows-Tcpip', 'AFD'
+          })
+          "$($events.Count) events of TCP/IP and AFD in the system log"
+          $events | Group-Object ProviderName, Id | ForEach-Object {
+            $times = $_.Group.TimeCreated | Sort-Object
+            "$($_.Name): $($_.Count) times, $($times[0].ToString('HH:mm:ss'))-$($times[-1].ToString('HH:mm:ss'))"
+            ($_.Group | Select-Object -First 1).Message
+          }
+          $defender = Get-MpComputerStatus -ErrorAction SilentlyContinue
+          "Defender real-time protection: $($defender.RealTimeProtectionEnabled)"
       # PostgreSQL's side of a failing test: its failures, without the sessions that dropping a
       # test's database ends.
       - name: Show PostgreSQL's failures

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     NO_BUFFER_SPACE, SETUP_ATTEMPTS, Samples, Server, close, connect, retried_into, server,
-    test_databases,
+    shows_no_buffer_space, test_databases,
 };
 
 /// An I/O error of `kind`, as sqlx gives it.
@@ -296,4 +296,17 @@ fn a_connection_whose_session_ended_closes() {
         close(ended).await;
         close(other).await;
     });
+}
+
+#[test]
+fn an_output_shows_no_buffer_space_once_its_new_bytes_end_the_error_also_split_across_reads() {
+    let line = b"skald: cannot reach the server: lacked buffer space (os error 10055)\n";
+    let split = line.len() - 8;
+    assert!(!shows_no_buffer_space(&line[..split], split));
+    assert!(shows_no_buffer_space(line, line.len() - split));
+    assert!(shows_no_buffer_space(line, line.len()));
+    let earlier = [&line[..], b"and then more"].concat();
+    assert!(!shows_no_buffer_space(&earlier, 13));
+    assert!(!shows_no_buffer_space(b"os error 10054\n", 16));
+    assert!(!shows_no_buffer_space(b"", 0));
 }
