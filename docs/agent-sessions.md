@@ -25,11 +25,13 @@ Skald tries them in this order: the socket, Channels, `asyncRewake`, the mod. A 
 ## Codex
 | Where the agent runs | Idle session, no prompt | Busy session | Fallbacks |
 |---|---|---|---|
-| Terminal | Yes, `codex queue` | Yes, when the current turn ends | Hooks, `inbox` |
+| Terminal | Yes, `codex queue` | Yes, after the current tool or at the end of the turn | Hooks, `inbox` |
 | ChatGPT app | Yes, `codex queue` | Yes, when the current turn ends | Hooks, `inbox`, a scheduled task |
 | VS Code | Yes, `codex queue` | Yes, when the current turn ends | Hooks, `inbox` |
 
 Skald gives the signal by the hooks of a turn, then `Stop`, then `codex queue` once the turn ends, then the next prompt's `UserPromptSubmit`. A message the session does not confirm within 30 seconds, or `SKALD_RESEND_AFTER` seconds, of its signal or of `inbox` giving it gets the signal by the next one; after the last, it waits for `inbox`.
+
+The Codex [end-to-end tests](dev/infrastructure.md#pr-checks) exercise these paths, delivery modes, wake counts and permission prompts with the real CLI. A full Codex executor runs `codex exec` in the task folder without the user's MCP servers, hooks, plugins or arbitrary environment variables. Skald refuses `read-only` executor sessions on every OS. [Executor checks](dev/agent-delivery.md#codex)
 
 ## Other agents
 - Gemini, Cursor, Copilot, OpenCode: hooks and plugins; the fallback is `inbox`.

@@ -47,10 +47,19 @@ pub fn claude_code() -> Option<PathBuf> {
 /// The first file on `PATH` of `names`, the names of the program `what`, if any. Without it, says
 /// that the test is skipped, or fails if [`REQUIRED`] is set.
 pub fn on_path(names: &[&str], what: &str) -> Option<PathBuf> {
+    on_path_or(names, what, || None)
+}
+
+pub fn on_path_or(
+    names: &[&str],
+    what: &str,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
     let found = (env::var_os("PATH").iter())
         .flat_map(env::split_paths)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
-        .find(|path| path.is_file());
+        .find(|path| path.is_file())
+        .or_else(fallback);
     if found.is_none() {
         let required = env::var_os(REQUIRED).is_some_and(|value| !value.is_empty() && value != "0");
         assert!(!required, "{what} is not on PATH, and {REQUIRED} is set");

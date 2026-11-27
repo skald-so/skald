@@ -73,14 +73,24 @@ struct Seen {
     turns: Vec<Value>,
     /// The names of the credential headers that held anything but the placeholder.
     foreign: Vec<String>,
+    responses: Vec<Value>,
     /// Whether the held step's answers go out.
     released: bool,
+}
+
+type ResponsesScript = dyn Fn(&Value) -> ResponsesReply + Send + Sync;
+
+pub enum ResponsesReply {
+    Done,
+    Call(Step),
+    Fail,
 }
 
 struct Shared {
     script: Vec<Step>,
     /// The step whose answers wait for [`Stub::release`], if any.
     hold: Option<usize>,
+    responses: Option<Box<ResponsesScript>>,
     seen: Mutex<Seen>,
     changed: Condvar,
 }
@@ -103,6 +113,20 @@ impl Stub {
     /// Starts a stub on a free local port that plays `script`, holding the answers of step `hold`,
     /// if any, until released.
     pub fn start(script: Vec<Step>, hold: Option<usize>) -> Self {
+        Self::launch(script, hold, None)
+    }
+
+    pub fn start_responses(
+        script: impl Fn(&Value) -> ResponsesReply + Send + Sync + 'static,
+    ) -> Self {
+        Self::launch(Vec::new(), None, Some(Box::new(script)))
+    }
+
+    fn launch(
+        script: Vec<Step>,
+        hold: Option<usize>,
+        responses: Option<Box<ResponsesScript>>,
+    ) -> Self {
         let listener = local_listener();
         let url = format!(
             "http://{}",
@@ -111,6 +135,7 @@ impl Stub {
         let shared = Arc::new(Shared {
             script,
             hold,
+            responses,
             seen: Mutex::new(Seen::default()),
             changed: Condvar::new(),
         });
@@ -155,6 +180,11 @@ impl Stub {
     /// The bodies of the requests of the session's turns so far, in order.
     pub fn turns(&self) -> Vec<Value> {
         self.shared.seen().turns.clone()
+    }
+
+    /// Every Responses request, including those that do not offer tools.
+    pub fn requests(&self) -> Vec<Value> {
+        self.shared.seen().responses.clone()
     }
 
     /// Fails if the session sent a credential other than the placeholder, naming the header, never
@@ -280,7 +310,27 @@ fn answer(
             json!({ "input_tokens": 1 }).to_string(),
         ),
         "/v1/messages" => ("200 OK", "text/event-stream", turn(shared, body)),
-        "/v1/responses" => ("200 OK", "text/event-stream", responses(shared, body)),
+        "/v1/responses" => {
+            shared.seen().responses.push(body.clone());
+            let (step, call) = if let Some(script) = &shared.responses {
+                match script(&body) {
+                    ResponsesReply::Call(call) => (played(&body), Some(call)),
+                    ResponsesReply::Done => (played(&body), None),
+                    ResponsesReply::Fail => {
+                        let error = json!({ "error": { "message": "fixture model failure", "type": "invalid_request_error" } });
+                        return ("400 Bad Request", "application/json", error.to_string());
+                    }
+                }
+            } else {
+                let (step, call) = next_step(shared, body);
+                (step, call.cloned())
+            };
+            (
+                "200 OK",
+                "text/event-stream",
+                responses(step, call.as_ref()),
+            )
+        }
         _ => (
             "404 Not Found",
             "application/json",
@@ -365,8 +415,7 @@ pub fn offers_tools(body: &Value) -> bool {
 /// The streamed answer to a request of `/v1/responses`, as Codex reads it: the next step as a
 /// function call, `exec_command` for a shell command and the server's namespace for a tool of
 /// `skald`, if it is one of the session's turns; else the message `Done.`.
-fn responses(shared: &Shared, body: Value) -> String {
-    let (step, call) = next_step(shared, body);
+fn responses(step: usize, call: Option<&Step>) -> String {
     let call_id = format!("call_e2e_{step}");
     let id = format!("fc_e2e_{step}");
     let item = match call {

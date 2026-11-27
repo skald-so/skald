@@ -31,10 +31,10 @@ hkdf = "0.13"
 hpke = { version = "0.15", default-features = false, features = ["aes", "alloc", "getrandom", "x25519"] }
 # 0.57.1 refuses too-short UpdatePaths and filters proposals correctly. `external_client` for the
 # Delivery Service and the browser, `last_resort_key_package_ext` for the last-resort KeyPackage.
-mls-rs = { version = "0.57.1", features = ["external_client", "last_resort_key_package_ext"] }
+mls-rs = { version = "0.58.0", features = ["external_client", "last_resort_key_package_ext"] }
 # GroupState and EpochRecord, which mls-rs does not re-export.
 mls-rs-core = "0.27"
-mls-rs-crypto-rustcrypto = "0.23"
+mls-rs-crypto-rustcrypto = "0.24"
 # The RSA keys ssh-key verifies with: which of them `crypto` checks.
 rsa = { version = "0.10", default-features = false }
 sha2 = { version = "0.11", default-features = false }
@@ -57,7 +57,7 @@ p256 = { version = "0.14", features = ["ecdsa"] }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.4", features = ["wasm_js"] }
 # mls-rs takes JavaScript's clock itself; `browser` gives its provider the random generator.
-mls-rs-crypto-rustcrypto = { version = "0.23", features = ["browser"] }
+mls-rs-crypto-rustcrypto = { version = "0.24", features = ["browser"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

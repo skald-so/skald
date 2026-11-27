@@ -88,6 +88,7 @@ mod page;
 mod permission_prompts;
 mod person;
 mod plain_path;
+mod powershell;
 mod presence;
 mod proxy;
 mod queue_keys;
