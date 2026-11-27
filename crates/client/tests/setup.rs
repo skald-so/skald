@@ -3,8 +3,14 @@
 //! few times, each retry a line with its error, for WSAENOBUFS with the sampled ports in use; any
 //! other error is not; a stand-in's connect, such as the relay's to the server, is tried again
 //! the same way while Windows fails it with WSAENOBUFS;
-//! a server that fails to start drops the database it made, as one that stops does.
+//! a server that fails to start drops the database it made, as one that stops does; on Windows the
+//! browser tests' driver and its browser end with their test binary, and a later driver removes
+//! what they left.
 
+#[cfg(windows)]
+#[allow(dead_code)]
+#[path = "../../server/tests/common/browser.rs"]
+mod browser;
 #[allow(dead_code)]
 mod common;
 
@@ -309,4 +315,69 @@ fn an_output_shows_no_buffer_space_once_its_new_bytes_end_the_error_also_split_a
     assert!(!shows_no_buffer_space(&earlier, 13));
     assert!(!shows_no_buffer_space(b"os error 10054\n", 16));
     assert!(!shows_no_buffer_space(b"", 0));
+}
+
+/// The driver of a run of this binary, which cannot exit by itself, and its browser end with that
+/// run; the next driver removes the run's directory, with the browser's profile in it.
+#[cfg(windows)]
+#[test]
+fn a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile() {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    use browser::{Browser, Processes, contained};
+
+    const TEST: &str = "a_browser_ends_with_its_test_binary_and_a_later_driver_removes_its_profile";
+    /// Set in the environment of that run.
+    const PLAY: &str = "SKALD_TEST_BROWSER_PLAY";
+    /// What starts the line where that run prints its browser's processes.
+    const PROCESSES: &str = "browser processes: ";
+    if std::env::var_os(PLAY).is_some() {
+        let processes = Browser::launch().processes();
+        // Its driver no longer sees its stdin close, nor closes the browser.
+        contained::suspend(processes.driver).expect("suspend the driver");
+        let processes = serde_json::to_string(&processes).expect("processes");
+        println!("{PROCESSES}{processes}");
+        std::process::exit(0);
+    }
+    let mut run = Command::new(std::env::current_exe().expect("this test binary"))
+        .args([TEST, "--exact", "--nocapture"])
+        .env(PLAY, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("run this test binary");
+    let stdout = BufReader::new(run.stdout.take().expect("stdout is piped"));
+    let printed = stdout
+        .lines()
+        .map_while(Result::ok)
+        .find_map(|line| line.strip_prefix(PROCESSES).map(str::to_owned));
+    let status = run.wait().expect("the run");
+    let printed = printed.unwrap_or_else(|| panic!("the run, {status}, printed no processes"));
+    let processes: Processes = serde_json::from_str(&printed).expect("processes");
+    let pids = [&[processes.driver][..], &processes.browser].concat();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let running = loop {
+        let running: Vec<u32> = pids
+            .iter()
+            .copied()
+            .filter(|&pid| contained::runs(pid))
+            .collect();
+        if running.is_empty() || Instant::now() >= deadline {
+            break running;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    // Nothing else would end them.
+    for pid in &running {
+        let _ = Command::new("taskkill")
+            .args(["/F", "/PID", &pid.to_string()])
+            .output();
+    }
+    assert!(running.is_empty(), "still running: {running:?} of {pids:?}");
+    let dir = contained::dir_of(run.id());
+    let filled = std::fs::read_dir(&dir).is_ok_and(|mut entries| entries.next().is_some());
+    assert!(filled, "nothing in {}", dir.display());
+    let _browser = Browser::launch();
+    assert!(!dir.exists(), "{} is left", dir.display());
 }

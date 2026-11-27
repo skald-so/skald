@@ -48,6 +48,9 @@ struct Driver {
     waiting: Arc<Mutex<Waiting>>,
     next_call: AtomicU64,
     next_session: AtomicU64,
+    /// The job the driver and its browser run in, closed as this test binary ends.
+    #[cfg(windows)]
+    _job: std::os::windows::io::OwnedHandle,
 }
 
 /// Where to send the answer to each call, by its ID; the thread that reads the driver's stdout takes
@@ -96,11 +99,185 @@ fn inherit_only_stdio(command: &mut Command) {
 #[cfg(not(unix))]
 fn inherit_only_stdio(_command: &mut Command) {}
 
+/// On Windows, where a process outlives its parent and the browser has no process group, the driver
+/// runs in a job of this test binary's that kills it and its browser as the binary ends, however it
+/// ends: a browser that playwright-core would close only after the driver has seen its stdin close
+/// runs on for seconds on a busy machine, many of them at once while the tests run. Killed so,
+/// playwright-core removes no profile: the driver's temporary directory, `skald-driver-<ID>` of
+/// the binary's process ID, holds them and the web app's build, and a later driver removes those of
+/// binaries no longer running.
+#[cfg(windows)]
+pub mod contained {
+    use std::env;
+    use std::fs;
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
+    use std::os::windows::process::CommandExt;
+    use std::path::PathBuf;
+    use std::process::{self, Child, Command};
+
+    use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, STILL_ACTIVE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+    use windows_sys::Win32::System::Threading::{
+        CREATE_SUSPENDED, GetExitCodeProcess, OpenProcess, OpenThread,
+        PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, SuspendThread, THREAD_SUSPEND_RESUME,
+    };
+
+    /// The start of the name of a driver's temporary directory.
+    const PREFIX: &str = "skald-driver-";
+
+    /// The temporary directory of the driver of the test binary whose process ID is `pid`.
+    pub fn dir_of(pid: u32) -> PathBuf {
+        env::temp_dir().join(format!("{PREFIX}{pid}"))
+    }
+
+    /// Makes `command` start suspended, to run once [`contain`] has put it in its job, with this
+    /// binary's driver directory for its temporary directory; removes those of binaries no longer
+    /// running first.
+    pub fn prepare(command: &mut Command) -> io::Result<()> {
+        remove_abandoned();
+        let dir = dir_of(process::id());
+        fs::create_dir_all(&dir)?;
+        command
+            .env("TEMP", &dir)
+            .env("TMP", &dir)
+            .creation_flags(CREATE_SUSPENDED);
+        Ok(())
+    }
+
+    /// Puts `child`, which [`prepare`] made start suspended, in a job that kills it and every
+    /// process it starts once the job's only handle, given here, closes; then lets it run.
+    pub fn contain(child: &Child) -> io::Result<OwnedHandle> {
+        // SAFETY: no attributes and no name; the handle is owned from here on.
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a new handle that nothing else owns.
+        let job = unsafe { OwnedHandle::from_raw_handle(job) };
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let size = u32::try_from(std::mem::size_of_val(&limits)).map_err(io::Error::other)?;
+        // SAFETY: `limits` is the information of that class, of that size; the handles are open.
+        let set = unsafe {
+            SetInformationJobObject(
+                job.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size,
+            )
+        };
+        // SAFETY: both handles are open.
+        if set == 0
+            || unsafe { AssignProcessToJobObject(job.as_raw_handle(), child.as_raw_handle()) } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        each_thread(child.id(), |thread| {
+            // SAFETY: an open handle of a thread with the right to resume it.
+            unsafe { ResumeThread(thread) }
+        })?;
+        Ok(job)
+    }
+
+    /// Suspends every thread of the process `pid`, so that it cannot exit by itself.
+    pub fn suspend(pid: u32) -> io::Result<()> {
+        each_thread(pid, |thread| {
+            // SAFETY: an open handle of a thread with the right to suspend it.
+            unsafe { SuspendThread(thread) }
+        })
+    }
+
+    /// Calls `change`, `ResumeThread` or `SuspendThread`, with each thread of the process `pid`;
+    /// fails if it has none or a call fails.
+    fn each_thread(pid: u32, change: impl Fn(RawHandle) -> u32) -> io::Result<()> {
+        // SAFETY: it takes no pointer; the snapshot is owned from here on.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a new handle that nothing else owns.
+        let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+        let mut entry = THREADENTRY32 {
+            dwSize: u32::try_from(std::mem::size_of::<THREADENTRY32>())
+                .map_err(io::Error::other)?,
+            ..THREADENTRY32::default()
+        };
+        let mut found = false;
+        // SAFETY: `entry` is an entry with its size set, for the snapshot taken.
+        let mut more = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: it takes no pointer; the handle is owned from here on.
+                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                if thread.is_null() {
+                    return Err(io::Error::last_os_error());
+                }
+                // SAFETY: a new handle that nothing else owns.
+                let thread = unsafe { OwnedHandle::from_raw_handle(thread) };
+                if change(thread.as_raw_handle()) == u32::MAX {
+                    return Err(io::Error::last_os_error());
+                }
+                found = true;
+            }
+            // SAFETY: as for the first entry.
+            more = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != 0;
+        }
+        if found {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("process {pid} has no thread")))
+        }
+    }
+
+    /// Whether the process `pid` runs.
+    pub fn runs(pid: u32) -> bool {
+        // SAFETY: it takes no pointer; the handle is owned from here on.
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return false;
+        }
+        // SAFETY: a new handle that nothing else owns.
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
+        let mut code = 0;
+        // SAFETY: an open handle with the right to query it; `code` is written only.
+        let queried = unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut code) } != 0;
+        queried && u32::try_from(STILL_ACTIVE).ok() == Some(code)
+    }
+
+    /// Removes the drivers' directories of the test binaries no longer running.
+    fn remove_abandoned() {
+        let Ok(entries) = fs::read_dir(env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let pid = entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.strip_prefix(PREFIX))
+                .and_then(|pid| pid.parse::<u32>().ok());
+            if pid.is_some_and(|pid| pid != process::id() && !runs(pid)) {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
 impl Driver {
     fn start() -> Result<Self, String> {
         let crates = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
         let mut command = Command::new("node");
         inherit_only_stdio(&mut command);
+        #[cfg(windows)]
+        contained::prepare(&mut command)
+            .map_err(|err| format!("make the browser driver's directory: {err}"))?;
         let mut child = command
             .arg(crates.join("server/tests/common/browser.mjs"))
             .arg(crates.join("../web"))
@@ -109,6 +286,11 @@ impl Driver {
             .stderr(Stdio::inherit())
             .spawn()
             .map_err(|err| format!("start node: the browser tests need Node.js: {err}"))?;
+        #[cfg(windows)]
+        let job = contained::contain(&child).map_err(|err| {
+            let _ = child.kill();
+            format!("put the browser driver in a job: {err}")
+        })?;
         let stdin = child.stdin.take().expect("stdin is piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout is piped"));
         let (ready, started) = mpsc::channel();
@@ -135,6 +317,8 @@ impl Driver {
                 waiting,
                 next_call: AtomicU64::new(READY + 1),
                 next_session: AtomicU64::new(1),
+                #[cfg(windows)]
+                _job: job,
             }),
             Ok(line) => Err(format!("the browser driver started with {line:?}")),
             Err(err) => Err(format!(
