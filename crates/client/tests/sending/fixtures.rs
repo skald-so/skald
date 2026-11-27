@@ -14,7 +14,7 @@ use skald_proto::{
 use skald_server::Settings;
 
 use super::browser::Browser;
-use super::cloud::{Cloud, WAIT};
+use super::cloud::{Cloud, Providers, WAIT};
 use super::front::{Front, Sent};
 use super::keys;
 use super::machine::{Finished, Machine, Run};
@@ -40,8 +40,13 @@ pub fn fronted() -> (World, Front) {
 
 /// As [`fronted`], the server's settings changed by `change`.
 pub fn fronted_with(change: impl FnOnce(&mut Settings)) -> (World, Front) {
+    fronted_for(Providers::GitHub, change)
+}
+
+/// As [`fronted_with`], with the given providers.
+pub fn fronted_for(providers: Providers, change: impl FnOnce(&mut Settings)) -> (World, Front) {
     let front = Front::bind();
-    let cloud = Cloud::fronted_with(HOST, front.port(), 120, 1, change);
+    let cloud = Cloud::fronted_for(providers, HOST, front.port(), (120, 1), change);
     front.forward_to(cloud.relay.address());
     let world = World {
         cloud,
