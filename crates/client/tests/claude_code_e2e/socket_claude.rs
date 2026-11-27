@@ -504,11 +504,15 @@ impl Session {
     }
 
     /// Whether what the session printed after its first `from` bytes shows `text`, white space
-    /// aside.
+    /// and box drawing aside: a long text wraps in the prompt box, maybe between its borders.
     fn shown_since(&self, from: usize, text: &str) -> bool {
+        let unboxed = |text: &str| -> String {
+            (text.chars())
+                .filter(|char| !char.is_whitespace() && !('\u{2500}'..='\u{257f}').contains(char))
+                .collect()
+        };
         let output = (self.output.lock()).unwrap_or_else(|poisoned| poisoned.into_inner());
-        let wanted: String = text.chars().filter(|char| !char.is_whitespace()).collect();
-        screen_text(&output[from..]).contains(&wanted)
+        unboxed(&screen_text(&output[from..])).contains(&unboxed(text))
     }
 
     /// Whether the terminal shows the prompt box of Claude Code's main screen: after its banner.
