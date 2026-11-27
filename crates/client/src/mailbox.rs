@@ -126,7 +126,9 @@ pub fn linking_came() -> bool {
 
 /// Notes why the server closed a connection, by its close `frame`, if any.
 pub fn note_closing(frame: Option<&tungstenite::protocol::CloseFrame>) {
-    if frame.is_some_and(|frame| frame.reason.as_str() == DELETED_REASON) {
+    if frame.is_some_and(|frame| frame.reason.as_str() == DELETED_REASON)
+        && !connection::note_sdk_account_deleted()
+    {
         ACCOUNT_DELETED.store(true, Ordering::SeqCst);
     }
 }

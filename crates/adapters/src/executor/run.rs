@@ -70,9 +70,9 @@ impl Run {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let marker = unique("run");
-        tree::prepare(&mut command, &marker);
+        let mark = tree::prepare(&mut command, &marker)?;
         let mut child = command.spawn()?;
-        let tree = match Tree::new(&child, &marker) {
+        let tree = match Tree::new(&child, &marker, mark) {
             Ok(tree) => tree,
             Err(error) => {
                 let _ = child.kill();

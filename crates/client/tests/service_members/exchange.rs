@@ -6,6 +6,7 @@ use std::num::NonZeroU64;
 
 use skald_proto::{DeviceId, MessageId, RawEnvelope};
 
+use crate::fixtures::send;
 use crate::gaps::{assert_reported_once, bob_in, msg_id_of, second_dropped};
 use crate::joins::drop_entry;
 use crate::kit::{RECV, assert_listed_with, channels, latest, line_of, received, warnings_naming};
@@ -79,6 +80,32 @@ fn a_member_agent_is_listed_in_its_channel_and_gets_into_the_group() {
         "{} without {BOT}: {listed:?}",
         bot.channel()
     );
+}
+
+/// With the agent in the group, its device on Ada's account, an admin's, Ada says a line: the
+/// agent's run shows it once and writes nothing to stderr, nor does the run after it.
+#[test]
+fn a_run_of_an_admin_s_member_agent_with_nothing_to_warn_of_writes_nothing_to_stderr() {
+    let mut bot = Bot::created(
+        [3_135_713_001, 3_135_713_002],
+        ["ada-member-quiet-standin", "bob-member-quiet-standin"],
+    );
+    bot.brought_in();
+    let (ada, channel) = (&bot.talk.ada, bot.channel());
+    let sent = send(&ada.machine, channel, ADA_SAYS);
+    assert!(sent.success, "Ada's send failed: {sent:?}");
+
+    let got = bot.runner.received();
+
+    shown_once(
+        &got,
+        ADA_SAYS,
+        (channel, &bot.talk.address(ada), ada.device),
+    );
+    assert_eq!(got.stderr, "", "{got:?}");
+    let again = bot.runner.received();
+    assert_not_shown(&again, ADA_SAYS);
+    assert_eq!(again.stderr, "", "{again:?}");
 }
 
 /// With the agent in the group, Ada's message reaches the agent's run once, from Ada's address and

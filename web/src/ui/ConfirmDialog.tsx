@@ -21,12 +21,14 @@ export interface ConfirmDialogProps {
   onCancel: () => void;
   /** The action is running: the confirm button shows a spinner and ignores presses. */
   busy?: boolean;
+  /** The confirm button is disabled, as until a typed confirmation matches. */
+  confirmDisabled?: boolean;
 }
 
 /**
  * A modal question before a dangerous action, over the page: Cancel and the action. It takes the
- * focus on Cancel and keeps Tab inside; Escape or a click beside it cancels. The focus returns to
- * where it was when it closes.
+ * focus on its first field, else on Cancel, and keeps Tab inside; Escape or a click beside it
+ * cancels. The focus returns to where it was when it closes.
  */
 export function ConfirmDialog({
   title,
@@ -35,17 +37,21 @@ export function ConfirmDialog({
   onConfirm,
   onCancel,
   busy,
+  confirmDisabled,
 }: ConfirmDialogProps) {
   const id = useId();
   const dialog = useRef<HTMLDivElement>(null);
 
-  const buttons = () => [
-    ...dialog.current!.querySelectorAll<HTMLElement>("button"),
+  /** The fields and buttons that take the focus, in order. */
+  const focusable = () => [
+    ...dialog.current!.querySelectorAll<HTMLElement>(
+      "input:not(:disabled), button:not(:disabled)",
+    ),
   ];
 
   useLayoutEffect(() => {
     const before = document.activeElement as HTMLElement | null;
-    buttons()[0]!.focus();
+    focusable()[0]!.focus();
     return () => before?.focus();
   }, []);
 
@@ -63,7 +69,7 @@ export function ConfirmDialog({
 
   function onKey(event: KeyboardEvent) {
     if (event.key !== "Tab") return;
-    const all = buttons();
+    const all = focusable();
     const at = all.indexOf(document.activeElement as HTMLElement);
     const next = event.shiftKey
       ? at <= 0
@@ -102,6 +108,7 @@ export function ConfirmDialog({
             kind="danger-primary"
             busy={busy}
             busyLabel={confirm}
+            disabled={confirmDisabled}
             onClick={onConfirm}
           >
             {confirm}

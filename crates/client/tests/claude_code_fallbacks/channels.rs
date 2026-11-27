@@ -2,9 +2,17 @@
 //! messages as one channel event, none while nothing waits: `own` text as its line, a message
 //! below `own` only as the signal, whose `inbox` call then gives its text; within the hooks' limit.
 
+use std::io::Write;
+
+use serde_json::json;
+use skald_proto::MessageId;
+
+use crate::client::Session;
+
 use crate::cloud::WAIT;
 use crate::fallbacks::{
-    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, long_text, wait_events,
+    Bare, CHANNEL_CAPABILITY, QUIET, RESEND_SETTING, STATELESS, events, late_reply_confirms_once,
+    long_text, stop_before_reply, stop_transcript, wait_events,
 };
 use crate::hooks::{Bob, LIMIT, assert_cut, assert_own_line, assert_signal};
 use crate::receipts::shows_read_once;
@@ -54,6 +62,14 @@ fn skald_mcp_offers_claude_code_only_revisions_with_initialize() {
 /// What api says to web; it is nowhere else.
 const OWN_SAYS: &str = "channel test: api asks web to tag the release";
 
+/// Sends the message from api and checks its first channel event.
+fn own_event(ada: &Bare, session: &mut Session) -> (MessageId, String) {
+    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
+    let first = wait_events(session, 1, WAIT).remove(0);
+    assert_own_line(&first, OWN_SAYS, msg_id, &ada.solo.short(API));
+    (msg_id, first)
+}
+
 /// web's `skald mcp` runs, no other path of web's: over [`QUIET`] it sends no channel event. api
 /// sends web a message: one channel event follows, its text the message's line from api at `own`;
 /// over [`QUIET`] more, no other event.
@@ -64,12 +80,46 @@ fn an_own_message_goes_as_one_channel_event_and_none_while_nothing_waits() {
 
     let idle = events(&mut session, 1, QUIET);
     assert!(idle.is_empty(), "events with nothing waiting: {idle:#?}");
-    let msg_id = ada.solo.api_sends_web(OWN_SAYS);
-
-    let sent = wait_events(&mut session, 1, WAIT);
-    assert_own_line(&sent[0], OWN_SAYS, msg_id, &ada.solo.short(API));
+    own_event(&ada, &mut session);
     let later = events(&mut session, 2, QUIET);
     assert_eq!(later.len(), 1, "more than one event: {later:#?}");
+}
+
+#[test]
+fn one_stop_confirms_an_own_channel_message_after_the_assistant_entry_is_written() {
+    let ada = Bare::new(4_919_505_001, "ada-channel-late-assistant");
+    let mut session = ada.channel(WEB, &[(RESEND_SETTING, LONG)]);
+    let (msg_id, event) = own_event(&ada, &mut session);
+
+    let (input, parsed, mut file) = stop_transcript(&ada);
+    let session_id = &parsed["session_id"];
+    let channel_entry = json!({
+        "type": "user",
+        "sessionId": session_id,
+        "timestamp": jiff::Timestamp::now().to_string(),
+        "message": { "role": "user", "content": format!("<channel source=\"skald\">\n{event}\n</channel>") },
+    });
+    let reply = json!({
+        "type": "assistant",
+        "sessionId": session_id,
+        "message": { "role": "assistant", "content": [{ "type": "text", "text": "Done." }] },
+    })
+    .to_string();
+    let (incomplete, remainder) = reply.split_at(reply.len() - 1);
+    write!(file, "{channel_entry}\n{incomplete}").expect("write the transcript before Stop");
+    stop_before_reply(&ada, &input, (&mut file, remainder), msg_id);
+}
+
+/// api sends web a message, which goes as a channel event. Its event ends web's session file at
+/// `Stop`, before bookkeeping lines, and the reply comes later ([`late_reply_confirms_once`]).
+#[test]
+fn one_stop_confirms_an_own_channel_message_whose_reply_follows_bookkeeping_lines() {
+    let ada = Bare::new(4_919_506_001, "ada-channel-bookkeeping");
+    let mut session = ada.channel(WEB, &[(RESEND_SETTING, LONG)]);
+    let (msg_id, event) = own_event(&ada, &mut session);
+
+    let delivery = format!("<channel source=\"skald\">\n{event}\n</channel>");
+    late_reply_confirms_once(&ada, &delivery, msg_id);
 }
 
 /// What review says to web; it is nowhere else.

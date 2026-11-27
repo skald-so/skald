@@ -3280,7 +3280,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skald-adapters"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -3290,7 +3290,7 @@ dependencies = [
 
 [[package]]
 name = "skald-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
@@ -3343,7 +3343,7 @@ dependencies = [
 
 [[package]]
 name = "skald-crypto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3371,7 +3371,7 @@ dependencies = [
 
 [[package]]
 name = "skald-github-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "skald-load-delivery"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3407,11 +3407,11 @@ dependencies = [
 
 [[package]]
 name = "skald-mcp"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "skald-oidc-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3423,7 +3423,7 @@ dependencies = [
 
 [[package]]
 name = "skald-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ciborium-io",
  "ciborium-ll",
@@ -3436,7 +3436,7 @@ dependencies = [
 
 [[package]]
 name = "skald-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3461,11 +3461,14 @@ dependencies = [
  "skald-github-stand-in",
  "skald-oidc-stand-in",
  "skald-proto",
+ "socket2",
  "sqlx",
  "tokio",
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

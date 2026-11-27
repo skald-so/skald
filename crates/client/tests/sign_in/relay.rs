@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 use socket2::SockRef;
 
+use super::common::reach;
+
 /// One read off a connection: when, which connection, which way, and the bytes.
 struct Chunk {
     at: Instant,
@@ -248,15 +250,22 @@ impl Relay {
                         continue;
                     }
                 };
-                let server = match TcpStream::connect(&target) {
-                    Ok(server) => server,
-                    Err(err) => {
-                        eprintln!("relay: connection {connection}: cannot reach {target}: {err}");
-                        continue;
-                    }
-                };
-                pipe(&machine, &server, connection, true, &kept, &rules);
-                pipe(&server, &machine, connection, false, &kept, &rules);
+                // Reached on a thread of its own, so that the next connection is accepted
+                // meanwhile: on a loaded machine a connect, and a retry of it, takes long enough
+                // for waiting connections to fill the listener's queue, which refuses the next.
+                let (target, kept, rules) = (target.clone(), Arc::clone(&kept), Arc::clone(&rules));
+                thread::spawn(move || {
+                    let who = format!("relay: connection {connection}");
+                    let server = match reach(&who, &target) {
+                        Ok(server) => server,
+                        Err(err) => {
+                            eprintln!("{who}: cannot reach {target}: {err}");
+                            return;
+                        }
+                    };
+                    pipe(&machine, &server, connection, true, &kept, &rules);
+                    pipe(&server, &machine, connection, false, &kept, &rules);
+                });
             }
         });
         Relay { url, reads, shared }
@@ -389,7 +398,7 @@ impl Relay {
     /// so that a request it holds until a second one comes goes on.
     pub fn send_through(&self, request: &str) {
         let address = self.address();
-        let mut stream = TcpStream::connect(address).expect("reach the relay");
+        let mut stream = reach("a request through the relay", address).expect("reach the relay");
         write!(
             stream,
             "{request} HTTP/1.1\r\nhost: {address}\r\nconnection: close\r\n\r\n"
@@ -541,6 +550,9 @@ fn pipe(
                 Ok(0) => break,
                 // A front before the relay resets a connection it is done with.
                 Err(err) if err.kind() == io::ErrorKind::ConnectionReset => break,
+                // On Windows, the relay's own reset of a connection ([`reset`]) aborts the read of
+                // its other half.
+                Err(err) if err.kind() == io::ErrorKind::ConnectionAborted => break,
                 Err(err) => {
                     eprintln!("relay: connection {connection}: cannot read the {source}: {err}");
                     break;

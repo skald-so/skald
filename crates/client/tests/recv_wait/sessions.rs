@@ -33,6 +33,8 @@ const WAITING: [&str; 2] = [
 ];
 const AFTER_QUIET: &str = "wait test: the backup finished overnight";
 const KEPT_FOR_CLAUDE: &str = "wait test: claude, the acme invoices are due";
+/// The request a session's run of `skald recv` sends once, for the devices that wait for linking.
+const LINKS_WAITING: &str = "GET /account/links/waiting ";
 const FOR_ACME: &str = "wait test: acme's standup moved to ten";
 const TO_CODEX: &str = "wait test: codex, review the migration";
 
@@ -310,9 +312,16 @@ fn message_wakes_no_session_of_another_space() {
     );
     waits.agents.run_as(CLAUDE);
     let other = dir_of(&waits.agents.talk.ada.machine, "work/other");
+    let cloud = waits.agents.talk.cloud();
+    let started = cloud.relay.mark();
     let mut claude = waits.session(CLAUDE);
     let traced = [(TRACE_SETTING, "1")];
     let mut codex = (waits.helped).start_in(&other, &traced, &[AGENT, CODEX, RECV, WAIT_FLAG]);
+    // Each session's run says the devices that wait for linking. A helper slow to start, as on a
+    // loaded machine, sends nothing for longer than the quiet that counts as settled.
+    await_running(&mut codex, "both sessions' runs", || {
+        cloud.count_sent(started, LINKS_WAITING) >= 2
+    });
     assert_idle(&waits.agents.talk, &mut [&mut claude, &mut codex]);
     let bob = waits.agents.bob();
     let sending = waits.agents.talk.cloud().relay.mark();

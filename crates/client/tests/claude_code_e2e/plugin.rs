@@ -39,6 +39,9 @@ const PLUGIN: &str = "skald";
 /// How the names Claude Code gives the tools of the plugin's MCP servers start.
 const PLUGIN_TOOLS: &str = "mcp__plugin_skald_";
 
+/// The name Claude Code gives the plugin's MCP server.
+const PLUGIN_SERVER: &str = "plugin:skald:skald";
+
 /// Tools of Skald's MCP server that a session of the plugin gets.
 const SKALD_TOOLS: [&str; 3] = ["inbox", "send", "reply"];
 
@@ -477,10 +480,54 @@ impl Session {
 
     /// The person sends the session a prompt, as the apps do.
     fn prompt(&mut self, text: &str) {
-        let line = json!({ "type": "user", "message": { "role": "user", "content": text } });
+        self.send(&json!({ "type": "user", "message": { "role": "user", "content": text } }));
+    }
+
+    /// Writes `line` to the session's input, a line of its own.
+    fn send(&mut self, line: &Value) {
         let input = self.input.as_mut().expect("the session's input is open");
-        writeln!(input, "{line}").expect("send a prompt");
-        input.flush().expect("send a prompt");
+        writeln!(input, "{line}").expect("write to the session's input");
+        input.flush().expect("write to the session's input");
+    }
+
+    /// Waits until Claude Code says the plugin's MCP server is connected, asking it as the apps
+    /// ask, with `mcp_status`. Claude Code connects a plugin's MCP server while the session
+    /// already takes prompts: a turn before then offers none of the server's tools. Fails if the
+    /// server is neither connected nor connecting.
+    #[track_caller]
+    fn wait_connected(&mut self) {
+        let deadline = Instant::now() + TURN_LIMIT;
+        for asked in 0.. {
+            let id = format!("mcp-status-{asked}");
+            let request = json!({ "subtype": "mcp_status" });
+            self.send(&json!({ "type": "control_request", "request_id": id, "request": request }));
+            let servers = loop {
+                let answer = (self.events().into_iter()).find(|event| {
+                    event["type"] == "control_response" && event["response"]["request_id"] == id
+                });
+                if let Some(answer) = answer {
+                    break answer["response"]["response"]["mcpServers"].clone();
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "no answer to {id}: {}",
+                    shown(&self.printed)
+                );
+                thread::sleep(Duration::from_millis(100));
+            };
+            let server = (servers.as_array().into_iter().flatten())
+                .find(|server| server["name"] == PLUGIN_SERVER);
+            match server.map(|server| &server["status"]) {
+                Some(status) if status == "connected" => return,
+                Some(status) if status == "pending" => {}
+                _ => panic!("the plugin's MCP server is not connecting: {servers}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the plugin's MCP server did not connect: {servers}"
+            );
+            thread::sleep(Duration::from_millis(200));
+        }
     }
 
     /// The JSON events the session printed so far.
@@ -572,9 +619,10 @@ const ALONE: &str = "e2e plugin test: run without skald";
 const OWN_SAYS: &str = "e2e plugin test: api asks the plugin's session to rerun the migration";
 
 /// The plugin, installed from the local marketplace into a temporary config home, runs a session in
-/// `~/work/clientA/plugin`, a bound folder; its prompt's turn ends. That turn offers the inbox, send
-/// and reply tools of the plugin's MCP server, and what reached the model holds each skill of the
-/// plugin by its description. api's send tool sends every agent in `clienta` a message, `to` `*`:
+/// `~/work/clientA/plugin`, a bound folder; once Claude Code says the plugin's MCP server is
+/// connected, the session takes a prompt, and that prompt's turn ends. That turn offers the inbox,
+/// send and reply tools of the plugin's MCP server, and what reached the model holds each skill of
+/// the plugin by its description. api's send tool sends every agent in `clienta` a message, `to` `*`:
 /// without another prompt, where the client writes into the socket, a turn of the session holds it
 /// as its line from api at `own`; elsewhere once the person gives it a prompt, by the plugin's
 /// hooks. The stub got no credential but its placeholder.
@@ -588,6 +636,7 @@ fn installed_plugin_gives_a_bound_session_skald_s_tools_its_skill_and_an_own_mes
     home.install(&market);
     let model = Model::start(|_| Reply::Done);
     let mut session = Session::start(&home, &solo.dir("plugin"), &model);
+    session.wait_connected();
     session.prompt(OPENS);
     session.wait_result(1);
 

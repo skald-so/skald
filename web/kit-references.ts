@@ -33,6 +33,8 @@ export const screens: { screen: Screen; widths: number[]; window?: true }[] = [
   { screen: "access-confirm", widths, window: true },
   { screen: "account-page", widths },
   { screen: "account-page-confirm", widths, window: true },
+  { screen: "account-page-blocked", widths },
+  { screen: "account-page-delete", widths, window: true },
   { screen: "usage", widths },
 ];
 

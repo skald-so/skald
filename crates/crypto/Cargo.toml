@@ -5,6 +5,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Test builds only: the recovery key's Argon2id at the least cost, 8 KiB and 1 pass, but on a
+# thread while a `SpecCost` of it lives. The dev-dependencies of the crates whose tests derive turn it on, so
+# cargo's builds of their tests have it and their plain and release builds do not; a release build
+# with it does not compile.
+test-cost = []
+
 [dependencies]
 # Seals history links and entries, and the master backup.
 aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc", "zeroize"] }

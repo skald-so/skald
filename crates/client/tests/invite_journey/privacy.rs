@@ -12,7 +12,6 @@ use crate::browser::Page;
 use crate::cloud::Cloud;
 use crate::keys;
 use crate::machine::TestDir;
-use crate::spa::Spa;
 
 const LOG_PROBE: &str = "SKALD_TEST_INVITE_LOG_PROBE";
 const TEST: &str = "a_new_account_joins_by_link_and_both_accounts_agents_exchange_peer_messages";
@@ -105,13 +104,11 @@ pub struct Invite {
 }
 
 impl Invite {
-    pub fn from_terminal(text: &str, spa: &Spa, observed_link: &Path) -> Self {
-        let prefix = spa.at("/invite/");
-        let shown = text
-            .split_whitespace()
-            .find(|word| word.starts_with(&prefix))
-            .expect("the terminal shows the link at the web address");
-        let invite = Self::parse(shown.to_owned());
+    pub fn from_terminal(
+        (link, parsed): (Zeroizing<String>, InviteLink),
+        observed_link: &Path,
+    ) -> Self {
+        let invite = Self { link, parsed };
         fs::write(observed_link, invite.link()).expect("record the link for the log check");
         invite
     }
