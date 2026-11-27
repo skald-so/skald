@@ -39,6 +39,9 @@ const PROMPT_BOX: &str = "\u{276f}";
 /// prompt box follows it, below any notice.
 const BANNER: &str = "ClaudeCodev";
 
+/// How many bytes of the end of Claude Code's debug log a failure shows.
+const DEBUG_SHOWN: usize = 8 << 10;
+
 /// How long a turn may take.
 const TURN_LIMIT: Duration = Duration::from_secs(120);
 
@@ -64,7 +67,26 @@ pub enum Surface {
 }
 
 /// The terminal's input, shared with what answers its cursor queries.
-type Typing = Arc<Mutex<Box<dyn Write + Send>>>;
+type Typing = Arc<Mutex<Keys>>;
+
+/// What types into a terminal, and a log of what it typed and when the terminal's output came,
+/// for a failure to show.
+struct Keys {
+    writer: Box<dyn Write + Send>,
+    started: Instant,
+    log: Vec<String>,
+}
+
+impl Keys {
+    /// How many of the log's last entries a failure shows.
+    const SHOWN: usize = 60;
+
+    /// Logs `what` at the time since the session started.
+    fn note(&mut self, what: impl std::fmt::Display) {
+        let at = self.started.elapsed();
+        self.log.push(format!("{:>8.3}s {what}", at.as_secs_f64()));
+    }
+}
 
 enum Running {
     Terminal {
@@ -119,6 +141,8 @@ const CHANNEL_WARNING: &str = "Iamusingthisforlocaldevelopment";
 pub struct Session {
     running: Running,
     output: Arc<Mutex<Vec<u8>>>,
+    /// Where Claude Code writes its debug log, `--debug-file`.
+    debug: PathBuf,
 }
 
 impl Session {
@@ -279,6 +303,8 @@ impl Session {
         if surface == Surface::AppBypassing {
             args.extend(["--permission-mode", "bypassPermissions"].map(str::to_owned));
         }
+        let debug = config.join("debug.txt");
+        args.extend(["--debug-file".to_owned(), lossy(debug.as_os_str())]);
         args.extend(["--setting-sources", "local", "--strict-mcp-config"].map(str::to_owned));
         args.extend([
             "--mcp-config".to_owned(),
@@ -316,9 +342,11 @@ impl Session {
             command.args(&args);
             let child = pair.slave.spawn_command(command).expect("run Claude Code");
             drop(pair.slave);
-            let input: Typing = Arc::new(Mutex::new(
-                pair.master.take_writer().expect("the terminal's input"),
-            ));
+            let input: Typing = Arc::new(Mutex::new(Keys {
+                writer: pair.master.take_writer().expect("the terminal's input"),
+                started: Instant::now(),
+                log: Vec::new(),
+            }));
             read_answering(
                 pair.master
                     .try_clone_reader()
@@ -348,7 +376,11 @@ impl Session {
             let input = child.stdin.take();
             Running::App { child, input }
         };
-        Session { running, output }
+        Session {
+            running,
+            output,
+            debug,
+        }
     }
 
     /// The person gives the session a prompt: types it and Enter in the terminal, or sends it as
@@ -356,23 +388,29 @@ impl Session {
     pub fn prompt(&mut self, text: &str) {
         match &mut self.running {
             Running::Terminal { .. } => {
-                // Claude Code reads typing once the prompt box of its main screen shows; Enter
-                // that comes with the text is taken as part of a paste.
+                // Claude Code reads typing once the prompt box of its main screen shows. Enter that
+                // it reads with the text, as when it was busy while both were typed, is taken as
+                // part of a paste and may not submit it: Enter goes once the text shows.
                 let deadline = Instant::now() + TURN_LIMIT;
                 while !self.composer_shown() {
-                    assert!(
-                        Instant::now() < deadline,
-                        "no prompt box: {}",
-                        self.output()
-                    );
+                    assert!(Instant::now() < deadline, "no prompt box: {}", self.shown());
                     thread::sleep(Duration::from_millis(200));
                 }
                 thread::sleep(Duration::from_secs(1));
                 let Running::Terminal { input, .. } = &self.running else {
                     unreachable!()
                 };
+                let before = self.output_len();
                 typed(input, text.as_bytes()).expect("type the prompt");
-                thread::sleep(Duration::from_secs(1));
+                while !self.shown_since(before, text) {
+                    assert!(
+                        Instant::now() < deadline,
+                        "the prompt box never showed {text:?}: {}",
+                        self.shown()
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                }
+                thread::sleep(Duration::from_millis(500));
                 typed(input, b"\r").expect("press Enter");
             }
             Running::App { input, .. } => {
@@ -411,7 +449,7 @@ impl Session {
             assert!(
                 Instant::now() < deadline,
                 "no turn held {text:?}; the session printed: {}",
-                self.output()
+                self.shown()
             );
             thread::sleep(Duration::from_millis(200));
         }
@@ -430,7 +468,7 @@ impl Session {
                 assert!(
                     Instant::now() < deadline,
                     "the turn did not end: {}",
-                    self.output()
+                    self.shown()
                 );
                 thread::sleep(Duration::from_millis(200));
                 let now = model.turns().len();
@@ -444,7 +482,7 @@ impl Session {
             assert!(
                 Instant::now() < deadline,
                 "the turn did not end: {}",
-                self.output()
+                self.shown()
             );
             thread::sleep(Duration::from_millis(200));
         }
@@ -458,6 +496,25 @@ impl Session {
             .count()
     }
 
+    /// How many bytes the session printed so far.
+    fn output_len(&self) -> usize {
+        (self.output.lock())
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
+    }
+
+    /// Whether what the session printed after its first `from` bytes shows `text`, white space
+    /// and box drawing aside: a long text wraps in the prompt box, maybe between its borders.
+    fn shown_since(&self, from: usize, text: &str) -> bool {
+        let unboxed = |text: &str| -> String {
+            (text.chars())
+                .filter(|char| !char.is_whitespace() && !('\u{2500}'..='\u{257f}').contains(char))
+                .collect()
+        };
+        let output = (self.output.lock()).unwrap_or_else(|poisoned| poisoned.into_inner());
+        unboxed(&screen_text(&output[from..])).contains(&unboxed(text))
+    }
+
     /// Whether the terminal shows the prompt box of Claude Code's main screen: after its banner.
     fn composer_shown(&self) -> bool {
         let screen = screen_text(
@@ -467,6 +524,29 @@ impl Session {
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
         );
         (screen.rfind(BANNER)).is_some_and(|at| screen[at..].contains(PROMPT_BOX))
+    }
+
+    /// What a failure shows of the session: what it printed so far; in a terminal also the last
+    /// of what was typed and when output came; and the end of Claude Code's debug log.
+    pub fn shown(&self) -> String {
+        let mut shown = self.output();
+        if let Running::Terminal { input, .. } = &self.running {
+            let keys = input
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let last = keys.log.len().saturating_sub(Keys::SHOWN);
+            shown += &format!(
+                "\n--- the terminal's last input and output:\n{}",
+                keys.log[last..].join("\n")
+            );
+        }
+        let debug = fs::read(&self.debug).unwrap_or_default();
+        let tail = &debug[debug.len().saturating_sub(DEBUG_SHOWN)..];
+        shown += &format!(
+            "\n--- Claude Code's debug log ends:\n{}",
+            String::from_utf8_lossy(tail)
+        );
+        shown
     }
 
     /// What the session printed so far.
@@ -564,8 +644,15 @@ fn typed(input: &Typing, bytes: &[u8]) -> std::io::Result<()> {
     let mut input = input
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    input.write_all(bytes)?;
-    input.flush()
+    let written = input
+        .writer
+        .write_all(bytes)
+        .and_then(|()| input.writer.flush());
+    let result = written
+        .as_ref()
+        .map_or_else(ToString::to_string, |()| "ok".to_owned());
+    input.note(format_args!("typed {} ({result})", bytes.escape_ascii()));
+    written
 }
 
 /// As [`read_into`] for a terminal's output: answers each query of where the cursor is, which a
@@ -584,6 +671,10 @@ fn read_answering(
             if count == 0 {
                 break;
             }
+            (input
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()))
+            .note(format_args!("got {count} bytes"));
             let mut output = into.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             output.extend_from_slice(&piece[..count]);
             // The queries in what is new, a query cut by the last read included.

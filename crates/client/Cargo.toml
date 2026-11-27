@@ -1,6 +1,8 @@
 [package]
 name = "skald-client"
 description = "Skald client: CLI, MCP server and local helper."
+homepage = "https://skald.so"
+repository = "https://github.com/skald-so/skald"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,6 +10,7 @@ license.workspace = true
 # dist builds and releases this package only: dist-workspace.toml.
 [package.metadata.dist]
 dist = true
+formula = "skald"
 
 # The skald-so crate installs the same dist archives as the other CLI installers.
 [package.metadata.binstall]
@@ -98,6 +101,8 @@ mls-rs-crypto-rustcrypto = "0.23"
 portable-pty = "0.9"
 # `trace` lets a state test run another connection in the middle of a read.
 rusqlite = { version = "0.39", default-features = false, features = ["bundled", "trace"] }
+# The recovery key's derivation at a test build's cost: `test-cost` of skald-crypto.
+skald-crypto = { path = "../crypto", features = ["test-cost"] }
 skald-github-stand-in = { path = "../github-stand-in" }
 skald-oidc-stand-in = { path = "../oidc-stand-in" }
 skald-server = { path = "../server" }
@@ -140,9 +145,14 @@ dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", 
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-# The tests list the processes of the copy of `skald` they run.
+# The tests list the processes of the copy of `skald` they run, and the state of the machine as a
+# connect fails for want of buffer space; the browser tests' driver runs in a job that ends with the
+# test binary.
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
+  "Win32_Security",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
   "Win32_System_Threading",
 ] }

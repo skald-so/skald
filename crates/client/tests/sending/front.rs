@@ -26,15 +26,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use skald_crypto::MlsFraming;
 use skald_proto::{
-    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
+    Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, PROOF_HEADER, Push, RawEnvelope,
+    RequestProof, SpaceId,
 };
 
+use super::common::reach;
 use super::relay::{answered_in_full, reset};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
+
+/// An ack in an HTTPS request, as its line starts: a run off a WebSocket acks so.
+const HTTPS_ACK: &str = "POST /mailbox/ack ";
 
 /// The WebSocket opcode of a binary message.
 const BINARY: u8 = 2;
@@ -51,7 +58,9 @@ pub enum Answers {
     Refuse(String),
 }
 
-/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first.
+/// What the front does with a machine's acks: an `ack`, or a `sync` after the connection's first,
+/// on a WebSocket, or an ack in an HTTPS request, whose connection it closes both ways unless it
+/// forwards it, as it cannot answer it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Acks {
     /// Forwards them.
@@ -128,7 +137,7 @@ struct State {
     acks: Acks,
     /// How many acks the machines sent.
     acked: usize,
-    /// Devices whose WebSocket `ack` frames it swallowed.
+    /// Devices whose acks it swallowed, as `ack` frames or HTTPS requests.
     swallowed_acks: BTreeSet<DeviceId>,
     watched_delivery: Option<(DeviceId, MessageId, Delivery)>,
     /// Whether it holds back the server's `message` pushes and the `batch` that ends catch-up.
@@ -415,7 +424,7 @@ impl Front {
         self.shared.state().acked
     }
 
-    /// Whether it swallowed a WebSocket `ack` frame from `device`.
+    /// Whether it swallowed an ack from `device`, as an `ack` frame or an HTTPS request.
     pub fn swallowed_ack_from(&self, device: DeviceId) -> bool {
         self.shared.state().swallowed_acks.contains(&device)
     }
@@ -511,9 +520,12 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
         }
         thread::sleep(Duration::from_millis(10));
     };
-    let Ok(server) = TcpStream::connect(&target) else {
-        eprintln!("front: connection {connection}: cannot reach {target}");
-        return;
+    let server = match reach(&format!("front: connection {connection}"), &target) {
+        Ok(server) => server,
+        Err(err) => {
+            eprintln!("front: connection {connection}: cannot reach {target}: {err}");
+            return;
+        }
     };
     let upgrading = Arc::new(AtomicBool::new(false));
     let link = Arc::new(Link::default());
@@ -529,6 +541,21 @@ fn serve(connection: usize, machine: TcpStream, shared: &Arc<Shared>) {
 
 fn clone(stream: &TcpStream) -> TcpStream {
     stream.try_clone().expect("clone a stream")
+}
+
+/// The device whose proof the head of the HTTPS request `text` carries, if any.
+fn proving(text: &str) -> Option<DeviceId> {
+    let head = text.split("\r\n\r\n").next()?;
+    let value = head.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case(PROOF_HEADER)
+            .then(|| value.trim())
+    })?;
+    let bytes = URL_SAFE_NO_PAD.decode(value).ok()?;
+    RequestProof::from_cbor(&bytes)
+        .ok()
+        .map(|proof| proof.device)
 }
 
 /// Copies what the machine sends to the server: HTTP as it comes, then, once the request of a
@@ -564,6 +591,21 @@ fn to_server(
                 let _ = machine.shutdown(Shutdown::Both);
                 let _ = server.shutdown(Shutdown::Both);
                 return;
+            }
+            if text.starts_with(HTTPS_ACK) {
+                let acks = {
+                    let mut state = shared.state();
+                    state.acked += 1;
+                    if let (Acks::Swallow, Some(device)) = (state.acks, proving(&text)) {
+                        state.swallowed_acks.insert(device);
+                    }
+                    state.acks
+                };
+                if acks != Acks::Forward {
+                    let _ = machine.shutdown(Shutdown::Both);
+                    let _ = server.shutdown(Shutdown::Both);
+                    return;
+                }
             }
             if text.starts_with(DELIVERY[1])
                 && let Some(end) = text.find("\r\n\r\n")

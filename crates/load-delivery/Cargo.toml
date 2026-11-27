@@ -22,6 +22,8 @@ url = "2.5"
 
 [dev-dependencies]
 axum = "0.8.9"
+# The recovery key's derivation at a test build's cost: `test-cost` of skald-crypto.
+skald-crypto = { path = "../crypto", features = ["test-cost"] }
 skald-server = { path = "../server" }
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio"] }
 tokio = { version = "1.54", features = ["rt-multi-thread"] }

@@ -232,7 +232,8 @@ pub fn leftovers(db: &TestDb, traces: &Traces, kept: &Kept) -> Vec<String> {
                 if row.contains(traces.backup.as_str()) {
                     held.push("its master backup".to_owned());
                 }
-                let beside_space = kept.spaces.iter().any(|space| holds(&row, space));
+                let beside_space = row.starts_with("roster_members: ")
+                    && kept.spaces.iter().any(|space| holds(&row, space));
                 if held.is_empty() && !beside_space {
                     marks.push(row);
                     continue;

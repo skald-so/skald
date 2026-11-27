@@ -33,6 +33,9 @@ export function readWorkflows(root) {
 const UNKNOWN = Symbol('unknown');
 // An object whose missing keys are unknown rather than null.
 const OPEN = Symbol('open');
+// An array made by an object filter, `.*`: a member of it is that member of each item.
+const FILTER = Symbol('filter');
+const filterOf = (items) => Object.assign(items, { [FILTER]: true });
 
 export const unknown = (truthy) => ({ [UNKNOWN]: true, truthy });
 export const isUnknown = (v) => v !== null && typeof v === 'object' && v[UNKNOWN] === true;
@@ -46,8 +49,13 @@ export function truth(v) {
 
 function member(object, key) {
   if (isUnknown(object)) return unknown();
+  if (Array.isArray(object) && object[FILTER]) {
+    const items = object.map((item) => member(item, key));
+    if (items.some(isUnknown)) return unknown();
+    return filterOf(items.flatMap((item) => (item === null || item === undefined ? [] : [item])));
+  }
   if (object === null || object === undefined || typeof object !== 'object') return null;
-  if (key === '*') return unknown();
+  if (key === '*') return Array.isArray(object) ? filterOf([...object]) : unknown();
   const name = Object.keys(object).find((k) => k.toLowerCase() === String(key).toLowerCase());
   if (name !== undefined) return object[name];
   return object[OPEN] ? unknown() : null;
@@ -370,13 +378,15 @@ export function runsFor(workflow, event) {
   return true;
 }
 
-// event <name> <ref> [{draft}]: an event of skald-so/skald on <ref>. A PR is one from a branch named
-// like a release tag, v1.2.3, into dev, ready for review unless draft is true.
-export function event(name, ref, { draft = false } = {}) {
+// event <name> <ref> [{draft, labels}]: an event of skald-so/skald on <ref>. A PR is one from a
+// branch named like a release tag, v1.2.3, into dev, ready for review unless draft is true, with the
+// labels named in <labels>, or with labels unknown when it is not given.
+export function event(name, ref, { draft = false, labels } = {}) {
   const refName = ref.replace(/^refs\/(heads|tags|pull)\//, '');
   const pr = name === 'pull_request' || name === 'pull_request_target';
+  const named = labels === undefined ? {} : { labels: labels.map((label) => ({ name: label })) };
   const payload = pr
-    ? open({ pull_request: open({ head: open({ ref: 'v1.2.3' }), base: open({ ref: 'dev' }), draft }), number: 7 })
+    ? open({ pull_request: open({ head: open({ ref: 'v1.2.3' }), base: open({ ref: 'dev' }), draft, ...named }), number: 7 })
     : open({ pull_request: null, ...(name === 'push' ? { ref } : {}), ...(name === 'workflow_dispatch' ? { ref } : {}) });
   const github = open({
     event_name: name,
@@ -485,9 +495,10 @@ export function stepSkipped(step, state) {
   return truth(condition(step.if, scope)) === false;
 }
 
-// The events of a release workflow's dry run, for event(): a PR and a manual run.
+// The events of a release workflow's dry run, for event(): a PR, the nightly run and a manual run.
 export const dryRunEvents = [
   ['pull_request', 'refs/pull/7/merge'],
+  ['schedule', 'refs/heads/dev'],
   ['workflow_dispatch', 'refs/heads/dev'],
 ];
 

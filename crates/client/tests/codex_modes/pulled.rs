@@ -9,7 +9,7 @@ use crate::delivery::{
 use crate::modes::{quiet_turn, review_sends, review_session};
 use crate::queued::assert_inbox_gives;
 use crate::senders::PEER;
-use crate::standin::{assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, assert_soon, web_in_app};
 
 /// What Bob's review says to web in the default channel, in `pull`; none is anywhere else.
 const PULLED_IDLE: [&str; 3] = [
@@ -65,16 +65,14 @@ pub fn in_pull_no_path_wakes_the_session_and_inbox_returns_every_message() {
     );
 
     let own = codex.web.own(OWN_THERE);
-    let came = now();
     let ran = app.await_runs(1);
-    assert_soon(&ran[0], came);
+    assert_soon(&ran[0], &codex, own);
     assert_queued(&ran[0], (&web, &app), &[OWN_THERE], &[own], &[]);
     quiet_turn(&mut process, &codex, &web, "the turn the own message woke");
 
     let elsewhere = review_sends_in(&codex.web.solo, &bob, other, PEER_ELSEWHERE);
-    let came = now();
     let ran = app.await_runs(2);
-    assert_soon(&ran[1], came);
+    assert_soon(&ran[1], &codex, elsewhere);
     assert_queued(&ran[1], (&web, &app), &[PEER_ELSEWHERE], &[elsewhere], &[]);
     quiet_turn(
         &mut process,

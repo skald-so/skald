@@ -23,6 +23,7 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use crate::common::reach;
 use crate::proxy::read_head;
 
 /// The paths of the WebSocket, the mailbox's event stream, its long-poll and the HTTPS send, as the
@@ -324,7 +325,7 @@ impl Filter {
         if let Some(delay) = delay {
             thread::sleep(delay);
         }
-        let Ok(mut server) = TcpStream::connect(target) else {
+        let Ok(mut server) = reach("filter", target) else {
             return close(machine);
         };
         let head = if upgrade { head } else { closing(&head) };

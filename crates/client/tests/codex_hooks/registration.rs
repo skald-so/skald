@@ -22,15 +22,17 @@ const DEVICE_REFERENCE: usize = 6;
 /// What api says to web; it is nowhere else.
 const TO_WEB: &str = "codex registration test: api asks web for the build log";
 
-/// Waits for up to [`WAIT`] until exactly one helper runs on `codex`'s machine; gives it.
+/// Waits for up to [`WAIT`] until exactly one helper runs on `codex`'s machine; gives it. A helper
+/// a `SessionStart` starts while another is yet to listen gives way to that one and exits.
 #[track_caller]
-fn one_helper_starts(codex: &Codex) -> u32 {
+fn one_helper_runs(codex: &Codex) -> u32 {
     let deadline = Instant::now() + WAIT;
     loop {
-        if let [one] = codex.helped.helpers().as_slice() {
+        let running = codex.helped.helpers();
+        if let [one] = running.as_slice() {
             return *one;
         }
-        assert!(Instant::now() < deadline, "no helper started");
+        assert!(Instant::now() < deadline, "not one helper: {running:?}");
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -45,9 +47,9 @@ fn session_start_registers_the_session_and_starts_the_helper_when_none_runs() {
     codex.helped.assert_none();
 
     codex.starts(&first);
-    let helper = one_helper_starts(&codex);
+    let helper = one_helper_runs(&codex);
     codex.starts(&second);
-    assert_eq!(codex.helped.helpers(), vec![helper], "not one helper");
+    assert_eq!(one_helper_runs(&codex), helper, "not that one helper");
     codex.busy(&second);
     let msg_id = codex.web.own(TO_WEB);
 

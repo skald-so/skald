@@ -42,6 +42,8 @@ mod claims;
 mod claude_relay;
 mod claude_socket;
 mod clock;
+#[cfg(test)]
+mod closed_port;
 mod codex;
 #[cfg(unix)]
 mod codex_app_server;

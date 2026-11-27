@@ -25,6 +25,10 @@
 mod proxy;
 mod trust;
 
+// A proxy that is down.
+#[path = "../../src/closed_port.rs"]
+mod closed_port;
+
 // The TLS endpoint and test CA of the tests of HTTPS.
 #[path = "../common/tls.rs"]
 mod tls;
@@ -71,15 +75,14 @@ mod keys;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use browser::Browser;
+use closed_port::closed_port;
 use cloud::Cloud;
 use common::Server;
 use fixtures::{TIMEOUT_SETTING, send};
 use kit::{RECV, create_space, received, with_channel};
 use machine::{Finished, Machine, SERVER, SIGN_IN};
 use played::Played;
-use proxy::{
-    BAD_GATEWAY, BASIC_ASKED, FORBIDDEN, OTHER_SCHEMES_ASKED, Proxy, Request, closed_port,
-};
+use proxy::{BAD_GATEWAY, BASIC_ASKED, FORBIDDEN, OTHER_SCHEMES_ASKED, Proxy, Request};
 use skald_proto::{PROTOCOL_VERSION, Role};
 use talk::{ADA_HOST, BOB_HOST, Line, assert_read, assert_shows_once, encrypted, stored};
 use tls_front::Front;
@@ -296,7 +299,7 @@ fn sign_in_send_and_recv_go_through_the_proxy_which_sees_only_tls() {
     let plain = front.plain();
     assert!(plain.contains("get /ws "), "no WebSocket: {plain}");
 
-    let down = format!("127.0.0.1:{}", closed_port());
+    let down = closed_port().to_string();
     ada.machine = (ada.machine)
         .with_env(HTTPS_PROXY, format!("http://{down}"))
         .with_env(TIMEOUT_SETTING, TIMEOUT);
@@ -505,7 +508,7 @@ fn proxy_that_is_down_fails_the_command_without_a_direct_connection() {
     for credentials in [PLAIN, ENCODED] {
         let trust = Trust::new();
         let (_server, front) = site(&trust);
-        let down = format!("127.0.0.1:{}", closed_port());
+        let down = closed_port().to_string();
         let machine = trust
             .proxied(&format!("http://{}@{down}", credentials.0))
             .with_env(TIMEOUT_SETTING, TIMEOUT);
