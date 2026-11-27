@@ -16,7 +16,7 @@ use crate::machine::Machine;
 use crate::modes::{quiet_turn, review_sends, review_session};
 use crate::queued::{assert_inbox_gives, second_device};
 use crate::senders::PEER;
-use crate::standin::{assert_queued, assert_quiet, assert_soon, now, web_in_app};
+use crate::standin::{assert_queued, assert_quiet, assert_soon, web_in_app};
 use crate::talk::BOB_HOST;
 
 /// The window of `batch`, as the CLI takes it and as a duration: long enough for the messages and
@@ -88,9 +88,8 @@ pub fn in_batch_ten_peer_messages_within_a_window_wake_the_session_once_at_its_e
     assert_quiet(&[(&app, 0, "codex queue within the window")]);
 
     let from_laptop = laptop_sends(&codex, (&laptop.machine, &folder), FROM_LAPTOP);
-    let came = now();
     let ran = app.await_runs(1);
-    assert_soon(&ran[0], came);
+    assert_soon(&ran[0], &codex, from_laptop);
     assert_queued(&ran[0], (&web, &app), &[FROM_LAPTOP], &[from_laptop], &[]);
     quiet_turn(
         &mut process,
@@ -100,9 +99,8 @@ pub fn in_batch_ten_peer_messages_within_a_window_wake_the_session_once_at_its_e
     );
 
     let elsewhere = review_sends_in(&codex.web.solo, &bob, other, ELSEWHERE);
-    let came = now();
     let ran = app.await_runs(2);
-    assert_soon(&ran[1], came);
+    assert_soon(&ran[1], &codex, elsewhere);
     assert_queued(&ran[1], (&web, &app), &[ELSEWHERE], &[elsewhere], &names);
     quiet_turn(
         &mut process,
