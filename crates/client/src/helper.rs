@@ -446,39 +446,37 @@ pub struct Stamp {
     changed: (i64, i64),
 }
 
-/// The [`Stamp`] of the file at `path`, if it can tell; on Unix its inode and the time its inode
-/// last changed, which a write or a rename over it changes.
-#[cfg(unix)]
+/// The [`Stamp`] of the file at `path`, if it can tell: its identity on its volume, its length and
+/// when it last changed ([`changed`]).
 fn stamp(path: &Path) -> Option<Stamp> {
-    use std::os::unix::fs::MetadataExt;
     let file = fs::File::open(path).ok()?;
     let identity = claude_socket::file_identity(&file).ok()?;
     let metadata = file.metadata().ok()?;
     Some(Stamp {
         identity,
         len: metadata.len(),
-        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        changed: changed(&metadata)?,
     })
 }
 
-/// The [`Stamp`] of the file at `path`, if it can tell; on Windows its file index and when it was
-/// last written.
+/// When the file of `metadata` last changed, on Unix as its inode: a write or a rename over it
+/// changes it.
+#[cfg(unix)]
+fn changed(metadata: &fs::Metadata) -> Option<(i64, i64)> {
+    use std::os::unix::fs::MetadataExt;
+    Some((metadata.ctime(), metadata.ctime_nsec()))
+}
+
+/// When the file of `metadata` was last written, on Windows.
 #[cfg(windows)]
-fn stamp(path: &Path) -> Option<Stamp> {
-    let file = fs::File::open(path).ok()?;
-    let identity = claude_socket::file_identity(&file).ok()?;
-    let metadata = file.metadata().ok()?;
+fn changed(metadata: &fs::Metadata) -> Option<(i64, i64)> {
     let written = (metadata.modified().ok()?)
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?;
-    Some(Stamp {
-        identity,
-        len: metadata.len(),
-        changed: (
-            i64::try_from(written.as_secs()).ok()?,
-            i64::from(written.subsec_nanos()),
-        ),
-    })
+    Some((
+        i64::try_from(written.as_secs()).ok()?,
+        i64::from(written.subsec_nanos()),
+    ))
 }
 
 /// The version the `skald` at `exe` says it is.
