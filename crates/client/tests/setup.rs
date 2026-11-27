@@ -7,9 +7,6 @@
 
 #[allow(dead_code)]
 mod common;
-#[allow(dead_code)]
-#[path = "sign_in/relay.rs"]
-mod relay;
 
 use std::cell::{Cell, RefCell};
 use std::future::{Ready, ready};
@@ -184,7 +181,7 @@ fn a_stand_ins_connect_is_tried_again_only_while_windows_has_no_buffer_space() {
         let mut sink = Vec::new();
         let calls = Cell::new(0);
         let started = Instant::now();
-        let result = relay::reached(
+        let result = common::reached(
             "a relay",
             "127.0.0.1:1",
             Some(samples.clone()),

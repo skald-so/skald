@@ -142,7 +142,7 @@ fn serve(mut client: TcpStream, refusal: Option<&str>, requests: &Arc<Mutex<Vec<
     };
     let upstream = port
         .filter(|_| refusal.is_none())
-        .and_then(|port| TcpStream::connect(format!("127.0.0.1:{port}")).ok());
+        .and_then(|port| super::common::reach("proxy", &format!("127.0.0.1:{port}")).ok());
     let Some(mut upstream) = upstream else {
         let _ = client.write_all(refusal.unwrap_or(BAD_GATEWAY).as_bytes());
         return;

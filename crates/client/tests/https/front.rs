@@ -11,6 +11,8 @@ use std::thread;
 
 use rustls::{ServerConfig, ServerConnection};
 
+use super::common::reach;
+
 /// What crossed the endpoint so far.
 #[derive(Default)]
 struct Log {
@@ -144,7 +146,7 @@ fn serve(machine: TcpStream, config: Arc<ServerConfig>, target: &OnceLock<String
         }
         log.plain.lock().unwrap().extend_from_slice(&plain);
         if server.is_none() {
-            let Some(Ok(stream)) = target.get().map(TcpStream::connect) else {
+            let Some(Ok(stream)) = target.get().map(|target| reach("TLS front", target)) else {
                 break;
             };
             let Ok(answers) = stream.try_clone() else {

@@ -30,7 +30,8 @@ use skald_proto::{
     Cbor as _, ChannelId, DeviceId, Frame, HistoryItem, MessageId, Push, RawEnvelope, SpaceId,
 };
 
-use super::relay::{answered_in_full, reach, reset};
+use super::common::reach;
+use super::relay::{answered_in_full, reset};
 
 /// The requests the front refuses while the server is down for delivery, as their lines start.
 const DELIVERY: [&str; 2] = ["POST /session/challenge ", "GET /ws "];
