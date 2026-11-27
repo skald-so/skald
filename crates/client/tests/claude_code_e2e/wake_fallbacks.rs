@@ -18,7 +18,7 @@ use skald_proto::MessageId;
 use crate::claude::claude_code;
 use crate::client::CLIENT;
 use crate::helped::Helped;
-use crate::hooks::{Bob, INBOX_WORD, api_sends};
+use crate::hooks::{Bob, INBOX_WORD, api_sends, api_sends_web};
 use crate::lines::{agent_line_of, agent_lines, reference};
 use crate::receipts::shows_read_once;
 use crate::senders::OWN;
@@ -83,7 +83,7 @@ fn own_wakes(id: u64, login: &str, fallback: Fallback, says: &str) {
         return;
     };
 
-    let own = solo.api_sends_web(says);
+    let own = api_sends_web(&solo, says);
 
     let turn = model.wait_turn_holding(says, "api's message");
     fallback.assert_came_by(&turn);

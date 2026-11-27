@@ -17,7 +17,7 @@ use crate::behind::{Behind, Forked, TIMEOUT, Transport, answered, recv};
 use crate::cloud::WAIT;
 use crate::filter::{EVENTS, Fate, POLL, Seen, WEBSOCKET};
 use crate::fixtures::{SEND, await_running};
-use crate::helped::{Helped, ONE_SHOT, START_TIMEOUT};
+use crate::helped::{Helped, ONE_SHOT, START_TIMEOUT, timeout_of};
 use crate::kit::RECV;
 use crate::machine::Run;
 use crate::waits::{
@@ -424,6 +424,10 @@ fn push_that_comes_while_a_send_through_the_helper_waits_for_its_answer_is_shown
 /// flight has ended, no two long-polls that wait are in flight at once for two of the server's
 /// longest long-poll waits: the wait's own stopped. Bob's device then sends a message, which the
 /// wait shows once.
+///
+/// The wait may reach the new helper before her `skald recv` does; her `skald recv` then waits for
+/// the helper's first run of the wait, for up to its request timeout: [`START_TIMEOUT`], as a run
+/// on a loaded machine may take longer than the proxy's tests' [`TIMEOUT`].
 #[test]
 fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
     let mut behind = on_long_poll(
@@ -434,7 +438,8 @@ fn one_shot_wait_that_goes_on_through_a_helper_long_polls_no_more_itself() {
     let from = behind.filter.mark();
     let mut waiting = helped.start(&[], &[ONE_SHOT, RECV, WAIT_FLAG]);
     await_waiting_poll(&behind, &mut waiting, from);
-    helped.received();
+    let started = helped.run_with(&timeout_of(START_TIMEOUT), &[RECV]);
+    assert!(started.success, "{started:?}");
     await_helper_beside(&helped, &[&waiting]);
     thread::sleep(POLL_WAIT + SETTLE);
 

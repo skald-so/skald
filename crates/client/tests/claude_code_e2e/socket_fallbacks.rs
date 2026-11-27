@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::claude::claude_code;
 use crate::helped::Helped;
+use crate::hooks::api_sends_web;
 use crate::receipts::shows_read_once;
 use crate::socket_claude::{Options, SOCKET, Session, Surface};
 use crate::socket_model::{Model, Reply, conversation, last_user_text};
@@ -74,7 +75,7 @@ fn a_session_that_refuses_cross_session_messages_gets_them_by_the_hooks() {
         return;
     };
 
-    let msg_id = solo.api_sends_web(REFUSED_SAYS);
+    let msg_id = api_sends_web(&solo, REFUSED_SAYS);
     session.prompt(AGAIN);
 
     let turn = model.wait_turn_holding(REFUSED_SAYS, "api's message after the refusal");
@@ -128,7 +129,7 @@ fn a_helper_killed_after_the_write_gives_read_once_and_keeps_nothing_of_the_conv
         "the conversation holds no {PLANTED}"
     );
 
-    let msg_id = solo.api_sends_web(KILLED_SAYS);
+    let msg_id = api_sends_web(&solo, KILLED_SAYS);
     nudged_unless_socket(&mut session);
     model.wait_turn_holding(KILLED_SAYS, "api's message");
     // Where the client writes into no socket, no write comes before the hooks give the message.

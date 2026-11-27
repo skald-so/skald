@@ -6,9 +6,9 @@
 //! [`DATA_WARNING`] (`docs/dev/architecture.md`, "Security"). A reply's line names the message it
 //! answers.
 //!
-//! A message's reference: the leading characters of the base32 of RFC 4648, in lowercase and
-//! without padding, of SHA-256 of its `msg_id`'s 16 bytes; at least [`SHORTEST`], more only where
-//! another message the device keeps shares them. Any device computes it from the `msg_id`.
+//! A message's reference: a prefix of the lowercase, unpadded base32 of SHA-256 of its `msg_id`.
+//! Most output uses the shortest unique prefix, at least [`SHORTEST`] characters. Own Claude
+//! channel and rewake messages that can be confirmed after Stop use the whole reference.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -19,6 +19,9 @@ use crate::connection::printable;
 
 /// The fewest characters of a reference.
 pub const SHORTEST: usize = 4;
+
+/// The characters of a whole message reference.
+pub const WHOLE_REFERENCE_LEN: usize = 256_usize.div_ceil(5);
 
 pub use skald_adapters::label::DATA_WARNING;
 
@@ -62,7 +65,7 @@ pub fn whole_reference(msg_id: MessageId) -> String {
 pub fn hashed(bytes: &[u8]) -> String {
     let hash = Sha256::digest(bytes);
     // Each character takes the next 5 of the hash's 256 bits; the last one, 1 bit and 4 zero bits.
-    (0..256_usize.div_ceil(5))
+    (0..WHOLE_REFERENCE_LEN)
         .map(|index| {
             let (byte, shift) = (index * 5 / 8, index * 5 % 8);
             let next = hash.get(byte + 1).copied().unwrap_or(0);
