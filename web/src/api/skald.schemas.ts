@@ -422,7 +422,7 @@ export interface UsernameRequest {
 }
 
 /**
- * `open`: a first sign-in creates an account. `closed`: only for the people the server lists.
+ * `open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite.
  */
 export type SignInProvidersSignUp =
   (typeof SignInProvidersSignUp)[keyof typeof SignInProvidersSignUp];
@@ -435,7 +435,7 @@ export const SignInProvidersSignUp = {
 export interface SignInProviders {
   /** The providers the server has settings for, each once. */
   providers: SignInProvider[];
-  /** `open`: a first sign-in creates an account. `closed`: only for the people the server lists. */
+  /** `open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite. */
   sign_up: SignInProvidersSignUp;
   /**
    * The address of the server's privacy policy, the server setting `--privacy-policy-url`, which its sign-in pages link. Absent without the setting.
@@ -637,6 +637,50 @@ export interface Spaces {
 
 export interface SpaceRequest {
   name: SpaceName;
+}
+
+/**
+ * A reason category configured by the server.
+ * @minLength 1
+ * @maxLength 63
+ * @pattern ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$
+ */
+export type AbuseReportReason = string;
+
+export interface AbuseReporting {
+  /** @minItems 1 */
+  reasons: AbuseReportReason[];
+}
+
+/**
+ * @pattern ^[1-9][0-9]{0,18}$
+ */
+export type RosterRevisionNumber = string;
+
+export interface AbuseReportRequest {
+  /**
+   * The selected member's handle in the listed roster.
+   * @minLength 1
+   * @maxLength 63
+   * @pattern ^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$
+   */
+  target: string;
+  /** The Skald-Roster-Revision header of the member list used for this selection. */
+  roster_revision: RosterRevisionNumber;
+  reason: AbuseReportReason;
+  /**
+   * A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.
+   * @pattern ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$
+   */
+  idempotency_key: string;
+}
+
+export interface AbuseReportReceipt {
+  /**
+   * An opaque acknowledgment of submission.
+   * @pattern ^[A-Za-z0-9_-]{43}$
+   */
+  receipt: string;
 }
 
 export interface WaitingAcceptance {

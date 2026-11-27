@@ -4,7 +4,6 @@
 //! Paseo's terminals, so a second session runs Codex's terminal UI in one.
 
 use std::fs;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -15,6 +14,12 @@ use serde_json::{Value, json};
 use crate::claude::PROMPT;
 use crate::host::{Live, STUB_MODEL, WAIT, as_fixture, on_path, record, version};
 use crate::stub::played;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// What api says to the session's agent once it is idle; it is nowhere else.
 const WAKES: &str = "codex hosts check: api asks the session in Paseo for the test report";
@@ -38,10 +43,7 @@ impl Daemon {
     fn start(paseo: &Path, live: &Live, settings: &[(String, String)]) -> Self {
         let home = live.codex.machine().root().join("paseo");
         fs::create_dir_all(&home).expect("make Paseo's home");
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .and_then(|listener| listener.local_addr())
-            .expect("a free port")
-            .port();
+        let port = local_listener().local_addr().expect("a free port").port();
         let host = format!("127.0.0.1:{port}");
         let config = json!({
             "version": 1,

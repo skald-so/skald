@@ -15,7 +15,7 @@
 //! machine sends next on one back for a while.
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -23,7 +23,14 @@ use std::time::{Duration, Instant};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
+use crate::common::reach;
 use crate::proxy::read_head;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The paths of the WebSocket, the mailbox's event stream, its long-poll and the HTTPS send, as the
 /// OpenAPI spec names them.
@@ -149,7 +156,7 @@ impl Filter {
     /// Forwards to `target`, such as the relay's `127.0.0.1:41234`; at first it forwards every
     /// request.
     pub fn start(target: &str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the filter's address").port();
         let filter = Filter {
             port,
@@ -324,7 +331,7 @@ impl Filter {
         if let Some(delay) = delay {
             thread::sleep(delay);
         }
-        let Ok(mut server) = TcpStream::connect(target) else {
+        let Ok(mut server) = reach("filter", target) else {
             return close(machine);
         };
         let head = if upgrade { head } else { closing(&head) };

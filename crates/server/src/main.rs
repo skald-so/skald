@@ -2,6 +2,7 @@
 
 use std::env;
 use std::net::SocketAddr;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -9,8 +10,9 @@ use std::time::Duration;
 use clap::{Parser, ValueEnum};
 use skald_proto::ServerName;
 use skald_server::{
-    AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret, GitHubApp, GitHubUrl, Listed,
-    OidcSettings, PrivacyPolicyUrl, PublicUrl, SentryDsn, Settings, SignInSettings, SignUp,
+    AbuseReportingSettings, AttachmentStorage, BucketEndpoint, BucketSettings, ClientSecret,
+    GitHubApp, GitHubUrl, Listed, OidcSettings, PrivacyPolicyUrl, PublicUrl, SentryDsn, Settings,
+    SignInSettings, SignUp,
 };
 use tokio::net::TcpListener;
 
@@ -162,8 +164,8 @@ struct Cli {
     )]
     device_poll_interval: u64,
 
-    /// Who may sign up: open, anyone the sign-in providers sign in; closed, only the identities on
-    /// the --sign-up-* lists. Existing accounts sign in and link methods either way.
+    /// Who may sign up: open, anyone the providers sign in. Closed admits corporate sign-ins,
+    /// identities on the --sign-up-* lists and usable invites. Existing accounts can still sign in.
     #[arg(
         long,
         env = "SKALD_SIGN_UP",
@@ -212,6 +214,22 @@ struct Cli {
     /// Show cloud plans in usage and enforce Free ownership and plan roster limits.
     #[arg(long, env = "SKALD_SPACE_PLANS")]
     space_plans: bool,
+
+    /// Comma-separated reason categories. Reporting requires all four abuse report settings.
+    #[arg(long, env = "SKALD_ABUSE_REPORT_REASONS", hide_env_values = true)]
+    abuse_report_reasons: Option<String>,
+
+    /// New reports an account may submit in 24 hours.
+    #[arg(long, env = "SKALD_ABUSE_REPORT_LIMIT", value_name = "N")]
+    abuse_report_limit: Option<NonZeroU32>,
+
+    /// Total reports the server may keep.
+    #[arg(long, env = "SKALD_ABUSE_REPORT_CAPACITY", value_name = "N")]
+    abuse_report_capacity: Option<NonZeroU32>,
+
+    /// How long new reports are kept.
+    #[arg(long, env = "SKALD_ABUSE_REPORT_RETENTION", value_name = "SECONDS")]
+    abuse_report_retention: Option<NonZeroU32>,
 
     /// With plans off, the number of spaces an account may own, including its personal space
     /// before creation [default: no limit].
@@ -433,7 +451,7 @@ fn open_warning(settings: &Settings) -> Option<String> {
     };
     Some(format!(
         "skald-server: warning: sign-up is open: any {providers} account can sign up; \
-         --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+         --sign-up closed (SKALD_SIGN_UP=closed) restricts GitHub and Google sign-up"
     ))
 }
 
@@ -537,9 +555,27 @@ impl Cli {
         }))
     }
 
+    fn abuse_reporting(&self) -> Result<Option<AbuseReportingSettings>, &'static str> {
+        match (
+            self.abuse_report_reasons.as_deref(),
+            self.abuse_report_limit,
+            self.abuse_report_capacity,
+            self.abuse_report_retention,
+        ) {
+            (None, None, None, None) => Ok(None),
+            (Some(reasons), Some(limit), Some(capacity), Some(retention)) => {
+                AbuseReportingSettings::new(reasons, limit, capacity, retention).map(Some)
+            }
+            _ => {
+                Err("abuse reporting requires reasons, a submission limit, capacity and retention")
+            }
+        }
+    }
+
     /// The settings, or why they do not fit together.
     fn settings(mut self) -> Result<Settings, String> {
         let sign_up = self.sign_up()?;
+        let abuse_reporting = self.abuse_reporting()?;
         let server_name = self
             .server_name
             .or_else(|| self.public_url.as_ref().and_then(PublicUrl::server_name));
@@ -596,6 +632,7 @@ impl Cli {
             sign_up,
             privacy_policy_url: self.privacy_policy_url,
             space_plans: self.space_plans,
+            abuse_reporting,
             owned_spaces_limit: self.owned_spaces_limit,
             server_name,
             mailbox_retention: self.mailbox_retention.map(Duration::from_secs),
@@ -980,7 +1017,7 @@ mod tests {
         let any = |providers: &str| {
             Some(format!(
                 "skald-server: warning: sign-up is open: any {providers} account can sign up; \
-                 --sign-up closed (SKALD_SIGN_UP=closed) admits only the listed ones"
+                 --sign-up closed (SKALD_SIGN_UP=closed) restricts GitHub and Google sign-up"
             ))
         };
         assert_eq!(warning(true, true), any("GitHub or Google"));

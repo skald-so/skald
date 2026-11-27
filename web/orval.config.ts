@@ -6,7 +6,7 @@ import { defineConfig } from "orval";
 // and what only a machine calls: the device flow's endpoints, a device session's challenge, its
 // mailbox requests and stream, a device's session by its key, a link run without a session and
 // its pairing, a channel's presence, queue key objects, queues, tasks and claims, a service token's
-// creation and the token's own record.
+// creation and the token's own record, and A2A gateway calls and discovery.
 export default defineConfig({
   skald: {
     input: {
@@ -14,6 +14,8 @@ export default defineConfig({
       filters: {
         mode: "exclude",
         operationIds: [
+          "callA2aGateway",
+          "getA2aAgentCard",
           "openWebSocket",
           "startGitHubSignIn",
           "finishGitHubSignIn",

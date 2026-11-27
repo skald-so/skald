@@ -6,6 +6,101 @@
     "description": "A server has two addresses. `<public URL>`, the server setting `--public-url`, is where the CLI and devices reach it. `<web URL>`, the setting `--web-url`, by default the public URL, is where browsers sign in: the providers' callbacks, the pages a sign-in returns to, its cookies, the `Origin` its browser forms are taken from and the verification page."
   },
   "paths": {
+    "/.well-known/agent-card.json": {
+      "get": {
+        "operationId": "getA2aAgentCard",
+        "summary": "Discover the gateway's A2A interface",
+        "description": "The A2A 1.0 Agent Card advertises a public route alias, JSON-RPC over HTTPS, bearer authentication and text/plain input and output. Discovery is available only in local fixtures.",
+        "responses": {
+          "200": {
+            "description": "The A2A Agent Card.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "externalDocs": {
+                    "url": "https://a2a-protocol.org/v1.0.0/specification/#441-agentcard"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Discovery is unavailable on this listener."
+          }
+        }
+      }
+    },
+    "/a2a/{route}": {
+      "post": {
+        "operationId": "callA2aGateway",
+        "summary": "Call a gateway route over HTTPS",
+        "description": "A2A 1.0 JSON-RPC. The bearer credential must allow this route. The gateway validates the request before checking its live Skald service grant and device proof. A task is visible only to its client on its original route. The gateway surface is available only in local fixtures. Submitting new exchanges and returning task status are unavailable.",
+        "parameters": [
+          {
+            "name": "route",
+            "in": "path",
+            "required": true,
+            "description": "Public route alias.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]+$"
+            }
+          },
+          {
+            "name": "A2A-Version",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "const": "1.0",
+              "type": "string"
+            }
+          }
+        ],
+        "security": [
+          {
+            "a2aBearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/A2aGatewayRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "JSON-RPC error. An absent or inaccessible task gets the same error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/A2aGatewayError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or revoked gateway credential."
+          },
+          "403": {
+            "description": "The route is unavailable to the caller or its Skald grant or proof failed."
+          },
+          "404": {
+            "description": "The gateway is unavailable on this listener."
+          },
+          "413": {
+            "description": "The request body exceeds 2 MiB."
+          },
+          "415": {
+            "description": "The request body must be JSON."
+          }
+        }
+      }
+    },
     "/account": {
       "delete": {
         "operationId": "deleteAccount",
@@ -2243,7 +2338,7 @@
       "post": {
         "operationId": "authorizeDevice",
         "summary": "Start a device flow sign-in",
-        "description": "Device authorization (RFC 8628, §3.1): a machine without a browser asks for a device code and a user code. Its person approves the user code on the verification page, `GET /device`, within `expires_in` seconds, the server setting `--device-code-lifetime`; the machine meanwhile polls `POST /auth/token` every `interval` seconds, the server setting `--device-poll-interval`.",
+        "description": "Device authorization (RFC 8628, §3.1): when at least one sign-in provider is configured, a machine without a browser asks for a device code and a user code. Its person approves the user code on the verification page, `GET /device`, within `expires_in` seconds, the server setting `--device-code-lifetime`; the machine meanwhile polls `POST /auth/token` every `interval` seconds, the server setting `--device-poll-interval`.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -2335,7 +2430,7 @@
       "put": {
         "operationId": "attachDeviceInvite",
         "summary": "Attach an invite proof to a device sign-in",
-        "description": "The machine calls this before it opens the verification page. While sign-up is closed, a proof that verifies with the invite's key is attached to its pending device authorization. If the identity has no account and is on none of the server's lists, sign-in from that authorization creates an account only if the invite is still held, live and unused. The invite then belongs to that account. If sign-in is already allowed, it leaves the invite available.",
+        "description": "The machine calls this before it opens the verification page. While sign-up is closed, a proof that verifies with the invite's key is attached to its pending device authorization. If the server's sign-up policy would refuse the identity, sign-in from that authorization creates an account only if the invite is still held, live and unused. The invite then belongs to that account. If sign-in is already allowed, it leaves the invite available.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -3117,7 +3212,7 @@
       "get": {
         "operationId": "finishCorporateSignIn",
         "summary": "The corporate sign-in callback",
-        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` with the PKCE verifier and client credentials, and validates the ID token and its `nonce`. With open sign-up the first sign-in creates an account bound to the validated issuer and subject. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The token request uses `client_secret_basic` by default or when advertised, and `client_secret_post` when the issuer advertises it without Basic. The server keeps no email or tokens from the issuer.",
+        "description": "Opened by the browser on its way back from the corporate issuer. Checks the browser-bound `state`, exchanges `code` with the PKCE verifier and client credentials, and validates the ID token and its `nonce`. The first verified sign-in creates an account bound to the configured issuer and validated subject, even while sign-up is closed. The username comes from the email's local part when available, with the same fallback as Google. Later sign-ins with the same issuer and subject reach the same account. The token request uses `client_secret_basic` by default or when advertised, and `client_secret_post` when the issuer advertises it without Basic. The server keeps no email or tokens from the issuer.",
         "parameters": [
           {
             "name": "code",
@@ -3172,21 +3267,6 @@
           },
           "400": {
             "description": "No one is signed in: the state is missing, wrong, from another browser, expired or used, or the issuer returned an error, no code, or an invalid token.",
-            "headers": {
-              "Cache-Control": {
-                "$ref": "#/components/headers/NoStore"
-              }
-            },
-            "content": {
-              "text/html": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Sign-up is closed and the issuer and subject have no existing account. The page names the problem type `https://skald.so/problems/sign-up-closed`.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -3406,7 +3486,7 @@
         ],
         "responses": {
           "200": {
-            "description": "The page that asks for the code; without a web session, a link to sign in with each provider the server has settings for, GitHub or Google, each returning to this page with `user_code`; unless `reopened` is given, it also opens this page with `user_code` and `reopened` again from this server, once, as a request from another site lacks the `SameSite=Strict` session cookie. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
+            "description": "The page that asks for the code; without a web session, a link to sign in with each configured provider (GitHub, Google or corporate), each returning to this page with `user_code`; unless `reopened` is given, it also opens this page with `user_code` and `reopened` again from this server, once, as a request from another site lacks the `SameSite=Strict` session cookie. With a web session or without, a link to the privacy policy of the server setting `--privacy-policy-url`, if set.",
             "headers": {
               "Cache-Control": {
                 "$ref": "#/components/headers/NoStore"
@@ -6248,6 +6328,343 @@
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/abuse-reporting": {
+      "get": {
+        "operationId": "getAbuseReporting",
+        "summary": "Get a space's report capabilities",
+        "description": "A member of the space's latest roster gets the configured reason categories.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The categories the server takes.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbuseReporting"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProtocolProblem"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no web or device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reporting is off, the space has no roster, or the session's account is not a current member.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/spaces/{space}/abuse-reports": {
+      "post": {
+        "operationId": "submitAbuseReport",
+        "summary": "Report a space member",
+        "description": "The session's account reports another active account selected from the member list for the current roster revision. Web requests must come from the server's web origin. A current member can retry the exact submission and receive the same receipt while the report is kept, even after the roster changes. The server limits each account's new submissions over 24 hours and also limits total stored reports.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ProtocolVersion"
+          },
+          {
+            "$ref": "#/components/parameters/Space"
+          }
+        ],
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbuseReportRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The receipt of the retained report.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbuseReportReceipt"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "The new report's receipt.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AbuseReportReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The server refuses the stated version, the body or the reason category.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ProtocolProblem"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Problem"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "The request has no web or device session.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The web session's request did not come from the server's page.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reporting is off, the space has no roster, or the session's account is not a current member. Also returned if the target is not another active member.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The member list changed since the selection, or the account already used this key in the space for a different submission.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The body is over 1024 bytes.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The account's submission limit or the server's report capacity was reached.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
+              }
+            },
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The database failed.",
+            "headers": {
+              "Skald-Protocol-Latest": {
+                "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/NoStore"
               }
             },
             "content": {
@@ -10180,7 +10597,7 @@
       "get": {
         "operationId": "listSpaceMembers",
         "summary": "The space's members as the web app shows them",
-        "description": "The members of the space's latest stored revision (docs/protocol/membership.md, \"Roster\"), in its order, each with its role; no revision or master key. It is the server's word: `skald` checks the space's revisions itself.",
+        "description": "The members of the space's latest stored revision (docs/protocol/membership.md, \"Roster\"), in its order, each with its role. The response header identifies that member list's revision. It is the server's word: `skald` checks the space's revisions itself.",
         "parameters": [
           {
             "$ref": "#/components/parameters/ProtocolVersion"
@@ -10203,6 +10620,12 @@
             "headers": {
               "Skald-Protocol-Latest": {
                 "$ref": "#/components/headers/ProtocolLatest"
+              },
+              "Skald-Roster-Revision": {
+                "description": "The revision number of this member list. Absent before revision 1.",
+                "schema": {
+                  "$ref": "#/components/schemas/RosterRevisionNumber"
+                }
               }
             },
             "content": {
@@ -11247,7 +11670,7 @@
         }
       },
       "NoStore": {
-        "description": "`no-store`: the response holds a sign-in's codes, token or outcome, or a service token.",
+        "description": "`no-store`: used for sign-ins, service tokens and abuse reporting.",
         "required": true,
         "schema": {
           "type": "string",
@@ -11256,11 +11679,16 @@
       }
     },
     "securitySchemes": {
+      "a2aBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "A gateway credential bound to a client and its allowed route aliases."
+      },
       "session": {
         "type": "apiKey",
         "in": "cookie",
         "name": "skald_session",
-        "description": "The web session that a sign-in in the browser gives, with GitHub or Google."
+        "description": "Cookie for a web session established in the browser through any configured sign-in provider."
       },
       "bearer": {
         "type": "http",
@@ -11279,6 +11707,317 @@
       }
     },
     "schemas": {
+      "A2aGatewayError": {
+        "type": "object",
+        "required": [
+          "jsonrpc",
+          "id",
+          "error"
+        ],
+        "properties": {
+          "jsonrpc": {
+            "type": "string",
+            "const": "2.0"
+          },
+          "id": {
+            "type": [
+              "string",
+              "integer",
+              "null"
+            ]
+          },
+          "error": {
+            "type": "object",
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "integer",
+                "enum": [
+                  -32700,
+                  -32600,
+                  -32601,
+                  -32602,
+                  -32001,
+                  -32003,
+                  -32004,
+                  -32005,
+                  -32009
+                ],
+                "description": "-32700 Parse error. -32600 Invalid request. -32601 MethodNotFoundError for unknown methods. -32602 Invalid params. -32001 TaskNotFoundError. -32003 PushNotificationNotSupportedError. -32004 UnsupportedOperationError. -32005 ContentTypeNotSupportedError. -32009 VersionNotSupportedError."
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "A2aGatewayRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "jsonrpc",
+              "id",
+              "method",
+              "params"
+            ],
+            "properties": {
+              "jsonrpc": {
+                "type": "string",
+                "const": "2.0"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "integer",
+                  "null"
+                ]
+              },
+              "method": {
+                "type": "string",
+                "const": "SendMessage"
+              },
+              "params": {
+                "type": "object",
+                "required": [
+                  "message"
+                ],
+                "properties": {
+                  "message": {
+                    "type": "object",
+                    "required": [
+                      "messageId",
+                      "role",
+                      "parts"
+                    ],
+                    "properties": {
+                      "messageId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "role": {
+                        "type": "string",
+                        "const": "ROLE_USER"
+                      },
+                      "parts": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                          "$ref": "#/components/schemas/A2aTextPart"
+                        }
+                      },
+                      "taskId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Continuation is unsupported. A supplied task is resolved only after the grant check."
+                      },
+                      "contextId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Requires taskId. Must match the accessible task."
+                      },
+                      "referenceTaskIds": {
+                        "type": "array",
+                        "maxItems": 0,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "metadata": {
+                        "type": "object"
+                      },
+                      "extensions": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    "additionalProperties": false,
+                    "dependentRequired": {
+                      "contextId": [
+                        "taskId"
+                      ]
+                    }
+                  },
+                  "configuration": {
+                    "type": "object",
+                    "description": "Push callback configuration is unsupported.",
+                    "properties": {
+                      "acceptedOutputModes": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "anyOf": [
+                          {
+                            "maxItems": 0
+                          },
+                          {
+                            "contains": {
+                              "type": "string",
+                              "pattern": "^[tT][eE][xX][tT]/[pP][lL][aA][iI][nN]$"
+                            }
+                          }
+                        ]
+                      },
+                      "historyLength": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 2147483647
+                      },
+                      "returnImmediately": {
+                        "type": "boolean"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "metadata": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "jsonrpc",
+              "id",
+              "method",
+              "params"
+            ],
+            "properties": {
+              "jsonrpc": {
+                "type": "string",
+                "const": "2.0"
+              },
+              "id": {
+                "type": [
+                  "string",
+                  "integer",
+                  "null"
+                ]
+              },
+              "method": {
+                "type": "string",
+                "const": "GetTask"
+              },
+              "params": {
+                "type": "object",
+                "required": [
+                  "id"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "historyLength": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2147483647
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        ]
+      },
+      "A2aTextPart": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": "string",
+            "pattern": "^[tT][eE][xX][tT]/[pP][lL][aA][iI][nN]$"
+          },
+          "metadata": {
+            "type": "object"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbuseReportReceipt": {
+        "type": "object",
+        "required": [
+          "receipt"
+        ],
+        "properties": {
+          "receipt": {
+            "description": "An opaque acknowledgment of submission.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbuseReportReason": {
+        "description": "A reason category configured by the server.",
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 63,
+        "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+      },
+      "AbuseReportRequest": {
+        "type": "object",
+        "required": [
+          "target",
+          "roster_revision",
+          "reason",
+          "idempotency_key"
+        ],
+        "properties": {
+          "target": {
+            "description": "The selected member's handle in the listed roster.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 63,
+            "pattern": "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+          },
+          "roster_revision": {
+            "description": "The Skald-Roster-Revision header of the member list used for this selection.",
+            "$ref": "#/components/schemas/RosterRevisionNumber"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/AbuseReportReason"
+          },
+          "idempotency_key": {
+            "description": "A client-generated UUID in lowercase hyphenated form, scoped to the reporting account and space.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbuseReporting": {
+        "type": "object",
+        "required": [
+          "reasons"
+        ],
+        "properties": {
+          "reasons": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/AbuseReportReason"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "Acceptance": {
         "description": "An acceptance's CBOR bytes (docs/protocol/membership.md, \"Invite\") in base64url without padding (RFC 4648, §5).",
         "type": "string",
@@ -12970,6 +13709,10 @@
         },
         "additionalProperties": false
       },
+      "RosterRevisionNumber": {
+        "type": "string",
+        "pattern": "^[1-9][0-9]{0,18}$"
+      },
       "RosterRevisions": {
         "type": "object",
         "required": ["revisions"],
@@ -13289,7 +14032,7 @@
             }
           },
           "sign_up": {
-            "description": "`open`: a first sign-in creates an account. `closed`: only for the people the server lists.",
+            "description": "`open`: a first sign-in creates an account. `closed`: a first sign-in creates an account for verified identities from the configured corporate issuer, listed identities, or identities with a usable device sign-up invite.",
             "type": "string",
             "enum": ["open", "closed"]
           },

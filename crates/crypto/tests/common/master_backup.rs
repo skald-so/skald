@@ -10,10 +10,10 @@ use hpke::{Kem as _, Serializable as _};
 
 /// Crockford's base32 alphabet, in the order of its values.
 pub const ALPHABET: &str = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-/// Argon2id's memory in KiB, passes and lanes.
-const MEMORY: u32 = 262_144;
-const PASSES: u32 = 8;
-const LANES: u32 = 1;
+/// Argon2id's memory in KiB, passes and lanes: the spec's, and a test build's of skald-crypto with
+/// the feature `test-cost`.
+const SPEC_COST: (u32, u32, u32) = (262_144, 8, 1);
+const TEST_COST: (u32, u32, u32) = (8, 1, 1);
 /// What comes before the account ID in the salt.
 const SALT_PREFIX: &[u8] = b"skald recovery";
 
@@ -43,10 +43,30 @@ pub fn shown_form(digits: &[u8; 12]) -> String {
     groups.join("-")
 }
 
-/// Argon2id of the key of `digits` on `account`, its 16 bytes: the backup's AES-256-GCM key and the
-/// IKM of the recovery HPKE key pair.
+/// Argon2id of the key of `digits` on `account`, its 16 bytes, at the spec's cost: the backup's
+/// AES-256-GCM key and the IKM of the recovery HPKE key pair.
 pub fn derive(digits: &[u8; 12], account: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
-    let params = Params::new(MEMORY, PASSES, LANES, Some(64)).expect("Argon2id parameters");
+    derive_at(SPEC_COST, digits, account)
+}
+
+/// [`derive`] at the cost the code under test derives at in this process: the spec's, or a test
+/// build's, as `skald_crypto::derives_at_spec_cost` says. For the tests of the CLI, whose `skald`
+/// is a test build.
+pub fn derive_as_built(digits: &[u8; 12], account: &[u8; 16]) -> ([u8; 32], [u8; 32]) {
+    let cost = if skald_crypto::derives_at_spec_cost() {
+        SPEC_COST
+    } else {
+        TEST_COST
+    };
+    derive_at(cost, digits, account)
+}
+
+fn derive_at(
+    (memory, passes, lanes): (u32, u32, u32),
+    digits: &[u8; 12],
+    account: &[u8; 16],
+) -> ([u8; 32], [u8; 32]) {
+    let params = Params::new(memory, passes, lanes, Some(64)).expect("Argon2id parameters");
     let salt = [SALT_PREFIX, account].concat();
     let mut out = [0; 64];
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)

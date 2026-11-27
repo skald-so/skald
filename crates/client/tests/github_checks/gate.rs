@@ -3,10 +3,18 @@
 //! server cannot be reached. Its address stays the same either way.
 
 use std::io;
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+
+use super::common::reach;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 pub struct Gate {
     port: u16,
@@ -16,7 +24,7 @@ pub struct Gate {
 impl Gate {
     /// An open gate before `target`, such as `127.0.0.1:41234`, serving until the tests end.
     pub fn start(target: &str) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let port = listener.local_addr().expect("the gate's address").port();
         let open = Arc::new(AtomicBool::new(true));
         let (target, letting) = (target.to_owned(), Arc::clone(&open));
@@ -51,7 +59,7 @@ impl Gate {
 
 /// Forwards what `client` and `target` send each other until either closes.
 fn forward(mut client: TcpStream, target: &str) {
-    let Ok(mut upstream) = TcpStream::connect(target) else {
+    let Ok(mut upstream) = reach("gate", target) else {
         return;
     };
     let (Ok(mut from_client), Ok(mut to_upstream)) = (client.try_clone(), upstream.try_clone())

@@ -13,6 +13,9 @@
 //! A `skald` installed from npm has a file `installed-by-npm` in its directory; the `skald-so`
 //! package's launcher writes it beside the `skald` it unpacks.
 
+#[allow(dead_code)]
+#[path = "../common/mod.rs"]
+mod common;
 mod release;
 #[allow(dead_code)]
 #[path = "../../src/test_dir.rs"]
@@ -22,7 +25,6 @@ mod tls;
 
 use std::fmt;
 use std::fs;
-use std::net::TcpListener;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{self, Command, Stdio};
@@ -33,6 +35,12 @@ use std::time::{Duration, Instant};
 
 use release::{Certificates, Proxy, Release, StandIn, TARGET, archive, checksum, checksum_of};
 use test_dir::TestDir;
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The running version: the version of the `skald` these tests build.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -574,7 +582,7 @@ fn api_answer_over_its_limit_leaves_the_old_binary() {
 fn redirect_to_plain_http_leaves_the_old_binary() {
     let machine = Machine::new("plain-http");
     // A plain HTTP server that counts the connections it gets and answers none.
-    let plain = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+    let plain = local_listener();
     let to = format!(
         "http://{}/{}",
         plain.local_addr().expect("the server's address"),

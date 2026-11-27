@@ -109,7 +109,7 @@ fn local_part(email: &str) -> &str {
 }
 
 impl<I: Issuer> Provider for OidcSignIn<I> {
-    const NAME: &'static str = I::KIND.label();
+    const KIND: ProviderKind = I::KIND;
 
     fn of(state: &AppState) -> Option<(&SignInSettings, &Self)> {
         Some((state.sign_in.as_deref()?, I::configured(state)?))

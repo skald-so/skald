@@ -21,7 +21,6 @@ mod common;
 
 use std::env;
 use std::fs::{self, File};
-use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{self, Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -32,6 +31,12 @@ use browser::{APPROVE, Browser, CODE_FIELD, Page, SIGN_IN_GITHUB, SUBMIT};
 use common::TestDb;
 use machine::{Machine, Run, SERVER, SIGN_IN};
 use skald_github_stand_in::{App, GitHub, User};
+
+// Other helpers of the same test binary load it too.
+#[path = "../common/local_listener.rs"]
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
+use local_listener::local_listener;
 
 /// The fake OAuth App's client ID and secret.
 const CLIENT_ID: &str = "Ov23li0signup0closed";
@@ -93,8 +98,8 @@ impl Closed {
         let binary = server_binary();
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
-            let port = TcpListener::bind("127.0.0.1:0")
-                .and_then(|listener| listener.local_addr())
+            let port = local_listener()
+                .local_addr()
                 .expect("a free local port")
                 .port();
             // Chrome resolves every *.test host to 127.0.0.1.

@@ -17,11 +17,7 @@ import { versioned } from "./app/api.ts";
 import { Cabinet } from "./app/Cabinet.tsx";
 import { InvitePage } from "./app/InvitePage.tsx";
 import { Machines } from "./app/Machines.tsx";
-import {
-  MachineSignIn,
-  machineSignIn,
-  type MachineSignInState,
-} from "./app/machine-sign-in.ts";
+import { MachineSignIn } from "./app/machine-sign-in.ts";
 import { Members } from "./app/Members.tsx";
 import { accountPath } from "./app/names.ts";
 import { CenteredPage, SignInPage } from "./app/SignInPage.tsx";
@@ -41,12 +37,10 @@ type View =
       kind: "signed-in";
       session: Session;
       spaces: ListedSpace[];
-      machineSignIn: MachineSignInState;
+      machineSignIn: boolean;
     };
 
-/**
- * Invite links open outside the cabinet, before sign-in or any API calls.
- */
+/** Invite links open outside the cabinet, before sign-in or any API calls. */
 export function App() {
   if (/^\/invite\/[^/]+\/?$/.test(window.location.pathname))
     return <InvitePage />;
@@ -57,6 +51,7 @@ export function App() {
 function SessionApp() {
   const [view, setView] = useState<View>({ kind: "loading" });
   const [attempt, setAttempt] = useState(0);
+  const [deleted, setDeleted] = useState(false);
   /** Loads the web app again, as when it starts. */
   const reload = useCallback(() => {
     setView({ kind: "loading" });
@@ -64,6 +59,11 @@ function SessionApp() {
   }, []);
   /** Loads the session again behind the page shown: the sign-in page once it has ended. */
   const refresh = useCallback(() => setAttempt((attempt) => attempt + 1), []);
+  /** Shows the sign-in page, saying the account was deleted. */
+  const onDeleted = useCallback(() => {
+    setDeleted(true);
+    reload();
+  }, [reload]);
 
   useEffect(() => {
     const request = new AbortController();
@@ -86,6 +86,7 @@ function SessionApp() {
       return (
         <SignInPage
           providers={view.providers}
+          deleted={deleted}
           returnTo={
             window.location.pathname +
             window.location.search +
@@ -127,6 +128,7 @@ function SessionApp() {
                     <Account
                       session={view.session}
                       onChanged={refresh}
+                      onDeleted={onDeleted}
                       onSignedOut={reload}
                     />
                   }
@@ -157,10 +159,8 @@ async function load(signal: AbortSignal): Promise<View> {
       kind: "signed-in",
       session: session.data,
       spaces: spaces.data.spaces,
-      machineSignIn: machineSignIn(
-        providers?.status === 200 ? providers.data.providers : [],
-        session.data.sign_in_method,
-      ),
+      machineSignIn:
+        providers?.status === 200 && providers.data.providers.length > 0,
     };
   if (session.status !== 401 && spaces.status !== 401)
     throw new Error(`GET /session ${session.status}, /spaces ${spaces.status}`);

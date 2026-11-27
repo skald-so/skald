@@ -14,6 +14,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{Map, Value, json};
 use skald_proto::MessageId;
 
@@ -37,8 +38,12 @@ const FAIL: &str = "fail";
 const INPUT_WAIT: Duration = Duration::from_millis(500);
 
 /// How soon an idle session gets its `codex queue` once its message reached the helper. The tests
-/// count from when the send returned, once the server stored the message.
+/// count from when web's device took it in, as its local state records: not from when the send
+/// returned, which leaves out neither the message's way to the helper nor its intake.
 pub const WAKE: Duration = Duration::from_secs(1);
+
+/// The local state's file in a machine's state directory.
+const STATE_FILE: &str = "state.sqlite3";
 
 /// What this run of the test binary does, if it is the stand-in: plays a Codex process when started
 /// as one, records itself otherwise. `None` for a run as the tests' binary.
@@ -325,19 +330,32 @@ pub fn assert_queued(
     message
 }
 
-/// Fails unless `ran` started within [`WAKE`] of `sent`, when its message's send returned.
+/// Fails unless `ran` started within [`WAKE`] of when web's device in `codex` took in the message
+/// `msg_id` ([`taken_in`]).
 #[track_caller]
-pub fn assert_soon(ran: &Ran, sent: SystemTime) {
-    let after = ran.started().duration_since(sent).unwrap_or_default();
+pub fn assert_soon(ran: &Ran, codex: &Codex, msg_id: MessageId) {
+    let came = taken_in(codex, msg_id);
+    let after = ran.started().duration_since(came).unwrap_or_default();
     assert!(
         after <= WAKE,
         "codex queue ran {after:?} after the message came, not within {WAKE:?}"
     );
 }
 
-/// When now is, to compare with when a run of the stand-in started.
-pub fn now() -> SystemTime {
-    SystemTime::now()
+/// When web's device in `codex` took in the message `msg_id`, as its local state records it.
+#[track_caller]
+fn taken_in(codex: &Codex, msg_id: MessageId) -> SystemTime {
+    let path = codex.web.solo.machine().state_dir().join(STATE_FILE);
+    let state = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .unwrap_or_else(|err| panic!("open {}: {err}", path.display()));
+    let came: i64 = state
+        .query_row(
+            "SELECT came FROM kept WHERE msg_id = ?1",
+            [msg_id.to_string()],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|err| panic!("when {msg_id} came: {err}"));
+    UNIX_EPOCH + Duration::from_millis(u64::try_from(came).expect("a time"))
 }
 
 /// A Codex session in `agent`'s folder, `--agent <agent>`, with a config home of its own,

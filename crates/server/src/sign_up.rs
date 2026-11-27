@@ -1,8 +1,8 @@
 //! Who may sign up without an invite: anyone a provider signs in, or, while sign-up is closed,
-//! only the identities on the operator's lists. Existing accounts sign in and link methods either
-//! way.
+//! verified corporate identities and those on the operator's lists. Existing accounts sign in and
+//! link methods either way.
 
-use crate::sign_in::Identity;
+use crate::sign_in::{Identity, ProviderKind};
 
 /// The server's sign-up.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -10,7 +10,7 @@ pub enum SignUp {
     /// Anyone a provider signs in creates an account.
     #[default]
     Open,
-    /// Only the identities on these lists create accounts without an invite.
+    /// Verified corporate identities and those on these lists create accounts without an invite.
     Closed(Listed),
 }
 
@@ -34,13 +34,15 @@ fn has(list: &[String], value: Option<&str>) -> bool {
 }
 
 impl SignUp {
-    /// Whether `identity`, which has no account, may create one without an invite.
-    pub(crate) fn admits(&self, identity: &Identity) -> bool {
-        match self {
-            SignUp::Open => true,
-            SignUp::Closed(listed) => {
+    /// Whether an identity verified through `provider` may create an account without an invite.
+    pub(crate) fn admits(&self, provider: ProviderKind, identity: &Identity) -> bool {
+        match (self, provider) {
+            (SignUp::Open, _) | (_, ProviderKind::Corporate) => true,
+            (SignUp::Closed(listed), ProviderKind::GitHub) => {
                 has(&listed.github_logins, identity.login.as_deref())
-                    || has(&listed.google_emails, identity.verified_email.as_deref())
+            }
+            (SignUp::Closed(listed), ProviderKind::Google) => {
+                has(&listed.google_emails, identity.verified_email.as_deref())
                     || has(&listed.google_domains, identity.hosted_domain.as_deref())
             }
         }
@@ -63,7 +65,7 @@ mod tests {
 
     #[test]
     fn open_admits_anyone() {
-        assert!(SignUp::Open.admits(&identity(None, None, None)));
+        assert!(SignUp::Open.admits(ProviderKind::GitHub, &identity(None, None, None)));
     }
 
     #[test]
@@ -73,18 +75,29 @@ mod tests {
             google_emails: vec!["Grace@Example.com".to_owned()],
             google_domains: vec!["Acme.Example".to_owned()],
         });
-        assert!(closed.admits(&identity(Some("aDA"), None, None)));
-        assert!(closed.admits(&identity(None, Some("grace@EXAMPLE.com"), None)));
-        assert!(closed.admits(&identity(None, None, Some("acme.example"))));
-        assert!(!closed.admits(&identity(None, None, None)));
-        assert!(!closed.admits(&identity(
-            Some("bob"),
-            Some("bob@acme.example"),
-            Some("other")
-        )));
+        assert!(closed.admits(ProviderKind::GitHub, &identity(Some("aDA"), None, None)));
+        assert!(closed.admits(
+            ProviderKind::Google,
+            &identity(None, Some("grace@EXAMPLE.com"), None)
+        ));
+        assert!(closed.admits(
+            ProviderKind::Google,
+            &identity(None, None, Some("acme.example"))
+        ));
+        assert!(!closed.admits(ProviderKind::GitHub, &identity(None, None, None)));
+        assert!(!closed.admits(ProviderKind::Google, &identity(None, None, None)));
+        assert!(!closed.admits(
+            ProviderKind::Google,
+            &identity(None, Some("bob@acme.example"), Some("other"))
+        ));
         // A login does not match an email or a domain entry, nor the other way round.
-        assert!(!closed.admits(&identity(Some("acme.example"), None, None)));
-        assert!(!closed.admits(&identity(None, Some("ada"), None)));
-        assert!(!SignUp::Closed(Listed::default()).admits(&identity(Some(""), Some(""), Some(""))));
+        assert!(!closed.admits(
+            ProviderKind::GitHub,
+            &identity(Some("acme.example"), None, None)
+        ));
+        assert!(!closed.admits(ProviderKind::Google, &identity(None, Some("ada"), None)));
+        let empty = SignUp::Closed(Listed::default());
+        assert!(!empty.admits(ProviderKind::GitHub, &identity(Some(""), None, None)));
+        assert!(!empty.admits(ProviderKind::Google, &identity(None, Some(""), Some(""))));
     }
 }

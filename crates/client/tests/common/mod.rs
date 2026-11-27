@@ -4,7 +4,7 @@
 use std::env;
 use std::future::Future;
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener};
+use std::net::{SocketAddr, TcpStream};
 use std::pin::Pin;
 use std::process::{self, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +17,11 @@ use tokio::runtime::Runtime;
 
 #[path = "../../../server/tests/common/connections.rs"]
 mod connections;
+// Other helpers of the same test binary load it too.
+#[allow(dead_code, clippy::duplicate_mod)]
+mod local_listener;
 use connections::{Database, maintenance};
+use local_listener::local_listener;
 
 pub const CLIENT: &str = env!("CARGO_BIN_EXE_skald");
 
@@ -112,9 +116,11 @@ impl Server {
                 .run(&pool)
                 .await
                 .expect("apply migrations");
-            tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind a local port")
+            let listener = local_listener();
+            listener
+                .set_nonblocking(true)
+                .expect("make the listener non-blocking");
+            tokio::net::TcpListener::from_std(listener).expect("listen in the runtime")
         });
         let addr = listener.local_addr().expect("the server's address");
         let settings = settings(addr);
@@ -174,7 +180,7 @@ impl Drop for Server {
 /// How many times a connection is tried while PostgreSQL resets it, and the wait before the first
 /// retry, doubled before each next one: 1.5 s in all.
 pub const SETUP_ATTEMPTS: u32 = 5;
-const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
+pub const SETUP_RETRY_WAIT: Duration = Duration::from_millis(100);
 
 /// WSAENOBUFS: Windows had no buffer space or port for a new socket.
 pub const NO_BUFFER_SPACE: i32 = 10055;
@@ -190,15 +196,126 @@ pub async fn retried_on_reset<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
     step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
-    let samples = env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into);
-    retried_into(what, samples, &mut io::stderr(), step).await
+    retried_into(what, &Samples::of_ci(), &mut io::stderr(), step).await
+}
+
+/// What a retry on WSAENOBUFS notes: the last of the samples of the ports in use in `file`, where
+/// CI's sampler writes them, and the state of the machine at that moment, as `now` takes it.
+pub struct Samples {
+    pub file: Option<std::path::PathBuf>,
+    pub now: fn() -> String,
+}
+
+impl Samples {
+    /// CI's samples, if its sampler runs, and the machine's state as [`snapshot`] takes it.
+    pub fn of_ci() -> Self {
+        Samples {
+            file: env::var_os("SKALD_TEST_PORT_SAMPLES").map(Into::into),
+            now: snapshot,
+        }
+    }
+
+    /// The end of a retry's line: `ports: <the last sample>; now: <the state now>`.
+    fn note(&self) -> String {
+        let ports = last_sample(self.file.clone());
+        format!("ports: {ports}; now: {}", (self.now)())
+    }
+}
+
+/// Whether `output`, of a program under test, shows WSAENOBUFS in its last `new` bytes or across
+/// their start: the text of the error first printed there.
+pub fn shows_no_buffer_space(output: &[u8], new: usize) -> bool {
+    let shown = format!("os error {NO_BUFFER_SPACE}");
+    let start = output.len().saturating_sub(new + shown.len() - 1);
+    output[start..]
+        .windows(shown.len())
+        .any(|window| window == shown.as_bytes())
+}
+
+/// For `who`, a program under test whose output [`shows_no_buffer_space`] just now, a line to this
+/// test's stderr with what CI's samples note at that moment.
+pub fn note_no_buffer_space(who: &str) {
+    let note = Samples::of_ci().note();
+    eprintln!("{who} printed os error {NO_BUFFER_SPACE}; {note}");
+}
+
+/// The state of this machine as a connect fails with WSAENOBUFS: on Windows its kernel's pools and
+/// counts of processes, threads and handles, and its TCP sockets by state, those of this process
+/// and the ephemeral ports they hold; elsewhere `not taken`.
+#[cfg(not(windows))]
+pub fn snapshot() -> String {
+    "not taken".to_owned()
+}
+
+/// The state of this machine as a connect fails with WSAENOBUFS: on Windows its kernel's pools and
+/// counts of processes, threads and handles, and its TCP sockets by state, those of this process
+/// and the ephemeral ports they hold; elsewhere `not taken`.
+#[cfg(windows)]
+pub fn snapshot() -> String {
+    use std::collections::{BTreeMap, BTreeSet};
+    use windows_sys::Win32::System::ProcessStatus::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+
+    let mut info = PERFORMANCE_INFORMATION::default();
+    let size = u32::try_from(std::mem::size_of::<PERFORMANCE_INFORMATION>()).unwrap_or(0);
+    // SAFETY: `info` is writable and of that size.
+    let kernel = if unsafe { GetPerformanceInfo(&raw mut info, size) } == 0 {
+        format!("no performance information: {}", io::Error::last_os_error())
+    } else {
+        let mb = |pages: usize| (pages * info.PageSize) >> 20;
+        let mut own = 0;
+        // SAFETY: the pseudo handle of this process, which needs no closing; `own` is writable.
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut own) };
+        format!(
+            "non-paged pool {} MB, paged pool {} MB, {} processes, {} threads, {} handles, {own} of \
+             them this process's",
+            mb(info.KernelNonpaged),
+            mb(info.KernelPaged),
+            info.ProcessCount,
+            info.ThreadCount,
+            info.HandleCount,
+        )
+    };
+    let netstat = match Command::new("netstat").arg("-ano").output() {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).into_owned(),
+        Err(err) => return format!("{kernel}; no netstat: {err}"),
+    };
+    let pid = process::id().to_string();
+    let (mut states, mut ports, mut own) = (BTreeMap::<&str, usize>::new(), BTreeSet::new(), 0);
+    for line in netstat.lines() {
+        let [protocol, local, _, state, owner] = line.split_whitespace().collect::<Vec<_>>()[..]
+        else {
+            continue;
+        };
+        if protocol != "TCP" {
+            continue;
+        }
+        *states.entry(state).or_default() += 1;
+        own += usize::from(owner == pid);
+        let port = local
+            .rsplit(':')
+            .next()
+            .and_then(|port| port.parse::<u16>().ok());
+        if let Some(port) = port.filter(|&port| port >= 49152 && state != "LISTENING") {
+            ports.insert(port);
+        }
+    }
+    let states: Vec<String> = states
+        .iter()
+        .map(|(state, n)| format!("{state}={n}"))
+        .collect();
+    format!(
+        "{kernel}; TCP sockets {}, {own} of them this process's; {} ephemeral ports held",
+        states.join(" "),
+        ports.len()
+    )
 }
 
 /// What [`retried_on_reset`] gives, each retry a line written to `sink`: its error and wait, and for
-/// WSAENOBUFS the last of the ports in use that `samples` holds.
+/// WSAENOBUFS what `samples` notes.
 pub async fn retried_into<T, F: Future<Output = Result<T, sqlx::Error>>>(
     what: &str,
-    samples: Option<std::path::PathBuf>,
+    samples: &Samples,
     sink: &mut (impl Write + Send),
     mut step: impl FnMut() -> F,
 ) -> Result<T, sqlx::Error> {
@@ -216,7 +333,7 @@ pub async fn retried_into<T, F: Future<Output = Result<T, sqlx::Error>>>(
                 let mut line =
                     format!("{what}: no connection to PostgreSQL: {err}; again in {wait:?}");
                 if err.raw_os_error() == Some(NO_BUFFER_SPACE) {
-                    line += &format!("; ports: {}", last_sample(samples.clone()));
+                    line += &format!("; {}", samples.note());
                 }
                 let _ = writeln!(sink, "{line}");
                 tokio::time::sleep(wait).await;
@@ -239,6 +356,44 @@ pub fn last_sample(samples: Option<std::path::PathBuf>) -> String {
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "not sampled".to_owned())
+}
+
+/// A connection to `target`, such as `127.0.0.1:41234`, for the stand-in `who`, tried again while
+/// Windows has no buffer space for it, as the tests' database connects are
+/// ([`retried_on_reset`]); each retry a line on stderr.
+pub fn reach(who: &str, target: &str) -> io::Result<TcpStream> {
+    reached(who, target, &Samples::of_ci(), &mut io::stderr(), || {
+        TcpStream::connect(target)
+    })
+}
+
+/// What [`reach`] gives with `connect` for the connect: up to [`SETUP_ATTEMPTS`] tries while it fails
+/// with WSAENOBUFS, waiting [`SETUP_RETRY_WAIT`] before the first retry, doubled before each next
+/// one; each retry a line written to `sink` with its error, its wait and what `samples` notes. Any
+/// other error is given at once.
+pub fn reached<T>(
+    who: &str,
+    target: &str,
+    samples: &Samples,
+    sink: &mut impl Write,
+    mut connect: impl FnMut() -> io::Result<T>,
+) -> io::Result<T> {
+    let mut wait = SETUP_RETRY_WAIT;
+    for _ in 1..SETUP_ATTEMPTS {
+        match connect() {
+            Err(err) if err.raw_os_error() == Some(NO_BUFFER_SPACE) => {
+                let note = samples.note();
+                let _ = writeln!(
+                    sink,
+                    "{who}: cannot reach {target}: {err}; again in {wait:?}; {note}"
+                );
+                thread::sleep(wait);
+                wait *= 2;
+            }
+            result => return result,
+        }
+    }
+    connect()
 }
 
 /// A new connection to the database at `url`, tried again while PostgreSQL resets it. Only
@@ -324,7 +479,7 @@ pub struct Stub {
 
 impl Stub {
     pub fn start(answer: fn(&str) -> String) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a local port");
+        let listener = local_listener();
         let addr: SocketAddr = listener.local_addr().expect("the stub's address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let recorded = Arc::clone(&requests);

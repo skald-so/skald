@@ -1067,9 +1067,9 @@ checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
 
 [[package]]
 name = "fancy-regex"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7b32c6266c2b14b0db7aa3409d3ee3f0ddda3b1d0279c4ba24fbec18af81d90e"
+checksum = "0a2e16b9a584b602f1e0e5e22c30ca0906786088c27500653e432d086def8b53"
 dependencies = [
  "bit-set",
  "regex-automata",
@@ -1776,8 +1776,22 @@ version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26699905cc795a23e3949585cc7ba3ee8ade090872a27e4316304a777297894a"
 dependencies = [
- "jiff-core",
- "jiff-static",
+ "jiff-core 0.1.5",
+ "jiff-static 0.2.43",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5e77cbfb9fff4798e283c2d69dff39fc2c45e7da017e5ce95b654e46ea41236"
+dependencies = [
+ "jiff-core 1.0.1",
+ "jiff-static 1.0.2",
  "log",
  "portable-atomic",
  "portable-atomic-util",
@@ -1794,15 +1808,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "jiff-core"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b46a105a9874634dd96231021526bf24ca04955a5998c59a9c7666e634b7b8"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "jiff-static"
 version = "0.2.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b4ff49b2887190c760b86207b55cdcaabbdecaf7a0660d68aa2ed6f652abf0a"
 dependencies = [
- "jiff-core",
+ "jiff-core 0.1.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "jiff-static"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9067a0b23e5be3147d56b2dcf652b18e6b1364caca93fb157653b6fbcab23a9"
+dependencies = [
+ "jiff-core 1.0.1",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
 ]
 
 [[package]]
@@ -1818,9 +1853,9 @@ dependencies = [
 
 [[package]]
 name = "jsonschema"
-version = "0.61.1"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e404978f72e1a21b53c96114b8a56e4cee7f17bd0a09b9c130875ed02a696f43"
+checksum = "f4d2afab27172a0073112ce84a64ec7fd06f3b8bdad37d46e86c53c933ed232b"
 dependencies = [
  "ahash",
  "bytecount",
@@ -1846,18 +1881,18 @@ dependencies = [
 
 [[package]]
 name = "jsonschema-regex"
-version = "0.61.1"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84cdf272371326ec8db8ce2608a52635d8edeeaf0189604e2ad627327b79e6db"
+checksum = "19532291f4c1f5a5726be72105a0d73620b714ef12256e9748cc863cf122dc1c"
 dependencies = [
  "regex-syntax",
 ]
 
 [[package]]
 name = "jsonschema-value"
-version = "0.61.1"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5e4a7f3b3c19c9cd2aa37937e1704229a0bcb1b446308a148574d56ace0c6ba"
+checksum = "d455c96d26f5c8527d7824f3f9ac810fec24d1448a3f7a254a006ea542e3dcf9"
 dependencies = [
  "ahash",
  "bytecount",
@@ -2765,9 +2800,9 @@ dependencies = [
 
 [[package]]
 name = "referencing"
-version = "0.61.1"
+version = "0.63.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba9bfd41f0d7d8fbf9c7ed23b788a3f97e9f5d9419be812ff7e08b8dc6b14ec"
+checksum = "1225f3e462cea1e4a8e169dd539f9d8a7592780b5b261d0e07e5cbb9efb28e4e"
 dependencies = [
  "ahash",
  "fluent-uri",
@@ -2782,9 +2817,9 @@ dependencies = [
 
 [[package]]
 name = "regex"
-version = "1.13.1"
+version = "1.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d"
+checksum = "9807af0e638c12e753aa1b4e601791bf2a8f71274023c8bbeec12fc149950857"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2794,9 +2829,9 @@ dependencies = [
 
 [[package]]
 name = "regex-automata"
-version = "0.4.18"
+version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
+checksum = "41d60ef07df457506a0a1a2073112eb4aae5733dbd2813c3da77d1b0fd441158"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -2805,9 +2840,9 @@ dependencies = [
 
 [[package]]
 name = "regex-syntax"
-version = "0.8.11"
+version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "rfc6979"
@@ -2978,12 +3013,12 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "rusty-s3"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1af5b74b316ee483ae486bd3cb206c8caa5dbb3cf0eab7269a868ae43aeece03"
+checksum = "7c091b4ca9c4d51c1a959fa746cc74f5a612a2242070a4ae7b14e22b04c71f8c"
 dependencies = [
  "hmac 0.13.0",
- "jiff",
+ "jiff 1.0.2",
  "percent-encoding",
  "sha2 0.11.1",
  "url",
@@ -3280,7 +3315,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "skald-adapters"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -3290,7 +3325,7 @@ dependencies = [
 
 [[package]]
 name = "skald-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "apple-native-keyring-store",
@@ -3304,7 +3339,7 @@ dependencies = [
  "gethostname",
  "getrandom 0.4.3",
  "hpke",
- "jiff",
+ "jiff 0.2.43",
  "keyring-core",
  "libc",
  "mls-rs",
@@ -3343,7 +3378,7 @@ dependencies = [
 
 [[package]]
 name = "skald-crypto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -3371,7 +3406,7 @@ dependencies = [
 
 [[package]]
 name = "skald-github-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3386,7 +3421,7 @@ dependencies = [
 
 [[package]]
 name = "skald-load-delivery"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3407,11 +3442,11 @@ dependencies = [
 
 [[package]]
 name = "skald-mcp"
-version = "0.1.2"
+version = "0.2.0"
 
 [[package]]
 name = "skald-oidc-stand-in"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3423,7 +3458,7 @@ dependencies = [
 
 [[package]]
 name = "skald-proto"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "ciborium-io",
  "ciborium-ll",
@@ -3436,7 +3471,7 @@ dependencies = [
 
 [[package]]
 name = "skald-server"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
@@ -3461,11 +3496,14 @@ dependencies = [
  "skald-github-stand-in",
  "skald-oidc-stand-in",
  "skald-proto",
+ "socket2",
  "sqlx",
  "tokio",
  "tungstenite 0.30.0",
  "ureq",
  "url",
+ "windows-sys 0.61.2",
+ "zeroize",
 ]
 
 [[package]]

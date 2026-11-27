@@ -83,6 +83,10 @@ mod history_common;
 use history_common::*;
 #[path = "../anchors/objects.rs"]
 mod anchors;
+#[path = "../invite_fixtures/terminal.rs"]
+mod invite_terminal;
+#[path = "../invite_fixtures/signed.rs"]
+mod signed_invite;
 #[path = "../recovery_key/terminal.rs"]
 mod terminal;
 
@@ -93,7 +97,7 @@ use serde_json::{Value, json};
 use skald_crypto::{InviteLink, InviteSecret, SigningKey, check_acceptance, sign_invite};
 use skald_proto::{
     Acceptance, Cbor as _, ChannelMember, Invite, InviteBody, InviteId, Member, Name, NonEmpty,
-    Role, Roster, SpaceId, Unknown,
+    Roster, SpaceId, Unknown,
 };
 
 use cloud::{Cloud, WAIT, unb64};
@@ -102,19 +106,16 @@ use front::Front;
 use kit::{Space, b64, create_space};
 use machine::{Finished, Machine, RUN_LIMIT};
 use talk::{ADA_HOST, BOB_HOST};
-use terminal::{Shown, Terminal};
-use world::{ACME, Person, World, holds_word, next_with, now, plain_lines, spaces};
+use terminal::Shown;
+use world::{ACME, Person, World, holds_word, next_with, plain_lines, spaces};
 
-/// The command that accepts an invite, and its option that names the handle.
-pub const ACCEPT: &str = "accept-invite";
+pub use invite_terminal::{ACCEPT, asked_for_link, start_accepting as start};
+/// The option that names the handle.
 pub const HANDLE: &str = "--handle";
 
 /// The answers to the question that confirms.
 pub const YES: &str = "yes";
 pub const NO: &str = "no";
-
-/// Seconds in a day.
-pub const DAY: u64 = 86_400;
 
 /// Ada, whose machine signed up first and created `acme`, and Bob, the first device of another
 /// account.
@@ -169,23 +170,18 @@ impl Scene {
     pub fn invite_with(&self, change: impl FnOnce(&mut InviteBody)) -> Made {
         let cloud = self.cloud();
         let space = self.space.id;
-        let id = issue(cloud, &self.ada.token, space);
+        let id = signed_invite::issue(cloud, &self.ada.token, space);
         let secret = InviteSecret::generate();
         let bytes = *secret.to_bytes();
         let revision = self.latest();
-        let mut body = InviteBody {
-            invite: id,
-            space,
-            key: secret.invite_key().public_key(),
-            role: Role::Member,
-            channels: vec![(self.space.default, true)],
-            signer: self.ada.device,
-            expires: now() + 7 * DAY,
-            unknown: Unknown::default(),
-        };
-        change(&mut body);
-        let invite = sign_invite(&body, &self.ada.key).expect("an invite");
-        store_invite(cloud, &self.ada.token, &invite);
+        let invite = signed_invite::sign_and_store(
+            cloud,
+            &self.ada,
+            (space, id),
+            &secret,
+            vec![(self.space.default, true)],
+            change,
+        );
         Made {
             link: link_of(&cloud.public, id, &bytes, revision.hash()),
             invite,
@@ -358,27 +354,6 @@ pub fn give_revisions(cloud: &Cloud, invite: InviteId, revisions: &[&Roster]) {
     });
 }
 
-/// An invite ID the server issues for `space` to the session `token`, through the API.
-#[track_caller]
-pub fn issue(cloud: &Cloud, token: &str, space: SpaceId) -> InviteId {
-    let path = format!("/spaces/{space}/invites");
-    let (status, body) = world::post_as(cloud, token, &path, None);
-    match (status, body["invite"].as_str().map(str::parse::<InviteId>)) {
-        (201, Some(Ok(id))) => id,
-        _ => panic!("no invite ID issued for {space}: {status} {body}"),
-    }
-}
-
-/// Stores `invite` as the session `token`, through the API; fails unless the server stores it.
-#[track_caller]
-pub fn store_invite(cloud: &Cloud, token: &str, invite: &Invite) {
-    let body = invite.body();
-    let path = format!("/spaces/{}/invites/{}", body.space, body.invite);
-    let request = json!({ "invite": b64(&invite.to_cbor()) });
-    let (status, answer) = world::put_as(cloud, token, &path, &request);
-    assert_eq!(status, 201, "the server did not store the invite: {answer}");
-}
-
 /// The waiting acceptances of `space` the server gives the session `token`, straight from the
 /// server.
 pub fn waiting(cloud: &Cloud, token: &str, space: SpaceId) -> Vec<Acceptance> {
@@ -415,18 +390,6 @@ pub fn says_after(before: &str, text: &str, word: &str) -> bool {
 /// How many questions `text` asks: its `?`.
 pub fn questions(text: &str) -> usize {
     text.matches('?').count()
-}
-
-/// Starts `skald accept-invite <extra>` on `machine` at a terminal.
-pub fn start(machine: &Machine, extra: &[&str]) -> Terminal {
-    Terminal::start(machine, &[&[ACCEPT][..], extra].concat())
-}
-
-/// Waits until `terminal` asks for the invite link; gives what it showed then.
-pub fn asked_for_link(terminal: &mut Terminal) -> String {
-    terminal.wait_for("a question for the invite link", |shown| {
-        shown.to_lowercase().contains("link")
-    })
 }
 
 /// A run of `skald accept-invite` at a terminal: what it showed when it asked for the link, when it

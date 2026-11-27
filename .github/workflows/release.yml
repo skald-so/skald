@@ -8,24 +8,26 @@ name: Release
 # from those files through cargo-binstall and the npm package skald-so, which a job then publishes
 # to npm. Another job builds the skald-server image at the tag's commit, pushes it to GHCR under its
 # version, signs its digest with cosign and attests it.
-# Once all three are published, the release check runs on every OS and architecture
-# (release-check.yml); once it passes, a stable release, vX.Y.Z, moves main to the tag with the
-# deploy key and, once the owner approves it, is deployed to production.
+# Stable releases also publish to Homebrew when enabled. Once publishing succeeds, the release
+# check runs on every OS and architecture (release-check.yml). Once it passes, a stable release
+# moves main to the tag with the deploy key and is deployed to production after owner approval.
 # Any other run is the dry run: it builds and checks everything and publishes nothing, and it runs the
 # tests of `skald update` on macOS and Windows; a PR that changes the release config, this workflow
-# or `skald update` starts it, and so does a manual run.
+# or `skald update` starts it once the PR has the label ready-to-merge, and so do a nightly run on
+# dev and a manual run.
 # Its tests: docs/dev/infrastructure.md, "PR checks", "Tooling".
 on:
   push:
     tags: ['v*']
   pull_request:
     branches: [dev]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
     paths:
       - .github/workflows/release.yml
       - dist-workspace.toml
       # dist's settings in Cargo.toml: [profile.dist], and the package it releases.
       - Cargo.toml
+      - Cargo.lock
       - crates/client/Cargo.toml
       # skald update, which installs the release's archives, and its tests.
       - crates/client/src/update.rs
@@ -34,19 +36,26 @@ on:
       # The npm package skald-so.
       - npm/**
       - script/deploy-production
+      - script/install-dist
       - script/installers-test
       - script/install-winget-fixture.ps1
+      - script/lib/release-check-stub.mjs
       - script/lib/release-files.sh
       - script/lib/release-tag-args.sh
       - script/lib/proxy.mjs
+      - script/lib/report.mjs
       - script/lib/serve.mjs
       - script/lib/ssh-deploy.sh
       - script/lib/start-server.sh
       - script/lib/winget.mjs
+      - script/lib/workflows.mjs
       - script/move-main
       - script/npm-package-test
+      - script/publish-homebrew
       - script/release-binstall-test
       - script/release-cargo
+      - script/release-homebrew
+      - script/release-homebrew-test
       - script/release-installers
       - script/release-notes
       - script/release-npm
@@ -56,6 +65,8 @@ on:
       - script/release-winget-test
       - script/submit-winget
       - script/winget-installers-test.ps1
+  schedule:
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 permissions:
@@ -73,7 +84,9 @@ defaults:
 jobs:
   plan:
     name: Plan
-    if: github.event.pull_request.draft != true
+    if: >-
+      github.event_name != 'pull_request' || (github.event.pull_request.draft != true &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -310,9 +323,41 @@ jobs:
           path: web-release/skald-web.tar.gz*
           if-no-files-found: error
 
+  homebrew-fixture:
+    name: Homebrew fixture on macOS
+    needs: plan
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 26.13.1
+          package-manager-cache: false
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Prepare the Homebrew fixture
+        run: |
+          command -v brew
+          HOMEBREW_NO_ANALYTICS=1 brew --version
+          xcodebuild -version || :
+          script/install-dist >/dev/null
+          cargo metadata --locked --format-version 1 >/dev/null
+      - name: Install and upgrade in an isolated prefix
+        env:
+          SKALD_TEST_REQUIRE_HOMEBREW: '1'
+        run: |
+          CARGO_HOME=${CARGO_HOME:-$HOME/.cargo} RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup} script/release-homebrew-test
+
   release:
     name: Release
-    needs: [plan, check, web]
+    needs: [plan, check, web, homebrew-fixture]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     # Attests the release's files and creates the release.
@@ -446,7 +491,9 @@ jobs:
   # archives with tar, on Windows System32's.
   update:
     name: Test skald update on ${{ matrix.runner }}
-    if: github.event_name != 'push' && github.event.pull_request.draft != true
+    if: >-
+      github.event_name != 'push' && (github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft != true && contains(github.event.pull_request.labels.*.name, 'ready-to-merge')))
     strategy:
       fail-fast: false
       matrix:
@@ -465,10 +512,53 @@ jobs:
       - name: Test skald update
         run: cargo test -p skald-client --test update --locked
 
+  publish-homebrew:
+    name: Publish to Homebrew
+    needs: [plan, release]
+    if: >-
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref, '-') &&
+      vars.HOMEBREW_TAP_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: homebrew
+    permissions:
+      attestations: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned dist
+        run: |
+          bin=$(script/install-dist)
+          echo "$bin" >>"$GITHUB_PATH"
+      - name: Verify release archives and generate the formula
+        id: formula
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          script/release-homebrew "$TAG" "$RUNNER_TEMP/skald.rb"
+          if [[ -s $RUNNER_TEMP/skald.rb ]]; then echo publish=true >>"$GITHUB_OUTPUT"; fi
+      - name: Update the tap
+        if: steps.formula.outputs.publish == 'true'
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          eval "$(ssh-agent -s)" >/dev/null
+          trap 'ssh-agent -k >/dev/null' EXIT
+          ssh-add -q - <<<"$DEPLOY_KEY"
+          unset DEPLOY_KEY
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >"$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes -o BatchMode=yes"
+          script/publish-homebrew "$TAG" "$RUNNER_TEMP/skald.rb"
+
   # The dry run's build of the release image, as job publish-image builds it.
   image:
     name: Image
-    if: github.event_name != 'push' && github.event.pull_request.draft != true
+    if: >-
+      github.event_name != 'push' && (github.event_name != 'pull_request' ||
+      (github.event.pull_request.draft != true && contains(github.event.pull_request.labels.*.name, 'ready-to-merge')))
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -548,11 +638,13 @@ jobs:
   # The published channels are ready and any enabled catalog submission has a status.
   check-release:
     name: Check the release
-    needs: [plan, release, publish-npm, publish-image, winget-install, submit-winget]
+    needs: [plan, release, publish-npm, publish-image, publish-homebrew, winget-install, submit-winget]
     if: >-
       !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
       needs.plan.result == 'success' && needs.release.result == 'success' &&
       needs.publish-npm.result == 'success' && needs.publish-image.result == 'success' &&
+      (needs.publish-homebrew.result == 'success' ||
+      (needs.publish-homebrew.result == 'skipped' && (contains(github.ref, '-') || vars.HOMEBREW_TAP_ENABLED != 'true'))) &&
       (needs.winget-install.result == 'success' ||
       (needs.winget-install.result == 'skipped' && contains(github.ref, '-'))) &&
       (needs.submit-winget.result == 'success' ||
@@ -565,8 +657,9 @@ jobs:
     with:
       tag: ${{ needs.plan.outputs.tag }}
 
-  # main follows stable releases only, forward only, once every channel is published and the release
-  # check passes.
+  # Stable releases can proceed after check-release when an optional publisher was skipped.
+  # Check direct results to avoid propagating that skip through the remaining jobs.
+  # main follows stable releases only, forward only.
   move-main:
     name: Move main
     needs: [plan, release, publish-npm, publish-image, check-release]

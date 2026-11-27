@@ -8,15 +8,17 @@ use std::sync::mpsc;
 use std::thread;
 
 use serde_json::{Value, json};
-use skald_proto::MessageId;
+use skald_proto::{ChannelId, MessageId};
 
 use crate::client::Session;
 use crate::fixtures::{SEND, TO};
-use crate::lines::{AgentLine, agent_line, agent_lines, assert_handed_line, refers_to};
-use crate::machine::{Machine, RUN_LIMIT};
+use crate::lines::{
+    AgentLine, agent_line, agent_lines, assert_handed_line, assert_says_sent, refers_to,
+};
+use crate::machine::{Finished, Machine, RUN_LIMIT};
 use crate::senders::data_warnings;
 use crate::solo::{API, EVERYONE, Solo, WEB};
-use crate::talk::one_message_sent;
+use crate::talk::messages_sent;
 use crate::world::{AGENT, Person, dir_of};
 
 /// The hook handler's command and its agent CLI.
@@ -203,7 +205,7 @@ impl Web {
     /// api sends web `text` with `skald --agent api send`; gives its `msg_id`.
     #[track_caller]
     pub fn own(&self, text: &str) -> MessageId {
-        self.solo.api_sends_web(text)
+        api_sends_web(&self.solo, text)
     }
 
     /// api's MCP session sends `*`, everyone in the channel, `text` with the send tool; gives its
@@ -257,30 +259,54 @@ impl Bob {
         format!("{}/{REVIEW}", self.person.handle)
     }
 
-    /// review sends Ada's agent `agent` `text` with `skald --agent review send` from Bob's machine;
-    /// fails unless the front saw one message in `clienta`'s default channel meanwhile. Gives its
-    /// `msg_id`.
+    /// Sends Ada's agent `agent` `text` with `skald --agent review send` on Bob's machine.
+    /// Gives the ID of the one user message the front saw and the command reported.
     #[track_caller]
     pub fn sends(&self, solo: &Solo, agent: &str, text: &str) -> MessageId {
         let mark = solo.mark();
         let to = solo.short(agent);
         let args = [AGENT, REVIEW, SEND, TO, &to, text];
         let sent = self.person.machine.start_in(&self.dir, &args).finish();
-        assert!(sent.success, "{sent:?}");
-        one_message_sent(&solo.talk.front, solo.default_channel(), mark)
+        assert_user_send(solo, solo.default_channel(), mark, &sent)
     }
 }
 
-/// api sends `to`, an agent as `--to` takes it, `text` with `skald --agent api send` in its folder;
-/// fails unless it succeeds and the front saw one message in `clienta`'s default channel meanwhile.
-/// Gives its `msg_id`.
+/// Sends `text` to the agent `to` with `skald --agent api send` in api's folder.
+/// Gives the ID of the one user message the front saw and the command reported.
 #[track_caller]
 pub fn api_sends(solo: &Solo, to: &str, text: &str) -> MessageId {
     let mark = solo.mark();
     let args = [AGENT, API, SEND, TO, to, text];
     let sent = solo.machine().start_in(&solo.dir(API), &args).finish();
+    assert_user_send(solo, solo.default_channel(), mark, &sent)
+}
+
+/// api sends web `text` in the default channel, as [`api_sends`] does.
+#[track_caller]
+pub fn api_sends_web(solo: &Solo, text: &str) -> MessageId {
+    api_sends(solo, &solo.short(WEB), text)
+}
+
+/// The ID the send printed, checked against the one reportable message the front saw in the
+/// channel after `mark`. The receiving session may send a receipt while the command runs.
+#[track_caller]
+pub fn assert_user_send(
+    solo: &Solo,
+    channel: ChannelId,
+    mark: usize,
+    sent: &Finished,
+) -> MessageId {
     assert!(sent.success, "{sent:?}");
-    one_message_sent(&solo.talk.front, solo.default_channel(), mark)
+    let ids: Vec<_> = messages_sent(&solo.talk.front, channel, mark)
+        .into_iter()
+        .filter(|send| send.report)
+        .map(|send| send.envelope.envelope().header.msg_id)
+        .collect();
+    let [msg_id] = ids.as_slice() else {
+        panic!("not one reported message in {channel}: {ids:?}");
+    };
+    assert_says_sent(&sent.stdout, *msg_id);
+    *msg_id
 }
 
 /// Fails unless `context` shows `text` once, as one line of the message `msg_id` from api, Ada's

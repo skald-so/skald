@@ -155,6 +155,9 @@ pub struct Watch {
     /// What came that the connection did not give: what the long-poll in the background got, or
     /// what a run dropped.
     polled: Arc<Mutex<Polled>>,
+    /// The spaces of the `space-notice`s among what [`Watch::came`] gave, until
+    /// [`Watch::noticed`] takes them: taken with what came, so that none comes between the two.
+    noticed: BTreeSet<SpaceId>,
     /// The long-poll in the background, while no connection is kept: what stops it, and its
     /// thread.
     poll: Option<(Arc<AtomicBool>, JoinHandle<()>)>,
@@ -198,9 +201,10 @@ impl Watch {
             mailbox::close_kept();
             return Came::Anything;
         }
-        let polled = std::mem::take(&mut self.polled.lock().expect("what came").came);
-        if polled != Came::Nothing {
-            return polled;
+        let polled = std::mem::take(&mut *self.polled.lock().expect("what came"));
+        self.noticed.extend(polled.noticed);
+        if polled.came != Came::Nothing {
+            return polled.came;
         }
         if self.polling() {
             return Came::Nothing;
@@ -209,10 +213,10 @@ impl Watch {
         mailbox::kept_came()
     }
 
-    /// The spaces of the `space-notice`s the long-poll in the background got since this was last
-    /// asked, which the connection does not give again.
+    /// The spaces of the `space-notice`s the long-poll in the background got among what
+    /// [`Watch::came`] gave since this was last asked, which the connection does not give again.
     pub fn noticed(&mut self) -> BTreeSet<SpaceId> {
-        std::mem::take(&mut self.polled.lock().expect("what came").noticed)
+        std::mem::take(&mut self.noticed)
     }
 
     /// Whether it was time to try WebSocket again since this was last asked.
@@ -363,6 +367,13 @@ pub enum Ran {
 }
 
 impl Sessions {
+    /// Keeps a successful Stop's exact deferred confirmation, or drops that session's old one.
+    pub fn claude_stopped(&mut self, id: String, deferred: Option<claude_socket::DeferredStop>) {
+        if let Some(claude) = &mut self.claude {
+            claude.stopped(id, deferred);
+        }
+    }
+
     /// Serves the registered Claude Code and Codex sessions too, its runs with `settings`.
     pub fn serve_agents(&mut self, settings: claude_socket::Settings) {
         self.claude = Some(claude_socket::Served::new(settings));
@@ -489,9 +500,17 @@ impl Sessions {
                 let held = self.waiting.remove(at);
                 let ran = helper::run_for(held.session, dir, |_| {
                     for event in &pushed.channel {
-                        let line = format!("{}\n", serde_json::json!({ "content": event }));
+                        let line = format!("{}\n", serde_json::json!({ "content": event.content }));
+                        let started = crate::state::unix_ms();
                         output::write(output::Stream::Out, line.as_bytes())
                             .map_err(|err| format!("cannot give a channel event: {err}"))?;
+                        if let Some(claude) = &mut self.claude {
+                            claude.emitted(
+                                (space, &agent),
+                                (resend::Way::Channel, None, started),
+                                event,
+                            );
+                        }
                     }
                     Ok(false)
                 });
@@ -501,9 +520,22 @@ impl Sessions {
                 && let Some(at) = (self.waiting.iter()).position(|waiting| theirs(waiting, rewakes))
             {
                 let rewake = self.waiting.remove(at);
-                let ran = helper::run_for(rewake.session, dir, |_| {
-                    output::write(output::Stream::Err, given.as_bytes())
+                let ran = helper::run_for(rewake.session, dir, |operation| {
+                    let started = crate::state::unix_ms();
+                    output::write(output::Stream::Err, given.content.as_bytes())
                         .map_err(|err| format!("cannot give the messages: {err}"))?;
+                    if let Some(claude) = &mut self.claude
+                        && let Command::Hook {
+                            input: Some(input), ..
+                        } = &operation.command
+                        && let Some(id) = input.session.id.as_deref()
+                    {
+                        claude.emitted(
+                            (space, &agent),
+                            (resend::Way::Rewake, Some(id), started),
+                            given,
+                        );
+                    }
                     Ok(true)
                 });
                 self.again(ran, Some(space))?;
@@ -913,4 +945,31 @@ fn open(stream: &helper::Stream) -> bool {
         |on| stream.set_nonblocking(on),
         |byte| (&mut &*stream).read(byte),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use skald_proto::Push;
+
+    use super::*;
+
+    /// A `space-notice` the long-poll in the background gets after what came was taken is given
+    /// with what comes next, not with what came before it: a look that hands nothing would drop
+    /// it, and the server does not give it again.
+    #[test]
+    fn a_notice_comes_with_what_came_with_it() {
+        let mut watch = Watch::default();
+        let space = SpaceId::generate();
+        // With nothing polled, it is what the connection kept gives.
+        watch.came();
+        let got = Got::Entries(vec![Push::SpaceNotice { space }]);
+        {
+            let mut polled = watch.polled.lock().unwrap();
+            polled.came.add(&got);
+            polled.noticed.insert(space);
+        }
+        assert_eq!(watch.noticed(), BTreeSet::new());
+        assert!(watch.came().brings_messages(space));
+        assert_eq!(watch.noticed(), BTreeSet::from([space]));
+    }
 }
