@@ -407,9 +407,78 @@ pub fn installed() -> Option<PathBuf> {
     )
 }
 
-/// Whether the `skald` at `exe` is newer than this run, as it says its version.
-pub fn newer_at(exe: &Path) -> bool {
-    version_at(exe).is_some_and(|disk| compare(&version(), &disk) == Ordering::Less)
+/// Whether the `skald` at `exe` is newer than this run, if it says its version.
+fn newer_said(exe: &Path) -> Option<bool> {
+    version_at(exe).map(|disk| compare(&version(), &disk) == Ordering::Less)
+}
+
+/// Whether the `skald` installed at a path is newer than this run ([`newer_said`]), asked of it
+/// again only once the file there is another or changed: a session that asks at each of its calls
+/// and beats would otherwise start a run of it every second. Only what it said is kept.
+#[derive(Default)]
+pub struct Newer(std::sync::Mutex<Option<(Stamp, bool)>>);
+
+impl Newer {
+    /// Whether the `skald` at `exe` is newer than this run.
+    pub fn at(&self, exe: &Path) -> bool {
+        let mut known = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stamp = stamp(exe);
+        if let (Some(stamp), Some((was, newer))) = (&stamp, &*known)
+            && stamp == was
+        {
+            return *newer;
+        }
+        let said = newer_said(exe);
+        *known = stamp.zip(said);
+        said.unwrap_or(false)
+    }
+}
+
+/// What tells a file at a path from another, or from itself once changed: its identity on its
+/// volume, its length and when it last changed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Stamp {
+    identity: (u64, u64),
+    len: u64,
+    changed: (i64, i64),
+}
+
+/// The [`Stamp`] of the file at `path`, if it can tell; on Unix its inode and the time its inode
+/// last changed, which a write or a rename over it changes.
+#[cfg(unix)]
+fn stamp(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let file = fs::File::open(path).ok()?;
+    let identity = claude_socket::file_identity(&file).ok()?;
+    let metadata = file.metadata().ok()?;
+    Some(Stamp {
+        identity,
+        len: metadata.len(),
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+    })
+}
+
+/// The [`Stamp`] of the file at `path`, if it can tell; on Windows its file index and when it was
+/// last written.
+#[cfg(windows)]
+fn stamp(path: &Path) -> Option<Stamp> {
+    let file = fs::File::open(path).ok()?;
+    let identity = claude_socket::file_identity(&file).ok()?;
+    let metadata = file.metadata().ok()?;
+    let written = (metadata.modified().ok()?)
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(Stamp {
+        identity,
+        len: metadata.len(),
+        changed: (
+            i64::try_from(written.as_secs()).ok()?,
+            i64::from(written.subsec_nanos()),
+        ),
+    })
 }
 
 /// The version the `skald` at `exe` says it is.
@@ -1273,6 +1342,39 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `skald` that the installed one is replaced by, as an update renames it over it, is asked
+    /// its version, even of the same length and in the same second; one left as it is is not
+    /// asked again.
+    #[cfg(unix)]
+    #[test]
+    fn a_skald_replaced_where_it_is_installed_is_asked_its_version_again() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("a directory");
+        let (exe, staged) = (dir.path().join("skald"), dir.path().join("staged"));
+        let asked = dir.path().join("asked");
+        let write = |path: &Path, major: &str| {
+            let script = format!(
+                "#!/bin/sh\necho asked >> '{}'\necho 'skald {major}.0.0'\n",
+                asked.display()
+            );
+            fs::write(path, script).expect("write a skald");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("make it run");
+        };
+        write(&exe, "0");
+        write(&staged, "9");
+        let newer = Newer::default();
+
+        assert!(!newer.at(&exe), "an older skald is newer");
+        assert!(!newer.at(&exe), "an older skald is newer");
+        fs::rename(&staged, &exe).expect("replace the skald");
+        assert!(newer.at(&exe), "the newer skald is not");
+        assert!(newer.at(&exe), "the newer skald is not");
+
+        let times = fs::read_to_string(&asked).expect("what was asked");
+        assert_eq!(times.lines().count(), 2, "not asked once each");
+    }
 
     /// A message goes over as its kind, length and payload, and the end of a stream before one
     /// gives none.

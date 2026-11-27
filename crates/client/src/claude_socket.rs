@@ -557,14 +557,14 @@ fn open_transcript(file: &Path) -> Option<fs::File> {
 }
 
 #[cfg(unix)]
-fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+pub fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
     use std::os::unix::fs::MetadataExt;
     let metadata = file.metadata()?;
     Ok((metadata.dev(), metadata.ino()))
 }
 
 #[cfg(windows)]
-fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
+pub fn file_identity(file: &fs::File) -> io::Result<(u64, u64)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
         BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle,
