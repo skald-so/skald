@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/skald-so/skald/compare/v0.2.0...v0.2.1) - 2026-11-27
+
+### Added
+
+- *(auth)* support corporate sign-in for devices ([#427](https://github.com/skald-so/skald/pull/427))
+- *(web)* delete the account on the Account page ([#400](https://github.com/skald-so/skald/pull/400))
+- *(release)* publish the verified Homebrew formula ([#416](https://github.com/skald-so/skald/pull/416))
+
+### Fixed
+
+- *(deps)* update rust crate rusqlite to 0.43 ([#117](https://github.com/skald-so/skald/pull/117))
+- *(deps)* update rust crate mls-rs-crypto-rustcrypto to 0.24 ([#401](https://github.com/skald-so/skald/pull/401))
+- *(deps)* update rust crate mls-rs to v0.58.0 ([#398](https://github.com/skald-so/skald/pull/398))
+- *(deps)* update rust crate rusty-s3 to 0.12 ([#402](https://github.com/skald-so/skald/pull/402))
+- *(client)* a service agent's run asks for no waiting acceptances ([#463](https://github.com/skald-so/skald/pull/463))
+- *(client)* ask the installed skald its version only once it changed ([#457](https://github.com/skald-so/skald/pull/457))
+- *(server)* close the A2A gateway's connection after a refusal before the body ([#454](https://github.com/skald-so/skald/pull/454))
+- *(client)* take a helper's long-poll notices with what came with them ([#452](https://github.com/skald-so/skald/pull/452))
+- *(client)* confirm late Claude Stop reads past bookkeeping lines ([#443](https://github.com/skald-so/skald/pull/443))
+- *(adapters)* end a run's processes in sessions of their own on macOS 27 ([#438](https://github.com/skald-so/skald/pull/438))
+
+### Other
+
+- *(deps)* lock file maintenance ([#225](https://github.com/skald-so/skald/pull/225))
+- *(deps)* update non-breaking updates ([#224](https://github.com/skald-so/skald/pull/224))
+- *(codex)* run native end-to-end tests nightly ([#430](https://github.com/skald-so/skald/pull/430))
+- *(windows)* hold the browser test's processes open and look at the run's directory while it runs ([#470](https://github.com/skald-so/skald/pull/470))
+- *(e2e)* start E2E when the tests' local listener changes ([#469](https://github.com/skald-so/skald/pull/469))
+- *(client)* order the stateless replay acknowledgement fixture ([#433](https://github.com/skald-so/skald/pull/433))
+- *(deps)* update rust crate jsonschema to 0.63 ([#397](https://github.com/skald-so/skald/pull/397))
+- bind the tests' local listeners again when Windows lacks buffer space ([#468](https://github.com/skald-so/skald/pull/468))
+- *(release)* keep git maintenance off the job fixtures' repository ([#439](https://github.com/skald-so/skald/pull/439))
+- *(windows)* sample the ports the allocator sees, Bound sockets and exclusions ([#466](https://github.com/skald-so/skald/pull/466))
+- *(client)* show the requests and challenges when a run after a killed link fails ([#467](https://github.com/skald-so/skald/pull/467))
+- *(client)* count a codex wake from when web's device took the message in ([#465](https://github.com/skald-so/skald/pull/465))
+- *(windows)* end the browser tests' driver and browser with their test binary ([#461](https://github.com/skald-so/skald/pull/461))
+- *(claude-code)* press Enter only once the typed prompt shows ([#464](https://github.com/skald-so/skald/pull/464))
+- *(client)* have the front swallow an ack in an HTTPS request too ([#462](https://github.com/skald-so/skald/pull/462))
+- *(client)* note the machine's state when a connect hits WSAENOBUFS ([#460](https://github.com/skald-so/skald/pull/460))
+- *(client)* count a batch's lateness from when its first send returned ([#458](https://github.com/skald-so/skald/pull/458))
+- *(client)* read a run's whole output before failing it for exiting without showing ([#456](https://github.com/skald-so/skald/pull/456))
+- *(client)* let the recv that starts a helper wait out a handed-over wait's first run ([#459](https://github.com/skald-so/skald/pull/459))
+- *(client)* wait for the given-way helper to exit before counting one ([#455](https://github.com/skald-so/skald/pull/455))
+- *(client)* fix the Windows listing of a copy's processes and show terminal timelines ([#446](https://github.com/skald-so/skald/pull/446))
+- *(client)* wait for both sessions' runs before counting the helper idle ([#453](https://github.com/skald-so/skald/pull/453))
+- run the workspace's tests 16 at a time ([#445](https://github.com/skald-so/skald/pull/445))
+- *(claude-code)* wait for the plugin's MCP server and log terminal input on failure ([#449](https://github.com/skald-so/skald/pull/449))
+- share one closed port below the ephemeral ranges, tried without listening ([#451](https://github.com/skald-so/skald/pull/451))
+- *(client)* let the held KeyPackages upload go without a second request ([#450](https://github.com/skald-so/skald/pull/450))
+- *(crypto)* derive the recovery key at the least cost in test builds ([#448](https://github.com/skald-so/skald/pull/448))
+- *(self-host)* stop the machines' helpers with each stack ([#447](https://github.com/skald-so/skald/pull/447))
+- run Windows, E2E and the release dry run once a PR is ready to merge ([#442](https://github.com/skald-so/skald/pull/442))
+- *(client)* distinguish receipts in Claude send fixtures ([#434](https://github.com/skald-so/skald/pull/434))
+- *(client)* share invite test fixtures ([#417](https://github.com/skald-so/skald/pull/417))
+- *(site)* describe the documentation root redirect ([#411](https://github.com/skald-so/skald/pull/411))
+- *(client)* close the stand-in server's connections after each answer ([#440](https://github.com/skald-so/skald/pull/440))
+
 ## [0.2.0](https://github.com/skald-so/skald/compare/v0.1.2...v0.2.0) - 2026-11-26
 
 ### Added
